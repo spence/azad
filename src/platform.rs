@@ -33,8 +33,8 @@ const KEYCODE_LEFT_OPTION: u16 = 0x3A;
 const KEYCODE_RIGHT_OPTION: u16 = 0x3D;
 const KEYCODE_LEFT_CONTROL: u16 = 0x3B;
 const KEYCODE_RIGHT_CONTROL: u16 = 0x3E;
-const PASTE_FOCUS_DELAY_MS: u64 = 60;
-const PASTE_CLIPBOARD_DELAY_MS: u64 = 60;
+const PASTE_CHORD_HOLD_MS: u64 = 100;
+const POST_PASTE_SETTLE_MS: u64 = 50;
 const OVERLAY_WIDTH_MIN: f64 = 420.0;
 const OVERLAY_WIDTH_MAX: f64 = 900.0;
 const OVERLAY_HEIGHT_MIN: f64 = 160.0;
@@ -163,7 +163,7 @@ pub fn set_overlay_content(status: &str, draft: &str, spinner: Option<char>) {
     }
 }
 
-pub fn paste_text(text: &str) -> PasteResult {
+pub fn paste_text(text: &str, paste_delay_ms: u64) -> PasteResult {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return PasteResult::EmptyText;
@@ -184,13 +184,14 @@ pub fn paste_text(text: &str) -> PasteResult {
         return PasteResult::AccessibilityRequired;
     }
 
-    // Give the previously focused app a moment to regain key status after overlay hide.
-    std::thread::sleep(Duration::from_millis(PASTE_FOCUS_DELAY_MS));
-    std::thread::sleep(Duration::from_millis(PASTE_CLIPBOARD_DELAY_MS));
+    // Clipboard propagation delay so the focused target app sees the new clipboard value.
+    std::thread::sleep(Duration::from_millis(paste_delay_ms));
 
     unsafe {
         send_command_v_robust();
     }
+    // Give the target app a short settle window after synthetic paste.
+    std::thread::sleep(Duration::from_millis(POST_PASTE_SETTLE_MS));
 
     PasteResult::Pasted
 }
@@ -760,6 +761,8 @@ unsafe fn send_command_v_robust() {
         key_up.set_flags(CGEventFlags::CGEventFlagCommand);
         key_up.post(CGEventTapLocation::HID);
     }
+    // Hold the command chord briefly so targets consistently register the paste action.
+    std::thread::sleep(Duration::from_millis(PASTE_CHORD_HOLD_MS));
 
     if let Ok(command_up) = CGEvent::new_keyboard_event(source, KEYCODE_LEFT_COMMAND, false) {
         command_up.post(CGEventTapLocation::HID);

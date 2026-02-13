@@ -9,6 +9,7 @@ pub struct AzadConfig {
     pub final_pass_timeout_ms: u64,
     pub chunk_ms: u32,
     pub buffer_ms: u32,
+    pub paste_delay_ms: u64,
     pub pipeline: PipelineConfig,
 }
 
@@ -31,6 +32,7 @@ impl Default for AzadConfig {
             final_pass_timeout_ms: 3_000,
             chunk_ms: 20,
             buffer_ms: 120_000,
+            paste_delay_ms: 120,
             pipeline: PipelineConfig {
                 vad_model_path: root
                     .join("whisper.cpp")

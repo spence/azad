@@ -612,7 +612,7 @@ impl AppController {
     }
 
     fn try_paste(&mut self, text: &str) -> bool {
-        match platform::paste_text(text) {
+        match platform::paste_text(text, self.cfg.paste_delay_ms) {
             PasteResult::Pasted => true,
             PasteResult::AccessibilityRequired => {
                 self.show_accessibility_overlay_notice();
