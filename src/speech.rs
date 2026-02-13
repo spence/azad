@@ -20,6 +20,7 @@ pub enum SpeechEvent {
     },
     DraftUpdated {
         session_id: u64,
+        turn_id: u64,
         committed: String,
         live: String,
     },
@@ -65,10 +66,13 @@ impl SpeechSession {
         let _ = self.handle.control(SessionControl::FinalizeCurrentTurn);
     }
 
+    pub fn cancel_current_turn(&self) {
+        let _ = self.handle.control(SessionControl::CancelCurrentTurn);
+    }
+
     pub fn cancel(&self) {
         let _ = self.handle.control(SessionControl::CancelSession);
     }
-
 }
 
 pub fn spawn_speech_session(
@@ -101,8 +105,13 @@ impl ToonSessionSink for ForwardingSink {
             ToonSessionEvent::SpeechStartedByVad => SpeechEvent::SpeechStartedByVad {
                 session_id: self.session_id,
             },
-            ToonSessionEvent::DraftUpdated { committed, live } => SpeechEvent::DraftUpdated {
+            ToonSessionEvent::DraftUpdated {
+                turn_id,
+                committed,
+                live,
+            } => SpeechEvent::DraftUpdated {
                 session_id: self.session_id,
+                turn_id,
                 committed,
                 live,
             },

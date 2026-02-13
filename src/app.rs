@@ -89,6 +89,7 @@ struct AppController {
 
     manual_hold_active: bool,
     overlay_visible: bool,
+    overlay_pending_vad_text: bool,
     cancelled: bool,
     pasted_this_session: bool,
     latest_draft: String,
@@ -112,6 +113,7 @@ impl AppController {
             device_menu_expanded: false,
             manual_hold_active: false,
             overlay_visible: false,
+            overlay_pending_vad_text: false,
             cancelled: false,
             pasted_this_session: false,
             latest_draft: String::new(),
@@ -190,6 +192,7 @@ impl AppController {
         self.accessibility_notice_deadline = None;
         self.pasted_this_session = false;
         self.cancelled = false;
+        self.overlay_pending_vad_text = false;
         self.latest_seen_turn_id = 0;
         self.turn_accept_floor = 1;
         self.current_turn_id = None;
@@ -240,6 +243,7 @@ impl AppController {
 
     fn handle_hotkey_pressed(&mut self) {
         self.manual_hold_active = true;
+        self.overlay_pending_vad_text = false;
         self.reset_turn_state();
         self.ensure_session();
         if let Some(session) = &self.session {
@@ -257,6 +261,7 @@ impl AppController {
     }
 
     fn handle_menu_listen(&mut self) {
+        self.overlay_pending_vad_text = false;
         self.reset_turn_state();
         self.ensure_session();
         if let Some(session) = &self.session {
@@ -293,9 +298,11 @@ impl AppController {
         }
         self.cancelled = true;
         self.manual_hold_active = false;
+        self.overlay_pending_vad_text = false;
         self.finalizing_deadline = None;
         if let Some(session) = &self.session {
-            session.cancel();
+            session.release_manual_hold();
+            session.cancel_current_turn();
         }
         self.hide_overlay();
     }
@@ -386,17 +393,26 @@ impl AppController {
             }
             SpeechEvent::SpeechStartedByVad { .. } => {
                 self.reset_turn_state();
-                if self.cfg.show_overlay_on_vad_start {
-                    self.show_overlay_listening();
-                }
+                self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
             }
             SpeechEvent::DraftUpdated {
-                committed, live, ..
+                turn_id,
+                committed,
+                live,
+                ..
             } => {
+                if !self.accept_turn(turn_id) {
+                    return;
+                }
+                self.observe_turn(turn_id);
                 let merged = format!("{committed}{live}");
                 let merged = merged.trim().to_string();
                 if !merged.is_empty() {
                     self.latest_draft = merged;
+                    if self.overlay_pending_vad_text && !self.overlay_visible {
+                        self.show_overlay_listening();
+                    }
+                    self.overlay_pending_vad_text = false;
                 }
                 if self.overlay_visible && self.finalizing_deadline.is_none() {
                     self.render_listening_overlay();
@@ -415,6 +431,7 @@ impl AppController {
                 if !current_draft.trim().is_empty() {
                     self.latest_draft = current_draft.trim().to_string();
                 }
+                self.overlay_pending_vad_text = false;
                 self.finalizing_deadline =
                     Some(Instant::now() + Duration::from_millis(self.cfg.final_pass_timeout_ms));
                 self.show_overlay_finalizing();
@@ -459,13 +476,6 @@ impl AppController {
                                 self.pasted_this_session = true;
                             }
                         }
-                    } else {
-                        let cleaned = self.latest_draft.trim().to_string();
-                        if !cleaned.is_empty() {
-                            if self.try_paste(&cleaned) {
-                                self.pasted_this_session = true;
-                            }
-                        }
                     }
                 }
 
@@ -475,6 +485,7 @@ impl AppController {
                 self.latest_final = None;
                 self.finalizing_deadline = None;
                 self.accessibility_notice_deadline = None;
+                self.overlay_pending_vad_text = false;
                 self.cancelled = false;
                 self.pasted_this_session = false;
                 self.start_session();
@@ -524,36 +535,33 @@ impl AppController {
 
     fn on_tick(&mut self) {
         if let Some(deadline) = self.finalizing_deadline {
-            if Instant::now() >= deadline {
-                self.finalizing_deadline = None;
-                if !self.cancelled && !self.pasted_this_session {
-                    let cleaned = self.latest_draft.trim().to_string();
-                    if !cleaned.is_empty() {
-                        self.hide_overlay();
-                        if self.try_paste(&cleaned) {
-                            self.pasted_this_session = true;
-                        }
-                    }
-                }
-                self.hide_overlay();
-                return;
+            let now = Instant::now();
+            let taking_longer = now >= deadline;
+            if taking_longer {
+                // Keep waiting for the real final-pass completion signal instead of hiding
+                // the overlay on a fixed timeout.
+                self.finalizing_deadline =
+                    Some(now + Duration::from_millis(self.cfg.final_pass_timeout_ms));
             }
 
             if self.overlay_visible {
                 self.spinner_index = (self.spinner_index + 1) % FINALIZING_SPINNER.len();
                 let spinner = FINALIZING_SPINNER[self.spinner_index];
-                platform::set_overlay_content(
-                    "Finalizing transcription...",
-                    &self.latest_draft,
-                    Some(spinner),
-                );
+                let status = if taking_longer {
+                    "Finalizing transcription... (taking longer than usual)"
+                } else {
+                    "Finalizing transcription..."
+                };
+                platform::set_overlay_content(status, &self.latest_draft, Some(spinner));
             }
         }
 
         if let Some(deadline) = self.accessibility_notice_deadline {
             if Instant::now() >= deadline {
                 self.accessibility_notice_deadline = None;
-                if self.overlay_visible && !self.manual_hold_active && self.finalizing_deadline.is_none()
+                if self.overlay_visible
+                    && !self.manual_hold_active
+                    && self.finalizing_deadline.is_none()
                 {
                     self.hide_overlay();
                 }
@@ -562,6 +570,7 @@ impl AppController {
     }
 
     fn show_overlay_listening(&mut self) {
+        self.overlay_pending_vad_text = false;
         if !self.overlay_visible {
             platform::show_overlay();
             self.overlay_visible = true;
@@ -570,6 +579,7 @@ impl AppController {
     }
 
     fn show_overlay_finalizing(&mut self) {
+        self.overlay_pending_vad_text = false;
         self.accessibility_notice_deadline = None;
         if !self.overlay_visible {
             platform::show_overlay();
@@ -613,6 +623,7 @@ impl AppController {
     }
 
     fn hide_overlay(&mut self) {
+        self.overlay_pending_vad_text = false;
         if self.overlay_visible {
             platform::hide_overlay();
             self.overlay_visible = false;
@@ -634,6 +645,7 @@ impl AppController {
         self.latest_final = None;
         self.finalizing_deadline = None;
         self.accessibility_notice_deadline = None;
+        self.overlay_pending_vad_text = false;
         self.current_turn_id = None;
         self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
     }

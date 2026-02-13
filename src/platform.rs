@@ -44,6 +44,7 @@ static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static HOTKEY_OPTION_SPACE_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ESCAPE_ID: OnceLock<u32> = OnceLock::new();
+static HOTKEY_ESCAPE_REGISTERED: AtomicBool = AtomicBool::new(false);
 static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
@@ -54,6 +55,7 @@ thread_local! {
     static DEVICE_HEADER_CHEVRON_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_ROW_IDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static DEVICE_MENU_MODEL: RefCell<DeviceMenuModel> = RefCell::new(DeviceMenuModel::default());
+    static HOTKEY_MANAGER_REF: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy)]
@@ -128,6 +130,7 @@ pub fn show_overlay() {
         let refs = ensure_overlay();
         let _: () = msg_send![refs.window, orderFrontRegardless];
     }
+    set_escape_hotkey_enabled(true);
 }
 
 pub fn hide_overlay() {
@@ -136,6 +139,7 @@ pub fn hide_overlay() {
             let _: () = msg_send![refs.window, orderOut: nil];
         }
     }
+    set_escape_hotkey_enabled(false);
 }
 
 pub fn set_overlay_content(status: &str, draft: &str, spinner: Option<char>) {
@@ -666,22 +670,15 @@ fn install_global_hotkeys() {
     let _ = HOTKEY_OPTION_SPACE_ID.set(hotkey_id);
 
     let escape_hotkey = HotKey::new(None, Code::Escape);
-    let escape_hotkey_id = escape_hotkey.id();
-    if let Err(err) = manager.register(escape_hotkey) {
-        eprintln!(
-            "Azad: failed to register Escape hotkey for overlay cancel: {}",
-            err
-        );
-    } else {
-        let _ = HOTKEY_ESCAPE_ID.set(escape_hotkey_id);
-    }
+    let _ = HOTKEY_ESCAPE_ID.set(escape_hotkey.id());
 
     GlobalHotKeyEvent::set_event_handler(Some(|event| {
         handle_global_hotkey_event(event);
     }));
 
-    // Keep manager alive for the lifetime of the app.
-    let _ = Box::leak(Box::new(manager));
+    HOTKEY_MANAGER_REF.with(|slot| {
+        slot.borrow_mut().replace(manager);
+    });
 }
 
 fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
@@ -696,10 +693,47 @@ fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
     }
 
     if let Some(escape_id) = HOTKEY_ESCAPE_ID.get().copied() {
-        if event.id == escape_id && matches!(event.state, HotKeyState::Pressed) {
+        if event.id == escape_id
+            && HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed)
+            && matches!(event.state, HotKeyState::Pressed)
+        {
             crate::app::send_event(AppEvent::OverlayCancel);
         }
     }
+}
+
+fn set_escape_hotkey_enabled(enabled: bool) {
+    let currently_enabled = HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed);
+    if currently_enabled == enabled {
+        return;
+    }
+
+    HOTKEY_MANAGER_REF.with(|slot| {
+        let mut manager_slot = slot.borrow_mut();
+        let Some(manager) = manager_slot.as_mut() else {
+            return;
+        };
+
+        let escape_hotkey = HotKey::new(None, Code::Escape);
+        let result = if enabled {
+            manager.register(escape_hotkey)
+        } else {
+            manager.unregister(escape_hotkey)
+        };
+
+        match result {
+            Ok(()) => {
+                HOTKEY_ESCAPE_REGISTERED.store(enabled, Ordering::Relaxed);
+            }
+            Err(err) => {
+                eprintln!(
+                    "Azad: failed to {} Escape hotkey: {}",
+                    if enabled { "register" } else { "unregister" },
+                    err
+                );
+            }
+        }
+    });
 }
 
 unsafe fn send_command_v_robust() {
@@ -710,7 +744,9 @@ unsafe fn send_command_v_robust() {
 
     release_modifiers(&source);
 
-    if let Ok(command_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_LEFT_COMMAND, true) {
+    if let Ok(command_down) =
+        CGEvent::new_keyboard_event(source.clone(), KEYCODE_LEFT_COMMAND, true)
+    {
         command_down.set_flags(CGEventFlags::CGEventFlagCommand);
         command_down.post(CGEventTapLocation::HID);
     }
@@ -769,7 +805,9 @@ fn maybe_request_accessibility_permission_once() {
         let prompted = unsafe { request_accessibility_prompt() };
         if !prompted {
             let _ = std::process::Command::new("/usr/bin/open")
-                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                .arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                )
                 .spawn();
         }
     }
