@@ -44,7 +44,9 @@ static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static HOTKEY_OPTION_SPACE_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ESCAPE_ID: OnceLock<u32> = OnceLock::new();
+static HOTKEY_ENTER_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ESCAPE_REGISTERED: AtomicBool = AtomicBool::new(false);
+static HOTKEY_ENTER_REGISTERED: AtomicBool = AtomicBool::new(false);
 static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
@@ -131,6 +133,7 @@ pub fn show_overlay() {
         let _: () = msg_send![refs.window, orderFrontRegardless];
     }
     set_escape_hotkey_enabled(true);
+    set_enter_hotkey_enabled(true);
 }
 
 pub fn hide_overlay() {
@@ -140,6 +143,7 @@ pub fn hide_overlay() {
         }
     }
     set_escape_hotkey_enabled(false);
+    set_enter_hotkey_enabled(false);
 }
 
 pub fn set_overlay_content(status: &str, draft: &str, spinner: Option<char>) {
@@ -672,6 +676,8 @@ fn install_global_hotkeys() {
 
     let escape_hotkey = HotKey::new(None, Code::Escape);
     let _ = HOTKEY_ESCAPE_ID.set(escape_hotkey.id());
+    let enter_hotkey = HotKey::new(None, Code::Enter);
+    let _ = HOTKEY_ENTER_ID.set(enter_hotkey.id());
 
     GlobalHotKeyEvent::set_event_handler(Some(|event| {
         handle_global_hotkey_event(event);
@@ -699,6 +705,16 @@ fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
             && matches!(event.state, HotKeyState::Pressed)
         {
             crate::app::send_event(AppEvent::OverlayCancel);
+            return;
+        }
+    }
+
+    if let Some(enter_id) = HOTKEY_ENTER_ID.get().copied() {
+        if event.id == enter_id
+            && HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
+            && matches!(event.state, HotKeyState::Pressed)
+        {
+            crate::app::send_event(AppEvent::FinalizeHotkeyPressed);
         }
     }
 }
@@ -729,6 +745,40 @@ fn set_escape_hotkey_enabled(enabled: bool) {
             Err(err) => {
                 eprintln!(
                     "Azad: failed to {} Escape hotkey: {}",
+                    if enabled { "register" } else { "unregister" },
+                    err
+                );
+            }
+        }
+    });
+}
+
+fn set_enter_hotkey_enabled(enabled: bool) {
+    let currently_enabled = HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed);
+    if currently_enabled == enabled {
+        return;
+    }
+
+    HOTKEY_MANAGER_REF.with(|slot| {
+        let mut manager_slot = slot.borrow_mut();
+        let Some(manager) = manager_slot.as_mut() else {
+            return;
+        };
+
+        let enter_hotkey = HotKey::new(None, Code::Enter);
+        let result = if enabled {
+            manager.register(enter_hotkey)
+        } else {
+            manager.unregister(enter_hotkey)
+        };
+
+        match result {
+            Ok(()) => {
+                HOTKEY_ENTER_REGISTERED.store(enabled, Ordering::Relaxed);
+            }
+            Err(err) => {
+                eprintln!(
+                    "Azad: failed to {} Enter hotkey: {}",
                     if enabled { "register" } else { "unregister" },
                     err
                 );

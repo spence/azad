@@ -45,6 +45,7 @@ impl Default for AzadConfig {
                 eou_max_silence_ms: 1_000,
                 stable_k: 3,
                 stable_h: 5,
+                enable_tdt_final_pass: true,
                 parakeet_tdt_dir: root.join("models").join("parakeet").join("tdt"),
                 parakeet_eou_dir: root.join("models").join("parakeet").join("eou"),
             },

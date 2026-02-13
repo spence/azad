@@ -18,6 +18,7 @@ const FINALIZING_SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 pub enum AppEvent {
     HotkeyPressed,
     HotkeyReleased,
+    FinalizeHotkeyPressed,
     MenuListen,
     MenuToggleDevices,
     MenuSelectDevice(String),
@@ -163,6 +164,7 @@ impl AppController {
         match event {
             AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
             AppEvent::HotkeyReleased => self.handle_hotkey_released(),
+            AppEvent::FinalizeHotkeyPressed => self.handle_finalize_hotkey_pressed(),
             AppEvent::MenuListen => self.handle_menu_listen(),
             AppEvent::MenuToggleDevices => self.handle_menu_toggle_devices(),
             AppEvent::MenuSelectDevice(device_id) => self.handle_menu_select_device(device_id),
@@ -253,6 +255,17 @@ impl AppController {
     }
 
     fn handle_hotkey_released(&mut self) {
+        self.manual_hold_active = false;
+        if let Some(session) = &self.session {
+            session.release_manual_hold();
+            session.finalize_current_turn();
+        }
+    }
+
+    fn handle_finalize_hotkey_pressed(&mut self) {
+        if !self.overlay_visible {
+            return;
+        }
         self.manual_hold_active = false;
         if let Some(session) = &self.session {
             session.release_manual_hold();
