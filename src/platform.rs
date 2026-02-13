@@ -39,9 +39,30 @@ const OVERLAY_WIDTH_MIN: f64 = 420.0;
 const OVERLAY_WIDTH_MAX: f64 = 900.0;
 const OVERLAY_HEIGHT_MIN: f64 = 160.0;
 const OVERLAY_HEIGHT_MAX: f64 = 280.0;
+const DEVICE_HEADER_WIDTH: f64 = 280.0;
+const DEVICE_HEADER_MIN_WIDTH: f64 = 220.0;
+const DEVICE_HEADER_HEIGHT: f64 = 24.0;
+const DEVICE_HEADER_TEXT_LEADING: f64 = 14.0;
+const DEVICE_HEADER_TRAILING: f64 = 12.0;
+const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
+const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
+const DEVICE_HEADER_EXTRA_TOP_PADDING: f64 = 1.0;
+const DEVICE_HEADER_EXTRA_SIDE_MARGIN: f64 = 2.0;
+const DEVICE_MENU_ROW_CHROME_WIDTH: f64 = 46.0;
+const DEVICE_MENU_INDENT_LEVEL_WIDTH: f64 = 16.0;
+const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
+const DEVICE_MENU_TEXT_SAFETY_PADDING: f64 = 10.0;
+const DEVICE_MENU_SCREEN_EDGE_MARGIN: f64 = 24.0;
+const DEVICE_HEADER_MENU_COMPENSATION: f64 = 22.0;
+
+// NSAutoresizingMaskOptions (see AppKit NSView.h)
+const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
+const NS_VIEW_WIDTH_SIZABLE: u64 = 1 << 1;
+const NS_VIEW_HEIGHT_SIZABLE: u64 = 1 << 4;
 
 static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
+static DEVICE_HEADER_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static HOTKEY_OPTION_SPACE_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ESCAPE_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ENTER_ID: OnceLock<u32> = OnceLock::new();
@@ -53,8 +74,13 @@ thread_local! {
     static OVERLAY_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static DEVICE_HEADER_VIEW_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static DEVICE_HEADER_BUTTON_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static DEVICE_HEADER_HIGHLIGHT_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_LABEL_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_CHEVRON_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static DEVICE_HEADER_OPEN_MAX_WIDTH: RefCell<Option<f64>> = const { RefCell::new(None) };
+    static DEVICE_MENU_OPEN_MAX_WIDTH: RefCell<Option<f64>> = const { RefCell::new(None) };
     static DEVICE_ROW_IDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static DEVICE_MENU_MODEL: RefCell<DeviceMenuModel> = RefCell::new(DeviceMenuModel::default());
     static HOTKEY_MANAGER_REF: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
@@ -168,13 +194,12 @@ pub fn set_overlay_content(status: &str, draft: &str, spinner: Option<char>) {
 }
 
 pub fn paste_text(text: &str, paste_delay_ms: u64) -> PasteResult {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+    if text.trim().is_empty() {
         return PasteResult::EmptyText;
     }
 
     unsafe {
-        if !write_pasteboard_string(trimmed) {
+        if !write_pasteboard_string(text) {
             eprintln!("Azad: failed to write transcript to pasteboard");
             return PasteResult::ClipboardWriteFailed;
         }
@@ -222,6 +247,18 @@ fn register_delegate_class() -> &'static Class {
             sel!(menuWillOpen:),
             menu_will_open as extern "C" fn(&Object, Sel, id),
         );
+        decl.add_method(
+            sel!(menuDidClose:),
+            menu_did_close as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(menu:willHighlightItem:),
+            menu_will_highlight_item as extern "C" fn(&Object, Sel, id, id),
+        );
+        decl.add_method(
+            sel!(syncMenuLayout:),
+            sync_menu_layout as extern "C" fn(&Object, Sel, id),
+        );
         decl.add_method(sel!(noop:), noop as extern "C" fn(&Object, Sel, id));
 
         decl.register()
@@ -251,6 +288,103 @@ fn register_overlay_window_class() -> &'static Class {
     })
 }
 
+fn register_device_header_view_class() -> &'static Class {
+    DEVICE_HEADER_VIEW_CLASS.get_or_init(|| unsafe {
+        let superclass = class!(NSView);
+        let mut decl = ClassDecl::new("AzadDeviceHeaderView", superclass)
+            .expect("failed to declare device header view class");
+
+        decl.add_method(
+            sel!(setFrame:),
+            device_header_view_set_frame as extern "C" fn(&Object, Sel, NSRect),
+        );
+        decl.add_method(
+            sel!(setFrameSize:),
+            device_header_view_set_frame_size as extern "C" fn(&Object, Sel, NSSize),
+        );
+        decl.add_method(
+            sel!(viewDidMoveToWindow),
+            device_header_view_did_move_to_window as extern "C" fn(&Object, Sel),
+        );
+        decl.add_method(
+            sel!(viewDidMoveToSuperview),
+            device_header_view_did_move_to_superview as extern "C" fn(&Object, Sel),
+        );
+
+        decl.register()
+    })
+}
+
+unsafe fn menu_window_content_width_for_view(view: id) -> Option<f64> {
+    if view == nil {
+        return None;
+    }
+
+    let window: id = msg_send![view, window];
+    if window == nil {
+        return None;
+    }
+
+    let content_view: id = msg_send![window, contentView];
+    if content_view != nil {
+        let bounds: NSRect = msg_send![content_view, bounds];
+        if bounds.size.width.is_finite() && bounds.size.width > 0.0 {
+            return Some(bounds.size.width);
+        }
+    }
+
+    let frame: NSRect = msg_send![window, frame];
+    if frame.size.width.is_finite() && frame.size.width > 0.0 {
+        return Some(frame.size.width);
+    }
+
+    None
+}
+
+extern "C" fn device_header_view_set_frame(this: &Object, _: Sel, mut rect: NSRect) {
+    unsafe {
+        let view_id = this as *const Object as id;
+        if let Some(window_width) = menu_window_content_width_for_view(view_id) {
+            // Pin the custom row width to the *rendered menu window* width.
+            // This prevents AppKit from leaving our custom view narrower than the
+            // outer menu background during expand/collapse transitions.
+            rect.size.width = window_width;
+        }
+        let _: () = msg_send![super(view_id, class!(NSView)), setFrame: rect];
+    }
+}
+
+extern "C" fn device_header_view_set_frame_size(this: &Object, _: Sel, mut size: NSSize) {
+    unsafe {
+        let view_id = this as *const Object as id;
+        if let Some(window_width) = menu_window_content_width_for_view(view_id) {
+            size.width = window_width;
+        }
+        let _: () = msg_send![super(view_id, class!(NSView)), setFrameSize: size];
+    }
+}
+
+extern "C" fn device_header_view_did_move_to_window(this: &Object, _: Sel) {
+    unsafe {
+        let view_id = this as *const Object as id;
+        let _: () = msg_send![super(view_id, class!(NSView)), viewDidMoveToWindow];
+        // Re-apply pinned width now that we have a window (menu attaches lazily).
+        let frame: NSRect = msg_send![view_id, frame];
+        let _: () = msg_send![view_id, setFrame: frame];
+    }
+}
+
+extern "C" fn device_header_view_did_move_to_superview(this: &Object, _: Sel) {
+    unsafe {
+        let view_id = this as *const Object as id;
+        let _: () = msg_send![super(view_id, class!(NSView)), viewDidMoveToSuperview];
+        // In some transitions AppKit re-parents/re-lays out menu item views.
+        // Re-assert our pinned width on reattachment.
+        let frame: NSRect = msg_send![view_id, frame];
+        let _: () = msg_send![view_id, setFrame: frame];
+    }
+}
+
 extern "C" fn listen(_: &Object, _: Sel, _: id) {
     crate::app::send_event(AppEvent::MenuListen);
 }
@@ -266,9 +400,10 @@ extern "C" fn tick(_: &Object, _: Sel, _: id) {
     crate::app::drain_events();
 }
 
-extern "C" fn toggle_devices(_: &Object, _: Sel, _: id) {
+extern "C" fn toggle_devices(this: &Object, _: Sel, _: id) {
     crate::app::send_event(AppEvent::MenuToggleDevices);
     crate::app::drain_events();
+    schedule_menu_layout_sync(this as *const Object as id);
 }
 
 extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
@@ -287,6 +422,42 @@ extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
 
 extern "C" fn menu_will_open(_: &Object, _: Sel, _: id) {
     crate::app::send_event(AppEvent::MenuOpened);
+
+    let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
+    let Some(menu) = menu else {
+        return;
+    };
+
+    let model = DEVICE_MENU_MODEL.with(|slot| slot.borrow().clone());
+    let target_width = compute_device_menu_target_width(&model);
+    apply_device_menu_layout(menu, target_width);
+
+    let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow());
+    if let Some(delegate) = delegate {
+        schedule_menu_layout_sync(delegate);
+    }
+}
+
+extern "C" fn menu_did_close(_: &Object, _: Sel, _: id) {
+    crate::app::send_event(AppEvent::MenuClosed);
+    set_device_header_highlighted(false);
+    reset_device_menu_open_width_sticky_state();
+}
+
+extern "C" fn menu_will_highlight_item(_: &Object, _: Sel, _: id, item: id) {
+    let is_header = unsafe {
+        if item == nil {
+            false
+        } else {
+            let item_view: id = msg_send![item, view];
+            DEVICE_HEADER_VIEW_REF.with(|slot| slot.borrow().is_some_and(|header_view| header_view == item_view))
+        }
+    };
+    set_device_header_highlighted(is_header);
+}
+
+extern "C" fn sync_menu_layout(_: &Object, _: Sel, _: id) {
+    sync_device_header_width_to_live_menu();
 }
 
 extern "C" fn noop(_: &Object, _: Sel, _: id) {}
@@ -327,7 +498,7 @@ unsafe fn setup_status_bar(delegate: id) {
     });
 
     // Poll app events on the main thread.
-    let _: id = msg_send![
+    let timer: id = msg_send![
         class!(NSTimer),
         scheduledTimerWithTimeInterval: 0.05f64
         target: delegate
@@ -335,6 +506,10 @@ unsafe fn setup_status_bar(delegate: id) {
         userInfo: nil
         repeats: YES
     ];
+    let run_loop: id = msg_send![class!(NSRunLoop), mainRunLoop];
+    let tracking_mode = NSString::alloc(nil).init_str("NSEventTrackingRunLoopMode");
+    // Also run while the menu is open and tracking mouse hover.
+    let _: () = msg_send![run_loop, addTimer: timer forMode: tracking_mode];
 
     let delegate_obj = &mut *(delegate as *mut Object);
     delegate_obj.set_ivar("statusItem", status_item);
@@ -351,17 +526,307 @@ fn rebuild_status_menu() {
         return;
     };
 
+    let target_width = compute_device_menu_target_width(&model);
     if menu_is_open(menu) {
         update_menu_inline(menu, delegate, &model);
     } else {
         build_menu_fresh(menu, delegate, &model);
     }
+    apply_device_menu_layout(menu, target_width);
 }
 
 fn menu_is_open(menu: id) -> bool {
     unsafe {
         let attached: i8 = msg_send![menu, isAttached];
         attached != 0
+    }
+}
+
+fn apply_device_menu_layout(menu: id, target_width: f64) {
+    if !target_width.is_finite() || target_width <= 0.0 {
+        return;
+    }
+
+    let max_width = menu_screen_width_cap();
+    let min_width = DEVICE_HEADER_MIN_WIDTH.min(max_width);
+    let width = target_width.max(min_width).min(max_width);
+    let menu_width = if menu_is_open(menu) {
+        sticky_menu_open_width(width)
+    } else {
+        width
+    };
+
+    unsafe {
+        let can_set_minimum: i8 = msg_send![menu, respondsToSelector: sel!(setMinimumWidth:)];
+        if can_set_minimum != 0 {
+            let _: () = msg_send![menu, setMinimumWidth: menu_width];
+        }
+        let can_size_to_fit: i8 = msg_send![menu, respondsToSelector: sel!(sizeToFit)];
+        if can_size_to_fit != 0 {
+            let _: () = msg_send![menu, sizeToFit];
+        }
+    }
+
+    let row_width = adjusted_header_row_width(menu_width);
+    let final_width = if menu_is_open(menu) {
+        sticky_header_open_width(row_width)
+    } else {
+        row_width
+    };
+    relayout_device_header_row(final_width);
+}
+
+fn sync_device_header_width_to_live_menu() {
+    let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
+    let Some(menu) = menu else {
+        return;
+    };
+    if !menu_is_open(menu) {
+        return;
+    }
+
+    let width = current_menu_width(menu);
+    if width > 0.0 {
+        let stable_menu_width = sticky_menu_open_width(width);
+        let final_width = sticky_header_open_width(adjusted_header_row_width(stable_menu_width));
+        relayout_device_header_row(final_width);
+    }
+}
+
+fn sticky_header_open_width(candidate: f64) -> f64 {
+    if !candidate.is_finite() || candidate <= 0.0 {
+        return candidate;
+    }
+
+    DEVICE_HEADER_OPEN_MAX_WIDTH.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let next = match *current {
+            Some(previous) => previous.max(candidate),
+            None => candidate,
+        };
+        *current = Some(next);
+        next
+    })
+}
+
+fn sticky_menu_open_width(candidate: f64) -> f64 {
+    if !candidate.is_finite() || candidate <= 0.0 {
+        return candidate;
+    }
+
+    DEVICE_MENU_OPEN_MAX_WIDTH.with(|slot| {
+        let mut current = slot.borrow_mut();
+        let next = match *current {
+            Some(previous) => previous.max(candidate),
+            None => candidate,
+        };
+        *current = Some(next);
+        next
+    })
+}
+
+fn reset_device_menu_open_width_sticky_state() {
+    DEVICE_HEADER_OPEN_MAX_WIDTH.with(|slot| {
+        slot.borrow_mut().take();
+    });
+    DEVICE_MENU_OPEN_MAX_WIDTH.with(|slot| {
+        slot.borrow_mut().take();
+    });
+}
+
+fn adjusted_header_row_width(base_width: f64) -> f64 {
+    let max_width = menu_screen_width_cap();
+    let adjusted = (base_width + DEVICE_HEADER_MENU_COMPENSATION).min(max_width);
+    if adjusted.is_finite() && adjusted > 0.0 {
+        adjusted
+    } else {
+        base_width
+    }
+}
+
+fn schedule_menu_layout_sync(delegate: id) {
+    unsafe {
+        if delegate == nil {
+            return;
+        }
+        let _: () = msg_send![
+            delegate,
+            performSelector: sel!(syncMenuLayout:)
+            withObject: nil
+            afterDelay: 0.0f64
+        ];
+    }
+}
+
+fn current_menu_width(menu: id) -> f64 {
+    unsafe {
+        if menu == nil {
+            return 0.0;
+        }
+
+        let header_context_width = DEVICE_HEADER_VIEW_REF.with(|slot| {
+            let Some(view) = *slot.borrow() else {
+                return None;
+            };
+
+            // Prefer the menu window's content width. This matches the rendered
+            // menu background and stays stable across expand/collapse.
+            if let Some(width) = menu_window_content_width_for_view(view) {
+                return Some(width);
+            }
+
+            // Fallback: immediate superview width (can be narrower than the
+            // menu background on some AppKit transitions).
+            let superview: id = msg_send![view, superview];
+            if superview == nil {
+                return None;
+            }
+
+            let bounds: NSRect = msg_send![superview, bounds];
+            if bounds.size.width.is_finite() && bounds.size.width > 0.0 {
+                return Some(bounds.size.width);
+            }
+
+            let frame: NSRect = msg_send![superview, frame];
+            if frame.size.width.is_finite() && frame.size.width > 0.0 {
+                return Some(frame.size.width);
+            }
+
+            None
+        });
+        if let Some(width) = header_context_width {
+            return width;
+        }
+
+        let menu_size: NSSize = msg_send![menu, size];
+        if menu_size.width.is_finite() && menu_size.width > 0.0 {
+            menu_size.width
+        } else {
+            DEVICE_HEADER_WIDTH
+        }
+    }
+}
+
+fn relayout_device_header_row(view_width: f64) {
+    if !view_width.is_finite() || view_width <= 0.0 {
+        return;
+    }
+    let view_height = DEVICE_HEADER_HEIGHT;
+
+    unsafe {
+        DEVICE_HEADER_VIEW_REF.with(|slot| {
+            if let Some(view) = *slot.borrow() {
+                let _: () = msg_send![
+                    view,
+                    setFrame: NSRect::new(
+                        NSPoint::new(0.0, 0.0),
+                        NSSize::new(view_width, view_height)
+                    )
+                ];
+            }
+        });
+    }
+}
+
+fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
+    unsafe {
+        let font = menu_row_font();
+        let mut max_width = DEVICE_HEADER_MIN_WIDTH;
+
+        for text in ["Listen", "Quit"] {
+            max_width = max_width.max(menu_row_width_for_text(text, font, 0, false));
+        }
+
+        if model.expanded {
+            if model.rows.is_empty() {
+                max_width = max_width.max(menu_row_width_for_text("No input devices", font, 1, false));
+            } else {
+                for row in &model.rows {
+                    max_width = max_width.max(menu_row_width_for_text(&row.label, font, 1, true));
+                }
+            }
+        }
+
+        max_width = max_width.max(device_header_width_for_label(&device_header_label(model), font));
+
+        let screen_cap = menu_screen_width_cap();
+        max_width.min(screen_cap)
+    }
+}
+
+unsafe fn menu_row_font() -> id {
+    let font_class = class!(NSFont);
+    let supports_menu_font: i8 = msg_send![font_class, respondsToSelector: sel!(menuFontOfSize:)];
+    if supports_menu_font != 0 {
+        let menu_font: id = msg_send![font_class, menuFontOfSize: 0.0f64];
+        if menu_font != nil {
+            return menu_font;
+        }
+    }
+    msg_send![font_class, systemFontOfSize: 13.0f64]
+}
+
+unsafe fn measure_text_width(text: &str, font: id) -> f64 {
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    let ns_text = NSString::alloc(nil).init_str(text);
+    if ns_text == nil {
+        return text.chars().count() as f64 * 7.0;
+    }
+
+    let size: NSSize = if font != nil {
+        let key = NSString::alloc(nil).init_str("NSFont");
+        let attrs: id = msg_send![class!(NSDictionary), dictionaryWithObject: font forKey: key];
+        msg_send![ns_text, sizeWithAttributes: attrs]
+    } else {
+        msg_send![ns_text, sizeWithAttributes: nil]
+    };
+
+    if size.width.is_finite() && size.width > 0.0 {
+        size.width
+    } else {
+        text.chars().count() as f64 * 7.0
+    }
+}
+
+unsafe fn menu_row_width_for_text(text: &str, font: id, indent_level: usize, with_checkmark: bool) -> f64 {
+    let text_width = measure_text_width(text, font);
+    let mut width = text_width + DEVICE_MENU_ROW_CHROME_WIDTH + DEVICE_MENU_TEXT_SAFETY_PADDING;
+    width += indent_level as f64 * DEVICE_MENU_INDENT_LEVEL_WIDTH;
+    if with_checkmark {
+        width += DEVICE_MENU_CHECKMARK_WIDTH;
+    }
+    width
+}
+
+unsafe fn device_header_width_for_label(label: &str, font: id) -> f64 {
+    let text_width = measure_text_width(label, font);
+    let mut width = text_width
+        + DEVICE_HEADER_TEXT_LEADING
+        + DEVICE_HEADER_LABEL_TO_CHEVRON_GAP
+        + DEVICE_HEADER_CHEVRON_SIZE
+        + DEVICE_HEADER_TRAILING
+        + DEVICE_MENU_TEXT_SAFETY_PADDING;
+    width += 6.0 + (DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0);
+    width
+}
+
+fn menu_screen_width_cap() -> f64 {
+    unsafe {
+        let screen = NSScreen::mainScreen(nil);
+        if screen == nil {
+            return DEVICE_HEADER_WIDTH * 2.5;
+        }
+
+        let frame = NSScreen::frame(screen);
+        let cap = frame.size.width - (DEVICE_MENU_SCREEN_EDGE_MARGIN * 2.0);
+        if cap.is_finite() && cap > DEVICE_HEADER_MIN_WIDTH {
+            cap
+        } else {
+            DEVICE_HEADER_WIDTH * 2.5
+        }
     }
 }
 
@@ -379,10 +844,16 @@ fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
         listen_item.setTarget_(delegate);
         menu.addItem_(listen_item);
 
+        let separator_top: id = msg_send![class!(NSMenuItem), separatorItem];
+        menu.addItem_(separator_top);
+
         let header_item = make_device_header_item(delegate, model);
         menu.addItem_(header_item);
 
-        insert_device_rows(menu, delegate, model, 2);
+        insert_device_rows(menu, delegate, model, 3);
+
+        let separator_bottom: id = msg_send![class!(NSMenuItem), separatorItem];
+        menu.addItem_(separator_bottom);
 
         let quit_item = NSMenuItem::alloc(nil)
             .initWithTitle_action_keyEquivalent_(
@@ -402,8 +873,8 @@ fn update_menu_inline(menu: id, delegate: id, model: &DeviceMenuModel) {
 
     unsafe {
         let count: i64 = msg_send![menu, numberOfItems];
-        // Items are [Listen, Header, ..., Quit]
-        let insert_at = if count >= 3 { count - 1 } else { 2 };
+        // Items are [Listen, Separator, Header, ..., Separator, Quit]
+        let insert_at = if count >= 2 { count - 2 } else { 0 };
         insert_device_rows(menu, delegate, model, insert_at);
     }
 }
@@ -416,8 +887,93 @@ fn device_header_label(model: &DeviceMenuModel) -> String {
     }
 }
 
-fn device_header_chevron(model: &DeviceMenuModel) -> &'static str {
-    if model.expanded { "▾" } else { "▸" }
+fn device_header_chevron_image_name(model: &DeviceMenuModel) -> &'static str {
+    if model.expanded {
+        "NSTouchBarGoDownTemplate"
+    } else {
+        "NSGoRightTemplate"
+    }
+}
+
+unsafe fn device_header_chevron_image(model: &DeviceMenuModel) -> id {
+    let image_name = NSString::alloc(nil).init_str(device_header_chevron_image_name(model));
+    msg_send![class!(NSImage), imageNamed: image_name]
+}
+
+unsafe fn set_image_view_tint_if_supported(image_view: id, tint_color: id) {
+    let supports_tint: i8 = msg_send![image_view, respondsToSelector: sel!(setContentTintColor:)];
+    if supports_tint != 0 {
+        let _: () = msg_send![image_view, setContentTintColor: tint_color];
+    }
+}
+
+unsafe fn resolved_menu_highlight_color_for_view(view: id) -> id {
+    let ns_color_class = class!(NSColor);
+    let has_selected_content_bg: i8 =
+        msg_send![ns_color_class, respondsToSelector: sel!(selectedContentBackgroundColor)];
+    let base_color: id = if has_selected_content_bg != 0 {
+        msg_send![ns_color_class, selectedContentBackgroundColor]
+    } else {
+        msg_send![ns_color_class, selectedMenuItemColor]
+    };
+
+    if view == nil || base_color == nil {
+        return base_color;
+    }
+
+    let appearance: id = msg_send![view, effectiveAppearance];
+    let has_resolve: i8 =
+        msg_send![base_color, respondsToSelector: sel!(resolvedColorWithAppearance:)];
+    if appearance != nil && has_resolve != 0 {
+        let resolved: id = msg_send![base_color, resolvedColorWithAppearance: appearance];
+        if resolved != nil {
+            return resolved;
+        }
+    }
+
+    base_color
+}
+
+fn set_device_header_highlighted(is_highlighted: bool) {
+    unsafe {
+        DEVICE_HEADER_HIGHLIGHT_REF.with(|slot| {
+            if let Some(bg) = *slot.borrow() {
+                if is_highlighted {
+                    // Resolve menu selection color at highlight time so the custom row
+                    // follows current macOS appearance/accent.
+                    let layer: id = msg_send![bg, layer];
+                    if layer != nil {
+                        let highlight_color = resolved_menu_highlight_color_for_view(bg);
+                        let highlight_cg_color: id = msg_send![highlight_color, CGColor];
+                        let _: () = msg_send![layer, setBackgroundColor: highlight_cg_color];
+                    }
+                }
+                let _: () = msg_send![bg, setHidden: if is_highlighted { NO } else { YES }];
+            }
+        });
+
+        DEVICE_HEADER_LABEL_REF.with(|slot| {
+            if let Some(label) = *slot.borrow() {
+                let color: id = if is_highlighted {
+                    msg_send![class!(NSColor), selectedMenuItemTextColor]
+                } else {
+                    msg_send![class!(NSColor), labelColor]
+                };
+                let _: () = msg_send![label, setTextColor: color];
+            }
+        });
+
+        DEVICE_HEADER_CHEVRON_REF.with(|slot| {
+            if let Some(image_view) = *slot.borrow() {
+                let tint: id = if is_highlighted {
+                    msg_send![class!(NSColor), selectedMenuItemTextColor]
+                } else {
+                    msg_send![class!(NSColor), secondaryLabelColor]
+                };
+                set_image_view_tint_if_supported(image_view, tint);
+            }
+        });
+    }
 }
 
 unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
@@ -429,13 +985,43 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
         )
         .autorelease();
 
-    let view_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(280.0, 24.0));
-    let view: id = msg_send![class!(NSView), alloc];
+    let view_frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_HEADER_HEIGHT),
+    );
+    let header_view_class = register_device_header_view_class();
+    let view: id = msg_send![header_view_class, alloc];
     let view: id = msg_send![view, initWithFrame: view_frame];
+    let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
 
-    let button_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(280.0, 24.0));
+    let highlight_frame = NSRect::new(
+        NSPoint::new(
+            3.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN,
+            1.0 + DEVICE_HEADER_EXTRA_TOP_PADDING,
+        ),
+        NSSize::new(
+            DEVICE_HEADER_WIDTH - (6.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0),
+            DEVICE_HEADER_HEIGHT - (2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
+        ),
+    );
+    let highlight_view: id = msg_send![class!(NSView), alloc];
+    let highlight_view: id = msg_send![highlight_view, initWithFrame: highlight_frame];
+    let _: () = msg_send![highlight_view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+    let _: () = msg_send![highlight_view, setWantsLayer: YES];
+    let highlight_layer: id = msg_send![highlight_view, layer];
+    let highlight_color: id = msg_send![class!(NSColor), selectedMenuItemColor];
+    let highlight_cg_color: id = msg_send![highlight_color, CGColor];
+    let _: () = msg_send![highlight_layer, setBackgroundColor: highlight_cg_color];
+    let _: () = msg_send![highlight_layer, setCornerRadius: 4.0f64];
+    let _: () = msg_send![highlight_view, setHidden: YES];
+
+    let button_frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_HEADER_HEIGHT),
+    );
     let button: id = msg_send![class!(NSButton), alloc];
     let button: id = msg_send![button, initWithFrame: button_frame];
+    let _: () = msg_send![button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
     let _: () = msg_send![button, setBordered: NO];
     let _: () = msg_send![button, setTarget: delegate];
     let _: () = msg_send![button, setAction: sel!(toggleDevices:)];
@@ -444,9 +1030,21 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
     let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
     let text_color: id = msg_send![class!(NSColor), labelColor];
 
-    let title_label_frame = NSRect::new(NSPoint::new(10.0, 2.0), NSSize::new(236.0, 20.0));
+    let title_width = DEVICE_HEADER_WIDTH
+        - DEVICE_HEADER_TEXT_LEADING
+        - DEVICE_HEADER_TRAILING
+        - DEVICE_HEADER_CHEVRON_SIZE
+        - DEVICE_HEADER_LABEL_TO_CHEVRON_GAP;
+    let title_label_frame = NSRect::new(
+        NSPoint::new(
+            DEVICE_HEADER_TEXT_LEADING,
+            2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING,
+        ),
+        NSSize::new(title_width, 18.0),
+    );
     let title_label: id = msg_send![class!(NSTextField), alloc];
     let title_label: id = msg_send![title_label, initWithFrame: title_label_frame];
+    let _: () = msg_send![title_label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
     let _: () = msg_send![title_label, setStringValue: NSString::alloc(nil).init_str(&device_header_label(model))];
     let _: () = msg_send![title_label, setBezeled: NO];
     let _: () = msg_send![title_label, setDrawsBackground: NO];
@@ -456,58 +1054,68 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
     let _: () = msg_send![title_label, setFont: font];
     let _: () = msg_send![title_label, setTextColor: text_color];
 
-    let chevron_label_frame = NSRect::new(NSPoint::new(250.0, 2.0), NSSize::new(20.0, 20.0));
-    let chevron_label: id = msg_send![class!(NSTextField), alloc];
-    let chevron_label: id = msg_send![chevron_label, initWithFrame: chevron_label_frame];
-    let _: () = msg_send![chevron_label, setStringValue: NSString::alloc(nil).init_str(device_header_chevron(model))];
-    let _: () = msg_send![chevron_label, setBezeled: NO];
-    let _: () = msg_send![chevron_label, setDrawsBackground: NO];
-    let _: () = msg_send![chevron_label, setEditable: NO];
-    let _: () = msg_send![chevron_label, setSelectable: NO];
-    let _: () = msg_send![chevron_label, setAlignment: 2isize];
-    let _: () = msg_send![chevron_label, setFont: font];
-    let _: () = msg_send![chevron_label, setTextColor: text_color];
+    let chevron_x = DEVICE_HEADER_WIDTH - DEVICE_HEADER_TRAILING - DEVICE_HEADER_CHEVRON_SIZE;
+    let chevron_y =
+        (DEVICE_HEADER_HEIGHT - DEVICE_HEADER_CHEVRON_SIZE) * 0.5 + DEVICE_HEADER_EXTRA_TOP_PADDING;
+    let chevron_frame = NSRect::new(
+        NSPoint::new(chevron_x, chevron_y),
+        NSSize::new(DEVICE_HEADER_CHEVRON_SIZE, DEVICE_HEADER_CHEVRON_SIZE),
+    );
+    let chevron_view: id = msg_send![class!(NSImageView), alloc];
+    let chevron_view: id = msg_send![chevron_view, initWithFrame: chevron_frame];
+    let _: () = msg_send![chevron_view, setAutoresizingMask: NS_VIEW_MIN_X_MARGIN];
+    let _: () = msg_send![chevron_view, setImage: device_header_chevron_image(model)];
+    let chevron_tint: id = msg_send![class!(NSColor), secondaryLabelColor];
+    set_image_view_tint_if_supported(chevron_view, chevron_tint);
 
-    let _: () = msg_send![view, addSubview: button];
+    let _: () = msg_send![view, addSubview: highlight_view];
     let _: () = msg_send![view, addSubview: title_label];
-    let _: () = msg_send![view, addSubview: chevron_label];
+    let _: () = msg_send![view, addSubview: chevron_view];
+    // Add the button last so the entire row is a single click target.
+    let _: () = msg_send![view, addSubview: button];
     let _: () = msg_send![item, setView: view];
 
+    DEVICE_HEADER_VIEW_REF.with(|slot| {
+        slot.borrow_mut().replace(view);
+    });
+    DEVICE_HEADER_BUTTON_REF.with(|slot| {
+        slot.borrow_mut().replace(button);
+    });
+    DEVICE_HEADER_HIGHLIGHT_REF.with(|slot| {
+        slot.borrow_mut().replace(highlight_view);
+    });
     DEVICE_HEADER_LABEL_REF.with(|slot| {
         slot.borrow_mut().replace(title_label);
     });
     DEVICE_HEADER_CHEVRON_REF.with(|slot| {
-        slot.borrow_mut().replace(chevron_label);
+        slot.borrow_mut().replace(chevron_view);
     });
 
     item
 }
 
 fn set_device_header_title(model: &DeviceMenuModel) {
-    DEVICE_HEADER_LABEL_REF.with(|slot| {
-        if let Some(label) = *slot.borrow() {
-            unsafe {
+    unsafe {
+        DEVICE_HEADER_LABEL_REF.with(|slot| {
+            if let Some(label) = *slot.borrow() {
                 let text = NSString::alloc(nil).init_str(&device_header_label(model));
                 let _: () = msg_send![label, setStringValue: text];
             }
-        }
-    });
-    DEVICE_HEADER_CHEVRON_REF.with(|slot| {
-        if let Some(label) = *slot.borrow() {
-            unsafe {
-                let chevron = NSString::alloc(nil).init_str(device_header_chevron(model));
-                let _: () = msg_send![label, setStringValue: chevron];
+        });
+        DEVICE_HEADER_CHEVRON_REF.with(|slot| {
+            if let Some(image_view) = *slot.borrow() {
+                let _: () = msg_send![image_view, setImage: device_header_chevron_image(model)];
             }
-        }
-    });
+        });
+    }
 }
 
 fn clear_device_rows(menu: id) {
     unsafe {
         let count: i64 = msg_send![menu, numberOfItems];
-        // Keep [Listen, Header, Quit], remove rows in between.
-        if count >= 4 {
-            for idx in (2..=(count - 2)).rev() {
+        // Keep [Listen, Separator, Header, Separator, Quit], remove rows in between.
+        if count >= 6 {
+            for idx in (3..=(count - 3)).rev() {
                 let _: () = msg_send![menu, removeItemAtIndex: idx];
             }
         }
