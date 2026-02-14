@@ -18,12 +18,14 @@ impl AzadConfig {
         &self,
         device_id: Option<String>,
         auto_vad_enabled: bool,
+        capture_enabled: bool,
     ) -> SessionConfig {
         SessionConfig {
             device_id,
             chunk_ms: self.chunk_ms,
             buffer_ms: self.buffer_ms,
             auto_vad_enabled,
+            capture_enabled,
             pipeline: self.pipeline.clone(),
         }
     }

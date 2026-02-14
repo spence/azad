@@ -146,9 +146,7 @@ impl AppController {
     fn bootstrap(&mut self) {
         self.start_device_controller();
         self.render_device_menu();
-        if self.always_listening_enabled {
-            self.start_session();
-        }
+        self.ensure_session();
     }
 
     fn start_device_controller(&mut self) {
@@ -226,12 +224,16 @@ impl AppController {
             Arc::new(|ev| send_event(AppEvent::Speech(ev)));
         match spawn_speech_session(
             session_id,
-            self.cfg
-                .to_session_config(device_id.clone(), self.always_listening_enabled),
+            self.cfg.to_session_config(
+                device_id.clone(),
+                self.always_listening_enabled,
+                self.always_listening_enabled,
+            ),
             emit,
         ) {
             Ok(session) => {
                 session.set_auto_vad_enabled(self.always_listening_enabled);
+                session.set_capture_enabled(self.always_listening_enabled);
                 self.session = Some(session);
                 self.session_device_id = device_id;
             }
@@ -253,22 +255,6 @@ impl AppController {
         }
     }
 
-    fn should_keep_session_running(&self) -> bool {
-        self.always_listening_enabled || self.manual_hold_active
-    }
-
-    fn maybe_stop_session_when_hotkey_only_idle(&mut self) {
-        if self.should_keep_session_running() {
-            return;
-        }
-        if self.finalizing_turn_id.is_some() || self.finalizing_deadline.is_some() {
-            return;
-        }
-        if let Some(session) = &self.session {
-            session.cancel();
-        }
-    }
-
     fn restart_session_for_device_change(&mut self) {
         if let Some(session) = &self.session {
             session.cancel();
@@ -280,6 +266,7 @@ impl AppController {
 
         if self.manual_hold_active {
             if let Some(session) = &self.session {
+                session.set_capture_enabled(true);
                 session.start_or_resume_manual_hold();
             }
             self.show_overlay_listening();
@@ -292,6 +279,7 @@ impl AppController {
         self.reset_turn_state();
         self.ensure_session();
         if let Some(session) = &self.session {
+            session.set_capture_enabled(true);
             session.start_or_resume_manual_hold();
         }
         self.show_overlay_listening();
@@ -320,16 +308,11 @@ impl AppController {
         self.always_listening_enabled = !self.always_listening_enabled;
         preferred_store::save_always_listening_enabled(self.always_listening_enabled);
 
-        if self.always_listening_enabled {
-            self.ensure_session();
-            if let Some(session) = &self.session {
-                session.set_auto_vad_enabled(true);
-            }
-        } else {
-            if let Some(session) = &self.session {
-                session.set_auto_vad_enabled(false);
-            }
-            self.maybe_stop_session_when_hotkey_only_idle();
+        self.ensure_session();
+        if let Some(session) = &self.session {
+            session.set_auto_vad_enabled(self.always_listening_enabled);
+            let should_capture = self.always_listening_enabled || self.manual_hold_active;
+            session.set_capture_enabled(should_capture);
         }
         self.overlay_pending_vad_text = false;
         self.render_device_menu();
@@ -375,9 +358,11 @@ impl AppController {
         if let Some(session) = &self.session {
             session.release_manual_hold();
             session.cancel_current_turn();
+            if !self.always_listening_enabled {
+                session.set_capture_enabled(false);
+            }
         }
         self.hide_overlay();
-        self.maybe_stop_session_when_hotkey_only_idle();
     }
 
     fn handle_device_event(&mut self, event: DeviceEvent) {
@@ -405,7 +390,7 @@ impl AppController {
             return;
         }
 
-        if self.session.is_none() && self.should_keep_session_running() {
+        if self.session.is_none() {
             self.start_session();
         }
 
@@ -575,7 +560,11 @@ impl AppController {
                 self.finalizing_deadline = None;
                 if cleaned.is_empty() {
                     self.maybe_start_deferred_vad_turn();
-                    self.maybe_stop_session_when_hotkey_only_idle();
+                    if !self.always_listening_enabled && !self.manual_hold_active {
+                        if let Some(session) = &self.session {
+                            session.set_capture_enabled(false);
+                        }
+                    }
                     return;
                 }
                 self.latest_final = Some(cleaned.clone());
@@ -590,7 +579,11 @@ impl AppController {
                     }
                 }
                 self.maybe_start_deferred_vad_turn();
-                self.maybe_stop_session_when_hotkey_only_idle();
+                if !self.always_listening_enabled && !self.manual_hold_active {
+                    if let Some(session) = &self.session {
+                        session.set_capture_enabled(false);
+                    }
+                }
             }
             SpeechEvent::SessionEnded { .. } => {
                 if !self.cancelled && !self.pasted_this_session {
@@ -618,15 +611,18 @@ impl AppController {
                 self.pasted_this_session = false;
                 self.session_device_id = None;
 
-                if self.should_keep_session_running() {
-                    self.start_session();
-                }
+                self.start_session();
 
                 if self.manual_hold_active {
                     if let Some(session) = &self.session {
+                        session.set_capture_enabled(true);
                         session.start_or_resume_manual_hold();
                     }
                     self.show_overlay_listening();
+                } else if !self.always_listening_enabled {
+                    if let Some(session) = &self.session {
+                        session.set_capture_enabled(false);
+                    }
                 }
             }
             SpeechEvent::Error { message, .. } => {
@@ -645,7 +641,11 @@ impl AppController {
                     // Empty/noisy VAD turns can end without a final-pass event. Close the
                     // overlay when engine reports idle and there is no draft to finalize.
                     self.hide_overlay();
-                    self.maybe_stop_session_when_hotkey_only_idle();
+                    if !self.always_listening_enabled && !self.manual_hold_active {
+                        if let Some(session) = &self.session {
+                            session.set_capture_enabled(false);
+                        }
+                    }
                     return;
                 }
 
