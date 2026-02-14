@@ -20,7 +20,7 @@ pub enum AppEvent {
     HotkeyPressed,
     HotkeyReleased,
     FinalizeHotkeyPressed,
-    MenuListen,
+    MenuToggleAlwaysListening,
     MenuToggleDevices,
     MenuSelectDevice(String),
     MenuOpened,
@@ -90,6 +90,7 @@ struct AppController {
     device_controller: Option<DeviceController>,
     device_snapshot: Option<DeviceStateSnapshot>,
     device_menu_expanded: bool,
+    always_listening_enabled: bool,
 
     manual_hold_active: bool,
     overlay_visible: bool,
@@ -112,6 +113,7 @@ struct AppController {
 
 impl AppController {
     fn new(cfg: AzadConfig) -> Self {
+        let always_listening_enabled = preferred_store::load_always_listening_enabled();
         Self {
             cfg,
             session: None,
@@ -120,6 +122,7 @@ impl AppController {
             device_controller: None,
             device_snapshot: None,
             device_menu_expanded: false,
+            always_listening_enabled,
             manual_hold_active: false,
             overlay_visible: false,
             overlay_pending_vad_text: false,
@@ -143,7 +146,9 @@ impl AppController {
     fn bootstrap(&mut self) {
         self.start_device_controller();
         self.render_device_menu();
-        self.start_session();
+        if self.always_listening_enabled {
+            self.start_session();
+        }
     }
 
     fn start_device_controller(&mut self) {
@@ -177,7 +182,7 @@ impl AppController {
             AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
             AppEvent::HotkeyReleased => self.handle_hotkey_released(),
             AppEvent::FinalizeHotkeyPressed => self.handle_finalize_hotkey_pressed(),
-            AppEvent::MenuListen => self.handle_menu_listen(),
+            AppEvent::MenuToggleAlwaysListening => self.handle_menu_toggle_always_listening(),
             AppEvent::MenuToggleDevices => self.handle_menu_toggle_devices(),
             AppEvent::MenuSelectDevice(device_id) => self.handle_menu_select_device(device_id),
             AppEvent::MenuOpened => self.handle_menu_opened(),
@@ -221,10 +226,12 @@ impl AppController {
             Arc::new(|ev| send_event(AppEvent::Speech(ev)));
         match spawn_speech_session(
             session_id,
-            self.cfg.to_session_config(device_id.clone()),
+            self.cfg
+                .to_session_config(device_id.clone(), self.always_listening_enabled),
             emit,
         ) {
             Ok(session) => {
+                session.set_auto_vad_enabled(self.always_listening_enabled);
                 self.session = Some(session);
                 self.session_device_id = device_id;
             }
@@ -243,6 +250,22 @@ impl AppController {
     fn ensure_session(&mut self) {
         if self.session.is_none() {
             self.start_session();
+        }
+    }
+
+    fn should_keep_session_running(&self) -> bool {
+        self.always_listening_enabled || self.manual_hold_active
+    }
+
+    fn maybe_stop_session_when_hotkey_only_idle(&mut self) {
+        if self.should_keep_session_running() {
+            return;
+        }
+        if self.finalizing_turn_id.is_some() || self.finalizing_deadline.is_some() {
+            return;
+        }
+        if let Some(session) = &self.session {
+            session.cancel();
         }
     }
 
@@ -293,15 +316,23 @@ impl AppController {
         }
     }
 
-    fn handle_menu_listen(&mut self) {
-        self.overlay_pending_vad_text = false;
-        self.reset_turn_state();
-        self.ensure_session();
-        if let Some(session) = &self.session {
-            session.start_or_resume_manual_hold();
-            session.release_manual_hold();
+    fn handle_menu_toggle_always_listening(&mut self) {
+        self.always_listening_enabled = !self.always_listening_enabled;
+        preferred_store::save_always_listening_enabled(self.always_listening_enabled);
+
+        if self.always_listening_enabled {
+            self.ensure_session();
+            if let Some(session) = &self.session {
+                session.set_auto_vad_enabled(true);
+            }
+        } else {
+            if let Some(session) = &self.session {
+                session.set_auto_vad_enabled(false);
+            }
+            self.maybe_stop_session_when_hotkey_only_idle();
         }
-        self.show_overlay_listening();
+        self.overlay_pending_vad_text = false;
+        self.render_device_menu();
     }
 
     fn handle_menu_toggle_devices(&mut self) {
@@ -346,6 +377,7 @@ impl AppController {
             session.cancel_current_turn();
         }
         self.hide_overlay();
+        self.maybe_stop_session_when_hotkey_only_idle();
     }
 
     fn handle_device_event(&mut self, event: DeviceEvent) {
@@ -373,7 +405,7 @@ impl AppController {
             return;
         }
 
-        if self.session.is_none() {
+        if self.session.is_none() && self.should_keep_session_running() {
             self.start_session();
         }
 
@@ -396,6 +428,7 @@ impl AppController {
 
     fn render_device_menu(&self) {
         let mut model = DeviceMenuModel {
+            always_listening_enabled: self.always_listening_enabled,
             header_label: "No Input Device".to_string(),
             expanded: self.device_menu_expanded,
             rows: Vec::new(),
@@ -542,6 +575,7 @@ impl AppController {
                 self.finalizing_deadline = None;
                 if cleaned.is_empty() {
                     self.maybe_start_deferred_vad_turn();
+                    self.maybe_stop_session_when_hotkey_only_idle();
                     return;
                 }
                 self.latest_final = Some(cleaned.clone());
@@ -556,6 +590,7 @@ impl AppController {
                     }
                 }
                 self.maybe_start_deferred_vad_turn();
+                self.maybe_stop_session_when_hotkey_only_idle();
             }
             SpeechEvent::SessionEnded { .. } => {
                 if !self.cancelled && !self.pasted_this_session {
@@ -581,7 +616,11 @@ impl AppController {
                 self.overlay_pending_vad_text = false;
                 self.cancelled = false;
                 self.pasted_this_session = false;
-                self.start_session();
+                self.session_device_id = None;
+
+                if self.should_keep_session_running() {
+                    self.start_session();
+                }
 
                 if self.manual_hold_active {
                     if let Some(session) = &self.session {
@@ -606,6 +645,7 @@ impl AppController {
                     // Empty/noisy VAD turns can end without a final-pass event. Close the
                     // overlay when engine reports idle and there is no draft to finalize.
                     self.hide_overlay();
+                    self.maybe_stop_session_when_hotkey_only_idle();
                     return;
                 }
 

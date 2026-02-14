@@ -48,6 +48,14 @@ const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
 const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
 const DEVICE_HEADER_EXTRA_TOP_PADDING: f64 = 1.0;
 const DEVICE_HEADER_EXTRA_SIDE_MARGIN: f64 = 2.0;
+const ALWAYS_LISTENING_ROW_HEIGHT: f64 = 24.0;
+const ALWAYS_LISTENING_LABEL_LEADING: f64 = 14.0;
+const ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP: f64 = 10.0;
+const ALWAYS_LISTENING_SWITCH_WIDTH: f64 = 32.0;
+const ALWAYS_LISTENING_SWITCH_HEIGHT: f64 = 18.0;
+const ALWAYS_LISTENING_SWITCH_INSET: f64 = 2.0;
+const ALWAYS_LISTENING_SWITCH_THUMB_SIZE: f64 =
+    ALWAYS_LISTENING_SWITCH_HEIGHT - (ALWAYS_LISTENING_SWITCH_INSET * 2.0);
 const DEVICE_MENU_ROW_CHROME_WIDTH: f64 = 46.0;
 const DEVICE_MENU_INDENT_LEVEL_WIDTH: f64 = 16.0;
 const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
@@ -74,6 +82,8 @@ thread_local! {
     static OVERLAY_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static ALWAYS_LISTENING_TRACK_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static ALWAYS_LISTENING_THUMB_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_VIEW_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_BUTTON_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_HIGHLIGHT_REF: RefCell<Option<id>> = const { RefCell::new(None) };
@@ -94,6 +104,7 @@ struct OverlayRefs {
 
 #[derive(Debug, Clone, Default)]
 pub struct DeviceMenuModel {
+    pub always_listening_enabled: bool,
     pub header_label: String,
     pub expanded: bool,
     pub rows: Vec<DeviceMenuRow>,
@@ -232,7 +243,10 @@ fn register_delegate_class() -> &'static Class {
             ClassDecl::new("AzadStatusDelegate", superclass).expect("failed to declare delegate");
 
         decl.add_ivar::<id>("statusItem");
-        decl.add_method(sel!(listen:), listen as extern "C" fn(&Object, Sel, id));
+        decl.add_method(
+            sel!(toggleAlwaysListening:),
+            toggle_always_listening as extern "C" fn(&Object, Sel, id),
+        );
         decl.add_method(sel!(quit:), quit as extern "C" fn(&Object, Sel, id));
         decl.add_method(sel!(tick:), tick as extern "C" fn(&Object, Sel, id));
         decl.add_method(
@@ -385,8 +399,9 @@ extern "C" fn device_header_view_did_move_to_superview(this: &Object, _: Sel) {
     }
 }
 
-extern "C" fn listen(_: &Object, _: Sel, _: id) {
-    crate::app::send_event(AppEvent::MenuListen);
+extern "C" fn toggle_always_listening(_: &Object, _: Sel, _: id) {
+    crate::app::send_event(AppEvent::MenuToggleAlwaysListening);
+    crate::app::drain_events();
 }
 
 extern "C" fn quit(_: &Object, _: Sel, _: id) {
@@ -733,9 +748,8 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
         let font = menu_row_font();
         let mut max_width = DEVICE_HEADER_MIN_WIDTH;
 
-        for text in ["Listen", "Quit"] {
-            max_width = max_width.max(menu_row_width_for_text(text, font, 0, false));
-        }
+        max_width = max_width.max(always_listening_row_width(font));
+        max_width = max_width.max(menu_row_width_for_text("Quit", font, 0, false));
 
         if model.expanded {
             if model.rows.is_empty() {
@@ -752,6 +766,16 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
         let screen_cap = menu_screen_width_cap();
         max_width.min(screen_cap)
     }
+}
+
+unsafe fn always_listening_row_width(font: id) -> f64 {
+    let text_width = measure_text_width("Listen", font);
+    ALWAYS_LISTENING_LABEL_LEADING
+        + text_width
+        + ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP
+        + ALWAYS_LISTENING_SWITCH_WIDTH
+        + DEVICE_HEADER_TRAILING
+        + DEVICE_MENU_TEXT_SAFETY_PADDING
 }
 
 unsafe fn menu_row_font() -> id {
@@ -834,15 +858,8 @@ fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
     unsafe {
         let _: () = msg_send![menu, removeAllItems];
 
-        let listen_item = NSMenuItem::alloc(nil)
-            .initWithTitle_action_keyEquivalent_(
-                NSString::alloc(nil).init_str("Listen"),
-                sel!(listen:),
-                NSString::alloc(nil).init_str(""),
-            )
-            .autorelease();
-        listen_item.setTarget_(delegate);
-        menu.addItem_(listen_item);
+        let always_item = make_always_listening_item(delegate, model.always_listening_enabled);
+        menu.addItem_(always_item);
 
         let separator_top: id = msg_send![class!(NSMenuItem), separatorItem];
         menu.addItem_(separator_top);
@@ -868,6 +885,7 @@ fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
 }
 
 fn update_menu_inline(menu: id, delegate: id, model: &DeviceMenuModel) {
+    set_always_listening_switch_state(model.always_listening_enabled);
     set_device_header_title(model);
     clear_device_rows(menu);
 
@@ -877,6 +895,70 @@ fn update_menu_inline(menu: id, delegate: id, model: &DeviceMenuModel) {
         let insert_at = if count >= 2 { count - 2 } else { 0 };
         insert_device_rows(menu, delegate, model, insert_at);
     }
+}
+
+fn set_always_listening_switch_state(enabled: bool) {
+    unsafe {
+        ALWAYS_LISTENING_TRACK_REF.with(|slot| {
+            if let Some(track) = *slot.borrow() {
+                let layer: id = msg_send![track, layer];
+                if layer != nil {
+                    let color = always_listening_track_color(track, enabled);
+                    if color != nil {
+                        let cg_color: id = msg_send![color, CGColor];
+                        let _: () = msg_send![layer, setBackgroundColor: cg_color];
+                    }
+                }
+            }
+        });
+        ALWAYS_LISTENING_THUMB_REF.with(|slot| {
+            if let Some(thumb) = *slot.borrow() {
+                let _: () = msg_send![thumb, setFrame: always_listening_thumb_frame(enabled)];
+            }
+        });
+    }
+}
+
+unsafe fn always_listening_track_color(view: id, enabled: bool) -> id {
+    let ns_color_class = class!(NSColor);
+    let base_color: id = if enabled {
+        msg_send![ns_color_class, systemBlueColor]
+    } else {
+        msg_send![ns_color_class, systemGrayColor]
+    };
+
+    if view == nil || base_color == nil {
+        return base_color;
+    }
+
+    let appearance: id = msg_send![view, effectiveAppearance];
+    let has_resolve: i8 =
+        msg_send![base_color, respondsToSelector: sel!(resolvedColorWithAppearance:)];
+    if appearance != nil && has_resolve != 0 {
+        let resolved: id = msg_send![base_color, resolvedColorWithAppearance: appearance];
+        if resolved != nil {
+            return resolved;
+        }
+    }
+
+    base_color
+}
+
+fn always_listening_thumb_frame(enabled: bool) -> NSRect {
+    let x = if enabled {
+        ALWAYS_LISTENING_SWITCH_WIDTH
+            - ALWAYS_LISTENING_SWITCH_INSET
+            - ALWAYS_LISTENING_SWITCH_THUMB_SIZE
+    } else {
+        ALWAYS_LISTENING_SWITCH_INSET
+    };
+    NSRect::new(
+        NSPoint::new(x, ALWAYS_LISTENING_SWITCH_INSET),
+        NSSize::new(
+            ALWAYS_LISTENING_SWITCH_THUMB_SIZE,
+            ALWAYS_LISTENING_SWITCH_THUMB_SIZE,
+        ),
+    )
 }
 
 fn device_header_label(model: &DeviceMenuModel) -> String {
@@ -974,6 +1056,114 @@ fn set_device_header_highlighted(is_highlighted: bool) {
             }
         });
     }
+}
+
+unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
+    let item = NSMenuItem::alloc(nil)
+        .initWithTitle_action_keyEquivalent_(
+            NSString::alloc(nil).init_str(""),
+            sel!(noop:),
+            NSString::alloc(nil).init_str(""),
+        )
+        .autorelease();
+
+    let view_frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(DEVICE_HEADER_WIDTH, ALWAYS_LISTENING_ROW_HEIGHT),
+    );
+    let view: id = msg_send![class!(NSView), alloc];
+    let view: id = msg_send![view, initWithFrame: view_frame];
+    let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+
+    // Let users click anywhere on the row, not only on the switch thumb.
+    let row_button: id = msg_send![class!(NSButton), alloc];
+    let row_button: id = msg_send![row_button, initWithFrame: view_frame];
+    let _: () = msg_send![row_button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
+    let _: () = msg_send![row_button, setBordered: NO];
+    let _: () = msg_send![row_button, setTitle: NSString::alloc(nil).init_str("")];
+    let _: () = msg_send![row_button, setTarget: delegate];
+    let _: () = msg_send![row_button, setAction: sel!(toggleAlwaysListening:)];
+
+    let label_width = DEVICE_HEADER_WIDTH
+        - ALWAYS_LISTENING_LABEL_LEADING
+        - DEVICE_HEADER_TRAILING
+        - ALWAYS_LISTENING_SWITCH_WIDTH
+        - ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP;
+    let label_frame = NSRect::new(
+        NSPoint::new(ALWAYS_LISTENING_LABEL_LEADING, 2.0),
+        NSSize::new(label_width, 18.0),
+    );
+    let label: id = msg_send![class!(NSTextField), alloc];
+    let label: id = msg_send![label, initWithFrame: label_frame];
+    let _: () = msg_send![label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+    let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("Listen")];
+    let _: () = msg_send![label, setBezeled: NO];
+    let _: () = msg_send![label, setDrawsBackground: NO];
+    let _: () = msg_send![label, setEditable: NO];
+    let _: () = msg_send![label, setSelectable: NO];
+    let _: () = msg_send![label, setAlignment: 0isize];
+    let font: id = msg_send![class!(NSFont), menuFontOfSize: 0.0f64];
+    let _: () = msg_send![label, setFont: font];
+    let text_color: id = msg_send![class!(NSColor), labelColor];
+    let _: () = msg_send![label, setTextColor: text_color];
+
+    let switch_x = DEVICE_HEADER_WIDTH - DEVICE_HEADER_TRAILING - ALWAYS_LISTENING_SWITCH_WIDTH;
+    let switch_y = (ALWAYS_LISTENING_ROW_HEIGHT - ALWAYS_LISTENING_SWITCH_HEIGHT) * 0.5;
+    let switch_frame = NSRect::new(
+        NSPoint::new(switch_x, switch_y),
+        NSSize::new(ALWAYS_LISTENING_SWITCH_WIDTH, ALWAYS_LISTENING_SWITCH_HEIGHT),
+    );
+    let switch_container: id = msg_send![class!(NSView), alloc];
+    let switch_container: id = msg_send![switch_container, initWithFrame: switch_frame];
+    let _: () = msg_send![switch_container, setAutoresizingMask: NS_VIEW_MIN_X_MARGIN];
+    let _: () = msg_send![switch_container, setWantsLayer: YES];
+
+    let track_frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(ALWAYS_LISTENING_SWITCH_WIDTH, ALWAYS_LISTENING_SWITCH_HEIGHT),
+    );
+    let track_view: id = msg_send![class!(NSView), alloc];
+    let track_view: id = msg_send![track_view, initWithFrame: track_frame];
+    let _: () = msg_send![track_view, setWantsLayer: YES];
+    let track_layer: id = msg_send![track_view, layer];
+    if track_layer != nil {
+        let _: () = msg_send![track_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_HEIGHT * 0.5)];
+        let color = always_listening_track_color(track_view, enabled);
+        if color != nil {
+            let cg_color: id = msg_send![color, CGColor];
+            let _: () = msg_send![track_layer, setBackgroundColor: cg_color];
+        }
+    }
+
+    let thumb_view: id = msg_send![class!(NSView), alloc];
+    let thumb_view: id = msg_send![thumb_view, initWithFrame: always_listening_thumb_frame(enabled)];
+    let _: () = msg_send![thumb_view, setWantsLayer: YES];
+    let thumb_layer: id = msg_send![thumb_view, layer];
+    if thumb_layer != nil {
+        let _: () = msg_send![thumb_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_THUMB_SIZE * 0.5)];
+        let thumb_color: id = msg_send![class!(NSColor), whiteColor];
+        let thumb_cg_color: id = msg_send![thumb_color, CGColor];
+        let _: () = msg_send![thumb_layer, setBackgroundColor: thumb_cg_color];
+    }
+
+    let _: () = msg_send![switch_container, addSubview: track_view];
+    let _: () = msg_send![switch_container, addSubview: thumb_view];
+
+    let _: () = msg_send![view, addSubview: label];
+    let _: () = msg_send![view, addSubview: switch_container];
+    // Keep full-row click handling by layering this transparent button on top.
+    let _: () = msg_send![view, addSubview: row_button];
+    let _: () = msg_send![item, setView: view];
+
+    ALWAYS_LISTENING_TRACK_REF.with(|slot| {
+        slot.borrow_mut().replace(track_view);
+    });
+    ALWAYS_LISTENING_THUMB_REF.with(|slot| {
+        slot.borrow_mut().replace(thumb_view);
+    });
+    set_always_listening_switch_state(enabled);
+
+    item
 }
 
 unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {

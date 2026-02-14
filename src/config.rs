@@ -14,11 +14,16 @@ pub struct AzadConfig {
 }
 
 impl AzadConfig {
-    pub fn to_session_config(&self, device_id: Option<String>) -> SessionConfig {
+    pub fn to_session_config(
+        &self,
+        device_id: Option<String>,
+        auto_vad_enabled: bool,
+    ) -> SessionConfig {
         SessionConfig {
             device_id,
             chunk_ms: self.chunk_ms,
             buffer_ms: self.buffer_ms,
+            auto_vad_enabled,
             pipeline: self.pipeline.clone(),
         }
     }
