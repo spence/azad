@@ -5,13 +5,13 @@ Development workflow now targets a launchd-managed app instance.
 ## Commands
 
 ```bash
-./dev install   # build + install ~/Applications/Azad.app and LaunchAgent plist
-./dev start     # start/restart via launchctl
-./dev stop      # stop via launchctl
-./dev restart   # stop + start
-./dev status    # launchctl print
-./dev logs      # tail stdout/stderr logs
-./dev uninstall # remove LaunchAgent plist (keeps app bundle)
+just install   # build + install ~/Applications/Azad.app and LaunchAgent plist
+just start     # start/restart via launchctl
+just stop      # stop via launchctl
+just restart   # stop + start
+just status    # launchctl print
+just logs      # tail stdout/stderr logs
+just uninstall # remove LaunchAgent plist (keeps app bundle)
 ```
 
 ## Defaults
@@ -20,6 +20,11 @@ Development workflow now targets a launchd-managed app instance.
 - LaunchAgent: `~/Library/LaunchAgents/com.spence.azad.plist`
 - Logs: `~/Library/Logs/Azad/{stdout,stderr}.log`
 
+## Prerequisites
+
+- Rust toolchain
+- `just` (`brew install just`)
+
 ## Microphone Permission
 
 Azad requires macOS microphone permission.
@@ -27,6 +32,6 @@ Azad requires macOS microphone permission.
 - Reset permission prompt:
   - `tccutil reset Microphone com.spence.azad`
 - Then restart Azad:
-  - `./dev restart`
+  - `just restart`
 
 Azad also checks Accessibility permission on startup (required for auto-paste) and opens the Accessibility settings pane if it is missing.

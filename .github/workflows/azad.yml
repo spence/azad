@@ -1,0 +1,25 @@
+name: azad-just
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  just-surface:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Verify just
+        run: just --version
+
+      - name: Verify command surface
+        run: |
+          just help
+          just doctor

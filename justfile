@@ -1,0 +1,55 @@
+set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+default:
+    @just help
+
+help:
+    @echo "Azad development commands:"
+    @just --list
+    @echo ""
+    @echo "Environment overrides:"
+    @echo "  AZAD_APP_DIR=/path/to/Azad.app"
+    @echo "  AZAD_BUILD_PROFILE=debug|release"
+    @echo "  AZAD_CODESIGN_IDENTITY='Signing Identity Name'"
+
+build:
+    cargo build
+
+build-release:
+    cargo build --release
+
+install:
+    ./scripts/azad-dev.sh install
+
+start:
+    ./scripts/azad-dev.sh start
+
+stop:
+    ./scripts/azad-dev.sh stop
+
+restart:
+    ./scripts/azad-dev.sh restart
+
+status:
+    ./scripts/azad-dev.sh status
+
+logs:
+    ./scripts/azad-dev.sh logs
+
+reset-permissions:
+    ./scripts/azad-dev.sh reset-permissions
+
+uninstall:
+    ./scripts/azad-dev.sh uninstall
+
+doctor:
+    @APP_DIR="${AZAD_APP_DIR:-$HOME/Applications/Azad.app}"; \
+    LABEL="com.spence.azad"; \
+    DOMAIN="gui/$(id -u)"; \
+    SERVICE_TARGET="$DOMAIN/$LABEL"; \
+    PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"; \
+    echo "app_bundle=$APP_DIR"; \
+    echo "launch_agent_plist=$PLIST"; \
+    if [[ -d "$APP_DIR" ]]; then echo "bundle_exists=yes"; else echo "bundle_exists=no"; fi; \
+    if [[ -f "$PLIST" ]]; then echo "plist_exists=yes"; else echo "plist_exists=no"; fi; \
+    if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then echo "service_loaded=yes"; else echo "service_loaded=no"; fi

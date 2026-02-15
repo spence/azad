@@ -37,7 +37,7 @@ fi
 
 usage() {
   cat <<'USAGE'
-Usage: ./dev <command>
+Usage: scripts/azad-dev.sh <command>
 
 Commands:
   install      Build Azad and install/update ~/Applications/Azad.app + LaunchAgent plist
@@ -205,13 +205,13 @@ cmd_install() {
 
   echo "Installed Azad app bundle at: $APP_DIR"
   echo "Installed LaunchAgent plist at: $PLIST_PATH"
-  echo "Permissions are preserved across install/restart unless you run: ./dev reset-permissions"
-  echo "Next: ./dev start"
+  echo "Permissions are preserved across install/restart unless you run: just reset-permissions"
+  echo "Next: just start"
 }
 
 cmd_start() {
   if [[ ! -f "$PLIST_PATH" ]]; then
-    echo "error: LaunchAgent plist not found at $PLIST_PATH (run ./dev install first)" >&2
+    echo "error: LaunchAgent plist not found at $PLIST_PATH (run just install first)" >&2
     exit 1
   fi
 
