@@ -63,11 +63,15 @@ impl SpeechSession {
     }
 
     pub fn set_auto_vad_enabled(&self, enabled: bool) {
-        let _ = self.handle.control(SessionControl::SetAutoVadEnabled(enabled));
+        let _ = self
+            .handle
+            .control(SessionControl::SetAutoVadEnabled(enabled));
     }
 
     pub fn set_capture_enabled(&self, enabled: bool) {
-        let _ = self.handle.control(SessionControl::SetCaptureEnabled(enabled));
+        let _ = self
+            .handle
+            .control(SessionControl::SetCaptureEnabled(enabled));
     }
 
     pub fn finalize_current_turn(&self) {

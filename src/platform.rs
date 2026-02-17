@@ -465,7 +465,10 @@ extern "C" fn menu_will_highlight_item(_: &Object, _: Sel, _: id, item: id) {
             false
         } else {
             let item_view: id = msg_send![item, view];
-            DEVICE_HEADER_VIEW_REF.with(|slot| slot.borrow().is_some_and(|header_view| header_view == item_view))
+            DEVICE_HEADER_VIEW_REF.with(|slot| {
+                slot.borrow()
+                    .is_some_and(|header_view| header_view == item_view)
+            })
         }
     };
     set_device_header_highlighted(is_header);
@@ -753,7 +756,8 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
 
         if model.expanded {
             if model.rows.is_empty() {
-                max_width = max_width.max(menu_row_width_for_text("No input devices", font, 1, false));
+                max_width =
+                    max_width.max(menu_row_width_for_text("No input devices", font, 1, false));
             } else {
                 for row in &model.rows {
                     max_width = max_width.max(menu_row_width_for_text(&row.label, font, 1, true));
@@ -761,7 +765,10 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
             }
         }
 
-        max_width = max_width.max(device_header_width_for_label(&device_header_label(model), font));
+        max_width = max_width.max(device_header_width_for_label(
+            &device_header_label(model),
+            font,
+        ));
 
         let screen_cap = menu_screen_width_cap();
         max_width.min(screen_cap)
@@ -815,7 +822,12 @@ unsafe fn measure_text_width(text: &str, font: id) -> f64 {
     }
 }
 
-unsafe fn menu_row_width_for_text(text: &str, font: id, indent_level: usize, with_checkmark: bool) -> f64 {
+unsafe fn menu_row_width_for_text(
+    text: &str,
+    font: id,
+    indent_level: usize,
+    with_checkmark: bool,
+) -> f64 {
     let text_width = measure_text_width(text, font);
     let mut width = text_width + DEVICE_MENU_ROW_CHROME_WIDTH + DEVICE_MENU_TEXT_SAFETY_PADDING;
     width += indent_level as f64 * DEVICE_MENU_INDENT_LEVEL_WIDTH;
@@ -1078,7 +1090,8 @@ unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
     // Let users click anywhere on the row, not only on the switch thumb.
     let row_button: id = msg_send![class!(NSButton), alloc];
     let row_button: id = msg_send![row_button, initWithFrame: view_frame];
-    let _: () = msg_send![row_button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
+    let _: () =
+        msg_send![row_button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
     let _: () = msg_send![row_button, setBordered: NO];
     let _: () = msg_send![row_button, setTitle: NSString::alloc(nil).init_str("")];
     let _: () = msg_send![row_button, setTarget: delegate];
@@ -1111,7 +1124,10 @@ unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
     let switch_y = (ALWAYS_LISTENING_ROW_HEIGHT - ALWAYS_LISTENING_SWITCH_HEIGHT) * 0.5;
     let switch_frame = NSRect::new(
         NSPoint::new(switch_x, switch_y),
-        NSSize::new(ALWAYS_LISTENING_SWITCH_WIDTH, ALWAYS_LISTENING_SWITCH_HEIGHT),
+        NSSize::new(
+            ALWAYS_LISTENING_SWITCH_WIDTH,
+            ALWAYS_LISTENING_SWITCH_HEIGHT,
+        ),
     );
     let switch_container: id = msg_send![class!(NSView), alloc];
     let switch_container: id = msg_send![switch_container, initWithFrame: switch_frame];
@@ -1120,7 +1136,10 @@ unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
 
     let track_frame = NSRect::new(
         NSPoint::new(0.0, 0.0),
-        NSSize::new(ALWAYS_LISTENING_SWITCH_WIDTH, ALWAYS_LISTENING_SWITCH_HEIGHT),
+        NSSize::new(
+            ALWAYS_LISTENING_SWITCH_WIDTH,
+            ALWAYS_LISTENING_SWITCH_HEIGHT,
+        ),
     );
     let track_view: id = msg_send![class!(NSView), alloc];
     let track_view: id = msg_send![track_view, initWithFrame: track_frame];
@@ -1136,11 +1155,13 @@ unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
     }
 
     let thumb_view: id = msg_send![class!(NSView), alloc];
-    let thumb_view: id = msg_send![thumb_view, initWithFrame: always_listening_thumb_frame(enabled)];
+    let thumb_view: id =
+        msg_send![thumb_view, initWithFrame: always_listening_thumb_frame(enabled)];
     let _: () = msg_send![thumb_view, setWantsLayer: YES];
     let thumb_layer: id = msg_send![thumb_view, layer];
     if thumb_layer != nil {
-        let _: () = msg_send![thumb_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_THUMB_SIZE * 0.5)];
+        let _: () =
+            msg_send![thumb_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_THUMB_SIZE * 0.5)];
         let thumb_color: id = msg_send![class!(NSColor), whiteColor];
         let thumb_cg_color: id = msg_send![thumb_color, CGColor];
         let _: () = msg_send![thumb_layer, setBackgroundColor: thumb_cg_color];
@@ -1211,7 +1232,8 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
     );
     let button: id = msg_send![class!(NSButton), alloc];
     let button: id = msg_send![button, initWithFrame: button_frame];
-    let _: () = msg_send![button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
+    let _: () =
+        msg_send![button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
     let _: () = msg_send![button, setBordered: NO];
     let _: () = msg_send![button, setTarget: delegate];
     let _: () = msg_send![button, setAction: sel!(toggleDevices:)];
