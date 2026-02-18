@@ -12,8 +12,11 @@ use crate::platform::{DeviceMenuModel, DeviceMenuRow, PasteResult};
 use crate::preferred_store;
 use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
 
-const FINALIZING_SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 const DEVICE_SWITCH_RESTART_DEBOUNCE_MS: u64 = 250;
+const OVERLAY_ACTIVITY_HISTORY_LEN: usize = 96;
+const OVERLAY_ACTIVITY_IDLE_TIMEOUT_MS: u64 = 220;
+const OVERLAY_ACTIVITY_DECAY_PER_TICK: f32 = 0.88;
+const OVERLAY_BUSY_PHASE_STEP: f32 = 0.24;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -101,14 +104,20 @@ struct AppController {
     latest_final: Option<String>,
     finalizing_deadline: Option<Instant>,
     finalizing_turn_id: Option<u64>,
+    raw_handled_turn_id: Option<u64>,
     deferred_vad_start: bool,
     accessibility_notice_deadline: Option<Instant>,
     latest_seen_turn_id: u64,
     turn_accept_floor: u64,
     current_turn_id: Option<u64>,
-    spinner_index: usize,
+    activity_history: Vec<f32>,
+    latest_activity_level: f32,
+    last_activity_at: Option<Instant>,
+    busy_border_phase: f32,
     pending_device_switch_target: Option<String>,
     pending_device_switch_deadline: Option<Instant>,
+    engine_state: EngineState,
+    release_should_finalize_turn: bool,
 }
 
 impl AppController {
@@ -132,14 +141,20 @@ impl AppController {
             latest_final: None,
             finalizing_deadline: None,
             finalizing_turn_id: None,
+            raw_handled_turn_id: None,
             deferred_vad_start: false,
             accessibility_notice_deadline: None,
             latest_seen_turn_id: 0,
             turn_accept_floor: 1,
             current_turn_id: None,
-            spinner_index: 0,
+            activity_history: vec![0.0; OVERLAY_ACTIVITY_HISTORY_LEN],
+            latest_activity_level: 0.0,
+            last_activity_at: None,
+            busy_border_phase: 0.0,
             pending_device_switch_target: None,
             pending_device_switch_deadline: None,
+            engine_state: EngineState::Idle,
+            release_should_finalize_turn: false,
         }
     }
 
@@ -210,6 +225,7 @@ impl AppController {
         self.latest_final = None;
         self.finalizing_deadline = None;
         self.finalizing_turn_id = None;
+        self.raw_handled_turn_id = None;
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
         self.pasted_this_session = false;
@@ -218,6 +234,9 @@ impl AppController {
         self.latest_seen_turn_id = 0;
         self.turn_accept_floor = 1;
         self.current_turn_id = None;
+        self.release_should_finalize_turn = false;
+        self.reset_activity_history();
+        self.busy_border_phase = 0.0;
 
         let device_id = self.current_device_id().map(ToOwned::to_owned);
         let emit: Arc<dyn Fn(SpeechEvent) + Send + Sync> =
@@ -276,7 +295,14 @@ impl AppController {
     fn handle_hotkey_pressed(&mut self) {
         self.manual_hold_active = true;
         self.overlay_pending_vad_text = false;
-        self.reset_turn_state();
+        // If the engine is already in speech for an active VAD turn, keep that turn
+        // authoritative; resetting here would discard subsequent events for it.
+        let preserve_active_turn =
+            self.engine_state == EngineState::Speech && self.finalizing_turn_id.is_none();
+        if !preserve_active_turn {
+            self.reset_turn_state();
+        }
+        self.release_should_finalize_turn = !preserve_active_turn;
         self.ensure_session();
         if let Some(session) = &self.session {
             session.set_capture_enabled(true);
@@ -287,9 +313,13 @@ impl AppController {
 
     fn handle_hotkey_released(&mut self) {
         self.manual_hold_active = false;
+        let should_finalize = self.release_should_finalize_turn;
+        self.release_should_finalize_turn = false;
         if let Some(session) = &self.session {
             session.release_manual_hold();
-            session.finalize_current_turn();
+            if should_finalize {
+                session.finalize_current_turn();
+            }
         }
     }
 
@@ -353,8 +383,10 @@ impl AppController {
         }
         self.cancelled = true;
         self.manual_hold_active = false;
+        self.release_should_finalize_turn = false;
         self.overlay_pending_vad_text = false;
         self.finalizing_deadline = None;
+        self.raw_handled_turn_id = None;
         if let Some(session) = &self.session {
             session.release_manual_hold();
             session.cancel_current_turn();
@@ -461,7 +493,8 @@ impl AppController {
             | SpeechEvent::FinalText { session_id, .. }
             | SpeechEvent::SessionEnded { session_id }
             | SpeechEvent::Error { session_id, .. }
-            | SpeechEvent::Status { session_id, .. } => *session_id,
+            | SpeechEvent::Status { session_id, .. }
+            | SpeechEvent::Meter { session_id, .. } => *session_id,
         };
 
         if Some(event_session_id) != self.current_session_id() {
@@ -517,7 +550,23 @@ impl AppController {
                     }
                     self.overlay_pending_vad_text = false;
                 }
-                if self.overlay_visible && self.finalizing_deadline.is_none() {
+                if self.overlay_visible
+                    && self.finalizing_deadline.is_none()
+                {
+                    self.render_listening_overlay();
+                }
+            }
+            SpeechEvent::Meter {
+                peak_db,
+                vad_speech,
+                vad_prob,
+                ..
+            } => {
+                self.update_activity_from_meter(peak_db, vad_speech, vad_prob);
+                if self.overlay_visible
+                    && self.finalizing_deadline.is_none()
+                    && self.accessibility_notice_deadline.is_none()
+                {
                     self.render_listening_overlay();
                 }
             }
@@ -535,12 +584,39 @@ impl AppController {
                     self.latest_draft = current_draft.trim().to_string();
                 }
                 self.finalizing_turn_id = Some(turn_id);
+                self.raw_handled_turn_id = None;
                 // If we never surfaced any draft text in auto mode, keep overlay hidden.
                 // This avoids noise-only VAD turns flashing the overlay.
                 let has_visible_text = !self.latest_draft.trim().is_empty();
                 if !has_visible_text && !self.overlay_visible && !self.manual_hold_active {
                     self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
                     self.finalizing_deadline = None;
+                    return;
+                }
+
+                let raw_requested = platform::is_raw_mode_pressed();
+                if raw_requested && has_visible_text {
+                    let raw_text = self.latest_draft.trim().to_string();
+                    self.finalizing_turn_id = None;
+                    self.finalizing_deadline = None;
+                    self.raw_handled_turn_id = Some(turn_id);
+                    self.latest_final = Some(raw_text.clone());
+                    if !self.cancelled && !self.pasted_this_session {
+                        self.hide_overlay();
+                        if self.try_paste(&raw_text) {
+                            self.pasted_this_session = true;
+                        } else {
+                            eprintln!(
+                                "Azad: failed to auto-paste raw transcript (clipboard still contains text)"
+                            );
+                        }
+                    }
+                    self.maybe_start_deferred_vad_turn();
+                    if !self.always_listening_enabled && !self.manual_hold_active {
+                        if let Some(session) = &self.session {
+                            session.set_capture_enabled(false);
+                        }
+                    }
                     return;
                 }
 
@@ -559,6 +635,7 @@ impl AppController {
                 self.finalizing_turn_id = None;
                 self.finalizing_deadline = None;
                 if cleaned.is_empty() {
+                    self.raw_handled_turn_id = None;
                     self.maybe_start_deferred_vad_turn();
                     if !self.always_listening_enabled && !self.manual_hold_active {
                         if let Some(session) = &self.session {
@@ -567,6 +644,17 @@ impl AppController {
                     }
                     return;
                 }
+                if self.raw_handled_turn_id == Some(turn_id) {
+                    self.raw_handled_turn_id = None;
+                    self.maybe_start_deferred_vad_turn();
+                    if !self.always_listening_enabled && !self.manual_hold_active {
+                        if let Some(session) = &self.session {
+                            session.set_capture_enabled(false);
+                        }
+                    }
+                    return;
+                }
+                self.raw_handled_turn_id = None;
                 self.latest_final = Some(cleaned.clone());
                 if !self.cancelled && !self.pasted_this_session {
                     self.hide_overlay();
@@ -586,6 +674,7 @@ impl AppController {
                 }
             }
             SpeechEvent::SessionEnded { .. } => {
+                self.engine_state = EngineState::Idle;
                 if !self.cancelled && !self.pasted_this_session {
                     self.hide_overlay();
                     if let Some(final_text) = self.latest_final.as_ref() {
@@ -604,12 +693,16 @@ impl AppController {
                 self.latest_final = None;
                 self.finalizing_deadline = None;
                 self.finalizing_turn_id = None;
+                self.raw_handled_turn_id = None;
                 self.deferred_vad_start = false;
                 self.accessibility_notice_deadline = None;
                 self.overlay_pending_vad_text = false;
                 self.cancelled = false;
                 self.pasted_this_session = false;
                 self.session_device_id = None;
+                self.release_should_finalize_turn = false;
+                self.reset_activity_history();
+                self.busy_border_phase = 0.0;
 
                 self.start_session();
 
@@ -627,10 +720,12 @@ impl AppController {
             }
             SpeechEvent::Error { message, .. } => {
                 if self.overlay_visible {
-                    platform::set_overlay_content("Error", &message, None);
+                    platform::set_overlay_notice_content("Error", &message);
                 }
             }
             SpeechEvent::Status { state, detail, .. } => {
+                let _ = detail;
+                self.engine_state = state;
                 if matches!(state, EngineState::Idle)
                     && self.overlay_visible
                     && self.finalizing_deadline.is_none()
@@ -648,25 +743,13 @@ impl AppController {
                     }
                     return;
                 }
-
-                if self.overlay_visible && self.finalizing_deadline.is_none() {
-                    let base_status = match state {
-                        EngineState::Idle => "Listening",
-                        EngineState::Speech => "Capturing speech...",
-                    };
-                    let status = self.status_with_key_indicator(base_status);
-                    let body = if detail.trim().is_empty() {
-                        self.latest_draft.as_str()
-                    } else {
-                        detail.trim()
-                    };
-                    platform::set_overlay_content(&status, body, None);
-                }
             }
         }
     }
 
     fn on_tick(&mut self) {
+        self.advance_activity_timeline();
+
         if let Some(deadline) = self.pending_device_switch_deadline {
             if Instant::now() >= deadline {
                 self.pending_device_switch_deadline = None;
@@ -684,8 +767,7 @@ impl AppController {
 
         if let Some(deadline) = self.finalizing_deadline {
             let now = Instant::now();
-            let taking_longer = now >= deadline;
-            if taking_longer {
+            if now >= deadline {
                 // Keep waiting for the real final-pass completion signal instead of hiding
                 // the overlay on a fixed timeout.
                 self.finalizing_deadline =
@@ -693,15 +775,14 @@ impl AppController {
             }
 
             if self.overlay_visible {
-                self.spinner_index = (self.spinner_index + 1) % FINALIZING_SPINNER.len();
-                let spinner = FINALIZING_SPINNER[self.spinner_index];
-                let status = if taking_longer {
-                    "Finalizing transcription... (taking longer than usual)"
-                } else {
-                    "Finalizing transcription..."
-                };
-                platform::set_overlay_content(status, &self.latest_draft, Some(spinner));
+                self.busy_border_phase = (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP)
+                    .rem_euclid(std::f32::consts::TAU);
+                if self.accessibility_notice_deadline.is_none() {
+                    self.show_overlay_finalizing();
+                }
             }
+        } else if self.overlay_visible && self.accessibility_notice_deadline.is_none() {
+            self.render_listening_overlay();
         }
 
         if let Some(deadline) = self.accessibility_notice_deadline {
@@ -733,17 +814,41 @@ impl AppController {
             platform::show_overlay();
             self.overlay_visible = true;
         }
-        let spinner = FINALIZING_SPINNER[self.spinner_index % FINALIZING_SPINNER.len()];
-        platform::set_overlay_content(
-            "Finalizing transcription...",
+        platform::set_overlay_stream_content(
             &self.latest_draft,
-            Some(spinner),
+            &self.activity_history,
+            Some(self.busy_border_phase),
+            self.raw_badge_visible(),
+            self.hold_badge_visible(),
         );
     }
 
     fn render_listening_overlay(&self) {
-        let status = self.status_with_key_indicator("Listening");
-        platform::set_overlay_content(&status, &self.latest_draft, None);
+        if self.accessibility_notice_deadline.is_some() {
+            return;
+        }
+        platform::set_overlay_stream_content(
+            &self.latest_draft,
+            &self.activity_history,
+            None,
+            self.raw_badge_visible(),
+            self.hold_badge_visible(),
+        );
+    }
+
+    fn raw_badge_visible(&self) -> bool {
+        let raw_pressed = platform::is_raw_mode_pressed();
+        if !raw_pressed {
+            return false;
+        }
+        if !self.manual_hold_active {
+            return true;
+        }
+        !platform::hold_hotkey_overlaps_raw_modifier()
+    }
+
+    fn hold_badge_visible(&self) -> bool {
+        self.manual_hold_active
     }
 
     fn show_accessibility_overlay_notice(&mut self) {
@@ -752,10 +857,9 @@ impl AppController {
             self.overlay_visible = true;
         }
         self.accessibility_notice_deadline = Some(Instant::now() + Duration::from_secs(6));
-        platform::set_overlay_content(
+        platform::set_overlay_notice_content(
             "Auto-paste blocked",
             "Enable Azad in System Settings -> Privacy & Security -> Accessibility",
-            None,
         );
     }
 
@@ -787,14 +891,6 @@ impl AppController {
         }
     }
 
-    fn status_with_key_indicator(&self, base: &str) -> String {
-        if self.manual_hold_active {
-            format!("{base}  [Option+Space held]")
-        } else {
-            base.to_string()
-        }
-    }
-
     fn reset_turn_state(&mut self) {
         self.cancelled = false;
         self.pasted_this_session = false;
@@ -802,11 +898,15 @@ impl AppController {
         self.latest_final = None;
         self.finalizing_deadline = None;
         self.finalizing_turn_id = None;
+        self.raw_handled_turn_id = None;
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
         self.overlay_pending_vad_text = false;
         self.current_turn_id = None;
         self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
+        self.release_should_finalize_turn = false;
+        self.reset_activity_history();
+        self.busy_border_phase = 0.0;
     }
 
     fn maybe_start_deferred_vad_turn(&mut self) {
@@ -825,5 +925,63 @@ impl AppController {
     fn observe_turn(&mut self, turn_id: u64) {
         self.latest_seen_turn_id = self.latest_seen_turn_id.max(turn_id);
         self.current_turn_id = Some(turn_id);
+    }
+
+    fn update_activity_from_meter(&mut self, peak_db: f32, vad_speech: bool, vad_prob: f32) {
+        let normalized_peak = ((peak_db + 60.0) / 60.0).clamp(0.0, 1.0);
+        let vad_component = if vad_speech {
+            vad_prob.clamp(0.0, 1.0).max(0.15)
+        } else {
+            0.0
+        };
+        let mut next = normalized_peak.max(vad_component);
+        if !vad_speech {
+            next *= 0.7;
+        }
+        self.latest_activity_level = next.clamp(0.0, 1.0);
+        self.last_activity_at = Some(Instant::now());
+    }
+
+    fn reset_activity_history(&mut self) {
+        self.activity_history.clear();
+        self.activity_history
+            .resize(OVERLAY_ACTIVITY_HISTORY_LEN, 0.0);
+        self.latest_activity_level = 0.0;
+        self.last_activity_at = None;
+    }
+
+    fn advance_activity_timeline(&mut self) {
+        if self.activity_history.len() != OVERLAY_ACTIVITY_HISTORY_LEN {
+            self.activity_history
+                .resize(OVERLAY_ACTIVITY_HISTORY_LEN, 0.0);
+        }
+
+        // Keep activity motion tied to active transcription capture. Once capture/speech
+        // stops, freeze the visualization in place.
+        let should_animate_activity = self.finalizing_deadline.is_none()
+            && (self.manual_hold_active || self.engine_state == EngineState::Speech);
+        if !should_animate_activity {
+            return;
+        }
+
+        let stale = self
+            .last_activity_at
+            .map(|t| t.elapsed() >= Duration::from_millis(OVERLAY_ACTIVITY_IDLE_TIMEOUT_MS))
+            .unwrap_or(true);
+        if stale {
+            self.latest_activity_level =
+                (self.latest_activity_level * OVERLAY_ACTIVITY_DECAY_PER_TICK).max(0.0);
+            if self.latest_activity_level < 0.01 {
+                self.latest_activity_level = 0.0;
+            }
+        }
+
+        if self.activity_history.is_empty() {
+            return;
+        }
+        self.activity_history.rotate_left(1);
+        if let Some(last) = self.activity_history.last_mut() {
+            *last = self.latest_activity_level.clamp(0.0, 1.0);
+        }
     }
 }

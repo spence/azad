@@ -25,6 +25,8 @@ else
   BIN_SOURCE="${ROOT_DIR}/target/debug/azad"
 fi
 
+TOON_SHOW_PARTIALS="${AZAD_TOON_SHOW_PARTIALS:-0}"
+
 CODESIGN_IDENTITY="${AZAD_CODESIGN_IDENTITY:-}"
 if [[ -z "$CODESIGN_IDENTITY" ]] && [[ -x /usr/bin/security ]]; then
   DETECTED_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning \
@@ -147,6 +149,8 @@ write_launch_agent_plist() {
   <dict>
     <key>AZAD_ASSETS_DIR</key>
     <string>${APP_RESOURCES_DIR}</string>
+    <key>TOON_SHOW_PARTIALS</key>
+    <string>${TOON_SHOW_PARTIALS}</string>
   </dict>
   <key>StandardOutPath</key>
   <string>${STDOUT_LOG}</string>

@@ -46,6 +46,12 @@ pub enum SpeechEvent {
         state: EngineState,
         detail: String,
     },
+    Meter {
+        session_id: u64,
+        peak_db: f32,
+        vad_speech: bool,
+        vad_prob: f32,
+    },
 }
 
 pub struct SpeechSession {
@@ -151,6 +157,16 @@ impl ToonSessionSink for ForwardingSink {
                 session_id: self.session_id,
                 state,
                 detail,
+            },
+            ToonSessionEvent::Meter {
+                peak_db,
+                vad_speech,
+                vad_prob,
+            } => SpeechEvent::Meter {
+                session_id: self.session_id,
+                peak_db,
+                vad_speech,
+                vad_prob,
             },
         };
         (self.handler)(mapped);
