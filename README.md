@@ -35,3 +35,7 @@ Azad requires macOS microphone permission.
   - `just restart`
 
 Azad also checks Accessibility permission on startup (required for auto-paste) and opens the Accessibility settings pane if it is missing.
+
+## Behavior Docs
+
+- `docs/keyboard-shortcut-state-machine.md` - Hotkey/VAD interaction rules and transitions.

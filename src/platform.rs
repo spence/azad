@@ -1536,9 +1536,11 @@ unsafe fn render_overlay_text(
     );
     let _: () = msg_send![refs.label, setFrame: body_frame];
     let _: () = msg_send![refs.meter_view, setFrame: meter_frame];
-    let mut badge_right = (width - OVERLAY_RAW_BADGE_RIGHT_INSET).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
+    let mut badge_right =
+        (width - OVERLAY_RAW_BADGE_RIGHT_INSET).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
     if show_raw_badge {
-        let raw_badge_x = (badge_right - OVERLAY_RAW_BADGE_WIDTH).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
+        let raw_badge_x =
+            (badge_right - OVERLAY_RAW_BADGE_WIDTH).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
         let raw_badge_frame = NSRect::new(
             NSPoint::new(raw_badge_x, OVERLAY_RAW_BADGE_BOTTOM_INSET),
             NSSize::new(OVERLAY_RAW_BADGE_WIDTH, OVERLAY_RAW_BADGE_HEIGHT),
@@ -1563,8 +1565,14 @@ unsafe fn render_overlay_text(
     }
 
     let _: () = msg_send![refs.label, setAlignment: 1isize];
-    let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
-    render_activity_wave(refs, activity, meter_frame.size.width, meter_frame.size.height);
+    let _: () =
+        msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
+    render_activity_wave(
+        refs,
+        activity,
+        meter_frame.size.width,
+        meter_frame.size.height,
+    );
 }
 
 fn main_screen_frame() -> NSRect {
@@ -1667,17 +1675,17 @@ unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, 
         let level = if samples_len == 0 {
             0.0
         } else {
-            let sample_idx =
-                ((i as f64 / (count.saturating_sub(1).max(1) as f64)) * (samples_len - 1) as f64)
-                    .round() as usize;
+            let sample_idx = ((i as f64 / (count.saturating_sub(1).max(1) as f64))
+                * (samples_len - 1) as f64)
+                .round() as usize;
             activity[sample_idx].clamp(0.0, 1.0)
         };
         let normalized = level as f64;
         let shaped = ((normalized - 0.08) / 0.92).clamp(0.0, 1.0).powf(1.8);
         let dramatic = shaped.powf(0.44);
-        let bar_h =
-            (OVERLAY_WAVE_BAR_MIN_HEIGHT + dramatic * (max_h - OVERLAY_WAVE_BAR_MIN_HEIGHT))
-                .clamp(OVERLAY_WAVE_BAR_MIN_HEIGHT, max_h);
+        let bar_h = (OVERLAY_WAVE_BAR_MIN_HEIGHT
+            + dramatic * (max_h - OVERLAY_WAVE_BAR_MIN_HEIGHT))
+            .clamp(OVERLAY_WAVE_BAR_MIN_HEIGHT, max_h);
         let y = (max_h - bar_h) * 0.5;
         let x = i as f64 * spacing + (spacing - bar_width) * 0.5;
         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(bar_width, bar_h));
@@ -1702,7 +1710,12 @@ unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, 
     }
 }
 
-unsafe fn apply_busy_border_style(refs: OverlayRefs, busy_phase: Option<f32>, width: f64, height: f64) {
+unsafe fn apply_busy_border_style(
+    refs: OverlayRefs,
+    busy_phase: Option<f32>,
+    width: f64,
+    height: f64,
+) {
     let card_layer: id = msg_send![refs.card_view, layer];
     if card_layer == nil {
         return;
@@ -1717,7 +1730,10 @@ unsafe fn apply_busy_border_style(refs: OverlayRefs, busy_phase: Option<f32>, wi
         return;
     }
 
-    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width.max(1.0), height.max(1.0)));
+    let frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(width.max(1.0), height.max(1.0)),
+    );
     let _: () = msg_send![refs.busy_gradient_layer, setFrame: frame];
     let _: () = msg_send![refs.busy_mask_layer, setFrame: frame];
     let _: () = msg_send![refs.busy_mask_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
@@ -1785,13 +1801,17 @@ unsafe fn create_overlay_window() -> OverlayRefs {
     let _: () = msg_send![card_layer, setBackgroundColor: cg_color];
     let _: () = msg_send![card_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
     let _: () = msg_send![card_layer, setMasksToBounds: YES];
-    let subtle_border = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.20);
+    let subtle_border =
+        NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.20);
     let subtle_border_cg: id = msg_send![subtle_border, CGColor];
     let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
     let _: () = msg_send![card_layer, setBorderColor: subtle_border_cg];
     window.setContentView_(card_view);
 
-    let label_frame = NSRect::new(NSPoint::new(OVERLAY_PAD_X, OVERLAY_PAD_BOTTOM), NSSize::new(overlay_width - OVERLAY_PAD_X * 2.0, 1.0));
+    let label_frame = NSRect::new(
+        NSPoint::new(OVERLAY_PAD_X, OVERLAY_PAD_BOTTOM),
+        NSSize::new(overlay_width - OVERLAY_PAD_X * 2.0, 1.0),
+    );
 
     let meter_view: id = msg_send![class!(NSView), alloc];
     let meter_view: id = msg_send![meter_view, initWithFrame: label_frame];
@@ -1871,7 +1891,10 @@ unsafe fn create_overlay_window() -> OverlayRefs {
     let busy_gradient_layer: id = msg_send![class!(CAGradientLayer), layer];
     let busy_mask_layer: id = msg_send![class!(CALayer), layer];
     if busy_gradient_layer != nil && busy_mask_layer != nil {
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(overlay_width, overlay_height));
+        let frame = NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(overlay_width, overlay_height),
+        );
         let _: () = msg_send![busy_gradient_layer, setFrame: frame];
         let _: () = msg_send![busy_gradient_layer, setHidden: YES];
         let _: () = msg_send![busy_gradient_layer, setOpacity: 1.0f32];
@@ -2081,7 +2104,10 @@ fn set_enter_hotkey_enabled(enabled: bool) {
                 eprintln!("Azad: failed to register NumpadEnter hotkey: {}", err);
             }
             if let Err(err) = manager.register(numpad_enter_option_hotkey) {
-                eprintln!("Azad: failed to register Option+NumpadEnter hotkey: {}", err);
+                eprintln!(
+                    "Azad: failed to register Option+NumpadEnter hotkey: {}",
+                    err
+                );
             }
             return;
         }
@@ -2096,7 +2122,10 @@ fn set_enter_hotkey_enabled(enabled: bool) {
             eprintln!("Azad: failed to unregister NumpadEnter hotkey: {}", err);
         }
         if let Err(err) = manager.unregister(numpad_enter_option_hotkey) {
-            eprintln!("Azad: failed to unregister Option+NumpadEnter hotkey: {}", err);
+            eprintln!(
+                "Azad: failed to unregister Option+NumpadEnter hotkey: {}",
+                err
+            );
         }
         HOTKEY_ENTER_REGISTERED.store(false, Ordering::Relaxed);
     });
