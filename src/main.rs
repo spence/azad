@@ -5,6 +5,7 @@
 mod app;
 mod config;
 mod device;
+mod hotkey_sm;
 mod platform;
 mod preferred_store;
 mod speech;
