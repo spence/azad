@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use toon::embed::{
+use asr::embed::{
     SessionConfig, SessionControl, SessionEvent as ToonSessionEvent, SessionHandle,
     SessionSink as ToonSessionSink, spawn_session,
 };
-use toon::pipeline::EngineState;
+use asr::pipeline::EngineState;
 
 #[derive(Debug, Clone)]
 pub enum SpeechEvent {

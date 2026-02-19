@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use toon::embed::SessionConfig;
-use toon::pipeline::PipelineConfig;
+use asr::embed::SessionConfig;
+use asr::pipeline::PipelineConfig;
 
 #[derive(Debug, Clone)]
 pub struct AzadConfig {

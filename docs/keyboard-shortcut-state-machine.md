@@ -16,7 +16,7 @@ Raw mode badges/formatting are out of scope here.
 
 ## Design Boundary
 
-`toon` does not know about keyboard shortcuts.
+`asr` does not know about keyboard shortcuts.
 
 `azad` translates keyboard gestures into `SpeechSession` controls:
 

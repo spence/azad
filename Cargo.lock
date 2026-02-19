@@ -122,6 +122,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "asr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "core-foundation 0.10.1",
+ "coreaudio-sys",
+ "cpal",
+ "crossbeam-channel",
+ "crossterm",
+ "hound",
+ "parakeet-rs",
+ "ratatui",
+ "ringbuf",
+ "symphonia",
+ "whisper-cpp-plus",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -132,11 +151,11 @@ name = "azad"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "asr",
  "cocoa",
  "core-graphics",
  "global-hotkey",
  "objc",
- "toon",
 ]
 
 [[package]]
@@ -2669,25 +2688,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "247eaa3197818b831697600aadf81514e577e0cba5eab10f7e064e78ae154df1"
 dependencies = [
  "winnow",
-]
-
-[[package]]
-name = "toon"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "core-foundation 0.10.1",
- "coreaudio-sys",
- "cpal",
- "crossbeam-channel",
- "crossterm",
- "hound",
- "parakeet-rs",
- "ratatui",
- "ringbuf",
- "symphonia",
- "whisper-cpp-plus",
 ]
 
 [[package]]

@@ -2,8 +2,8 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use toon::devices::DeviceStateSnapshot;
-use toon::pipeline::EngineState;
+use asr::devices::DeviceStateSnapshot;
+use asr::pipeline::EngineState;
 
 use crate::config::AzadConfig;
 use crate::device::{DeviceController, DeviceEvent};
