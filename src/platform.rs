@@ -199,6 +199,7 @@ pub fn set_device_menu(model: DeviceMenuModel) {
 pub fn show_overlay() {
     unsafe {
         let refs = ensure_overlay();
+        move_overlay_to_cursor_screen(refs, true);
         let _: () = msg_send![refs.window, orderFrontRegardless];
     }
     set_escape_hotkey_enabled(true);
@@ -226,6 +227,7 @@ pub fn set_overlay_stream_content(
         return;
     };
     unsafe {
+        move_overlay_to_cursor_screen(refs, false);
         render_overlay_text(
             refs,
             draft,
@@ -250,6 +252,7 @@ pub fn set_overlay_notice_content(title: &str, body: &str) {
     };
 
     unsafe {
+        move_overlay_to_cursor_screen(refs, false);
         render_overlay_text(refs, &rendered, &[], None, false, false);
     }
 }
@@ -1469,7 +1472,8 @@ unsafe fn render_overlay_text(
     show_raw_badge: bool,
     show_hold_badge: bool,
 ) {
-    let screen = main_screen_frame();
+    let current_frame: NSRect = msg_send![refs.window, frame];
+    let screen = overlay_screen_frame_for_window(current_frame);
     let width = overlay_width_for_screen(screen);
     let max_body_height = (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
     let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
@@ -1487,7 +1491,6 @@ unsafe fn render_overlay_text(
     let content_height = OVERLAY_PAD_TOP + body_height + OVERLAY_PAD_BOTTOM;
     let height = content_height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
 
-    let current_frame: NSRect = msg_send![refs.window, frame];
     let default_x = screen.origin.x + (screen.size.width - width) * 0.5;
     let default_y = screen.origin.y + screen.size.height * 0.08;
     let x = if current_frame.size.width <= 0.0 {
@@ -1583,6 +1586,161 @@ fn main_screen_frame() -> NSRect {
         } else {
             NSScreen::frame(screen)
         }
+    }
+}
+
+fn cursor_screen_frame() -> Option<NSRect> {
+    unsafe {
+        let point: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        screen_frame_for_point(point)
+    }
+}
+
+fn is_left_mouse_button_down() -> bool {
+    unsafe {
+        let pressed: u64 = msg_send![class!(NSEvent), pressedMouseButtons];
+        (pressed & 1) != 0
+    }
+}
+
+fn screen_frame_for_point(point: NSPoint) -> Option<NSRect> {
+    unsafe {
+        let screens: id = msg_send![class!(NSScreen), screens];
+        if screens == nil {
+            return None;
+        }
+
+        let count: usize = msg_send![screens, count];
+        for idx in 0..count {
+            let screen: id = msg_send![screens, objectAtIndex: idx];
+            if screen == nil {
+                continue;
+            }
+            let frame = NSScreen::frame(screen);
+            let min_x = frame.origin.x;
+            let min_y = frame.origin.y;
+            let max_x = frame.origin.x + frame.size.width;
+            let max_y = frame.origin.y + frame.size.height;
+            if point.x >= min_x && point.x < max_x && point.y >= min_y && point.y < max_y {
+                return Some(frame);
+            }
+        }
+
+        None
+    }
+}
+
+fn overlay_screen_frame_for_window(frame: NSRect) -> NSRect {
+    if let Some(screen) = current_overlay_screen_frame(frame) {
+        return screen;
+    }
+
+    cursor_screen_frame().unwrap_or_else(main_screen_frame)
+}
+
+fn current_overlay_screen_frame(frame: NSRect) -> Option<NSRect> {
+    if frame.size.width > 0.0 && frame.size.height > 0.0 {
+        let center = NSPoint::new(
+            frame.origin.x + frame.size.width * 0.5,
+            frame.origin.y + frame.size.height * 0.5,
+        );
+        return screen_frame_for_point(center);
+    }
+
+    None
+}
+
+fn same_screen_frame(a: NSRect, b: NSRect) -> bool {
+    const EPS: f64 = 0.5;
+    (a.origin.x - b.origin.x).abs() <= EPS
+        && (a.origin.y - b.origin.y).abs() <= EPS
+        && (a.size.width - b.size.width).abs() <= EPS
+        && (a.size.height - b.size.height).abs() <= EPS
+}
+
+fn remap_origin_proportionally(
+    current_origin: f64,
+    source_origin: f64,
+    source_size: f64,
+    current_size: f64,
+    target_origin: f64,
+    target_size: f64,
+    target_current_size: f64,
+) -> f64 {
+    let source_range = (source_size - current_size).max(0.0);
+    let target_range = (target_size - target_current_size).max(0.0);
+    if source_range <= 0.5 || target_range <= 0.5 {
+        return target_origin + target_range * 0.5;
+    }
+
+    let source_ratio = ((current_origin - source_origin) / source_range).clamp(0.0, 1.0);
+    target_origin + source_ratio * target_range
+}
+
+unsafe fn move_overlay_to_cursor_screen(refs: OverlayRefs, force_default_anchor: bool) {
+    if !force_default_anchor && is_left_mouse_button_down() {
+        return;
+    }
+
+    let target_screen = cursor_screen_frame().unwrap_or_else(main_screen_frame);
+    let current_frame: NSRect = msg_send![refs.window, frame];
+    let current_screen = current_overlay_screen_frame(current_frame);
+    if !force_default_anchor
+        && current_screen.is_some_and(|screen| same_screen_frame(screen, target_screen))
+    {
+        return;
+    }
+
+    let width = overlay_width_for_screen(target_screen);
+    let height = if current_frame.size.height > 0.0 {
+        current_frame
+            .size
+            .height
+            .clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX)
+    } else {
+        OVERLAY_HEIGHT_MIN
+    };
+    let (mut x, mut y) = if force_default_anchor || current_screen.is_none() {
+        (
+            target_screen.origin.x + (target_screen.size.width - width) * 0.5,
+            target_screen.origin.y + target_screen.size.height * 0.08,
+        )
+    } else {
+        let source = current_screen.unwrap();
+        (
+            remap_origin_proportionally(
+                current_frame.origin.x,
+                source.origin.x,
+                source.size.width,
+                current_frame.size.width,
+                target_screen.origin.x,
+                target_screen.size.width,
+                width,
+            ),
+            remap_origin_proportionally(
+                current_frame.origin.y,
+                source.origin.y,
+                source.size.height,
+                current_frame.size.height,
+                target_screen.origin.y,
+                target_screen.size.height,
+                height,
+            ),
+        )
+    };
+    let max_x =
+        (target_screen.origin.x + target_screen.size.width - width).max(target_screen.origin.x);
+    let max_y =
+        (target_screen.origin.y + target_screen.size.height - height).max(target_screen.origin.y);
+    x = x.clamp(target_screen.origin.x, max_x);
+    y = y.clamp(target_screen.origin.y, max_y);
+    let target_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+    if (current_frame.origin.x - target_frame.origin.x).abs() > 0.05
+        || (current_frame.origin.y - target_frame.origin.y).abs() > 0.05
+        || (current_frame.size.width - target_frame.size.width).abs() > 0.05
+        || (current_frame.size.height - target_frame.size.height).abs() > 0.05
+    {
+        let _: () = msg_send![refs.window, setFrame: target_frame display: YES];
     }
 }
 
@@ -1758,7 +1916,7 @@ unsafe fn apply_busy_border_style(
 }
 
 unsafe fn create_overlay_window() -> OverlayRefs {
-    let frame = main_screen_frame();
+    let frame = cursor_screen_frame().unwrap_or_else(main_screen_frame);
 
     let overlay_width = overlay_width_for_screen(frame);
     let overlay_height = OVERLAY_HEIGHT_MIN;
