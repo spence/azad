@@ -81,6 +81,13 @@ const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
 const DEVICE_MENU_TEXT_SAFETY_PADDING: f64 = 10.0;
 const DEVICE_MENU_SCREEN_EDGE_MARGIN: f64 = 24.0;
 const DEVICE_HEADER_MENU_COMPENSATION: f64 = 22.0;
+const SETTINGS_WINDOW_WIDTH: f64 = 720.0;
+const SETTINGS_WINDOW_HEIGHT: f64 = 460.0;
+const SETTINGS_INSET_X: f64 = 20.0;
+const SETTINGS_TOP_MARGIN: f64 = 18.0;
+const SETTINGS_CONTROL_HEIGHT: f64 = 24.0;
+const SETTINGS_REFRESH_WIDTH: f64 = 90.0;
+const SETTINGS_METRICS_TOP_GAP: f64 = 14.0;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -119,6 +126,7 @@ thread_local! {
     static DEVICE_ROW_IDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static DEVICE_MENU_MODEL: RefCell<DeviceMenuModel> = RefCell::new(DeviceMenuModel::default());
     static HOTKEY_MANAGER_REF: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
+    static SETTINGS_WINDOW_REFS: RefCell<Option<SettingsWindowRefs>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy)]
@@ -134,6 +142,13 @@ struct OverlayRefs {
     busy_mask_layer: id,
 }
 
+#[derive(Clone, Copy)]
+struct SettingsWindowRefs {
+    window: id,
+    debug_checkbox: id,
+    metrics_text_view: id,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DeviceMenuModel {
     pub always_listening_enabled: bool,
@@ -147,6 +162,12 @@ pub struct DeviceMenuRow {
     pub id: String,
     pub label: String,
     pub checked: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsViewModel {
+    pub debug_stats_enabled: bool,
+    pub metrics_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +217,24 @@ pub fn set_device_menu(model: DeviceMenuModel) {
     rebuild_status_menu();
 }
 
+pub fn show_settings_window(model: SettingsViewModel) {
+    unsafe {
+        let refs = ensure_settings_window();
+        apply_settings_view_model(refs, &model);
+        let app = NSApp();
+        let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+        let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
+    }
+}
+
+pub fn update_settings_window(model: SettingsViewModel) {
+    if let Some(refs) = current_settings_window() {
+        unsafe {
+            apply_settings_view_model(refs, &model);
+        }
+    }
+}
+
 pub fn show_overlay() {
     unsafe {
         let refs = ensure_overlay();
@@ -210,6 +249,8 @@ pub fn hide_overlay() {
     if let Some(refs) = current_overlay() {
         unsafe {
             let _: () = msg_send![refs.window, orderOut: nil];
+            let app = NSApp();
+            let _: () = msg_send![app, updateWindows];
         }
     }
     set_escape_hotkey_enabled(false);
@@ -320,6 +361,18 @@ fn register_delegate_class() -> &'static Class {
         decl.add_method(
             sel!(toggleDevices:),
             toggle_devices as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(openSettings:),
+            open_settings as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(settingsToggleDebug:),
+            settings_toggle_debug as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(settingsRefresh:),
+            settings_refresh as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
             sel!(selectDevice:),
@@ -487,6 +540,27 @@ extern "C" fn toggle_devices(this: &Object, _: Sel, _: id) {
     crate::app::send_event(AppEvent::MenuToggleDevices);
     crate::app::drain_events();
     schedule_menu_layout_sync(this as *const Object as id);
+}
+
+extern "C" fn open_settings(_: &Object, _: Sel, _: id) {
+    crate::app::send_event(AppEvent::MenuOpenSettings);
+    crate::app::drain_events();
+}
+
+extern "C" fn settings_toggle_debug(_: &Object, _: Sel, sender: id) {
+    unsafe {
+        if sender == nil {
+            return;
+        }
+        let state: i64 = msg_send![sender, state];
+        crate::app::send_event(AppEvent::SettingsToggleDebugStats(state != 0));
+        crate::app::drain_events();
+    }
+}
+
+extern "C" fn settings_refresh(_: &Object, _: Sel, _: id) {
+    crate::app::send_event(AppEvent::SettingsRefresh);
+    crate::app::drain_events();
 }
 
 extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
@@ -821,6 +895,7 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
 
         max_width = max_width.max(always_listening_row_width(font));
         max_width = max_width.max(menu_row_width_for_text("Quit", font, 0, false));
+        max_width = max_width.max(menu_row_width_for_text("Settings...", font, 0, false));
 
         if model.expanded {
             if model.rows.is_empty() {
@@ -952,6 +1027,16 @@ fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
         let separator_bottom: id = msg_send![class!(NSMenuItem), separatorItem];
         menu.addItem_(separator_bottom);
 
+        let settings_item = NSMenuItem::alloc(nil)
+            .initWithTitle_action_keyEquivalent_(
+                NSString::alloc(nil).init_str("Settings..."),
+                sel!(openSettings:),
+                NSString::alloc(nil).init_str(","),
+            )
+            .autorelease();
+        settings_item.setTarget_(delegate);
+        menu.addItem_(settings_item);
+
         let quit_item = NSMenuItem::alloc(nil)
             .initWithTitle_action_keyEquivalent_(
                 NSString::alloc(nil).init_str("Quit"),
@@ -971,8 +1056,8 @@ fn update_menu_inline(menu: id, delegate: id, model: &DeviceMenuModel) {
 
     unsafe {
         let count: i64 = msg_send![menu, numberOfItems];
-        // Items are [Listen, Separator, Header, ..., Separator, Quit]
-        let insert_at = if count >= 2 { count - 2 } else { 0 };
+        // Items are [Listen, Separator, Header, ..., Separator, Settings..., Quit]
+        let insert_at = if count >= 3 { count - 3 } else { 0 };
         insert_device_rows(menu, delegate, model, insert_at);
     }
 }
@@ -1393,9 +1478,9 @@ fn set_device_header_title(model: &DeviceMenuModel) {
 fn clear_device_rows(menu: id) {
     unsafe {
         let count: i64 = msg_send![menu, numberOfItems];
-        // Keep [Listen, Separator, Header, Separator, Quit], remove rows in between.
-        if count >= 6 {
-            for idx in (3..=(count - 3)).rev() {
+        // Keep [Listen, Separator, Header, Separator, Settings..., Quit].
+        if count >= 7 {
+            for idx in (3..=(count - 4)).rev() {
                 let _: () = msg_send![menu, removeItemAtIndex: idx];
             }
         }
@@ -1462,6 +1547,30 @@ unsafe fn ensure_overlay() -> OverlayRefs {
 
 fn current_overlay() -> Option<OverlayRefs> {
     OVERLAY_REFS.with(|store| *store.borrow())
+}
+
+unsafe fn ensure_settings_window() -> SettingsWindowRefs {
+    if let Some(existing) = current_settings_window() {
+        return existing;
+    }
+
+    let refs = create_settings_window();
+    SETTINGS_WINDOW_REFS.with(|store| {
+        store.borrow_mut().replace(refs);
+    });
+    refs
+}
+
+fn current_settings_window() -> Option<SettingsWindowRefs> {
+    SETTINGS_WINDOW_REFS.with(|store| *store.borrow())
+}
+
+unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsViewModel) {
+    let checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
+    let _: () = msg_send![refs.debug_checkbox, setState: checkbox_state];
+
+    let metrics = NSString::alloc(nil).init_str(&model.metrics_text);
+    let _: () = msg_send![refs.metrics_text_view, setString: metrics];
 }
 
 unsafe fn render_overlay_text(
@@ -1915,6 +2024,88 @@ unsafe fn apply_busy_border_style(
     let _: () = msg_send![refs.busy_gradient_layer, setEndPoint: end];
 }
 
+unsafe fn create_settings_window() -> SettingsWindowRefs {
+    let frame = main_screen_frame();
+    let x = frame.origin.x + (frame.size.width - SETTINGS_WINDOW_WIDTH) * 0.5;
+    let y = frame.origin.y + (frame.size.height - SETTINGS_WINDOW_HEIGHT) * 0.5;
+    let window_frame = NSRect::new(
+        NSPoint::new(x, y),
+        NSSize::new(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT),
+    );
+
+    let style = NSWindowStyleMask::NSTitledWindowMask
+        | NSWindowStyleMask::NSClosableWindowMask
+        | NSWindowStyleMask::NSMiniaturizableWindowMask;
+    let window: id = msg_send![class!(NSWindow), alloc];
+    let window: id = msg_send![window, initWithContentRect: window_frame
+                                                styleMask: style
+                                                  backing: NSBackingStoreType::NSBackingStoreBuffered
+                                                    defer: NO];
+    let _: () = msg_send![window, setReleasedWhenClosed: NO];
+    let _: () = msg_send![window, setTitle: NSString::alloc(nil).init_str("Azad Settings")];
+
+    let content_view: id = msg_send![window, contentView];
+
+    let top_y = SETTINGS_WINDOW_HEIGHT - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
+    let checkbox_frame = NSRect::new(
+        NSPoint::new(SETTINGS_INSET_X, top_y),
+        NSSize::new(320.0, SETTINGS_CONTROL_HEIGHT),
+    );
+    let debug_checkbox: id = msg_send![class!(NSButton), alloc];
+    let debug_checkbox: id = msg_send![debug_checkbox, initWithFrame: checkbox_frame];
+    let _: () = msg_send![debug_checkbox, setButtonType: 3usize];
+    let _: () = msg_send![debug_checkbox, setTitle: NSString::alloc(nil).init_str("Enable debug statistics")];
+    let _: () = msg_send![debug_checkbox, setAction: sel!(settingsToggleDebug:)];
+
+    let refresh_x = SETTINGS_WINDOW_WIDTH - SETTINGS_INSET_X - SETTINGS_REFRESH_WIDTH;
+    let refresh_frame = NSRect::new(
+        NSPoint::new(refresh_x, top_y),
+        NSSize::new(SETTINGS_REFRESH_WIDTH, SETTINGS_CONTROL_HEIGHT),
+    );
+    let refresh_button: id = msg_send![class!(NSButton), alloc];
+    let refresh_button: id = msg_send![refresh_button, initWithFrame: refresh_frame];
+    let _: () = msg_send![refresh_button, setBezelStyle: 1usize];
+    let _: () = msg_send![refresh_button, setTitle: NSString::alloc(nil).init_str("Refresh")];
+    let _: () = msg_send![refresh_button, setAction: sel!(settingsRefresh:)];
+
+    let metrics_height =
+        (top_y - SETTINGS_METRICS_TOP_GAP - SETTINGS_INSET_X).max(SETTINGS_CONTROL_HEIGHT * 2.0);
+    let scroll_frame = NSRect::new(
+        NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
+        NSSize::new(SETTINGS_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0, metrics_height),
+    );
+    let scroll_view: id = msg_send![class!(NSScrollView), alloc];
+    let scroll_view: id = msg_send![scroll_view, initWithFrame: scroll_frame];
+    let _: () = msg_send![scroll_view, setHasVerticalScroller: YES];
+
+    let text_frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(scroll_frame.size.width, scroll_frame.size.height),
+    );
+    let metrics_text_view: id = msg_send![class!(NSTextView), alloc];
+    let metrics_text_view: id = msg_send![metrics_text_view, initWithFrame: text_frame];
+    let _: () = msg_send![metrics_text_view, setEditable: NO];
+    let _: () = msg_send![metrics_text_view, setSelectable: YES];
+    let _: () = msg_send![metrics_text_view, setRichText: NO];
+    let _: () = msg_send![metrics_text_view, setString: NSString::alloc(nil).init_str("")];
+    let _: () = msg_send![scroll_view, setDocumentView: metrics_text_view];
+
+    if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
+        let _: () = msg_send![debug_checkbox, setTarget: delegate];
+        let _: () = msg_send![refresh_button, setTarget: delegate];
+    }
+
+    let _: () = msg_send![content_view, addSubview: debug_checkbox];
+    let _: () = msg_send![content_view, addSubview: refresh_button];
+    let _: () = msg_send![content_view, addSubview: scroll_view];
+
+    SettingsWindowRefs {
+        window,
+        debug_checkbox,
+        metrics_text_view,
+    }
+}
+
 unsafe fn create_overlay_window() -> OverlayRefs {
     let frame = cursor_screen_frame().unwrap_or_else(main_screen_frame);
 
@@ -2185,11 +2376,19 @@ fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
         || HOTKEY_NUMPAD_ENTER_OPTION_ID
             .get()
             .is_some_and(|id| event.id == *id);
+    let is_option_enter_hotkey = HOTKEY_ENTER_OPTION_ID
+        .get()
+        .is_some_and(|id| event.id == *id)
+        || HOTKEY_NUMPAD_ENTER_OPTION_ID
+            .get()
+            .is_some_and(|id| event.id == *id);
     if is_enter_hotkey
         && HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
         && matches!(event.state, HotKeyState::Pressed)
     {
-        crate::app::send_event(AppEvent::FinalizeHotkeyPressed);
+        crate::app::send_event(AppEvent::FinalizeHotkeyPressed {
+            raw_requested: is_option_enter_hotkey,
+        });
     }
 }
 

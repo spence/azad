@@ -7,6 +7,7 @@ use objc::{class, msg_send, sel, sel_impl};
 
 const PREFERRED_DEVICE_KEY: &str = "AzadPreferredInputDeviceId";
 const ALWAYS_LISTENING_KEY: &str = "AzadAlwaysListeningEnabled";
+const DEBUG_STATS_ENABLED_KEY: &str = "AzadDebugStatsEnabled";
 
 pub fn load_preferred_device_id() -> Option<String> {
     unsafe {
@@ -60,6 +61,37 @@ pub fn save_always_listening_enabled(enabled: bool) {
         }
 
         let key = NSString::alloc(nil).init_str(ALWAYS_LISTENING_KEY);
+        let value = if enabled { YES } else { NO };
+        let _: () = msg_send![defaults, setBool: value forKey: key];
+    }
+}
+
+pub fn load_debug_stats_enabled() -> bool {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return false;
+        }
+
+        let key = NSString::alloc(nil).init_str(DEBUG_STATS_ENABLED_KEY);
+        let existing: id = msg_send![defaults, objectForKey: key];
+        if existing == nil {
+            return false;
+        }
+
+        let value: i8 = msg_send![defaults, boolForKey: key];
+        value != 0
+    }
+}
+
+pub fn save_debug_stats_enabled(enabled: bool) {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return;
+        }
+
+        let key = NSString::alloc(nil).init_str(DEBUG_STATS_ENABLED_KEY);
         let value = if enabled { YES } else { NO };
         let _: () = msg_send![defaults, setBool: value forKey: key];
     }

@@ -1,15 +1,17 @@
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use asr::devices::DeviceStateSnapshot;
-use asr::pipeline::EngineState;
+use asr::pipeline::{DebugStatsEvent, EngineState};
 
 use crate::config::AzadConfig;
 use crate::device::{DeviceController, DeviceEvent};
 use crate::hotkey_sm::{HotkeyEffect, HotkeyInput, HotkeyState, RuntimeSnapshot};
+use crate::metrics_log::{self, MetricsLogEvent, MetricsLogRecord, TranscriptMode};
 use crate::platform;
-use crate::platform::{DeviceMenuModel, DeviceMenuRow, PasteResult};
+use crate::platform::{DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsViewModel};
 use crate::preferred_store;
 use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
 
@@ -23,12 +25,15 @@ const OVERLAY_BUSY_PHASE_STEP: f32 = 0.24;
 pub enum AppEvent {
     HotkeyPressed,
     HotkeyReleased,
-    FinalizeHotkeyPressed,
+    FinalizeHotkeyPressed { raw_requested: bool },
     MenuToggleAlwaysListening,
     MenuToggleDevices,
     MenuSelectDevice(String),
+    MenuOpenSettings,
     MenuOpened,
     MenuClosed,
+    SettingsToggleDebugStats(bool),
+    SettingsRefresh,
     OverlayCancel,
     Speech(SpeechEvent),
     Device(DeviceEvent),
@@ -120,11 +125,36 @@ struct AppController {
     pending_device_switch_deadline: Option<Instant>,
     engine_state: EngineState,
     hotkey_state: HotkeyState,
+    raw_finalize_requested: bool,
+    debug_stats_enabled: bool,
+    turn_started_at: HashMap<u64, Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RawFinalizeUiPlan {
+    hide_overlay: bool,
+    disable_capture: bool,
+}
+
+fn raw_finalize_ui_plan(
+    always_listening_enabled: bool,
+    manual_hold_active: bool,
+    forced_by_finalize_hotkey: bool,
+) -> RawFinalizeUiPlan {
+    RawFinalizeUiPlan {
+        hide_overlay: forced_by_finalize_hotkey || !manual_hold_active,
+        disable_capture: !always_listening_enabled && !manual_hold_active,
+    }
+}
+
+fn should_ignore_finalizing_event(raw_handled_turn_id: Option<u64>, turn_id: u64) -> bool {
+    raw_handled_turn_id == Some(turn_id)
 }
 
 impl AppController {
     fn new(cfg: AzadConfig) -> Self {
         let always_listening_enabled = preferred_store::load_always_listening_enabled();
+        let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
         Self {
             cfg,
             session: None,
@@ -157,6 +187,9 @@ impl AppController {
             pending_device_switch_deadline: None,
             engine_state: EngineState::Idle,
             hotkey_state: HotkeyState::default(),
+            raw_finalize_requested: false,
+            debug_stats_enabled,
+            turn_started_at: HashMap::new(),
         }
     }
 
@@ -196,12 +229,19 @@ impl AppController {
         match event {
             AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
             AppEvent::HotkeyReleased => self.handle_hotkey_released(),
-            AppEvent::FinalizeHotkeyPressed => self.handle_finalize_hotkey_pressed(),
+            AppEvent::FinalizeHotkeyPressed { raw_requested } => {
+                self.handle_finalize_hotkey_pressed(raw_requested)
+            }
             AppEvent::MenuToggleAlwaysListening => self.handle_menu_toggle_always_listening(),
             AppEvent::MenuToggleDevices => self.handle_menu_toggle_devices(),
             AppEvent::MenuSelectDevice(device_id) => self.handle_menu_select_device(device_id),
+            AppEvent::MenuOpenSettings => self.handle_menu_open_settings(),
             AppEvent::MenuOpened => self.handle_menu_opened(),
             AppEvent::MenuClosed => self.handle_menu_closed(),
+            AppEvent::SettingsToggleDebugStats(enabled) => {
+                self.handle_settings_toggle_debug_stats(enabled)
+            }
+            AppEvent::SettingsRefresh => self.handle_settings_refresh(),
             AppEvent::OverlayCancel => self.handle_overlay_cancel(),
             AppEvent::Speech(ev) => self.handle_speech_event(ev),
             AppEvent::Device(ev) => self.handle_device_event(ev),
@@ -237,8 +277,10 @@ impl AppController {
         self.turn_accept_floor = 1;
         self.current_turn_id = None;
         self.dispatch_hotkey_input(HotkeyInput::SessionReset);
+        self.raw_finalize_requested = false;
         self.reset_activity_history();
         self.busy_border_phase = 0.0;
+        self.turn_started_at.clear();
 
         let device_id = self.current_device_id().map(ToOwned::to_owned);
         let emit: Arc<dyn Fn(SpeechEvent) + Send + Sync> =
@@ -249,12 +291,14 @@ impl AppController {
                 device_id.clone(),
                 self.always_listening_enabled,
                 self.always_listening_enabled,
+                self.debug_stats_enabled,
             ),
             emit,
         ) {
             Ok(session) => {
                 session.set_auto_vad_enabled(self.always_listening_enabled);
                 session.set_capture_enabled(self.always_listening_enabled);
+                session.set_debug_stats_enabled(self.debug_stats_enabled);
                 self.session = Some(session);
                 self.session_device_id = device_id;
             }
@@ -307,10 +351,20 @@ impl AppController {
         });
     }
 
-    fn handle_finalize_hotkey_pressed(&mut self) {
+    fn handle_finalize_hotkey_pressed(&mut self, raw_requested: bool) {
+        if raw_requested {
+            self.raw_finalize_requested = true;
+        }
         self.dispatch_hotkey_input(HotkeyInput::FinalizePressed {
             overlay_visible: self.overlay_visible,
         });
+        if raw_requested {
+            let turn_id = self
+                .finalizing_turn_id
+                .or(self.current_turn_id)
+                .or_else(|| (self.latest_seen_turn_id > 0).then_some(self.latest_seen_turn_id));
+            let _ = self.try_finalize_with_raw_text(turn_id);
+        }
     }
 
     fn handle_menu_toggle_always_listening(&mut self) {
@@ -434,6 +488,35 @@ impl AppController {
         }
     }
 
+    fn handle_menu_open_settings(&mut self) {
+        platform::show_settings_window(self.settings_view_model());
+    }
+
+    fn handle_settings_toggle_debug_stats(&mut self, enabled: bool) {
+        self.debug_stats_enabled = enabled;
+        preferred_store::save_debug_stats_enabled(enabled);
+        if let Some(session) = &self.session {
+            session.set_debug_stats_enabled(enabled);
+        }
+        platform::update_settings_window(self.settings_view_model());
+    }
+
+    fn handle_settings_refresh(&mut self) {
+        platform::update_settings_window(self.settings_view_model());
+    }
+
+    fn settings_view_model(&self) -> SettingsViewModel {
+        let metrics_text = match metrics_log::summarize_last_24h() {
+            Ok(summary) => metrics_log::render_summary(&summary),
+            Err(err) => format!("Failed to load debug metrics: {err}"),
+        };
+
+        SettingsViewModel {
+            debug_stats_enabled: self.debug_stats_enabled,
+            metrics_text,
+        }
+    }
+
     fn handle_menu_opened(&mut self) {
         if let Some(controller) = &self.device_controller {
             let _ = controller.refresh_now();
@@ -455,9 +538,11 @@ impl AppController {
         self.cancelled = true;
         self.manual_hold_active = false;
         self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
+        self.raw_finalize_requested = false;
         self.overlay_pending_vad_text = false;
         self.finalizing_deadline = None;
         self.raw_handled_turn_id = None;
+        self.turn_started_at.clear();
         if let Some(session) = &self.session {
             session.release_manual_hold();
             session.cancel_current_turn();
@@ -565,7 +650,8 @@ impl AppController {
             | SpeechEvent::SessionEnded { session_id }
             | SpeechEvent::Error { session_id, .. }
             | SpeechEvent::Status { session_id, .. }
-            | SpeechEvent::Meter { session_id, .. } => *session_id,
+            | SpeechEvent::Meter { session_id, .. }
+            | SpeechEvent::DebugStats { session_id, .. } => *session_id,
         };
 
         if Some(event_session_id) != self.current_session_id() {
@@ -639,12 +725,20 @@ impl AppController {
                     self.render_listening_overlay();
                 }
             }
+            SpeechEvent::DebugStats { event, .. } => {
+                self.handle_debug_stats_event(event);
+            }
             SpeechEvent::Finalizing {
                 turn_id,
                 current_draft,
                 ..
             } => {
                 if !self.accept_turn(turn_id) {
+                    return;
+                }
+                if should_ignore_finalizing_event(self.raw_handled_turn_id, turn_id) {
+                    self.finalizing_turn_id = None;
+                    self.finalizing_deadline = None;
                     return;
                 }
 
@@ -663,33 +757,12 @@ impl AppController {
                     return;
                 }
 
-                let raw_requested = platform::is_raw_mode_pressed();
+                let raw_requested = self.raw_finalize_requested || platform::is_raw_mode_pressed();
                 if raw_requested && has_visible_text {
-                    let raw_text = self.latest_draft.trim().to_string();
-                    self.finalizing_turn_id = None;
-                    self.finalizing_deadline = None;
-                    self.raw_handled_turn_id = Some(turn_id);
-                    self.dispatch_hotkey_input(HotkeyInput::SpeechFinalized);
-                    self.latest_final = Some(raw_text.clone());
-                    if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-                        if !self.manual_hold_active {
-                            self.hide_overlay();
-                        }
-                        if self.try_paste(&raw_text) {
-                            self.last_pasted_turn_id = Some(turn_id);
-                        } else {
-                            eprintln!(
-                                "Azad: failed to auto-paste raw transcript (clipboard still contains text)"
-                            );
-                        }
+                    self.raw_finalize_requested = true;
+                    if self.try_finalize_with_raw_text(Some(turn_id)) {
+                        return;
                     }
-                    self.maybe_start_deferred_vad_turn();
-                    if !self.always_listening_enabled && !self.manual_hold_active {
-                        if let Some(session) = &self.session {
-                            session.set_capture_enabled(false);
-                        }
-                    }
-                    return;
                 }
 
                 self.overlay_pending_vad_text = false;
@@ -706,8 +779,10 @@ impl AppController {
                 let cleaned = text.trim().to_string();
                 self.finalizing_turn_id = None;
                 self.finalizing_deadline = None;
+                self.raw_finalize_requested = false;
                 self.dispatch_hotkey_input(HotkeyInput::SpeechFinalized);
                 if cleaned.is_empty() {
+                    self.turn_started_at.remove(&turn_id);
                     self.raw_handled_turn_id = None;
                     self.maybe_start_deferred_vad_turn();
                     if !self.always_listening_enabled && !self.manual_hold_active {
@@ -718,6 +793,7 @@ impl AppController {
                     return;
                 }
                 if self.raw_handled_turn_id == Some(turn_id) {
+                    self.turn_started_at.remove(&turn_id);
                     self.raw_handled_turn_id = None;
                     self.maybe_start_deferred_vad_turn();
                     if !self.always_listening_enabled && !self.manual_hold_active {
@@ -733,7 +809,7 @@ impl AppController {
                     if !self.manual_hold_active {
                         self.hide_overlay();
                     }
-                    if self.try_paste(&cleaned) {
+                    if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
                         self.last_pasted_turn_id = Some(turn_id);
                     } else {
                         eprintln!(
@@ -758,7 +834,11 @@ impl AppController {
                     if let Some(final_text) = self.latest_final.as_ref() {
                         let cleaned = final_text.trim().to_string();
                         if !cleaned.is_empty() {
-                            if self.try_paste(&cleaned) {
+                            if self.try_paste(
+                                self.latest_seen_turn_id,
+                                TranscriptMode::Normal,
+                                &cleaned,
+                            ) {
                                 self.last_pasted_turn_id = Some(self.latest_seen_turn_id);
                             }
                         }
@@ -772,6 +852,7 @@ impl AppController {
                 self.finalizing_deadline = None;
                 self.finalizing_turn_id = None;
                 self.raw_handled_turn_id = None;
+                self.raw_finalize_requested = false;
                 self.deferred_vad_start = false;
                 self.accessibility_notice_deadline = None;
                 self.overlay_pending_vad_text = false;
@@ -781,6 +862,7 @@ impl AppController {
                 self.dispatch_hotkey_input(HotkeyInput::SessionReset);
                 self.reset_activity_history();
                 self.busy_border_phase = 0.0;
+                self.turn_started_at.clear();
 
                 self.start_session();
 
@@ -946,7 +1028,7 @@ impl AppController {
         );
     }
 
-    fn try_paste(&mut self, text: &str) -> bool {
+    fn try_paste(&mut self, turn_id: u64, mode: TranscriptMode, text: &str) -> bool {
         let mut paste_text = text.to_string();
         if !paste_text
             .chars()
@@ -956,14 +1038,44 @@ impl AppController {
             paste_text.push(' ');
         }
 
-        match platform::paste_text(&paste_text, self.cfg.paste_delay_ms) {
-            PasteResult::Pasted => true,
-            PasteResult::AccessibilityRequired => {
-                self.show_accessibility_overlay_notice();
-                false
-            }
-            PasteResult::EmptyText | PasteResult::ClipboardWriteFailed => false,
+        let paste_started = Instant::now();
+        let paste_result = platform::paste_text(&paste_text, self.cfg.paste_delay_ms);
+        if matches!(paste_result, PasteResult::AccessibilityRequired) {
+            self.show_accessibility_overlay_notice();
         }
+
+        if self.debug_stats_enabled {
+            let paste_result_label = match paste_result {
+                PasteResult::Pasted => "pasted",
+                PasteResult::AccessibilityRequired => "accessibility_required",
+                PasteResult::EmptyText => "empty_text",
+                PasteResult::ClipboardWriteFailed => "clipboard_write_failed",
+            };
+            let paste_duration_ms =
+                u64::try_from(paste_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let _ = metrics_log::append_record(&MetricsLogRecord::new(
+                MetricsLogEvent::PasteCompleted {
+                    turn_id,
+                    mode,
+                    paste_duration_ms,
+                    result: paste_result_label.to_string(),
+                },
+            ));
+
+            if let Some(started_at) = self.turn_started_at.remove(&turn_id) {
+                let transcription_duration_ms =
+                    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let _ = metrics_log::append_record(&MetricsLogRecord::new(
+                    MetricsLogEvent::TurnCompleted {
+                        turn_id,
+                        mode,
+                        transcription_duration_ms,
+                    },
+                ));
+            }
+        }
+
+        matches!(paste_result, PasteResult::Pasted)
     }
 
     fn hide_overlay(&mut self) {
@@ -987,13 +1099,60 @@ impl AppController {
         self.finalizing_deadline = None;
         self.finalizing_turn_id = None;
         self.raw_handled_turn_id = None;
+        self.raw_finalize_requested = false;
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
         self.overlay_pending_vad_text = false;
         self.current_turn_id = None;
         self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
+        self.turn_started_at.clear();
         self.reset_activity_history();
         self.busy_border_phase = 0.0;
+    }
+
+    fn try_finalize_with_raw_text(&mut self, turn_id: Option<u64>) -> bool {
+        let Some(turn_id) = turn_id else {
+            return false;
+        };
+
+        let raw_text = self.latest_draft.trim().to_string();
+        if raw_text.is_empty() {
+            return false;
+        }
+
+        let ui_plan = raw_finalize_ui_plan(
+            self.always_listening_enabled,
+            self.manual_hold_active,
+            self.raw_finalize_requested,
+        );
+        self.finalizing_turn_id = None;
+        self.finalizing_deadline = None;
+        self.raw_handled_turn_id = Some(turn_id);
+        self.raw_finalize_requested = false;
+        self.dispatch_hotkey_input(HotkeyInput::SpeechFinalized);
+        self.latest_final = Some(raw_text.clone());
+
+        if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
+            if ui_plan.hide_overlay {
+                self.hide_overlay();
+            }
+            if self.try_paste(turn_id, TranscriptMode::Raw, &raw_text) {
+                self.last_pasted_turn_id = Some(turn_id);
+            } else {
+                eprintln!(
+                    "Azad: failed to auto-paste raw transcript (clipboard still contains text)"
+                );
+            }
+        }
+
+        self.maybe_start_deferred_vad_turn();
+        if ui_plan.disable_capture {
+            if let Some(session) = &self.session {
+                session.set_capture_enabled(false);
+            }
+        }
+
+        true
     }
 
     fn maybe_start_deferred_vad_turn(&mut self) {
@@ -1005,6 +1164,71 @@ impl AppController {
         self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
     }
 
+    fn handle_debug_stats_event(&mut self, event: DebugStatsEvent) {
+        if !self.debug_stats_enabled {
+            return;
+        }
+
+        match event {
+            DebugStatsEvent::PartialFinalizeOutcome {
+                turn_id,
+                outcome,
+                reason,
+            } => {
+                let _ =
+                    metrics_log::append_record(&MetricsLogRecord::new(
+                        MetricsLogEvent::PartialFinalizeOutcome {
+                            turn_id,
+                            outcome,
+                            reason,
+                        },
+                    ));
+            }
+            DebugStatsEvent::PartialAuditResult {
+                turn_id,
+                emitted_kind,
+                exact,
+                partial_count,
+                emitted_tokens,
+                full_tokens,
+                edit_distance,
+                wer_like,
+                lcp_tokens,
+                lcp_pct,
+            } => {
+                let _ = metrics_log::append_record(&MetricsLogRecord::new(
+                    MetricsLogEvent::PartialAuditResult {
+                        turn_id,
+                        emitted_kind,
+                        exact,
+                        partial_count,
+                        emitted_tokens,
+                        full_tokens,
+                        edit_distance,
+                        wer_like,
+                        lcp_tokens,
+                        lcp_pct,
+                    },
+                ));
+            }
+            DebugStatsEvent::PartialAuditError {
+                turn_id,
+                emitted_kind,
+                partial_count,
+                message,
+            } => {
+                let _ = metrics_log::append_record(&MetricsLogRecord::new(
+                    MetricsLogEvent::PartialAuditError {
+                        turn_id,
+                        emitted_kind,
+                        partial_count,
+                        message,
+                    },
+                ));
+            }
+        }
+    }
+
     fn accept_turn(&self, turn_id: u64) -> bool {
         turn_id >= self.turn_accept_floor
     }
@@ -1012,6 +1236,9 @@ impl AppController {
     fn observe_turn(&mut self, turn_id: u64) {
         self.latest_seen_turn_id = self.latest_seen_turn_id.max(turn_id);
         self.current_turn_id = Some(turn_id);
+        self.turn_started_at
+            .entry(turn_id)
+            .or_insert_with(Instant::now);
     }
 
     fn update_activity_from_meter(&mut self, peak_db: f32, vad_speech: bool, vad_prob: f32) {
@@ -1070,5 +1297,69 @@ impl AppController {
         if let Some(last) = self.activity_history.last_mut() {
             *last = self.latest_activity_level.clamp(0.0, 1.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RawFinalizeUiPlan, raw_finalize_ui_plan, should_ignore_finalizing_event};
+
+    #[test]
+    fn raw_finalize_hotkey_forces_overlay_hide_even_during_manual_hold() {
+        let plan = raw_finalize_ui_plan(false, true, true);
+        assert_eq!(
+            plan,
+            RawFinalizeUiPlan {
+                hide_overlay: true,
+                disable_capture: false,
+            }
+        );
+    }
+
+    #[test]
+    fn non_hotkey_raw_finalize_keeps_overlay_when_manual_hold_is_active() {
+        let plan = raw_finalize_ui_plan(false, true, false);
+        assert_eq!(
+            plan,
+            RawFinalizeUiPlan {
+                hide_overlay: false,
+                disable_capture: false,
+            }
+        );
+    }
+
+    #[test]
+    fn raw_finalize_without_hold_in_manual_mode_hides_overlay_and_disables_capture() {
+        let plan = raw_finalize_ui_plan(false, false, false);
+        assert_eq!(
+            plan,
+            RawFinalizeUiPlan {
+                hide_overlay: true,
+                disable_capture: true,
+            }
+        );
+    }
+
+    #[test]
+    fn raw_finalize_without_hold_in_always_listening_hides_overlay_but_keeps_capture() {
+        let plan = raw_finalize_ui_plan(true, false, false);
+        assert_eq!(
+            plan,
+            RawFinalizeUiPlan {
+                hide_overlay: true,
+                disable_capture: false,
+            }
+        );
+    }
+
+    #[test]
+    fn replayed_finalizing_for_raw_handled_turn_is_ignored() {
+        assert!(should_ignore_finalizing_event(Some(42), 42));
+    }
+
+    #[test]
+    fn finalizing_for_different_turn_is_not_ignored() {
+        assert!(!should_ignore_finalizing_event(Some(42), 43));
+        assert!(!should_ignore_finalizing_event(None, 43));
     }
 }

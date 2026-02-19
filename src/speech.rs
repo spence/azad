@@ -5,7 +5,7 @@ use asr::embed::{
     SessionConfig, SessionControl, SessionEvent as ToonSessionEvent, SessionHandle,
     SessionSink as ToonSessionSink, spawn_session,
 };
-use asr::pipeline::EngineState;
+use asr::pipeline::{DebugStatsEvent, EngineState};
 
 #[derive(Debug, Clone)]
 pub enum SpeechEvent {
@@ -52,6 +52,10 @@ pub enum SpeechEvent {
         vad_speech: bool,
         vad_prob: f32,
     },
+    DebugStats {
+        session_id: u64,
+        event: DebugStatsEvent,
+    },
 }
 
 pub struct SpeechSession {
@@ -78,6 +82,12 @@ impl SpeechSession {
         let _ = self
             .handle
             .control(SessionControl::SetCaptureEnabled(enabled));
+    }
+
+    pub fn set_debug_stats_enabled(&self, enabled: bool) {
+        let _ = self
+            .handle
+            .control(SessionControl::SetDebugStatsEnabled(enabled));
     }
 
     pub fn finalize_current_turn(&self) {
@@ -167,6 +177,10 @@ impl ToonSessionSink for ForwardingSink {
                 peak_db,
                 vad_speech,
                 vad_prob,
+            },
+            ToonSessionEvent::DebugStats { event } => SpeechEvent::DebugStats {
+                session_id: self.session_id,
+                event,
             },
         };
         (self.handler)(mapped);

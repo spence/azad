@@ -19,6 +19,7 @@ impl AzadConfig {
         device_id: Option<String>,
         auto_vad_enabled: bool,
         capture_enabled: bool,
+        debug_stats_enabled: bool,
     ) -> SessionConfig {
         SessionConfig {
             device_id,
@@ -26,6 +27,7 @@ impl AzadConfig {
             buffer_ms: self.buffer_ms,
             auto_vad_enabled,
             capture_enabled,
+            debug_stats_enabled,
             pipeline: self.pipeline.clone(),
         }
     }

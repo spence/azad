@@ -156,6 +156,8 @@ dependencies = [
  "core-graphics",
  "global-hotkey",
  "objc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
