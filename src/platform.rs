@@ -2180,6 +2180,10 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     let _: () = msg_send![metrics_text_view, setEditable: NO];
     let _: () = msg_send![metrics_text_view, setSelectable: YES];
     let _: () = msg_send![metrics_text_view, setRichText: NO];
+    let mono_font: id = msg_send![class!(NSFont), userFixedPitchFontOfSize: 12.0f64];
+    if mono_font != nil {
+        let _: () = msg_send![metrics_text_view, setFont: mono_font];
+    }
     let _: () = msg_send![metrics_text_view, setString: NSString::alloc(nil).init_str("")];
     let _: () = msg_send![scroll_view, setDocumentView: metrics_text_view];
 

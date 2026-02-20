@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 const METRICS_LOG_SCHEMA_VERSION: u8 = 1;
 const LAST_24_HOURS_MS: i64 = 24 * 60 * 60 * 1000;
+const RECENT_TRANSCRIPTS_LIMIT: usize = 10;
+const SUMMARY_TRAILING_BLANK_LINES: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +72,14 @@ pub enum MetricsLogEvent {
         partial_count: usize,
         message: String,
     },
+    TurnSnapshot {
+        turn_id: u64,
+        mode: TranscriptMode,
+        transcription_duration_ms: u64,
+        fallback: bool,
+        fallback_reason: String,
+        text_preview: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,6 +108,17 @@ pub struct MetricsSummary {
     pub quality_avg_edit_distance: f64,
     pub quality_avg_wer_like: f64,
     pub quality_avg_lcp_pct: f64,
+    pub recent_transcripts: Vec<RecentTranscriptSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentTranscriptSummary {
+    pub turn_id: u64,
+    pub mode: TranscriptMode,
+    pub transcription_duration_ms: u64,
+    pub partial_count: Option<usize>,
+    pub fallback: bool,
+    pub text_preview: String,
 }
 
 pub fn append_record(record: &MetricsLogRecord) -> std::io::Result<()> {
@@ -155,34 +176,99 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
     lines.push("Debug statistics (last 24h)".to_string());
     lines.push(String::new());
     lines.push(format!(
-        "Transcriptions: total={} raw={} normal={}",
-        summary.total_transcriptions, summary.raw_transcriptions, summary.normal_transcriptions
+        "Transcriptions total: {}",
+        summary.total_transcriptions
     ));
+    lines.push(format!("Transcriptions raw: {}", summary.raw_transcriptions));
     lines.push(format!(
-        "Transcription latency (ms, speech->paste): all {} | raw {} | normal {}",
-        format_duration_stats(&summary.transcription_all),
-        format_duration_stats(&summary.transcription_raw),
-        format_duration_stats(&summary.transcription_normal)
+        "Transcriptions normal: {}",
+        summary.normal_transcriptions
     ));
-    lines.push(format!(
-        "Paste latency (ms): {}",
-        format_duration_stats(&summary.paste)
+    lines.push(String::new());
+    lines.push("Latency (ms)".to_string());
+    lines.extend(render_table(
+        &["scope", "n", "avg", "p50", "p95", "max"],
+        &[8, 5, 8, 6, 6, 6],
+        &[
+            duration_row("all", &summary.transcription_all),
+            duration_row("raw", &summary.transcription_raw),
+            duration_row("normal", &summary.transcription_normal),
+            duration_row("paste", &summary.paste),
+        ],
     ));
-    lines.push(format!(
-        "Finalize fallback: {} / {} ({:.1}%)",
-        summary.fallback_count, summary.fallback_attempts, summary.fallback_rate_pct
-    ));
-    if summary.quality_samples == 0 {
-        lines.push("Quality: no partial-audit samples in last 24h".to_string());
+    lines.push(String::new());
+    let fast_count = summary
+        .fallback_attempts
+        .saturating_sub(summary.fallback_count);
+    let fast_rate_pct = if summary.fallback_attempts == 0 {
+        0.0
     } else {
+        fast_count as f64 * 100.0 / summary.fallback_attempts as f64
+    };
+    lines.push(format!("Finalize attempts: {}", summary.fallback_attempts));
+    lines.push(format!("Finalize fast count: {}", fast_count));
+    lines.push(format!(
+        "Finalize fast rate_pct: {:.1}",
+        fast_rate_pct
+    ));
+    lines.push(String::new());
+    lines.push(format!("Quality samples: {}", summary.quality_samples));
+    if summary.quality_samples == 0 {
+        lines.push("Quality exact_pct: n/a".to_string());
+        lines.push("Quality avg_edit: n/a".to_string());
+        lines.push("Quality avg_wer: n/a".to_string());
+        lines.push("Quality avg_lcp_pct: n/a".to_string());
+    } else {
+        lines.push(format!("Quality exact_pct: {:.1}", summary.quality_exact_rate_pct));
         lines.push(format!(
-            "Quality: samples={} exact={:.1}% avg_edit={:.2} avg_wer_like={:.3} avg_lcp={:.1}%",
-            summary.quality_samples,
-            summary.quality_exact_rate_pct,
-            summary.quality_avg_edit_distance,
-            summary.quality_avg_wer_like,
-            summary.quality_avg_lcp_pct
+            "Quality avg_edit: {:.2}",
+            summary.quality_avg_edit_distance
         ));
+        lines.push(format!(
+            "Quality avg_wer: {:.3}",
+            summary.quality_avg_wer_like
+        ));
+        lines.push(format!("Quality avg_lcp_pct: {:.1}", summary.quality_avg_lcp_pct));
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Recent transcriptions (latest {})",
+        RECENT_TRANSCRIPTS_LIMIT
+    ));
+    if summary.recent_transcripts.is_empty() {
+        lines.extend(render_table(
+            &["mode", "parts", "preview", "ms"],
+            &[7, 5, 44, 8],
+            &[vec![
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "none".to_string(),
+            ]],
+        ));
+    } else {
+        let mut rows = Vec::new();
+        for sample in &summary.recent_transcripts {
+            let partial_count = sample
+                .partial_count
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            rows.push(vec![
+                recent_mode_label(sample).to_string(),
+                partial_count,
+                sample.text_preview.clone(),
+                sample.transcription_duration_ms.to_string(),
+            ]);
+        }
+        lines.extend(render_table(
+            &["mode", "parts", "preview", "ms"],
+            &[7, 5, 44, 8],
+            &rows,
+        ));
+    }
+    for _ in 0..SUMMARY_TRAILING_BLANK_LINES {
+        lines.push(String::new());
     }
     lines.join("\n")
 }
@@ -201,6 +287,8 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
     let mut pastes: HashMap<u64, (i64, TranscriptMode, u64)> = HashMap::new();
     let mut outcomes: HashMap<u64, (i64, String, String)> = HashMap::new();
     let mut audits: HashMap<u64, (i64, bool, usize, f64, f64)> = HashMap::new();
+    let mut partial_counts: HashMap<u64, (i64, usize)> = HashMap::new();
+    let mut recent_snapshots: Vec<(i64, RecentTranscriptSummary)> = Vec::new();
 
     for record in records {
         match &record.event {
@@ -241,6 +329,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
             MetricsLogEvent::PartialAuditResult {
                 turn_id,
                 exact,
+                partial_count,
                 edit_distance,
                 wer_like,
                 lcp_pct,
@@ -251,8 +340,35 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
                     *turn_id,
                     (record.ts_ms, *exact, *edit_distance, *wer_like, *lcp_pct),
                 );
+                upsert_latest(&mut partial_counts, *turn_id, (record.ts_ms, *partial_count));
             }
-            MetricsLogEvent::PartialAuditError { .. } => {}
+            MetricsLogEvent::PartialAuditError {
+                turn_id,
+                partial_count,
+                ..
+            } => {
+                upsert_latest(&mut partial_counts, *turn_id, (record.ts_ms, *partial_count));
+            }
+            MetricsLogEvent::TurnSnapshot {
+                turn_id,
+                mode,
+                transcription_duration_ms,
+                fallback,
+                fallback_reason: _,
+                text_preview,
+            } => {
+                recent_snapshots.push((
+                    record.ts_ms,
+                    RecentTranscriptSummary {
+                        turn_id: *turn_id,
+                        mode: *mode,
+                        transcription_duration_ms: *transcription_duration_ms,
+                        partial_count: None,
+                        fallback: *fallback,
+                        text_preview: text_preview.clone(),
+                    },
+                ));
+            }
         }
     }
 
@@ -319,6 +435,18 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
         summary.quality_avg_lcp_pct = sum_lcp / denom;
     }
 
+    recent_snapshots.sort_by(|a, b| b.0.cmp(&a.0));
+    summary.recent_transcripts = recent_snapshots
+        .into_iter()
+        .take(RECENT_TRANSCRIPTS_LIMIT)
+        .map(|(_, summary)| summary)
+        .collect();
+    for sample in &mut summary.recent_transcripts {
+        if let Some((_, count)) = partial_counts.get(&sample.turn_id) {
+            sample.partial_count = Some(*count);
+        }
+    }
+
     summary
 }
 
@@ -352,6 +480,12 @@ impl HasTsMs for (i64, String, String) {
 }
 
 impl HasTsMs for (i64, bool, usize, f64, f64) {
+    fn ts_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+impl HasTsMs for (i64, usize) {
     fn ts_ms(&self) -> i64 {
         self.0
     }
@@ -394,14 +528,81 @@ fn percentile(sorted_values: &[u64], pct: f64) -> u64 {
     ((lo_v * (1.0 - weight)) + (hi_v * weight)).round() as u64
 }
 
-fn format_duration_stats(stats: &DurationStats) -> String {
-    if stats.count == 0 {
-        return "n=0".to_string();
+fn duration_row(scope: &str, stats: &DurationStats) -> Vec<String> {
+    vec![
+        scope.to_string(),
+        stats.count.to_string(),
+        format!("{:.1}", stats.avg_ms),
+        stats.p50_ms.to_string(),
+        stats.p95_ms.to_string(),
+        stats.max_ms.to_string(),
+    ]
+}
+
+fn render_table(headers: &[&str], widths: &[usize], rows: &[Vec<String>]) -> Vec<String> {
+    let mut out = Vec::new();
+    let header_cells = headers.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    out.push(table_row(&header_cells, widths));
+    out.push(table_divider(widths));
+    for row in rows {
+        out.push(table_row(row, widths));
     }
-    format!(
-        "n={} avg={:.1} p50={} p95={} max={}",
-        stats.count, stats.avg_ms, stats.p50_ms, stats.p95_ms, stats.max_ms
-    )
+    out
+}
+
+fn table_divider(widths: &[usize]) -> String {
+    widths
+        .iter()
+        .map(|width| "-".repeat(*width))
+        .collect::<Vec<_>>()
+        .join("-+-")
+}
+
+fn table_row(cells: &[String], widths: &[usize]) -> String {
+    widths
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(idx, width)| {
+            let cell = cells.get(idx).cloned().unwrap_or_default();
+            let clipped = truncate_cell(&cell, width);
+            format!("{:<width$}", clipped, width = width)
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn truncate_cell(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    if width <= 3 {
+        return ".".repeat(width);
+    }
+    let keep = width - 3;
+    let mut out = String::new();
+    for ch in text.chars().take(keep) {
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
+}
+
+fn recent_mode_label(sample: &RecentTranscriptSummary) -> &'static str {
+    match sample.mode {
+        TranscriptMode::Raw => "raw",
+        TranscriptMode::Normal => {
+            if sample.fallback {
+                "full"
+            } else {
+                "partial"
+            }
+        }
+    }
 }
 
 fn metrics_log_path() -> PathBuf {
@@ -500,6 +701,30 @@ mod tests {
                     lcp_pct: 100.0,
                 },
             },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 7,
+                event: MetricsLogEvent::TurnSnapshot {
+                    turn_id: 1,
+                    mode: TranscriptMode::Normal,
+                    transcription_duration_ms: 120,
+                    fallback: false,
+                    fallback_reason: "na".to_string(),
+                    text_preview: "hello world".to_string(),
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 8,
+                event: MetricsLogEvent::TurnSnapshot {
+                    turn_id: 2,
+                    mode: TranscriptMode::Raw,
+                    transcription_duration_ms: 80,
+                    fallback: true,
+                    fallback_reason: "tail_timeout".to_string(),
+                    text_preview: "fallback example".to_string(),
+                },
+            },
         ];
 
         let summary = summarize(&records);
@@ -510,5 +735,10 @@ mod tests {
         assert_eq!(summary.fallback_count, 1);
         assert_eq!(summary.quality_samples, 1);
         assert_eq!(summary.quality_exact_rate_pct, 100.0);
+        assert_eq!(summary.recent_transcripts.len(), 2);
+        assert_eq!(summary.recent_transcripts[0].turn_id, 2);
+        assert!(summary.recent_transcripts[0].fallback);
+        assert_eq!(summary.recent_transcripts[0].transcription_duration_ms, 80);
+        assert_eq!(summary.recent_transcripts[1].turn_id, 1);
     }
 }

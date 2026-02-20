@@ -113,6 +113,9 @@ struct AppController {
     latest_final: Option<String>,
     finalizing_deadline: Option<Instant>,
     finalizing_turn_id: Option<u64>,
+    held_top_active: bool,
+    held_top_draft: String,
+    saw_vad_start_during_finalizing: bool,
     raw_handled_turn_id: Option<u64>,
     deferred_vad_start: bool,
     accessibility_notice_deadline: Option<Instant>,
@@ -130,6 +133,7 @@ struct AppController {
     raw_finalize_requested: bool,
     debug_stats_enabled: bool,
     turn_started_at: HashMap<u64, Instant>,
+    turn_finalize_outcomes: HashMap<u64, (String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +172,16 @@ fn split_overlay_visible_for_state(
         && !live_draft.trim().is_empty()
 }
 
+fn split_overlay_visible_with_hold_for_state(
+    finalizing_turn_id: Option<u64>,
+    current_turn_id: Option<u64>,
+    live_draft: &str,
+    hold_active: bool,
+) -> bool {
+    split_overlay_visible_for_state(finalizing_turn_id, current_turn_id, live_draft)
+        || (hold_active && !live_draft.trim().is_empty())
+}
+
 fn raw_finalize_target_turn_id_for_state(
     finalizing_turn_id: Option<u64>,
     current_turn_id: Option<u64>,
@@ -187,6 +201,19 @@ fn next_current_turn_id(current_turn_id: Option<u64>, incoming_turn_id: u64) -> 
     current_turn_id
         .map(|current| current.max(incoming_turn_id))
         .unwrap_or(incoming_turn_id)
+}
+
+fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    let mut out = String::new();
+    for ch in normalized.chars().take(max_chars) {
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
 }
 
 impl AppController {
@@ -213,6 +240,9 @@ impl AppController {
             latest_final: None,
             finalizing_deadline: None,
             finalizing_turn_id: None,
+            held_top_active: false,
+            held_top_draft: String::new(),
+            saw_vad_start_during_finalizing: false,
             raw_handled_turn_id: None,
             deferred_vad_start: false,
             accessibility_notice_deadline: None,
@@ -230,6 +260,7 @@ impl AppController {
             raw_finalize_requested: false,
             debug_stats_enabled,
             turn_started_at: HashMap::new(),
+            turn_finalize_outcomes: HashMap::new(),
         }
     }
 
@@ -310,6 +341,7 @@ impl AppController {
         self.latest_final = None;
         self.finalizing_deadline = None;
         self.finalizing_turn_id = None;
+        self.clear_held_top_overlay();
         self.raw_handled_turn_id = None;
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
@@ -324,6 +356,7 @@ impl AppController {
         self.reset_activity_history();
         self.busy_border_phase = 0.0;
         self.turn_started_at.clear();
+        self.turn_finalize_outcomes.clear();
 
         let device_id = self.current_device_id().map(ToOwned::to_owned);
         let emit: Arc<dyn Fn(SpeechEvent) + Send + Sync> =
@@ -451,11 +484,22 @@ impl AppController {
         split_overlay_active_for_turns(self.finalizing_turn_id, self.current_turn_id)
     }
 
+    fn held_top_overlay_active(&self) -> bool {
+        self.held_top_active && !self.held_top_draft.trim().is_empty()
+    }
+
+    fn clear_held_top_overlay(&mut self) {
+        self.held_top_active = false;
+        self.held_top_draft.clear();
+        self.saw_vad_start_during_finalizing = false;
+    }
+
     fn split_overlay_visible(&self) -> bool {
-        split_overlay_visible_for_state(
+        split_overlay_visible_with_hold_for_state(
             self.finalizing_turn_id,
             self.current_turn_id,
             &self.latest_draft,
+            self.held_top_overlay_active(),
         )
     }
 
@@ -493,6 +537,7 @@ impl AppController {
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
         self.overlay_pending_vad_text = false;
+        self.clear_held_top_overlay();
         self.current_turn_id = self.finalizing_turn_id;
         self.turn_accept_floor = self
             .finalizing_turn_id
@@ -634,6 +679,7 @@ impl AppController {
         self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
         self.raw_finalize_requested = false;
         self.overlay_pending_vad_text = false;
+        self.clear_held_top_overlay();
         if !split_active {
             self.finalizing_deadline = None;
             self.finalizing_turn_id = None;
@@ -771,12 +817,14 @@ impl AppController {
             SpeechEvent::SpeechStartedByVad { .. } => {
                 if self.finalizing_turn_id.is_some() {
                     // Keep finalizing lane visible and prepare a fresh live lane below it.
+                    self.saw_vad_start_during_finalizing = true;
                     self.latest_draft.clear();
                     self.latest_final = None;
                     self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
                     self.reset_activity_history();
                     return;
                 }
+                self.saw_vad_start_during_finalizing = false;
                 self.reset_turn_state();
                 if self.overlay_visible {
                     self.hide_overlay();
@@ -797,6 +845,9 @@ impl AppController {
                 let merged = format!("{committed}{live}");
                 let merged = merged.trim().to_string();
                 if !merged.is_empty() {
+                    if self.held_top_overlay_active() {
+                        self.clear_held_top_overlay();
+                    }
                     self.latest_draft = merged;
                     if self.overlay_pending_vad_text && !self.overlay_visible {
                         self.show_overlay_listening();
@@ -862,6 +913,7 @@ impl AppController {
                 }
                 self.finalizing_activity_history.clone_from(&self.activity_history);
                 self.finalizing_turn_id = Some(turn_id);
+                self.clear_held_top_overlay();
                 self.raw_handled_turn_id = None;
                 // If we never surfaced any draft text in auto mode, keep overlay hidden.
                 // This avoids noise-only VAD turns flashing the overlay.
@@ -891,6 +943,10 @@ impl AppController {
                 }
 
                 let cleaned = text.trim().to_string();
+                let hold_top_for_next_turn = self.finalizing_turn_id == Some(turn_id)
+                    && self.saw_vad_start_during_finalizing
+                    && self.latest_draft.trim().is_empty()
+                    && !cleaned.is_empty();
                 let split_top_completion = self
                     .finalizing_turn_id
                     .is_some_and(|finalizing_turn_id| {
@@ -916,6 +972,14 @@ impl AppController {
                 if !split_top_completion {
                     self.dispatch_hotkey_input(HotkeyInput::SpeechFinalized);
                 }
+                if self.finalizing_turn_id != Some(turn_id) {
+                    self.saw_vad_start_during_finalizing = false;
+                }
+
+                if hold_top_for_next_turn {
+                    self.held_top_draft = cleaned.clone();
+                    self.held_top_active = true;
+                }
 
                 if split_top_completion {
                     self.turn_started_at.remove(&turn_id);
@@ -939,6 +1003,7 @@ impl AppController {
                 }
 
                 if cleaned.is_empty() {
+                    self.clear_held_top_overlay();
                     self.turn_started_at.remove(&turn_id);
                     self.raw_handled_turn_id = None;
                     self.maybe_start_deferred_vad_turn();
@@ -950,6 +1015,7 @@ impl AppController {
                     return;
                 }
                 if self.raw_handled_turn_id == Some(turn_id) {
+                    self.clear_held_top_overlay();
                     self.turn_started_at.remove(&turn_id);
                     self.raw_handled_turn_id = None;
                     self.maybe_start_deferred_vad_turn();
@@ -963,7 +1029,7 @@ impl AppController {
                 self.raw_handled_turn_id = None;
                 self.latest_final = Some(cleaned.clone());
                 if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-                    if !self.manual_hold_active {
+                    if !self.manual_hold_active && !hold_top_for_next_turn {
                         self.hide_overlay();
                     }
                     if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
@@ -1011,6 +1077,7 @@ impl AppController {
                 self.latest_final = None;
                 self.finalizing_deadline = None;
                 self.finalizing_turn_id = None;
+                self.clear_held_top_overlay();
                 self.raw_handled_turn_id = None;
                 self.raw_finalize_requested = false;
                 self.deferred_vad_start = false;
@@ -1170,9 +1237,25 @@ impl AppController {
         if self.accessibility_notice_deadline.is_some() {
             return;
         }
-        platform::hide_overlay_top();
+        let held_active = self.held_top_overlay_active();
+        let live_has_text = !self.latest_draft.trim().is_empty();
+        if held_active && live_has_text {
+            platform::show_overlay_top();
+            platform::set_overlay_top_stream_content(
+                &self.held_top_draft,
+                &self.finalizing_activity_history,
+                None,
+            );
+        } else {
+            platform::hide_overlay_top();
+        }
+        let body_text = if held_active && !live_has_text {
+            self.held_top_draft.as_str()
+        } else {
+            self.latest_draft.as_str()
+        };
         platform::set_overlay_stream_content(
-            &self.latest_draft,
+            body_text,
             &self.activity_history,
             None,
             self.raw_badge_visible(),
@@ -1223,6 +1306,17 @@ impl AppController {
             self.show_accessibility_overlay_notice();
         }
 
+        let transcription_duration_ms = self
+            .turn_started_at
+            .remove(&turn_id)
+            .map(|started_at| u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let (fallback, fallback_reason) = self
+            .turn_finalize_outcomes
+            .remove(&turn_id)
+            .map(|(outcome, reason)| (outcome == "full_pass_bailout", reason))
+            .unwrap_or((false, "unavailable".to_string()));
+
         if self.debug_stats_enabled {
             let paste_result_label = match paste_result {
                 PasteResult::Pasted => "pasted",
@@ -1241,9 +1335,7 @@ impl AppController {
                 },
             ));
 
-            if let Some(started_at) = self.turn_started_at.remove(&turn_id) {
-                let transcription_duration_ms =
-                    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            if transcription_duration_ms > 0 {
                 let _ = metrics_log::append_record(&MetricsLogRecord::new(
                     MetricsLogEvent::TurnCompleted {
                         turn_id,
@@ -1252,6 +1344,16 @@ impl AppController {
                     },
                 ));
             }
+            let _ = metrics_log::append_record(&MetricsLogRecord::new(
+                MetricsLogEvent::TurnSnapshot {
+                    turn_id,
+                    mode,
+                    transcription_duration_ms,
+                    fallback,
+                    fallback_reason,
+                    text_preview: preview_text_for_metrics(text, 56),
+                },
+            ));
         }
 
         matches!(paste_result, PasteResult::Pasted)
@@ -1259,6 +1361,7 @@ impl AppController {
 
     fn hide_overlay(&mut self) {
         self.overlay_pending_vad_text = false;
+        self.clear_held_top_overlay();
         if self.overlay_visible {
             platform::hide_overlay();
             self.overlay_visible = false;
@@ -1282,9 +1385,11 @@ impl AppController {
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
         self.overlay_pending_vad_text = false;
+        self.clear_held_top_overlay();
         self.current_turn_id = None;
         self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
         self.turn_started_at.clear();
+        self.turn_finalize_outcomes.clear();
         self.reset_activity_history();
         self.busy_border_phase = 0.0;
     }
@@ -1369,6 +1474,8 @@ impl AppController {
                 outcome,
                 reason,
             } => {
+                self.turn_finalize_outcomes
+                    .insert(turn_id, (outcome.clone(), reason.clone()));
                 let _ =
                     metrics_log::append_record(&MetricsLogRecord::new(
                         MetricsLogEvent::PartialFinalizeOutcome {
@@ -1499,7 +1606,7 @@ mod tests {
     use super::{
         RawFinalizeUiPlan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
         raw_finalize_ui_plan, should_ignore_finalizing_event, split_overlay_active_for_turns,
-        split_overlay_visible_for_state,
+        split_overlay_visible_for_state, split_overlay_visible_with_hold_for_state,
     };
 
     #[test]
@@ -1611,5 +1718,21 @@ mod tests {
         assert!(!split_overlay_visible_for_state(Some(5), Some(6), ""));
         assert!(!split_overlay_visible_for_state(Some(5), Some(6), "   "));
         assert!(split_overlay_visible_for_state(Some(5), Some(6), "hello"));
+    }
+
+    #[test]
+    fn split_overlay_hold_shows_only_after_live_text_appears() {
+        assert!(!split_overlay_visible_with_hold_for_state(
+            Some(5),
+            Some(5),
+            "",
+            true
+        ));
+        assert!(split_overlay_visible_with_hold_for_state(
+            Some(5),
+            Some(5),
+            "new words",
+            true
+        ));
     }
 }
