@@ -39,6 +39,7 @@ const OVERLAY_WIDTH_MIN: f64 = 300.0;
 const OVERLAY_WIDTH_MAX: f64 = 620.0;
 const OVERLAY_HEIGHT_MIN: f64 = 60.0;
 const OVERLAY_HEIGHT_MAX: f64 = 380.0;
+const OVERLAY_STACK_GAP: f64 = 10.0;
 const OVERLAY_CARD_RADIUS: f64 = 22.0;
 const OVERLAY_BORDER_THICKNESS: f64 = 2.0;
 const OVERLAY_BUSY_RING_THICKNESS: f64 = 3.4;
@@ -112,6 +113,7 @@ static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static OVERLAY_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
+    static OVERLAY_TOP_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_TRACK_REF: RefCell<Option<id>> = const { RefCell::new(None) };
@@ -245,7 +247,20 @@ pub fn show_overlay() {
     set_enter_hotkey_enabled(true);
 }
 
+pub fn show_overlay_top() {
+    unsafe {
+        let refs = ensure_overlay_top();
+        if let Some(bottom) = current_overlay() {
+            position_overlay_top_relative_to_bottom(refs, bottom);
+        } else {
+            move_overlay_to_cursor_screen(refs, true);
+        }
+        let _: () = msg_send![refs.window, orderFrontRegardless];
+    }
+}
+
 pub fn hide_overlay() {
+    hide_overlay_top();
     if let Some(refs) = current_overlay() {
         unsafe {
             let _: () = msg_send![refs.window, orderOut: nil];
@@ -255,6 +270,14 @@ pub fn hide_overlay() {
     }
     set_escape_hotkey_enabled(false);
     set_enter_hotkey_enabled(false);
+}
+
+pub fn hide_overlay_top() {
+    if let Some(refs) = current_overlay_top() {
+        unsafe {
+            let _: () = msg_send![refs.window, orderOut: nil];
+        }
+    }
 }
 
 pub fn set_overlay_stream_content(
@@ -277,6 +300,25 @@ pub fn set_overlay_stream_content(
             show_raw_badge,
             show_hold_badge,
         );
+    }
+}
+
+pub fn set_overlay_top_stream_content(
+    draft: &str,
+    activity: &[f32],
+    busy_phase: Option<f32>,
+) {
+    let Some(refs) = current_overlay_top() else {
+        return;
+    };
+    unsafe {
+        if let Some(bottom) = current_overlay() {
+            position_overlay_top_relative_to_bottom(refs, bottom);
+        }
+        render_overlay_text(refs, draft, activity, busy_phase, false, false);
+        if let Some(bottom) = current_overlay() {
+            position_overlay_top_relative_to_bottom(refs, bottom);
+        }
     }
 }
 
@@ -1538,7 +1580,7 @@ unsafe fn ensure_overlay() -> OverlayRefs {
         return existing;
     }
 
-    let refs = create_overlay_window();
+    let refs = create_overlay_window(false);
     OVERLAY_REFS.with(|store| {
         store.borrow_mut().replace(refs);
     });
@@ -1547,6 +1589,57 @@ unsafe fn ensure_overlay() -> OverlayRefs {
 
 fn current_overlay() -> Option<OverlayRefs> {
     OVERLAY_REFS.with(|store| *store.borrow())
+}
+
+unsafe fn ensure_overlay_top() -> OverlayRefs {
+    if let Some(existing) = current_overlay_top() {
+        return existing;
+    }
+
+    let refs = create_overlay_window(true);
+    OVERLAY_TOP_REFS.with(|store| {
+        store.borrow_mut().replace(refs);
+    });
+    refs
+}
+
+fn current_overlay_top() -> Option<OverlayRefs> {
+    OVERLAY_TOP_REFS.with(|store| *store.borrow())
+}
+
+unsafe fn position_overlay_top_relative_to_bottom(top: OverlayRefs, bottom: OverlayRefs) {
+    let bottom_frame: NSRect = msg_send![bottom.window, frame];
+    if bottom_frame.size.width <= 0.0 || bottom_frame.size.height <= 0.0 {
+        return;
+    }
+
+    let top_frame: NSRect = msg_send![top.window, frame];
+    let screen = overlay_screen_frame_for_window(bottom_frame);
+    let width = overlay_width_for_screen(screen);
+    let height = if top_frame.size.height > 0.0 {
+        top_frame
+            .size
+            .height
+            .clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX)
+    } else {
+        OVERLAY_HEIGHT_MIN
+    };
+
+    let mut x = bottom_frame.origin.x;
+    let mut y = bottom_frame.origin.y + bottom_frame.size.height + OVERLAY_STACK_GAP;
+    let max_x = (screen.origin.x + screen.size.width - width).max(screen.origin.x);
+    let max_y = (screen.origin.y + screen.size.height - height).max(screen.origin.y);
+    x = x.clamp(screen.origin.x, max_x);
+    y = y.clamp(screen.origin.y, max_y);
+
+    let target_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+    if (top_frame.origin.x - target_frame.origin.x).abs() > 0.05
+        || (top_frame.origin.y - target_frame.origin.y).abs() > 0.05
+        || (top_frame.size.width - target_frame.size.width).abs() > 0.05
+        || (top_frame.size.height - target_frame.size.height).abs() > 0.05
+    {
+        let _: () = msg_send![top.window, setFrame: target_frame display: YES];
+    }
 }
 
 unsafe fn ensure_settings_window() -> SettingsWindowRefs {
@@ -2106,7 +2199,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     }
 }
 
-unsafe fn create_overlay_window() -> OverlayRefs {
+unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let frame = cursor_screen_frame().unwrap_or_else(main_screen_frame);
 
     let overlay_width = overlay_width_for_screen(frame);
@@ -2129,8 +2222,8 @@ unsafe fn create_overlay_window() -> OverlayRefs {
     window.setReleasedWhenClosed_(NO);
     window.setOpaque_(NO);
     window.setHasShadow_(YES);
-    window.setIgnoresMouseEvents_(NO);
-    window.setMovableByWindowBackground_(YES);
+    window.setIgnoresMouseEvents_(if read_only { YES } else { NO });
+    window.setMovableByWindowBackground_(if read_only { NO } else { YES });
     window.setLevel_((NSMainMenuWindowLevel + 1) as i64);
     window.setCollectionBehavior_(
         NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
