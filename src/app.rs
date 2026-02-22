@@ -203,6 +203,34 @@ fn next_current_turn_id(current_turn_id: Option<u64>, incoming_turn_id: u64) -> 
         .unwrap_or(incoming_turn_id)
 }
 
+fn has_turn_context_for_snapshot(
+    engine_state: EngineState,
+    current_turn_id: Option<u64>,
+    finalizing_turn_id: Option<u64>,
+    latest_draft: &str,
+) -> bool {
+    engine_state == EngineState::Speech
+        || current_turn_id.is_some()
+        || finalizing_turn_id.is_some()
+        || !latest_draft.trim().is_empty()
+}
+
+fn has_started_turn_for_snapshot(
+    manual_hold_active: bool,
+    engine_state: EngineState,
+    current_turn_id: Option<u64>,
+    finalizing_turn_id: Option<u64>,
+    latest_draft: &str,
+) -> bool {
+    manual_hold_active
+        || has_turn_context_for_snapshot(
+            engine_state,
+            current_turn_id,
+            finalizing_turn_id,
+            latest_draft,
+        )
+}
+
 fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.chars().count() <= max_chars {
@@ -466,14 +494,23 @@ impl AppController {
     fn hotkey_snapshot(&self) -> RuntimeSnapshot {
         let has_active_speech_turn =
             self.engine_state == EngineState::Speech && self.finalizing_turn_id.is_none();
-        let has_started_turn = self.engine_state == EngineState::Speech
-            || self.current_turn_id.is_some()
-            || self.finalizing_turn_id.is_some()
-            || !self.latest_draft.trim().is_empty();
+        let has_turn_context = has_turn_context_for_snapshot(
+            self.engine_state,
+            self.current_turn_id,
+            self.finalizing_turn_id,
+            &self.latest_draft,
+        );
+        let has_started_turn = has_started_turn_for_snapshot(
+            self.manual_hold_active,
+            self.engine_state,
+            self.current_turn_id,
+            self.finalizing_turn_id,
+            &self.latest_draft,
+        );
         RuntimeSnapshot {
             always_listening_enabled: self.always_listening_enabled,
             has_active_speech_turn,
-            has_turn_context: has_started_turn,
+            has_turn_context,
             has_started_turn,
             overlay_visible: self.overlay_visible,
             manual_hold_active: self.manual_hold_active,
@@ -1604,8 +1641,10 @@ impl AppController {
 #[cfg(test)]
 mod tests {
     use super::{
-        RawFinalizeUiPlan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
-        raw_finalize_ui_plan, should_ignore_finalizing_event, split_overlay_active_for_turns,
+        EngineState, RawFinalizeUiPlan, has_started_turn_for_snapshot,
+        has_turn_context_for_snapshot, next_current_turn_id,
+        raw_finalize_target_turn_id_for_state, raw_finalize_ui_plan,
+        should_ignore_finalizing_event, split_overlay_active_for_turns,
         split_overlay_visible_for_state, split_overlay_visible_with_hold_for_state,
     };
 
@@ -1733,6 +1772,38 @@ mod tests {
             Some(5),
             "new words",
             true
+        ));
+    }
+
+    #[test]
+    fn hotkey_snapshot_counts_manual_hold_as_started_turn() {
+        assert!(has_started_turn_for_snapshot(
+            true,
+            EngineState::Idle,
+            None,
+            None,
+            "",
+        ));
+    }
+
+    #[test]
+    fn hotkey_snapshot_without_hold_requires_runtime_turn_signal() {
+        assert!(!has_started_turn_for_snapshot(
+            false,
+            EngineState::Idle,
+            None,
+            None,
+            "   ",
+        ));
+    }
+
+    #[test]
+    fn turn_context_snapshot_ignores_manual_hold_without_turn_signals() {
+        assert!(!has_turn_context_for_snapshot(
+            EngineState::Idle,
+            None,
+            None,
+            "",
         ));
     }
 }

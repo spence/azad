@@ -105,7 +105,10 @@ impl HotkeyState {
             HotkeyInput::HoldReleased { snapshot } => {
                 let should_finalize = self.release_should_finalize;
                 self.release_should_finalize = false;
-                self.manual_finalize_pending = should_finalize && snapshot.has_started_turn;
+                // Keep "pending finalize context" only when real turn context exists.
+                // A manual-hold press/release used as a pure double-tap gesture should not
+                // poison the next press by forcing has_turn_context=true.
+                self.manual_finalize_pending = should_finalize && snapshot.has_turn_context;
 
                 vec![HotkeyEffect::ReleaseManualHold {
                     should_finalize,
@@ -303,6 +306,41 @@ mod tests {
             }]
         );
         assert!(!sm.manual_finalize_pending());
+    }
+
+    #[test]
+    fn manual_hold_only_release_does_not_block_idle_double_tap_toggle() {
+        let mut sm = HotkeyState::default();
+        let _ = sm.reduce(HotkeyInput::HoldPressed {
+            now_ms: 1000,
+            snapshot: snapshot(false, false, false, false, false),
+        });
+
+        // Manual-hold can report "started turn" before any concrete turn context exists.
+        // That should not poison the next press and block idle double-tap toggle.
+        let first_release = sm.reduce(HotkeyInput::HoldReleased {
+            snapshot: snapshot(false, false, false, true, true),
+        });
+        assert_eq!(
+            first_release,
+            vec![HotkeyEffect::ReleaseManualHold {
+                should_finalize: true,
+                has_started_turn: true,
+            }]
+        );
+        assert!(!sm.manual_finalize_pending());
+
+        let second_press = sm.reduce(HotkeyInput::HoldPressed {
+            now_ms: 1000 + HOLD_DOUBLE_TAP_WINDOW_MS - 1,
+            snapshot: snapshot(false, false, false, false, false),
+        });
+        assert_eq!(
+            second_press,
+            vec![
+                HotkeyEffect::ToggleAlwaysListening,
+                HotkeyEffect::CompletePureToggleGesture,
+            ]
+        );
     }
 
     #[test]
