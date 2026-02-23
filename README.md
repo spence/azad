@@ -17,7 +17,7 @@ just uninstall # remove LaunchAgent plist (keeps app bundle)
 ## Defaults
 
 - App bundle: `~/Applications/Azad.app`
-- LaunchAgent: `~/Library/LaunchAgents/com.spence.azad.plist`
+- LaunchAgent: `~/Library/LaunchAgents/ai.azad.plist`
 - Logs: `~/Library/Logs/Azad/{stdout,stderr}.log`
 
 ## Prerequisites
@@ -30,7 +30,7 @@ just uninstall # remove LaunchAgent plist (keeps app bundle)
 Azad requires macOS microphone permission.
 
 - Reset permission prompt:
-  - `tccutil reset Microphone com.spence.azad`
+  - `tccutil reset Microphone ai.azad`
 - Then restart Azad:
   - `just restart`
 

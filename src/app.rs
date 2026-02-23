@@ -13,13 +13,14 @@ use crate::metrics_log::{self, MetricsLogEvent, MetricsLogRecord, TranscriptMode
 use crate::platform;
 use crate::platform::{DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsViewModel};
 use crate::preferred_store;
-use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
+use crate::speech::{spawn_speech_session, SpeechEvent, SpeechSession};
 
 const DEVICE_SWITCH_RESTART_DEBOUNCE_MS: u64 = 250;
 const OVERLAY_ACTIVITY_HISTORY_LEN: usize = 96;
 const OVERLAY_ACTIVITY_IDLE_TIMEOUT_MS: u64 = 220;
 const OVERLAY_ACTIVITY_DECAY_PER_TICK: f32 = 0.88;
 const OVERLAY_BUSY_PHASE_STEP: f32 = 0.24;
+const LISTEN_TOGGLE_NOTICE_DURATION_MS: u64 = 900;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -157,7 +158,10 @@ fn should_ignore_finalizing_event(raw_handled_turn_id: Option<u64>, turn_id: u64
     raw_handled_turn_id == Some(turn_id)
 }
 
-fn split_overlay_active_for_turns(finalizing_turn_id: Option<u64>, current_turn_id: Option<u64>) -> bool {
+fn split_overlay_active_for_turns(
+    finalizing_turn_id: Option<u64>,
+    current_turn_id: Option<u64>,
+) -> bool {
     finalizing_turn_id
         .zip(current_turn_id)
         .is_some_and(|(finalizing, current)| current > finalizing)
@@ -180,6 +184,99 @@ fn split_overlay_visible_with_hold_for_state(
 ) -> bool {
     split_overlay_visible_for_state(finalizing_turn_id, current_turn_id, live_draft)
         || (hold_active && !live_draft.trim().is_empty())
+}
+
+fn split_overlay_visible_with_vad_hint_for_state(
+    finalizing_turn_id: Option<u64>,
+    current_turn_id: Option<u64>,
+    live_draft: &str,
+    hold_active: bool,
+    saw_vad_start_during_finalizing: bool,
+) -> bool {
+    split_overlay_visible_with_hold_for_state(
+        finalizing_turn_id,
+        current_turn_id,
+        live_draft,
+        hold_active,
+    ) || (finalizing_turn_id.is_some()
+        && saw_vad_start_during_finalizing
+        && !live_draft.trim().is_empty())
+}
+
+fn draft_matches_finalized_text(live_draft: &str, finalized_text: &str) -> bool {
+    let live_tokens = live_draft
+        .split_whitespace()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let final_tokens = finalized_text
+        .split_whitespace()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    if live_tokens.is_empty() || final_tokens.is_empty() {
+        return false;
+    }
+    if live_tokens == final_tokens {
+        return true;
+    }
+
+    let min_len = live_tokens.len().min(final_tokens.len());
+    let max_len = live_tokens.len().max(final_tokens.len());
+    let lcp = live_tokens
+        .iter()
+        .zip(final_tokens.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    if lcp == min_len {
+        // One side is a strict token-prefix of the other.
+        return true;
+    }
+
+    // Treat near-identical beginnings as the same finalized lane.
+    // This prevents VAD-hint-only split mode from getting stuck on replayed
+    // same-turn drafts that differ only by minor tail edits/punctuation.
+    lcp * 100 >= min_len * 85 && (max_len - min_len) <= 2
+}
+
+fn split_overlay_visible_with_live_divergence_for_state(
+    finalizing_turn_id: Option<u64>,
+    live_draft: &str,
+    finalizing_draft: &str,
+) -> bool {
+    finalizing_turn_id.is_some()
+        && !live_draft.trim().is_empty()
+        && !finalizing_draft.trim().is_empty()
+        && !draft_matches_finalized_text(live_draft, finalizing_draft)
+}
+
+fn split_top_completion_for_state(
+    finalizing_turn_id: Option<u64>,
+    current_turn_id: Option<u64>,
+    live_draft: &str,
+    hold_active: bool,
+    saw_vad_start_during_finalizing: bool,
+    finalized_turn_id: u64,
+    finalized_text: &str,
+) -> bool {
+    let live_draft = live_draft.trim();
+    if live_draft.is_empty() || finalizing_turn_id != Some(finalized_turn_id) {
+        return false;
+    }
+
+    if split_overlay_active_for_turns(finalizing_turn_id, current_turn_id) {
+        return true;
+    }
+
+    if hold_active {
+        return true;
+    }
+
+    if saw_vad_start_during_finalizing {
+        return !draft_matches_finalized_text(live_draft, finalized_text);
+    }
+
+    false
 }
 
 fn raw_finalize_target_turn_id_for_state(
@@ -215,20 +312,33 @@ fn has_turn_context_for_snapshot(
         || !latest_draft.trim().is_empty()
 }
 
-fn has_started_turn_for_snapshot(
-    manual_hold_active: bool,
+fn has_actionable_turn_context_for_snapshot(
     engine_state: EngineState,
     current_turn_id: Option<u64>,
     finalizing_turn_id: Option<u64>,
     latest_draft: &str,
+    overlay_visible: bool,
+    manual_hold_active: bool,
 ) -> bool {
-    manual_hold_active
-        || has_turn_context_for_snapshot(
-            engine_state,
-            current_turn_id,
-            finalizing_turn_id,
-            latest_draft,
-        )
+    if !has_turn_context_for_snapshot(
+        engine_state,
+        current_turn_id,
+        finalizing_turn_id,
+        latest_draft,
+    ) {
+        return false;
+    }
+
+    // Ignore stale post-turn ids/text once UI is fully idle; they should not
+    // block an idle double-tap from toggling always-listening back on.
+    engine_state == EngineState::Speech
+        || finalizing_turn_id.is_some()
+        || overlay_visible
+        || manual_hold_active
+}
+
+fn has_started_turn_for_snapshot(manual_hold_active: bool, has_turn_context: bool) -> bool {
+    manual_hold_active || has_turn_context
 }
 
 fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
@@ -242,6 +352,14 @@ fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
     }
     out.push_str("...");
     out
+}
+
+fn listen_toggle_notice(enabled: bool) -> (&'static str, &'static str) {
+    if enabled {
+        ("Listen enabled", "Auto listen is on")
+    } else {
+        ("Listen disabled", "Hold Option+Space to talk")
+    }
 }
 
 impl AppController {
@@ -475,6 +593,10 @@ impl AppController {
     fn apply_always_listening_toggle(&mut self) {
         self.always_listening_enabled = !self.always_listening_enabled;
         preferred_store::save_always_listening_enabled(self.always_listening_enabled);
+        if self.always_listening_enabled && !self.ensure_paste_accessibility_or_disable_listening()
+        {
+            return;
+        }
 
         self.ensure_session();
         if let Some(session) = &self.session {
@@ -484,6 +606,12 @@ impl AppController {
         }
         self.overlay_pending_vad_text = false;
         self.render_device_menu();
+        let (title, body) = listen_toggle_notice(self.always_listening_enabled);
+        self.show_overlay_notice(
+            title,
+            body,
+            Duration::from_millis(LISTEN_TOGGLE_NOTICE_DURATION_MS),
+        );
     }
 
     fn hotkey_now_ms(&self) -> u64 {
@@ -494,19 +622,16 @@ impl AppController {
     fn hotkey_snapshot(&self) -> RuntimeSnapshot {
         let has_active_speech_turn =
             self.engine_state == EngineState::Speech && self.finalizing_turn_id.is_none();
-        let has_turn_context = has_turn_context_for_snapshot(
+        let has_turn_context = has_actionable_turn_context_for_snapshot(
             self.engine_state,
             self.current_turn_id,
             self.finalizing_turn_id,
             &self.latest_draft,
-        );
-        let has_started_turn = has_started_turn_for_snapshot(
+            self.overlay_visible,
             self.manual_hold_active,
-            self.engine_state,
-            self.current_turn_id,
-            self.finalizing_turn_id,
-            &self.latest_draft,
         );
+        let has_started_turn =
+            has_started_turn_for_snapshot(self.manual_hold_active, has_turn_context);
         RuntimeSnapshot {
             always_listening_enabled: self.always_listening_enabled,
             has_active_speech_turn,
@@ -532,11 +657,16 @@ impl AppController {
     }
 
     fn split_overlay_visible(&self) -> bool {
-        split_overlay_visible_with_hold_for_state(
+        split_overlay_visible_with_vad_hint_for_state(
             self.finalizing_turn_id,
             self.current_turn_id,
             &self.latest_draft,
             self.held_top_overlay_active(),
+            self.saw_vad_start_during_finalizing,
+        ) || split_overlay_visible_with_live_divergence_for_state(
+            self.finalizing_turn_id,
+            &self.latest_draft,
+            &self.finalizing_draft,
         )
     }
 
@@ -598,12 +728,17 @@ impl AppController {
                     session.release_manual_hold();
                     session.set_capture_enabled(self.always_listening_enabled);
                 }
-                self.hide_overlay();
+                if self.accessibility_notice_deadline.is_none() {
+                    self.hide_overlay();
+                }
             }
             HotkeyEffect::ActivateManualHold {
                 reset_turn_state,
                 release_should_finalize: _,
             } => {
+                if !self.ensure_paste_accessibility_or_disable_listening() {
+                    return;
+                }
                 self.manual_hold_active = true;
                 self.overlay_pending_vad_text = false;
                 if reset_turn_state {
@@ -847,6 +982,9 @@ impl AppController {
         match event {
             SpeechEvent::SessionStarted { .. } => {}
             SpeechEvent::Listening { .. } => {
+                if !self.ensure_paste_accessibility_or_disable_listening() {
+                    return;
+                }
                 if self.overlay_visible {
                     self.render_listening_overlay();
                 }
@@ -925,9 +1063,13 @@ impl AppController {
                 if !self.accept_turn(turn_id) {
                     return;
                 }
-                if self.finalizing_turn_id.is_some_and(|existing_finalizing_turn_id| {
-                    turn_id > existing_finalizing_turn_id && self.current_turn_id == Some(turn_id)
-                }) {
+                if self
+                    .finalizing_turn_id
+                    .is_some_and(|existing_finalizing_turn_id| {
+                        turn_id > existing_finalizing_turn_id
+                            && self.current_turn_id == Some(turn_id)
+                    })
+                {
                     // Keep one finalizing lane authoritative at a time.
                     self.deferred_vad_start = true;
                     return;
@@ -948,7 +1090,8 @@ impl AppController {
                 } else if self.finalizing_draft.is_empty() {
                     self.finalizing_draft = self.latest_draft.clone();
                 }
-                self.finalizing_activity_history.clone_from(&self.activity_history);
+                self.finalizing_activity_history
+                    .clone_from(&self.activity_history);
                 self.finalizing_turn_id = Some(turn_id);
                 self.clear_held_top_overlay();
                 self.raw_handled_turn_id = None;
@@ -984,18 +1127,28 @@ impl AppController {
                     && self.saw_vad_start_during_finalizing
                     && self.latest_draft.trim().is_empty()
                     && !cleaned.is_empty();
-                let split_top_completion = self
-                    .finalizing_turn_id
-                    .is_some_and(|finalizing_turn_id| {
-                        finalizing_turn_id == turn_id && self.split_overlay_visible()
-                    });
+                let split_top_completion = split_top_completion_for_state(
+                    self.finalizing_turn_id,
+                    self.current_turn_id,
+                    &self.latest_draft,
+                    self.held_top_overlay_active(),
+                    self.saw_vad_start_during_finalizing,
+                    turn_id,
+                    &cleaned,
+                )
+                    || split_overlay_visible_with_live_divergence_for_state(
+                        self.finalizing_turn_id,
+                        &self.latest_draft,
+                        &self.finalizing_draft,
+                    );
                 if !split_top_completion {
                     self.observe_turn(turn_id);
                 }
                 self.finalizing_turn_id = if split_top_completion {
                     None
                 } else {
-                    self.finalizing_turn_id.and_then(|id| (id != turn_id).then_some(id))
+                    self.finalizing_turn_id
+                        .and_then(|id| (id != turn_id).then_some(id))
                 };
                 self.finalizing_deadline = if self.finalizing_turn_id.is_some() {
                     self.finalizing_deadline
@@ -1203,8 +1356,8 @@ impl AppController {
                     Some(now + Duration::from_millis(self.cfg.final_pass_timeout_ms));
             }
 
-            self.busy_border_phase =
-                (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP).rem_euclid(std::f32::consts::TAU);
+            self.busy_border_phase = (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP)
+                .rem_euclid(std::f32::consts::TAU);
             if self.accessibility_notice_deadline.is_none() {
                 self.render_finalizing_overlay_state();
             }
@@ -1315,16 +1468,59 @@ impl AppController {
         self.manual_hold_active
     }
 
-    fn show_accessibility_overlay_notice(&mut self) {
+    fn show_overlay_notice(&mut self, title: &str, body: &str, duration: Duration) {
         if !self.overlay_visible {
             platform::show_overlay();
             self.overlay_visible = true;
         }
-        self.accessibility_notice_deadline = Some(Instant::now() + Duration::from_secs(6));
-        platform::set_overlay_notice_content(
+        platform::hide_overlay_top();
+        self.accessibility_notice_deadline = Some(Instant::now() + duration);
+        platform::set_overlay_notice_content(title, body);
+    }
+
+    fn show_accessibility_overlay_notice(&mut self) {
+        self.show_overlay_notice(
             "Auto-paste blocked",
             "Enable Azad in System Settings -> Privacy & Security -> Accessibility",
+            Duration::from_secs(6),
         );
+    }
+
+    fn disable_listening_due_to_accessibility(&mut self) {
+        self.always_listening_enabled = false;
+        preferred_store::save_always_listening_enabled(false);
+        self.manual_hold_active = false;
+        self.overlay_pending_vad_text = false;
+        self.raw_finalize_requested = false;
+        self.deferred_vad_start = false;
+        self.finalizing_deadline = None;
+        self.finalizing_turn_id = None;
+        self.finalizing_draft.clear();
+        self.latest_draft.clear();
+        self.latest_final = None;
+        self.raw_handled_turn_id = None;
+        self.current_turn_id = None;
+        self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
+        self.clear_held_top_overlay();
+        self.reset_activity_history();
+        self.busy_border_phase = 0.0;
+        self.dispatch_hotkey_input(HotkeyInput::TurnReset);
+        self.render_device_menu();
+        if let Some(session) = &self.session {
+            session.release_manual_hold();
+            session.cancel_current_turn();
+            session.set_auto_vad_enabled(false);
+            session.set_capture_enabled(false);
+        }
+        self.show_accessibility_overlay_notice();
+    }
+
+    fn ensure_paste_accessibility_or_disable_listening(&mut self) -> bool {
+        if platform::ensure_accessibility_for_auto_paste() {
+            return true;
+        }
+        self.disable_listening_due_to_accessibility();
+        false
     }
 
     fn try_paste(&mut self, turn_id: u64, mode: TranscriptMode, text: &str) -> bool {
@@ -1340,7 +1536,7 @@ impl AppController {
         let paste_started = Instant::now();
         let paste_result = platform::paste_text(&paste_text, self.cfg.paste_delay_ms);
         if matches!(paste_result, PasteResult::AccessibilityRequired) {
-            self.show_accessibility_overlay_notice();
+            self.disable_listening_due_to_accessibility();
         }
 
         let transcription_duration_ms = self
@@ -1381,16 +1577,15 @@ impl AppController {
                     },
                 ));
             }
-            let _ = metrics_log::append_record(&MetricsLogRecord::new(
-                MetricsLogEvent::TurnSnapshot {
+            let _ =
+                metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::TurnSnapshot {
                     turn_id,
                     mode,
                     transcription_duration_ms,
                     fallback,
                     fallback_reason,
                     text_preview: preview_text_for_metrics(text, 56),
-                },
-            ));
+                }));
         }
 
         matches!(paste_result, PasteResult::Pasted)
@@ -1462,8 +1657,8 @@ impl AppController {
         self.latest_final = Some(raw_text.clone());
 
         if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-            let should_hide_overlay =
-                ui_plan.hide_overlay && (raw_targets_finalizing_lane || self.finalizing_turn_id.is_none());
+            let should_hide_overlay = ui_plan.hide_overlay
+                && (raw_targets_finalizing_lane || self.finalizing_turn_id.is_none());
             if should_hide_overlay {
                 self.hide_overlay();
             }
@@ -1513,14 +1708,13 @@ impl AppController {
             } => {
                 self.turn_finalize_outcomes
                     .insert(turn_id, (outcome.clone(), reason.clone()));
-                let _ =
-                    metrics_log::append_record(&MetricsLogRecord::new(
-                        MetricsLogEvent::PartialFinalizeOutcome {
-                            turn_id,
-                            outcome,
-                            reason,
-                        },
-                    ));
+                let _ = metrics_log::append_record(&MetricsLogRecord::new(
+                    MetricsLogEvent::PartialFinalizeOutcome {
+                        turn_id,
+                        outcome,
+                        reason,
+                    },
+                ));
             }
             DebugStatsEvent::PartialAuditResult {
                 turn_id,
@@ -1641,11 +1835,14 @@ impl AppController {
 #[cfg(test)]
 mod tests {
     use super::{
-        EngineState, RawFinalizeUiPlan, has_started_turn_for_snapshot,
-        has_turn_context_for_snapshot, next_current_turn_id,
-        raw_finalize_target_turn_id_for_state, raw_finalize_ui_plan,
+        draft_matches_finalized_text, has_actionable_turn_context_for_snapshot,
+        has_started_turn_for_snapshot, has_turn_context_for_snapshot, listen_toggle_notice,
+        next_current_turn_id, raw_finalize_target_turn_id_for_state, raw_finalize_ui_plan,
         should_ignore_finalizing_event, split_overlay_active_for_turns,
         split_overlay_visible_for_state, split_overlay_visible_with_hold_for_state,
+        split_overlay_visible_with_live_divergence_for_state,
+        split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state, EngineState,
+        RawFinalizeUiPlan,
     };
 
     #[test]
@@ -1776,25 +1973,124 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_snapshot_counts_manual_hold_as_started_turn() {
-        assert!(has_started_turn_for_snapshot(
+    fn split_overlay_vad_hint_keeps_second_lane_visible_when_turn_id_lags() {
+        assert!(split_overlay_visible_with_vad_hint_for_state(
+            Some(5),
+            Some(5),
+            "new words",
+            false,
             true,
-            EngineState::Idle,
-            None,
-            None,
-            "",
         ));
     }
 
     #[test]
-    fn hotkey_snapshot_without_hold_requires_runtime_turn_signal() {
-        assert!(!has_started_turn_for_snapshot(
+    fn split_overlay_without_hint_stays_hidden_when_turn_id_has_not_advanced() {
+        assert!(!split_overlay_visible_with_vad_hint_for_state(
+            Some(5),
+            Some(5),
+            "new words",
             false,
-            EngineState::Idle,
-            None,
-            None,
-            "   ",
+            false,
         ));
+    }
+
+    #[test]
+    fn split_overlay_vad_hint_requires_finalizing_lane() {
+        assert!(!split_overlay_visible_with_vad_hint_for_state(
+            None,
+            Some(5),
+            "new words",
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn split_overlay_live_divergence_shows_when_turn_id_lags() {
+        assert!(split_overlay_visible_with_live_divergence_for_state(
+            Some(5),
+            "new sentence starts in next thought",
+            "previous finalized sentence is done",
+        ));
+    }
+
+    #[test]
+    fn split_overlay_live_divergence_ignores_same_lane_rewrites() {
+        assert!(!split_overlay_visible_with_live_divergence_for_state(
+            Some(5),
+            "this is still the same lane text",
+            "this is still the same lane text with punctuation",
+        ));
+    }
+
+    #[test]
+    fn draft_match_treats_near_identical_token_prefix_as_same_turn() {
+        assert!(draft_matches_finalized_text(
+            "this feels heavy and i think this got cut",
+            "this feels heavy and i think this got cut off at the end",
+        ));
+    }
+
+    #[test]
+    fn draft_match_rejects_distinct_turn_content() {
+        assert!(!draft_matches_finalized_text(
+            "new thought starts here",
+            "previous paragraph is now done",
+        ));
+    }
+
+    #[test]
+    fn split_top_completion_ignores_vad_hint_when_live_matches_finalized_turn() {
+        assert!(!split_top_completion_for_state(
+            Some(10),
+            Some(10),
+            "this is still the same turn text",
+            false,
+            true,
+            10,
+            "this is still the same turn text with punctuation.",
+        ));
+    }
+
+    #[test]
+    fn split_top_completion_allows_vad_hint_when_live_lane_is_distinct() {
+        assert!(split_top_completion_for_state(
+            Some(10),
+            Some(10),
+            "brand new sentence in next lane",
+            false,
+            true,
+            10,
+            "previous lane text that just finished",
+        ));
+    }
+
+    #[test]
+    fn split_top_completion_allows_live_divergence_without_vad_hint() {
+        let completion = split_top_completion_for_state(
+            Some(10),
+            Some(10),
+            "brand new sentence in next lane",
+            false,
+            false,
+            10,
+            "previous lane text that just finished",
+        ) || split_overlay_visible_with_live_divergence_for_state(
+            Some(10),
+            "brand new sentence in next lane",
+            "previous lane text that just finished",
+        );
+        assert!(completion);
+    }
+
+    #[test]
+    fn hotkey_snapshot_counts_manual_hold_as_started_turn() {
+        assert!(has_started_turn_for_snapshot(true, false));
+    }
+
+    #[test]
+    fn hotkey_snapshot_without_hold_requires_runtime_turn_signal() {
+        assert!(!has_started_turn_for_snapshot(false, false));
     }
 
     #[test]
@@ -1805,5 +2101,41 @@ mod tests {
             None,
             "",
         ));
+    }
+
+    #[test]
+    fn actionable_turn_context_ignores_stale_state_when_idle_and_hidden() {
+        assert!(!has_actionable_turn_context_for_snapshot(
+            EngineState::Idle,
+            Some(7),
+            None,
+            "stale transcript text",
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn actionable_turn_context_keeps_live_finalizing_state() {
+        assert!(has_actionable_turn_context_for_snapshot(
+            EngineState::Idle,
+            Some(7),
+            Some(7),
+            "still finalizing",
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn listen_toggle_notice_uses_listen_wording() {
+        assert_eq!(
+            listen_toggle_notice(true),
+            ("Listen enabled", "Auto listen is on")
+        );
+        assert_eq!(
+            listen_toggle_notice(false),
+            ("Listen disabled", "Hold Option+Space to talk")
+        );
     }
 }

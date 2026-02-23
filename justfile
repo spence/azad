@@ -44,7 +44,7 @@ uninstall:
 
 doctor:
     @APP_DIR="${AZAD_APP_DIR:-$HOME/Applications/Azad.app}"; \
-    LABEL="com.spence.azad"; \
+    LABEL="ai.azad"; \
     DOMAIN="gui/$(id -u)"; \
     SERVICE_TARGET="$DOMAIN/$LABEL"; \
     PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"; \

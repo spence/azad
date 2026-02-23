@@ -2,9 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LABEL="com.spence.azad"
+LABEL="ai.azad"
+LEGACY_LABEL="com.spence.azad"
 DOMAIN="gui/$(id -u)"
 SERVICE_TARGET="${DOMAIN}/${LABEL}"
+LEGACY_SERVICE_TARGET="${DOMAIN}/${LEGACY_LABEL}"
 
 APP_DIR="${AZAD_APP_DIR:-$HOME/Applications/Azad.app}"
 APP_CONTENTS_DIR="${APP_DIR}/Contents"
@@ -13,6 +15,7 @@ APP_RESOURCES_DIR="${APP_CONTENTS_DIR}/Resources"
 
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/${LABEL}.plist"
+LEGACY_PLIST_PATH="${LAUNCH_AGENTS_DIR}/${LEGACY_LABEL}.plist"
 
 LOG_DIR="$HOME/Library/Logs/Azad"
 STDOUT_LOG="${LOG_DIR}/stdout.log"
@@ -165,6 +168,24 @@ is_loaded() {
   launchctl print "$SERVICE_TARGET" >/dev/null 2>&1
 }
 
+legacy_is_loaded() {
+  launchctl print "$LEGACY_SERVICE_TARGET" >/dev/null 2>&1
+}
+
+cleanup_legacy_service() {
+  if [[ "$LEGACY_LABEL" == "$LABEL" ]]; then
+    return
+  fi
+
+  if legacy_is_loaded; then
+    launchctl bootout "$LEGACY_SERVICE_TARGET" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -f "$LEGACY_PLIST_PATH" ]]; then
+    rm -f "$LEGACY_PLIST_PATH"
+  fi
+}
+
 bootstrap_until_loaded() {
   local attempt
   for attempt in $(seq 1 20); do
@@ -196,6 +217,7 @@ kickstart_with_retry() {
 }
 
 cmd_install() {
+  cleanup_legacy_service
   build_binary
 
   mkdir -p "$APP_MACOS_DIR" "$APP_RESOURCES_DIR"
@@ -214,6 +236,7 @@ cmd_install() {
 }
 
 cmd_start() {
+  cleanup_legacy_service
   if [[ ! -f "$PLIST_PATH" ]]; then
     echo "error: LaunchAgent plist not found at $PLIST_PATH (run just install first)" >&2
     exit 1

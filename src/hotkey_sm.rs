@@ -1,4 +1,4 @@
-pub const HOLD_DOUBLE_TAP_WINDOW_MS: u64 = 350;
+pub const HOLD_DOUBLE_TAP_WINDOW_MS: u64 = 450;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RuntimeSnapshot {
@@ -151,7 +151,7 @@ impl HotkeyState {
 #[cfg(test)]
 mod tests {
     use super::{
-        HOLD_DOUBLE_TAP_WINDOW_MS, HotkeyEffect, HotkeyInput, HotkeyState, RuntimeSnapshot,
+        HotkeyEffect, HotkeyInput, HotkeyState, RuntimeSnapshot, HOLD_DOUBLE_TAP_WINDOW_MS,
     };
 
     fn snapshot(

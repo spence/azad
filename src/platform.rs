@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use cocoa::appkit::{
@@ -12,7 +12,7 @@ use cocoa::appkit::{
     NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWindow, NSWindowCollectionBehavior,
     NSWindowStyleMask,
 };
-use cocoa::base::{NO, YES, id, nil};
+use cocoa::base::{id, nil, NO, YES};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -204,12 +204,18 @@ pub fn run_app() {
 }
 
 pub fn check_required_permissions_on_startup() {
-    if !is_accessibility_trusted() {
-        maybe_request_accessibility_permission_once();
-        eprintln!(
-            "Azad: Accessibility permission missing at startup. Enable Azad in System Settings -> Privacy & Security -> Accessibility."
-        );
+    let _ = ensure_accessibility_for_auto_paste();
+}
+
+pub fn ensure_accessibility_for_auto_paste() -> bool {
+    if is_accessibility_trusted() {
+        return true;
     }
+    maybe_request_accessibility_permission_once();
+    eprintln!(
+        "Azad: Accessibility permission missing. Enable Azad in System Settings -> Privacy & Security -> Accessibility."
+    );
+    false
 }
 
 pub fn set_device_menu(model: DeviceMenuModel) {
@@ -303,11 +309,7 @@ pub fn set_overlay_stream_content(
     }
 }
 
-pub fn set_overlay_top_stream_content(
-    draft: &str,
-    activity: &[f32],
-    busy_phase: Option<f32>,
-) {
+pub fn set_overlay_top_stream_content(draft: &str, activity: &[f32], busy_phase: Option<f32>) {
     let Some(refs) = current_overlay_top() else {
         return;
     };
@@ -367,11 +369,8 @@ pub fn paste_text(text: &str, paste_delay_ms: u64) -> PasteResult {
         }
     }
 
-    if !is_accessibility_trusted() {
-        maybe_request_accessibility_permission_once();
-        eprintln!(
-            "Azad: paste skipped; grant Accessibility to Azad in System Settings -> Privacy & Security -> Accessibility"
-        );
+    if !ensure_accessibility_for_auto_paste() {
+        eprintln!("Azad: paste skipped due to missing Accessibility permission");
         return PasteResult::AccessibilityRequired;
     }
 
@@ -2165,7 +2164,10 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
         (top_y - SETTINGS_METRICS_TOP_GAP - SETTINGS_INSET_X).max(SETTINGS_CONTROL_HEIGHT * 2.0);
     let scroll_frame = NSRect::new(
         NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
-        NSSize::new(SETTINGS_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0, metrics_height),
+        NSSize::new(
+            SETTINGS_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0,
+            metrics_height,
+        ),
     );
     let scroll_view: id = msg_send![class!(NSScrollView), alloc];
     let scroll_view: id = msg_send![scroll_view, initWithFrame: scroll_frame];

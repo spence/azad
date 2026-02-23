@@ -16,7 +16,7 @@ just start
 ## Check Launchd State
 
 ```bash
-launchctl print gui/$(id -u)/com.spence.azad
+launchctl print gui/$(id -u)/ai.azad
 ```
 
 ## Check Running App Identity
