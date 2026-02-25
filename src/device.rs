@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use asr::devices::{
-    DeviceControllerHandle, DeviceEvent as ToonDeviceEvent, DeviceEventSink as ToonDeviceEventSink,
-    DeviceStateSnapshot, start_device_controller,
+    start_device_controller, DeviceControllerHandle, DeviceEvent as ToonDeviceEvent,
+    DeviceEventSink as ToonDeviceEventSink, DeviceStateSnapshot,
 };
 
 #[derive(Debug, Clone)]

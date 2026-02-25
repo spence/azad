@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -82,13 +83,16 @@ const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
 const DEVICE_MENU_TEXT_SAFETY_PADDING: f64 = 10.0;
 const DEVICE_MENU_SCREEN_EDGE_MARGIN: f64 = 24.0;
 const DEVICE_HEADER_MENU_COMPENSATION: f64 = 22.0;
-const SETTINGS_WINDOW_WIDTH: f64 = 720.0;
+const SETTINGS_WINDOW_WIDTH: f64 = 820.0;
 const SETTINGS_WINDOW_HEIGHT: f64 = 460.0;
 const SETTINGS_INSET_X: f64 = 20.0;
 const SETTINGS_TOP_MARGIN: f64 = 18.0;
 const SETTINGS_CONTROL_HEIGHT: f64 = 24.0;
 const SETTINGS_REFRESH_WIDTH: f64 = 90.0;
 const SETTINGS_METRICS_TOP_GAP: f64 = 14.0;
+const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
+const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
+const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -147,6 +151,10 @@ struct OverlayRefs {
 #[derive(Clone, Copy)]
 struct SettingsWindowRefs {
     window: id,
+    tab_list_view: id,
+    general_container: id,
+    debug_container: id,
+    run_on_startup_checkbox: id,
     debug_checkbox: id,
     metrics_text_view: id,
 }
@@ -168,8 +176,17 @@ pub struct DeviceMenuRow {
 
 #[derive(Debug, Clone)]
 pub struct SettingsViewModel {
+    pub selected_tab: SettingsTab,
+    pub run_on_startup_enabled: bool,
     pub debug_stats_enabled: bool,
     pub metrics_text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Debug,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +258,102 @@ pub fn update_settings_window(model: SettingsViewModel) {
             apply_settings_view_model(refs, &model);
         }
     }
+}
+
+pub fn set_launch_agent_startup_enabled(enabled: bool) -> bool {
+    let plist_path = match launch_agent_plist_path() {
+        Some(path) => path,
+        None => {
+            eprintln!("Azad: unable to resolve LaunchAgent plist path for startup toggle");
+            return false;
+        }
+    };
+
+    if !plist_path.exists() {
+        eprintln!(
+            "Azad: LaunchAgent plist not found at {} (run install first)",
+            plist_path.display()
+        );
+        return false;
+    }
+
+    let output = match Command::new("plutil")
+        .arg("-replace")
+        .arg("RunAtLoad")
+        .arg("-bool")
+        .arg(if enabled { "true" } else { "false" })
+        .arg(plist_path.as_os_str())
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("Azad: failed to update RunAtLoad in LaunchAgent plist: {err}");
+            return false;
+        }
+    };
+
+    if output.status.success() {
+        return true;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        eprintln!(
+            "Azad: failed to update RunAtLoad (status {})",
+            output.status
+        );
+    } else {
+        eprintln!("Azad: failed to update RunAtLoad: {stderr}");
+    }
+    false
+}
+
+pub fn focus_existing_instance(bundle_id: &str) -> bool {
+    unsafe {
+        let _pool = NSAutoreleasePool::new(nil);
+        let bundle = NSString::alloc(nil).init_str(bundle_id);
+        if bundle == nil {
+            return false;
+        }
+
+        let running_apps: id = msg_send![
+            class!(NSRunningApplication),
+            runningApplicationsWithBundleIdentifier: bundle
+        ];
+        if running_apps == nil {
+            return false;
+        }
+
+        let current_pid = std::process::id() as i32;
+        let count: usize = msg_send![running_apps, count];
+        for idx in 0..count {
+            let running: id = msg_send![running_apps, objectAtIndex: idx];
+            if running == nil {
+                continue;
+            }
+
+            let pid: i32 = msg_send![running, processIdentifier];
+            if pid == current_pid {
+                continue;
+            }
+
+            let activated: bool = msg_send![running, activateWithOptions: (1u64 << 1)];
+            if activated {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn launch_agent_plist_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let mut path = PathBuf::from(home);
+    path.push("Library");
+    path.push("LaunchAgents");
+    path.push("ai.azad.plist");
+    Some(path)
 }
 
 pub fn show_overlay() {
@@ -408,12 +521,32 @@ fn register_delegate_class() -> &'static Class {
             open_settings as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
+            sel!(settingsToggleRunOnStartup:),
+            settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(settingsToggleDebug:),
             settings_toggle_debug as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
+            sel!(windowWillClose:),
+            settings_window_will_close as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(settingsRefresh:),
             settings_refresh as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(numberOfRowsInTableView:),
+            settings_tab_rows as extern "C" fn(&Object, Sel, id) -> isize,
+        );
+        decl.add_method(
+            sel!(tableView:viewForTableColumn:row:),
+            settings_tab_row_view as extern "C" fn(&Object, Sel, id, id, isize) -> id,
+        );
+        decl.add_method(
+            sel!(tableViewSelectionDidChange:),
+            settings_tab_selection_did_change as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
             sel!(selectDevice:),
@@ -588,6 +721,17 @@ extern "C" fn open_settings(_: &Object, _: Sel, _: id) {
     crate::app::drain_events();
 }
 
+extern "C" fn settings_toggle_run_on_startup(_: &Object, _: Sel, sender: id) {
+    unsafe {
+        if sender == nil {
+            return;
+        }
+        let state: i64 = msg_send![sender, state];
+        crate::app::send_event(AppEvent::SettingsToggleRunOnStartup(state != 0));
+        crate::app::drain_events();
+    }
+}
+
 extern "C" fn settings_toggle_debug(_: &Object, _: Sel, sender: id) {
     unsafe {
         if sender == nil {
@@ -602,6 +746,107 @@ extern "C" fn settings_toggle_debug(_: &Object, _: Sel, sender: id) {
 extern "C" fn settings_refresh(_: &Object, _: Sel, _: id) {
     crate::app::send_event(AppEvent::SettingsRefresh);
     crate::app::drain_events();
+}
+
+extern "C" fn settings_tab_rows(_: &Object, _: Sel, _: id) -> isize {
+    2
+}
+
+unsafe fn settings_tab_label(row: isize) -> &'static str {
+    match row {
+        1 => "Debug",
+        _ => "General",
+    }
+}
+
+unsafe fn settings_tab_from_row(row: isize) -> SettingsTab {
+    match row {
+        1 => SettingsTab::Debug,
+        _ => SettingsTab::General,
+    }
+}
+
+unsafe fn settings_row_for_tab(tab: SettingsTab) -> isize {
+    match tab {
+        SettingsTab::General => 0,
+        SettingsTab::Debug => 1,
+    }
+}
+
+extern "C" fn settings_tab_row_view(_: &Object, _: Sel, table_view: id, _: id, row: isize) -> id {
+    unsafe {
+        if table_view == nil {
+            return nil;
+        }
+
+        let identifier = NSString::alloc(nil).init_str("AzadSettingsTabCell");
+        let mut cell: id = msg_send![table_view, makeViewWithIdentifier: identifier owner: nil];
+        if cell == nil {
+            let row_height: f64 = msg_send![table_view, rowHeight];
+            let bounds: NSRect = msg_send![table_view, bounds];
+            let width = bounds.size.width.max(SETTINGS_SIDEBAR_WIDTH);
+
+            let created: id = msg_send![class!(NSTableCellView), alloc];
+            cell = msg_send![created, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(width, row_height.max(SETTINGS_SIDEBAR_ROW_HEIGHT))
+            )];
+            let _: () = msg_send![cell, setIdentifier: identifier];
+
+            let text: id = msg_send![class!(NSTextField), alloc];
+            let text: id = msg_send![text, initWithFrame: NSRect::new(
+                NSPoint::new(10.0, 4.0),
+                NSSize::new((width - 20.0).max(1.0), (row_height - 8.0).max(1.0))
+            )];
+            let _: () = msg_send![text, setBezeled: NO];
+            let _: () = msg_send![text, setDrawsBackground: NO];
+            let _: () = msg_send![text, setEditable: NO];
+            let _: () = msg_send![text, setSelectable: NO];
+            let _: () = msg_send![text, setAlignment: 0usize];
+            let _: () = msg_send![text, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+            let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
+            if font != nil {
+                let _: () = msg_send![text, setFont: font];
+            }
+            let _: () = msg_send![cell, addSubview: text];
+            let _: () = msg_send![cell, setTextField: text];
+        }
+
+        let text_field: id = msg_send![cell, textField];
+        if text_field != nil {
+            let label = NSString::alloc(nil).init_str(settings_tab_label(row));
+            let _: () = msg_send![text_field, setStringValue: label];
+        }
+        cell
+    }
+}
+
+extern "C" fn settings_tab_selection_did_change(_: &Object, _: Sel, notification: id) {
+    unsafe {
+        if notification == nil {
+            return;
+        }
+        let table_view: id = msg_send![notification, object];
+        if table_view == nil {
+            return;
+        }
+        let row: isize = msg_send![table_view, selectedRow];
+        if row < 0 {
+            return;
+        }
+        if let Some(refs) = current_settings_window() {
+            if refs.tab_list_view != table_view {
+                return;
+            }
+            apply_settings_selected_tab(refs, settings_tab_from_row(row));
+        }
+    }
+}
+
+extern "C" fn settings_window_will_close(_: &Object, _: Sel, _: id) {
+    SETTINGS_WINDOW_REFS.with(|store| {
+        store.borrow_mut().take();
+    });
 }
 
 extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
@@ -1657,12 +1902,46 @@ fn current_settings_window() -> Option<SettingsWindowRefs> {
     SETTINGS_WINDOW_REFS.with(|store| *store.borrow())
 }
 
+unsafe fn apply_settings_selected_tab(refs: SettingsWindowRefs, tab: SettingsTab) {
+    let (general_hidden, debug_hidden) = match tab {
+        SettingsTab::General => (NO, YES),
+        SettingsTab::Debug => (YES, NO),
+    };
+    let _: () = msg_send![refs.general_container, setHidden: general_hidden];
+    let _: () = msg_send![refs.debug_container, setHidden: debug_hidden];
+
+    if refs.tab_list_view != nil {
+        let row = settings_row_for_tab(tab);
+        if row >= 0 {
+            let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
+            if selected_row != row {
+                let selection: id = msg_send![class!(NSIndexSet), indexSetWithIndex: row as usize];
+                let _: () = msg_send![
+                    refs.tab_list_view,
+                    selectRowIndexes: selection
+                    byExtendingSelection: NO
+                ];
+            }
+        }
+    }
+}
+
 unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsViewModel) {
-    let checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
-    let _: () = msg_send![refs.debug_checkbox, setState: checkbox_state];
+    let run_on_startup_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
+    let _: () = msg_send![refs.run_on_startup_checkbox, setState: run_on_startup_state];
+
+    let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
+    let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
 
     let metrics = NSString::alloc(nil).init_str(&model.metrics_text);
     let _: () = msg_send![refs.metrics_text_view, setString: metrics];
+
+    let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
+    if selected_row >= 0 {
+        apply_settings_selected_tab(refs, settings_tab_from_row(selected_row));
+    } else {
+        apply_settings_selected_tab(refs, model.selected_tab);
+    }
 }
 
 unsafe fn render_overlay_text(
@@ -2138,20 +2417,116 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
 
     let content_view: id = msg_send![window, contentView];
 
-    let top_y = SETTINGS_WINDOW_HEIGHT - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-    let checkbox_frame = NSRect::new(
-        NSPoint::new(SETTINGS_INSET_X, top_y),
+    let body_frame = NSRect::new(
+        NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
+        NSSize::new(
+            SETTINGS_WINDOW_WIDTH - (SETTINGS_INSET_X * 2.0),
+            SETTINGS_WINDOW_HEIGHT - (SETTINGS_INSET_X * 2.0),
+        ),
+    );
+    let body_view: id = msg_send![class!(NSView), alloc];
+    let body_view: id = msg_send![body_view, initWithFrame: body_frame];
+    let _: () = msg_send![
+        body_view,
+        setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+    ];
+    let _: () = msg_send![content_view, addSubview: body_view];
+
+    let sidebar_height = body_frame.size.height.max(220.0);
+    let sidebar_frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(SETTINGS_SIDEBAR_WIDTH, sidebar_height),
+    );
+    let sidebar_scroll: id = msg_send![class!(NSScrollView), alloc];
+    let sidebar_scroll: id = msg_send![sidebar_scroll, initWithFrame: sidebar_frame];
+    let _: () = msg_send![sidebar_scroll, setHasVerticalScroller: NO];
+    let _: () = msg_send![sidebar_scroll, setBorderType: 0usize];
+    let _: () = msg_send![sidebar_scroll, setDrawsBackground: NO];
+    let _: () = msg_send![body_view, addSubview: sidebar_scroll];
+
+    let tab_list_view: id = msg_send![class!(NSTableView), alloc];
+    let tab_list_view: id = msg_send![tab_list_view, initWithFrame: sidebar_frame];
+    let _: () = msg_send![tab_list_view, setHeaderView: nil];
+    let _: () = msg_send![tab_list_view, setUsesAlternatingRowBackgroundColors: NO];
+    let _: () = msg_send![tab_list_view, setAllowsMultipleSelection: NO];
+    let _: () = msg_send![tab_list_view, setAllowsEmptySelection: NO];
+    let _: () = msg_send![tab_list_view, setRowHeight: SETTINGS_SIDEBAR_ROW_HEIGHT];
+    let _: () = msg_send![tab_list_view, setIntercellSpacing: NSSize::new(0.0, 2.0)];
+    let _: () = msg_send![tab_list_view, setBackgroundColor: NSColor::clearColor(nil)];
+    let supports_style: i8 = msg_send![tab_list_view, respondsToSelector: sel!(setStyle:)];
+    if supports_style != 0 {
+        // NSTableViewStyleSourceList
+        let _: () = msg_send![tab_list_view, setStyle: 3usize];
+    } else {
+        // NSTableViewSelectionHighlightStyleSourceList
+        let _: () = msg_send![tab_list_view, setSelectionHighlightStyle: 1isize];
+    }
+
+    let tab_column_identifier = NSString::alloc(nil).init_str("azad-settings-tabs-column");
+    let tab_column: id = msg_send![class!(NSTableColumn), alloc];
+    let tab_column: id = msg_send![tab_column, initWithIdentifier: tab_column_identifier];
+    let _: () = msg_send![tab_column, setWidth: SETTINGS_SIDEBAR_WIDTH];
+    let _: () = msg_send![tab_column, setMinWidth: SETTINGS_SIDEBAR_WIDTH];
+    let _: () = msg_send![tab_column, setMaxWidth: SETTINGS_SIDEBAR_WIDTH];
+    let _: () = msg_send![tab_list_view, addTableColumn: tab_column];
+
+    let content_origin_x = SETTINGS_SIDEBAR_WIDTH + SETTINGS_SIDEBAR_TO_CONTENT_GAP;
+    let content_height = body_frame.size.height.max(220.0);
+    let content_width = (body_frame.size.width - content_origin_x).max(420.0);
+    let content_frame = NSRect::new(
+        NSPoint::new(content_origin_x, 0.0),
+        NSSize::new(content_width, content_height),
+    );
+
+    let general_container: id = msg_send![class!(NSView), alloc];
+    let general_container: id = msg_send![general_container, initWithFrame: content_frame];
+    let _: () = msg_send![
+        general_container,
+        setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+    ];
+    let debug_container: id = msg_send![class!(NSView), alloc];
+    let debug_container: id = msg_send![debug_container, initWithFrame: content_frame];
+    let _: () = msg_send![
+        debug_container,
+        setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+    ];
+
+    let general_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
+    let run_on_startup_frame = NSRect::new(
+        NSPoint::new(0.0, general_top_y),
+        NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+    );
+    let run_on_startup_checkbox: id = msg_send![class!(NSButton), alloc];
+    let run_on_startup_checkbox: id =
+        msg_send![run_on_startup_checkbox, initWithFrame: run_on_startup_frame];
+    let _: () = msg_send![run_on_startup_checkbox, setButtonType: 3usize];
+    let _: () = msg_send![
+        run_on_startup_checkbox,
+        setTitle: NSString::alloc(nil).init_str("Run Azad on startup")
+    ];
+    let _: () = msg_send![
+        run_on_startup_checkbox,
+        setAction: sel!(settingsToggleRunOnStartup:)
+    ];
+    let _: () = msg_send![general_container, addSubview: run_on_startup_checkbox];
+
+    let debug_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
+    let debug_checkbox_frame = NSRect::new(
+        NSPoint::new(0.0, debug_top_y),
         NSSize::new(320.0, SETTINGS_CONTROL_HEIGHT),
     );
     let debug_checkbox: id = msg_send![class!(NSButton), alloc];
-    let debug_checkbox: id = msg_send![debug_checkbox, initWithFrame: checkbox_frame];
+    let debug_checkbox: id = msg_send![debug_checkbox, initWithFrame: debug_checkbox_frame];
     let _: () = msg_send![debug_checkbox, setButtonType: 3usize];
-    let _: () = msg_send![debug_checkbox, setTitle: NSString::alloc(nil).init_str("Enable debug statistics")];
+    let _: () = msg_send![
+        debug_checkbox,
+        setTitle: NSString::alloc(nil).init_str("Enable debug statistics")
+    ];
     let _: () = msg_send![debug_checkbox, setAction: sel!(settingsToggleDebug:)];
 
-    let refresh_x = SETTINGS_WINDOW_WIDTH - SETTINGS_INSET_X - SETTINGS_REFRESH_WIDTH;
+    let refresh_x = content_width - SETTINGS_REFRESH_WIDTH;
     let refresh_frame = NSRect::new(
-        NSPoint::new(refresh_x, top_y),
+        NSPoint::new(refresh_x, debug_top_y),
         NSSize::new(SETTINGS_REFRESH_WIDTH, SETTINGS_CONTROL_HEIGHT),
     );
     let refresh_button: id = msg_send![class!(NSButton), alloc];
@@ -2161,13 +2536,10 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     let _: () = msg_send![refresh_button, setAction: sel!(settingsRefresh:)];
 
     let metrics_height =
-        (top_y - SETTINGS_METRICS_TOP_GAP - SETTINGS_INSET_X).max(SETTINGS_CONTROL_HEIGHT * 2.0);
+        (debug_top_y - SETTINGS_METRICS_TOP_GAP).max(SETTINGS_CONTROL_HEIGHT * 2.0);
     let scroll_frame = NSRect::new(
-        NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
-        NSSize::new(
-            SETTINGS_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0,
-            metrics_height,
-        ),
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(content_width, metrics_height),
     );
     let scroll_view: id = msg_send![class!(NSScrollView), alloc];
     let scroll_view: id = msg_send![scroll_view, initWithFrame: scroll_frame];
@@ -2190,19 +2562,33 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     let _: () = msg_send![scroll_view, setDocumentView: metrics_text_view];
 
     if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
+        let _: () = msg_send![window, setDelegate: delegate];
+        let _: () = msg_send![tab_list_view, setDelegate: delegate];
+        let _: () = msg_send![tab_list_view, setDataSource: delegate];
+        let _: () = msg_send![run_on_startup_checkbox, setTarget: delegate];
         let _: () = msg_send![debug_checkbox, setTarget: delegate];
         let _: () = msg_send![refresh_button, setTarget: delegate];
     }
 
-    let _: () = msg_send![content_view, addSubview: debug_checkbox];
-    let _: () = msg_send![content_view, addSubview: refresh_button];
-    let _: () = msg_send![content_view, addSubview: scroll_view];
+    let _: () = msg_send![sidebar_scroll, setDocumentView: tab_list_view];
+    let _: () = msg_send![body_view, addSubview: general_container];
+    let _: () = msg_send![debug_container, addSubview: debug_checkbox];
+    let _: () = msg_send![debug_container, addSubview: refresh_button];
+    let _: () = msg_send![debug_container, addSubview: scroll_view];
+    let _: () = msg_send![body_view, addSubview: debug_container];
+    let _: () = msg_send![tab_list_view, reloadData];
 
-    SettingsWindowRefs {
+    let refs = SettingsWindowRefs {
         window,
+        tab_list_view,
+        general_container,
+        debug_container,
+        run_on_startup_checkbox,
         debug_checkbox,
         metrics_text_view,
-    }
+    };
+    apply_settings_selected_tab(refs, SettingsTab::General);
+    refs
 }
 
 unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {

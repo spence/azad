@@ -11,7 +11,9 @@ use crate::device::{DeviceController, DeviceEvent};
 use crate::hotkey_sm::{HotkeyEffect, HotkeyInput, HotkeyState, RuntimeSnapshot};
 use crate::metrics_log::{self, MetricsLogEvent, MetricsLogRecord, TranscriptMode};
 use crate::platform;
-use crate::platform::{DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsViewModel};
+use crate::platform::{
+    DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsTab, SettingsViewModel,
+};
 use crate::preferred_store;
 use crate::speech::{spawn_speech_session, SpeechEvent, SpeechSession};
 
@@ -33,6 +35,7 @@ pub enum AppEvent {
     MenuOpenSettings,
     MenuOpened,
     MenuClosed,
+    SettingsToggleRunOnStartup(bool),
     SettingsToggleDebugStats(bool),
     SettingsRefresh,
     OverlayCancel,
@@ -132,6 +135,7 @@ struct AppController {
     engine_state: EngineState,
     hotkey_state: HotkeyState,
     raw_finalize_requested: bool,
+    run_on_startup_enabled: bool,
     debug_stats_enabled: bool,
     turn_started_at: HashMap<u64, Instant>,
     turn_finalize_outcomes: HashMap<u64, (String, String)>,
@@ -337,8 +341,11 @@ fn has_actionable_turn_context_for_snapshot(
         || manual_hold_active
 }
 
-fn has_started_turn_for_snapshot(manual_hold_active: bool, has_turn_context: bool) -> bool {
-    manual_hold_active || has_turn_context
+fn has_started_turn_for_snapshot(_manual_hold_active: bool, has_turn_context: bool) -> bool {
+    // Manual hold by itself does not prove a speech turn started.
+    // This keeps idle double-tap mode toggles from being blocked by a
+    // press/release that produced no speech context.
+    has_turn_context
 }
 
 fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
@@ -365,6 +372,7 @@ fn listen_toggle_notice(enabled: bool) -> (&'static str, &'static str) {
 impl AppController {
     fn new(cfg: AzadConfig) -> Self {
         let always_listening_enabled = preferred_store::load_always_listening_enabled();
+        let run_on_startup_enabled = preferred_store::load_run_on_startup_enabled();
         let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
         Self {
             cfg,
@@ -404,6 +412,7 @@ impl AppController {
             engine_state: EngineState::Idle,
             hotkey_state: HotkeyState::default(),
             raw_finalize_requested: false,
+            run_on_startup_enabled,
             debug_stats_enabled,
             turn_started_at: HashMap::new(),
             turn_finalize_outcomes: HashMap::new(),
@@ -411,6 +420,7 @@ impl AppController {
     }
 
     fn bootstrap(&mut self) {
+        self.apply_run_on_startup_preference();
         self.start_device_controller();
         self.render_device_menu();
         self.ensure_session();
@@ -455,6 +465,9 @@ impl AppController {
             AppEvent::MenuOpenSettings => self.handle_menu_open_settings(),
             AppEvent::MenuOpened => self.handle_menu_opened(),
             AppEvent::MenuClosed => self.handle_menu_closed(),
+            AppEvent::SettingsToggleRunOnStartup(enabled) => {
+                self.handle_settings_toggle_run_on_startup(enabled)
+            }
             AppEvent::SettingsToggleDebugStats(enabled) => {
                 self.handle_settings_toggle_debug_stats(enabled)
             }
@@ -802,6 +815,26 @@ impl AppController {
         platform::show_settings_window(self.settings_view_model());
     }
 
+    fn apply_run_on_startup_preference(&mut self) {
+        if platform::set_launch_agent_startup_enabled(self.run_on_startup_enabled) {
+            return;
+        }
+        eprintln!(
+            "Azad: failed to apply run-on-startup preference (enabled={})",
+            self.run_on_startup_enabled
+        );
+    }
+
+    fn handle_settings_toggle_run_on_startup(&mut self, enabled: bool) {
+        if platform::set_launch_agent_startup_enabled(enabled) {
+            self.run_on_startup_enabled = enabled;
+            preferred_store::save_run_on_startup_enabled(enabled);
+        } else {
+            eprintln!("Azad: failed to set run-on-startup to {enabled}");
+        }
+        platform::update_settings_window(self.settings_view_model());
+    }
+
     fn handle_settings_toggle_debug_stats(&mut self, enabled: bool) {
         self.debug_stats_enabled = enabled;
         preferred_store::save_debug_stats_enabled(enabled);
@@ -822,6 +855,8 @@ impl AppController {
         };
 
         SettingsViewModel {
+            selected_tab: SettingsTab::General,
+            run_on_startup_enabled: self.run_on_startup_enabled,
             debug_stats_enabled: self.debug_stats_enabled,
             metrics_text,
         }
@@ -1584,7 +1619,7 @@ impl AppController {
                     transcription_duration_ms,
                     fallback,
                     fallback_reason,
-                    text_preview: preview_text_for_metrics(text, 56),
+                    text_preview: preview_text_for_metrics(text, 45),
                 }));
         }
 
@@ -2084,13 +2119,19 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_snapshot_counts_manual_hold_as_started_turn() {
-        assert!(has_started_turn_for_snapshot(true, false));
+    fn hotkey_snapshot_manual_hold_alone_is_not_started_turn() {
+        assert!(!has_started_turn_for_snapshot(true, false));
     }
 
     #[test]
     fn hotkey_snapshot_without_hold_requires_runtime_turn_signal() {
         assert!(!has_started_turn_for_snapshot(false, false));
+    }
+
+    #[test]
+    fn hotkey_snapshot_with_turn_context_marks_started_turn() {
+        assert!(has_started_turn_for_snapshot(true, true));
+        assert!(has_started_turn_for_snapshot(false, true));
     }
 
     #[test]

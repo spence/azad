@@ -141,7 +141,10 @@ write_launch_agent_plist() {
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>LimitLoadToSessionType</key>
   <array>
     <string>Aqua</string>

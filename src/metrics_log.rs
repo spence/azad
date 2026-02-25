@@ -179,7 +179,10 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
         "Transcriptions total: {}",
         summary.total_transcriptions
     ));
-    lines.push(format!("Transcriptions raw: {}", summary.raw_transcriptions));
+    lines.push(format!(
+        "Transcriptions raw: {}",
+        summary.raw_transcriptions
+    ));
     lines.push(format!(
         "Transcriptions normal: {}",
         summary.normal_transcriptions
@@ -207,10 +210,7 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
     };
     lines.push(format!("Finalize attempts: {}", summary.fallback_attempts));
     lines.push(format!("Finalize fast count: {}", fast_count));
-    lines.push(format!(
-        "Finalize fast rate_pct: {:.1}",
-        fast_rate_pct
-    ));
+    lines.push(format!("Finalize fast rate_pct: {:.1}", fast_rate_pct));
     lines.push(String::new());
     lines.push(format!("Quality samples: {}", summary.quality_samples));
     if summary.quality_samples == 0 {
@@ -219,7 +219,10 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
         lines.push("Quality avg_wer: n/a".to_string());
         lines.push("Quality avg_lcp_pct: n/a".to_string());
     } else {
-        lines.push(format!("Quality exact_pct: {:.1}", summary.quality_exact_rate_pct));
+        lines.push(format!(
+            "Quality exact_pct: {:.1}",
+            summary.quality_exact_rate_pct
+        ));
         lines.push(format!(
             "Quality avg_edit: {:.2}",
             summary.quality_avg_edit_distance
@@ -228,7 +231,10 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
             "Quality avg_wer: {:.3}",
             summary.quality_avg_wer_like
         ));
-        lines.push(format!("Quality avg_lcp_pct: {:.1}", summary.quality_avg_lcp_pct));
+        lines.push(format!(
+            "Quality avg_lcp_pct: {:.1}",
+            summary.quality_avg_lcp_pct
+        ));
     }
     lines.push(String::new());
     lines.push(format!(
@@ -340,14 +346,22 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
                     *turn_id,
                     (record.ts_ms, *exact, *edit_distance, *wer_like, *lcp_pct),
                 );
-                upsert_latest(&mut partial_counts, *turn_id, (record.ts_ms, *partial_count));
+                upsert_latest(
+                    &mut partial_counts,
+                    *turn_id,
+                    (record.ts_ms, *partial_count),
+                );
             }
             MetricsLogEvent::PartialAuditError {
                 turn_id,
                 partial_count,
                 ..
             } => {
-                upsert_latest(&mut partial_counts, *turn_id, (record.ts_ms, *partial_count));
+                upsert_latest(
+                    &mut partial_counts,
+                    *turn_id,
+                    (record.ts_ms, *partial_count),
+                );
             }
             MetricsLogEvent::TurnSnapshot {
                 turn_id,
@@ -619,7 +633,7 @@ fn metrics_log_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        MetricsLogEvent, MetricsLogRecord, TranscriptMode, duration_stats, percentile, summarize,
+        duration_stats, percentile, summarize, MetricsLogEvent, MetricsLogRecord, TranscriptMode,
     };
 
     #[test]

@@ -155,6 +155,7 @@ dependencies = [
  "cocoa",
  "core-graphics",
  "global-hotkey",
+ "libc",
  "objc",
  "serde",
  "serde_json",
