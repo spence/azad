@@ -15,7 +15,8 @@ use crate::platform::{
     DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsTab, SettingsViewModel,
 };
 use crate::preferred_store;
-use crate::speech::{spawn_speech_session, SpeechEvent, SpeechSession};
+use crate::settings::{AutoSubmitMode, PasteMethod};
+use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
 
 const DEVICE_SWITCH_RESTART_DEBOUNCE_MS: u64 = 250;
 const OVERLAY_ACTIVITY_HISTORY_LEN: usize = 96;
@@ -37,6 +38,8 @@ pub enum AppEvent {
     MenuClosed,
     SettingsToggleRunOnStartup(bool),
     SettingsToggleDebugStats(bool),
+    SettingsSelectPasteMethod(PasteMethod),
+    SettingsSelectAutoSubmit(AutoSubmitMode),
     SettingsRefresh,
     OverlayCancel,
     Speech(SpeechEvent),
@@ -136,6 +139,8 @@ struct AppController {
     hotkey_state: HotkeyState,
     raw_finalize_requested: bool,
     run_on_startup_enabled: bool,
+    paste_method: PasteMethod,
+    auto_submit_mode: AutoSubmitMode,
     debug_stats_enabled: bool,
     turn_started_at: HashMap<u64, Instant>,
     turn_finalize_outcomes: HashMap<u64, (String, String)>,
@@ -361,6 +366,40 @@ fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn transcript_mode_label(mode: TranscriptMode) -> &'static str {
+    match mode {
+        TranscriptMode::Normal => "normal",
+        TranscriptMode::Raw => "raw",
+    }
+}
+
+fn paste_result_label(result: PasteResult) -> &'static str {
+    match result {
+        PasteResult::Pasted => "pasted",
+        PasteResult::AccessibilityRequired => "accessibility_required",
+        PasteResult::EmptyText => "empty_text",
+        PasteResult::ClipboardWriteFailed => "clipboard_write_failed",
+        PasteResult::InputEventFailed => "input_event_failed",
+    }
+}
+
+fn paste_method_label(method: PasteMethod) -> &'static str {
+    match method {
+        PasteMethod::ClipboardPaste => "clipboard_paste",
+        PasteMethod::DirectTyping => "direct_typing",
+        PasteMethod::DirectTypingAndCopyClipboard => "direct_typing_copy_clipboard",
+    }
+}
+
+fn auto_submit_mode_label(mode: AutoSubmitMode) -> &'static str {
+    match mode {
+        AutoSubmitMode::Off => "off",
+        AutoSubmitMode::Enter => "enter",
+        AutoSubmitMode::CtrlEnter => "ctrl_enter",
+        AutoSubmitMode::ShiftEnter => "shift_enter",
+    }
+}
+
 fn listen_toggle_notice(enabled: bool) -> (&'static str, &'static str) {
     if enabled {
         ("Listen enabled", "Auto listen is on")
@@ -373,6 +412,8 @@ impl AppController {
     fn new(cfg: AzadConfig) -> Self {
         let always_listening_enabled = preferred_store::load_always_listening_enabled();
         let run_on_startup_enabled = preferred_store::load_run_on_startup_enabled();
+        let paste_method = preferred_store::load_paste_method();
+        let auto_submit_mode = preferred_store::load_auto_submit_mode();
         let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
         Self {
             cfg,
@@ -413,6 +454,8 @@ impl AppController {
             hotkey_state: HotkeyState::default(),
             raw_finalize_requested: false,
             run_on_startup_enabled,
+            paste_method,
+            auto_submit_mode,
             debug_stats_enabled,
             turn_started_at: HashMap::new(),
             turn_finalize_outcomes: HashMap::new(),
@@ -470,6 +513,12 @@ impl AppController {
             }
             AppEvent::SettingsToggleDebugStats(enabled) => {
                 self.handle_settings_toggle_debug_stats(enabled)
+            }
+            AppEvent::SettingsSelectPasteMethod(method) => {
+                self.handle_settings_select_paste_method(method)
+            }
+            AppEvent::SettingsSelectAutoSubmit(mode) => {
+                self.handle_settings_select_auto_submit(mode)
             }
             AppEvent::SettingsRefresh => self.handle_settings_refresh(),
             AppEvent::OverlayCancel => self.handle_overlay_cancel(),
@@ -844,6 +893,18 @@ impl AppController {
         platform::update_settings_window(self.settings_view_model());
     }
 
+    fn handle_settings_select_paste_method(&mut self, method: PasteMethod) {
+        self.paste_method = method;
+        preferred_store::save_paste_method(method);
+        platform::update_settings_window(self.settings_view_model());
+    }
+
+    fn handle_settings_select_auto_submit(&mut self, mode: AutoSubmitMode) {
+        self.auto_submit_mode = mode;
+        preferred_store::save_auto_submit_mode(mode);
+        platform::update_settings_window(self.settings_view_model());
+    }
+
     fn handle_settings_refresh(&mut self) {
         platform::update_settings_window(self.settings_view_model());
     }
@@ -857,6 +918,8 @@ impl AppController {
         SettingsViewModel {
             selected_tab: SettingsTab::General,
             run_on_startup_enabled: self.run_on_startup_enabled,
+            paste_method: self.paste_method,
+            auto_submit_mode: self.auto_submit_mode,
             debug_stats_enabled: self.debug_stats_enabled,
             metrics_text,
         }
@@ -1569,10 +1632,51 @@ impl AppController {
         }
 
         let paste_started = Instant::now();
-        let paste_result = platform::paste_text(&paste_text, self.cfg.paste_delay_ms);
+        let insert_started = Instant::now();
+        let paste_result =
+            platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
+        let insert_duration_ms =
+            u64::try_from(insert_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        let auto_submit_started = Instant::now();
+        let (auto_submit_sent, auto_submit_ok) = if matches!(paste_result, PasteResult::Pasted) {
+            let sent = !matches!(self.auto_submit_mode, AutoSubmitMode::Off);
+            let ok = platform::send_auto_submit(self.auto_submit_mode);
+            (sent, ok)
+        } else {
+            (false, true)
+        };
+        let auto_submit_duration_ms = if matches!(paste_result, PasteResult::Pasted) {
+            u64::try_from(auto_submit_started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        } else {
+            0
+        };
+        if matches!(paste_result, PasteResult::Pasted) && !auto_submit_ok {
+            eprintln!(
+                "Azad: failed to send auto-submit key event (mode={})",
+                auto_submit_mode_label(self.auto_submit_mode)
+            );
+        }
         if matches!(paste_result, PasteResult::AccessibilityRequired) {
             self.disable_listening_due_to_accessibility();
         }
+        let paste_duration_ms =
+            u64::try_from(paste_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        eprintln!(
+            "AZAD_INSERT_PERF turn_id={} transcript_mode={} method={} chars={} result={} insert_ms={} auto_submit_mode={} auto_submit_sent={} auto_submit_ms={} auto_submit_ok={} total_ms={}",
+            turn_id,
+            transcript_mode_label(mode),
+            paste_method_label(self.paste_method),
+            paste_text.chars().count(),
+            paste_result_label(paste_result),
+            insert_duration_ms,
+            auto_submit_mode_label(self.auto_submit_mode),
+            auto_submit_sent,
+            auto_submit_duration_ms,
+            auto_submit_ok,
+            paste_duration_ms
+        );
 
         let transcription_duration_ms = self
             .turn_started_at
@@ -1586,20 +1690,12 @@ impl AppController {
             .unwrap_or((false, "unavailable".to_string()));
 
         if self.debug_stats_enabled {
-            let paste_result_label = match paste_result {
-                PasteResult::Pasted => "pasted",
-                PasteResult::AccessibilityRequired => "accessibility_required",
-                PasteResult::EmptyText => "empty_text",
-                PasteResult::ClipboardWriteFailed => "clipboard_write_failed",
-            };
-            let paste_duration_ms =
-                u64::try_from(paste_started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let _ = metrics_log::append_record(&MetricsLogRecord::new(
                 MetricsLogEvent::PasteCompleted {
                     turn_id,
                     mode,
                     paste_duration_ms,
-                    result: paste_result_label.to_string(),
+                    result: paste_result_label(paste_result).to_string(),
                 },
             ));
 
@@ -1870,14 +1966,14 @@ impl AppController {
 #[cfg(test)]
 mod tests {
     use super::{
-        draft_matches_finalized_text, has_actionable_turn_context_for_snapshot,
-        has_started_turn_for_snapshot, has_turn_context_for_snapshot, listen_toggle_notice,
-        next_current_turn_id, raw_finalize_target_turn_id_for_state, raw_finalize_ui_plan,
+        EngineState, RawFinalizeUiPlan, draft_matches_finalized_text,
+        has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
+        has_turn_context_for_snapshot, listen_toggle_notice, next_current_turn_id,
+        raw_finalize_target_turn_id_for_state, raw_finalize_ui_plan,
         should_ignore_finalizing_event, split_overlay_active_for_turns,
         split_overlay_visible_for_state, split_overlay_visible_with_hold_for_state,
         split_overlay_visible_with_live_divergence_for_state,
-        split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state, EngineState,
-        RawFinalizeUiPlan,
+        split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
     };
 
     #[test]

@@ -3,8 +3,8 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cocoa::appkit::{
@@ -13,7 +13,7 @@ use cocoa::appkit::{
     NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWindow, NSWindowCollectionBehavior,
     NSWindowStyleMask,
 };
-use cocoa::base::{id, nil, NO, YES};
+use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -24,8 +24,10 @@ use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::app::AppEvent;
+use crate::settings::{AutoSubmitMode, PasteMethod};
 
 const KEYCODE_V: u16 = 0x09;
+const KEYCODE_RETURN: u16 = 0x24;
 const KEYCODE_LEFT_COMMAND: u16 = 0x37;
 const KEYCODE_RIGHT_COMMAND: u16 = 0x36;
 const KEYCODE_LEFT_SHIFT: u16 = 0x38;
@@ -93,6 +95,9 @@ const SETTINGS_METRICS_TOP_GAP: f64 = 14.0;
 const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
+const SETTINGS_LABEL_WIDTH: f64 = 180.0;
+const SETTINGS_POPUP_WIDTH: f64 = 220.0;
+const SETTINGS_CONTROL_VERTICAL_GAP: f64 = 14.0;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -155,6 +160,8 @@ struct SettingsWindowRefs {
     general_container: id,
     debug_container: id,
     run_on_startup_checkbox: id,
+    paste_method_popup: id,
+    auto_submit_popup: id,
     debug_checkbox: id,
     metrics_text_view: id,
 }
@@ -178,6 +185,8 @@ pub struct DeviceMenuRow {
 pub struct SettingsViewModel {
     pub selected_tab: SettingsTab,
     pub run_on_startup_enabled: bool,
+    pub paste_method: PasteMethod,
+    pub auto_submit_mode: AutoSubmitMode,
     pub debug_stats_enabled: bool,
     pub metrics_text: String,
 }
@@ -194,6 +203,7 @@ pub enum PasteResult {
     Pasted,
     EmptyText,
     ClipboardWriteFailed,
+    InputEventFailed,
     AccessibilityRequired,
 }
 
@@ -470,33 +480,62 @@ pub fn hold_hotkey_overlaps_raw_modifier() -> bool {
     HOLD_HOTKEY_MODIFIERS.contains(Modifiers::ALT)
 }
 
-pub fn paste_text(text: &str, paste_delay_ms: u64) -> PasteResult {
+pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> PasteResult {
     if text.trim().is_empty() {
         return PasteResult::EmptyText;
     }
 
-    unsafe {
-        if !write_pasteboard_string(text) {
-            eprintln!("Azad: failed to write transcript to pasteboard");
-            return PasteResult::ClipboardWriteFailed;
-        }
-    }
-
     if !ensure_accessibility_for_auto_paste() {
-        eprintln!("Azad: paste skipped due to missing Accessibility permission");
+        eprintln!("Azad: insert skipped due to missing Accessibility permission");
         return PasteResult::AccessibilityRequired;
     }
 
-    // Clipboard propagation delay so the focused target app sees the new clipboard value.
-    std::thread::sleep(Duration::from_millis(paste_delay_ms));
-
     unsafe {
-        send_command_v_robust();
+        match method {
+            PasteMethod::ClipboardPaste => {
+                if !write_pasteboard_string(text) {
+                    eprintln!("Azad: failed to write transcript to pasteboard");
+                    return PasteResult::ClipboardWriteFailed;
+                }
+                // Clipboard propagation delay so focused target app sees the new value.
+                std::thread::sleep(Duration::from_millis(paste_delay_ms));
+                send_command_v_robust();
+            }
+            PasteMethod::DirectTyping => {
+                if !send_direct_text_input(text) {
+                    eprintln!("Azad: failed to send direct text input");
+                    return PasteResult::InputEventFailed;
+                }
+            }
+            PasteMethod::DirectTypingAndCopyClipboard => {
+                if !send_direct_text_input(text) {
+                    eprintln!("Azad: failed to send direct text input");
+                    return PasteResult::InputEventFailed;
+                }
+                if !write_pasteboard_string(text) {
+                    eprintln!("Azad: direct input succeeded but failed to copy text to pasteboard");
+                }
+            }
+        }
     }
+
     // Give the target app a short settle window after synthetic paste.
     std::thread::sleep(Duration::from_millis(POST_PASTE_SETTLE_MS));
 
     PasteResult::Pasted
+}
+
+pub fn send_auto_submit(mode: AutoSubmitMode) -> bool {
+    match mode {
+        AutoSubmitMode::Off => true,
+        AutoSubmitMode::Enter => unsafe { send_key_chord(KEYCODE_RETURN, CGEventFlags::empty()) },
+        AutoSubmitMode::CtrlEnter => unsafe {
+            send_key_chord(KEYCODE_RETURN, CGEventFlags::CGEventFlagControl)
+        },
+        AutoSubmitMode::ShiftEnter => unsafe {
+            send_key_chord(KEYCODE_RETURN, CGEventFlags::CGEventFlagShift)
+        },
+    }
 }
 
 fn register_delegate_class() -> &'static Class {
@@ -527,6 +566,14 @@ fn register_delegate_class() -> &'static Class {
         decl.add_method(
             sel!(settingsToggleDebug:),
             settings_toggle_debug as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(settingsSelectPasteMethod:),
+            settings_select_paste_method as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(settingsSelectAutoSubmit:),
+            settings_select_auto_submit as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
             sel!(windowWillClose:),
@@ -739,6 +786,32 @@ extern "C" fn settings_toggle_debug(_: &Object, _: Sel, sender: id) {
         }
         let state: i64 = msg_send![sender, state];
         crate::app::send_event(AppEvent::SettingsToggleDebugStats(state != 0));
+        crate::app::drain_events();
+    }
+}
+
+extern "C" fn settings_select_paste_method(_: &Object, _: Sel, sender: id) {
+    unsafe {
+        if sender == nil {
+            return;
+        }
+        let index: i64 = msg_send![sender, indexOfSelectedItem];
+        crate::app::send_event(AppEvent::SettingsSelectPasteMethod(
+            PasteMethod::from_ui_index(index),
+        ));
+        crate::app::drain_events();
+    }
+}
+
+extern "C" fn settings_select_auto_submit(_: &Object, _: Sel, sender: id) {
+    unsafe {
+        if sender == nil {
+            return;
+        }
+        let index: i64 = msg_send![sender, indexOfSelectedItem];
+        crate::app::send_event(AppEvent::SettingsSelectAutoSubmit(
+            AutoSubmitMode::from_ui_index(index),
+        ));
         crate::app::drain_events();
     }
 }
@@ -1930,6 +2003,15 @@ unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsVi
     let run_on_startup_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
     let _: () = msg_send![refs.run_on_startup_checkbox, setState: run_on_startup_state];
 
+    let _: () = msg_send![
+        refs.paste_method_popup,
+        selectItemAtIndex: model.paste_method.ui_index()
+    ];
+    let _: () = msg_send![
+        refs.auto_submit_popup,
+        selectItemAtIndex: model.auto_submit_mode.ui_index()
+    ];
+
     let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
     let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
 
@@ -2510,6 +2592,70 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     ];
     let _: () = msg_send![general_container, addSubview: run_on_startup_checkbox];
 
+    let paste_method_y = general_top_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+    let paste_method_label_frame = NSRect::new(
+        NSPoint::new(0.0, paste_method_y),
+        NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
+    );
+    let paste_method_label: id = msg_send![class!(NSTextField), alloc];
+    let paste_method_label: id =
+        msg_send![paste_method_label, initWithFrame: paste_method_label_frame];
+    let _: () = msg_send![paste_method_label, setStringValue: NSString::alloc(nil).init_str("Insert method")];
+    let _: () = msg_send![paste_method_label, setBezeled: NO];
+    let _: () = msg_send![paste_method_label, setDrawsBackground: NO];
+    let _: () = msg_send![paste_method_label, setEditable: NO];
+    let _: () = msg_send![paste_method_label, setSelectable: NO];
+    let _: () = msg_send![paste_method_label, setAlignment: 0isize];
+    let _: () = msg_send![general_container, addSubview: paste_method_label];
+
+    let paste_method_popup_x = SETTINGS_LABEL_WIDTH + 10.0;
+    let paste_method_popup_frame = NSRect::new(
+        NSPoint::new(paste_method_popup_x, paste_method_y - 2.0),
+        NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
+    );
+    let paste_method_popup: id = msg_send![class!(NSPopUpButton), alloc];
+    let paste_method_popup: id =
+        msg_send![paste_method_popup, initWithFrame: paste_method_popup_frame pullsDown: NO];
+    let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Clipboard paste")];
+    let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing")];
+    let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing + copy clipboard")];
+    let _: () = msg_send![paste_method_popup, setAction: sel!(settingsSelectPasteMethod:)];
+    let _: () = msg_send![general_container, addSubview: paste_method_popup];
+
+    let auto_submit_y = paste_method_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+    let auto_submit_label_frame = NSRect::new(
+        NSPoint::new(0.0, auto_submit_y),
+        NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
+    );
+    let auto_submit_label: id = msg_send![class!(NSTextField), alloc];
+    let auto_submit_label: id =
+        msg_send![auto_submit_label, initWithFrame: auto_submit_label_frame];
+    let _: () =
+        msg_send![auto_submit_label, setStringValue: NSString::alloc(nil).init_str("Auto submit")];
+    let _: () = msg_send![auto_submit_label, setBezeled: NO];
+    let _: () = msg_send![auto_submit_label, setDrawsBackground: NO];
+    let _: () = msg_send![auto_submit_label, setEditable: NO];
+    let _: () = msg_send![auto_submit_label, setSelectable: NO];
+    let _: () = msg_send![auto_submit_label, setAlignment: 0isize];
+    let _: () = msg_send![general_container, addSubview: auto_submit_label];
+
+    let auto_submit_popup_frame = NSRect::new(
+        NSPoint::new(paste_method_popup_x, auto_submit_y - 2.0),
+        NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
+    );
+    let auto_submit_popup: id = msg_send![class!(NSPopUpButton), alloc];
+    let auto_submit_popup: id =
+        msg_send![auto_submit_popup, initWithFrame: auto_submit_popup_frame pullsDown: NO];
+    let _: () =
+        msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Off")];
+    let _: () =
+        msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Enter")];
+    let _: () =
+        msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Ctrl+Enter")];
+    let _: () = msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Shift+Enter")];
+    let _: () = msg_send![auto_submit_popup, setAction: sel!(settingsSelectAutoSubmit:)];
+    let _: () = msg_send![general_container, addSubview: auto_submit_popup];
+
     let debug_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
     let debug_checkbox_frame = NSRect::new(
         NSPoint::new(0.0, debug_top_y),
@@ -2566,6 +2712,8 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
         let _: () = msg_send![tab_list_view, setDelegate: delegate];
         let _: () = msg_send![tab_list_view, setDataSource: delegate];
         let _: () = msg_send![run_on_startup_checkbox, setTarget: delegate];
+        let _: () = msg_send![paste_method_popup, setTarget: delegate];
+        let _: () = msg_send![auto_submit_popup, setTarget: delegate];
         let _: () = msg_send![debug_checkbox, setTarget: delegate];
         let _: () = msg_send![refresh_button, setTarget: delegate];
     }
@@ -2584,6 +2732,8 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
         general_container,
         debug_container,
         run_on_startup_checkbox,
+        paste_method_popup,
+        auto_submit_popup,
         debug_checkbox,
         metrics_text_view,
     };
@@ -2971,6 +3121,77 @@ fn set_enter_hotkey_enabled(enabled: bool) {
         }
         HOTKEY_ENTER_REGISTERED.store(false, Ordering::Relaxed);
     });
+}
+
+unsafe fn send_direct_text_input(text: &str) -> bool {
+    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        Ok(source) => source,
+        Err(_) => return false,
+    };
+    release_modifiers(&source);
+
+    let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), 0, true) else {
+        return false;
+    };
+    key_down.set_string(text);
+    key_down.post(CGEventTapLocation::HID);
+
+    let Ok(key_up) = CGEvent::new_keyboard_event(source, 0, false) else {
+        return false;
+    };
+    key_up.post(CGEventTapLocation::HID);
+    true
+}
+
+unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
+    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        Ok(source) => source,
+        Err(_) => return false,
+    };
+
+    release_modifiers(&source);
+
+    let modifier_key = if flags.contains(CGEventFlags::CGEventFlagControl) {
+        Some(KEYCODE_LEFT_CONTROL)
+    } else if flags.contains(CGEventFlags::CGEventFlagShift) {
+        Some(KEYCODE_LEFT_SHIFT)
+    } else {
+        None
+    };
+
+    if let Some(modifier_key) = modifier_key {
+        let Ok(mod_down) = CGEvent::new_keyboard_event(source.clone(), modifier_key, true) else {
+            return false;
+        };
+        if !flags.is_empty() {
+            mod_down.set_flags(flags);
+        }
+        mod_down.post(CGEventTapLocation::HID);
+    }
+
+    let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), keycode, true) else {
+        return false;
+    };
+    if !flags.is_empty() {
+        key_down.set_flags(flags);
+    }
+    key_down.post(CGEventTapLocation::HID);
+
+    let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), keycode, false) else {
+        return false;
+    };
+    if !flags.is_empty() {
+        key_up.set_flags(flags);
+    }
+    key_up.post(CGEventTapLocation::HID);
+
+    if let Some(modifier_key) = modifier_key {
+        if let Ok(mod_up) = CGEvent::new_keyboard_event(source, modifier_key, false) {
+            mod_up.post(CGEventTapLocation::HID);
+        }
+    }
+
+    true
 }
 
 unsafe fn send_command_v_robust() {

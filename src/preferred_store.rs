@@ -1,14 +1,18 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use cocoa::base::{id, nil, NO, YES};
+use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::NSString;
 use objc::{class, msg_send, sel, sel_impl};
+
+use crate::settings::{AutoSubmitMode, PasteMethod};
 
 const PREFERRED_DEVICE_KEY: &str = "AzadPreferredInputDeviceId";
 const ALWAYS_LISTENING_KEY: &str = "AzadAlwaysListeningEnabled";
 const DEBUG_STATS_ENABLED_KEY: &str = "AzadDebugStatsEnabled";
 const RUN_ON_STARTUP_KEY: &str = "AzadRunOnStartup";
+const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
+const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
 
 pub fn load_preferred_device_id() -> Option<String> {
     unsafe {
@@ -126,6 +130,64 @@ pub fn save_run_on_startup_enabled(enabled: bool) {
         let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
         let value = if enabled { YES } else { NO };
         let _: () = msg_send![defaults, setBool: value forKey: key];
+    }
+}
+
+pub fn load_paste_method() -> PasteMethod {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return PasteMethod::default();
+        }
+
+        let key = NSString::alloc(nil).init_str(PASTE_METHOD_KEY);
+        let value: id = msg_send![defaults, stringForKey: key];
+        let Some(value) = nsstring_to_string(value) else {
+            return PasteMethod::default();
+        };
+        PasteMethod::from_prefs_value(value.trim())
+    }
+}
+
+pub fn save_paste_method(method: PasteMethod) {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return;
+        }
+
+        let key = NSString::alloc(nil).init_str(PASTE_METHOD_KEY);
+        let value = NSString::alloc(nil).init_str(method.prefs_value());
+        let _: () = msg_send![defaults, setObject: value forKey: key];
+    }
+}
+
+pub fn load_auto_submit_mode() -> AutoSubmitMode {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return AutoSubmitMode::default();
+        }
+
+        let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
+        let value: id = msg_send![defaults, stringForKey: key];
+        let Some(value) = nsstring_to_string(value) else {
+            return AutoSubmitMode::default();
+        };
+        AutoSubmitMode::from_prefs_value(value.trim())
+    }
+}
+
+pub fn save_auto_submit_mode(mode: AutoSubmitMode) {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return;
+        }
+
+        let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
+        let value = NSString::alloc(nil).init_str(mode.prefs_value());
+        let _: () = msg_send![defaults, setObject: value forKey: key];
     }
 }
 

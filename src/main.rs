@@ -9,6 +9,7 @@ mod hotkey_sm;
 mod metrics_log;
 mod platform;
 mod preferred_store;
+mod settings;
 mod single_instance;
 mod speech;
 
