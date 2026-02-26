@@ -117,6 +117,7 @@ pub struct RecentTranscriptSummary {
     pub mode: TranscriptMode,
     pub transcription_duration_ms: u64,
     pub partial_count: Option<usize>,
+    pub quality_score_pct: Option<f64>,
     pub fallback: bool,
     pub text_preview: String,
 }
@@ -243,14 +244,14 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
     ));
     if summary.recent_transcripts.is_empty() {
         lines.extend(render_table(
-            &["mode", "parts", "preview", "ms"],
-            &[7, 5, 44, 8],
+            &["mode", "parts", "quality", "preview", "ms"],
+            &[7, 5, 7, 34, 8],
             &[vec![
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
-                "none".to_string(),
+                "-".to_string(),
             ]],
         ));
     } else {
@@ -263,13 +264,14 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
             rows.push(vec![
                 recent_mode_label(sample).to_string(),
                 partial_count,
+                recent_quality_label(sample),
                 sample.text_preview.clone(),
                 sample.transcription_duration_ms.to_string(),
             ]);
         }
         lines.extend(render_table(
-            &["mode", "parts", "preview", "ms"],
-            &[7, 5, 44, 8],
+            &["mode", "parts", "quality", "preview", "ms"],
+            &[7, 5, 7, 34, 8],
             &rows,
         ));
     }
@@ -378,6 +380,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
                         mode: *mode,
                         transcription_duration_ms: *transcription_duration_ms,
                         partial_count: None,
+                        quality_score_pct: None,
                         fallback: *fallback,
                         text_preview: text_preview.clone(),
                     },
@@ -458,6 +461,9 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
     for sample in &mut summary.recent_transcripts {
         if let Some((_, count)) = partial_counts.get(&sample.turn_id) {
             sample.partial_count = Some(*count);
+        }
+        if let Some((_, exact, _, wer_like, _)) = audits.get(&sample.turn_id) {
+            sample.quality_score_pct = Some(quality_score_pct(*exact, *wer_like));
         }
     }
 
@@ -619,6 +625,20 @@ fn recent_mode_label(sample: &RecentTranscriptSummary) -> &'static str {
     }
 }
 
+fn recent_quality_label(sample: &RecentTranscriptSummary) -> String {
+    sample
+        .quality_score_pct
+        .map(|pct| format!("{pct:.1}%"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn quality_score_pct(exact: bool, wer_like: f64) -> f64 {
+    if exact {
+        return 100.0;
+    }
+    (1.0 - wer_like.clamp(0.0, 1.0)) * 100.0
+}
+
 fn metrics_log_path() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home)
@@ -633,7 +653,8 @@ fn metrics_log_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        duration_stats, percentile, summarize, MetricsLogEvent, MetricsLogRecord, TranscriptMode,
+        MetricsLogEvent, MetricsLogRecord, TranscriptMode, duration_stats, percentile,
+        quality_score_pct, summarize,
     };
 
     #[test]
@@ -754,5 +775,13 @@ mod tests {
         assert!(summary.recent_transcripts[0].fallback);
         assert_eq!(summary.recent_transcripts[0].transcription_duration_ms, 80);
         assert_eq!(summary.recent_transcripts[1].turn_id, 1);
+        assert_eq!(summary.recent_transcripts[1].quality_score_pct, Some(100.0));
+    }
+
+    #[test]
+    fn quality_score_uses_wer_like_similarity() {
+        assert_eq!(quality_score_pct(true, 0.7), 100.0);
+        assert!((quality_score_pct(false, 0.03) - 97.0).abs() < 1e-9);
+        assert!((quality_score_pct(false, 2.0) - 0.0).abs() < 1e-9);
     }
 }
