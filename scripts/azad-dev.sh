@@ -29,6 +29,7 @@ else
 fi
 
 TOON_SHOW_PARTIALS="${AZAD_TOON_SHOW_PARTIALS:-0}"
+AZAD_NATIVE_ENGINE_LOGS="${AZAD_NATIVE_ENGINE_LOGS:-0}"
 
 CODESIGN_IDENTITY="${AZAD_CODESIGN_IDENTITY:-}"
 if [[ -z "$CODESIGN_IDENTITY" ]] && [[ -x /usr/bin/security ]]; then
@@ -157,6 +158,8 @@ write_launch_agent_plist() {
     <string>${APP_RESOURCES_DIR}</string>
     <key>TOON_SHOW_PARTIALS</key>
     <string>${TOON_SHOW_PARTIALS}</string>
+    <key>AZAD_NATIVE_ENGINE_LOGS</key>
+    <string>${AZAD_NATIVE_ENGINE_LOGS}</string>
   </dict>
   <key>StandardOutPath</key>
   <string>${STDOUT_LOG}</string>

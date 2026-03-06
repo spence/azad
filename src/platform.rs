@@ -28,6 +28,7 @@ use crate::settings::{AutoSubmitMode, PasteMethod};
 
 const KEYCODE_V: u16 = 0x09;
 const KEYCODE_RETURN: u16 = 0x24;
+const KEYCODE_DIRECT_INPUT: u16 = 0x00;
 const KEYCODE_LEFT_COMMAND: u16 = 0x37;
 const KEYCODE_RIGHT_COMMAND: u16 = 0x36;
 const KEYCODE_LEFT_SHIFT: u16 = 0x38;
@@ -98,6 +99,18 @@ const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
 const SETTINGS_LABEL_WIDTH: f64 = 180.0;
 const SETTINGS_POPUP_WIDTH: f64 = 220.0;
 const SETTINGS_CONTROL_VERTICAL_GAP: f64 = 14.0;
+const LISTEN_NOTICE_CARD_ALPHA: f64 = 0.92;
+const LISTEN_NOTICE_WAVE_BASE_ALPHA: f64 = 0.060;
+const LISTEN_NOTICE_WAVE_PEAK_ALPHA: f64 = 0.170;
+const OVERLAY_NOTICE_KEYCAP_HEIGHT: f64 = 18.0;
+const OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH: f64 = 24.0;
+const OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH: f64 = 62.0;
+const OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH: f64 = 14.0;
+const OVERLAY_NOTICE_KEYCAP_GAP: f64 = 6.0;
+const OVERLAY_NOTICE_KEYCAP_BORDER_WIDTH: f64 = 1.2;
+const OVERLAY_NOTICE_KEYCAP_CORNER_RADIUS: f64 = 5.0;
+const OVERLAY_NOTICE_KEYCAP_FONT_SIZE: f64 = 12.0;
+const OVERLAY_NOTICE_KEYCAP_BOTTOM_INSET: f64 = 8.0;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -151,6 +164,12 @@ struct OverlayRefs {
     wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
     busy_gradient_layer: id,
     busy_mask_layer: id,
+    notice_shortcut_row: id,
+    notice_option_key: id,
+    notice_option_label: id,
+    notice_plus_label: id,
+    notice_space_key: id,
+    notice_space_label: id,
 }
 
 #[derive(Clone, Copy)]
@@ -205,6 +224,24 @@ pub enum PasteResult {
     ClipboardWriteFailed,
     InputEventFailed,
     AccessibilityRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayNoticeSegment {
+    Text(String),
+    #[allow(dead_code)]
+    Keycap(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayNoticeShortcut {
+    OptionSpace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OverlayNoticeStyle {
+    Standard,
+    ListenToggle { enabled: bool, progress: f32 },
 }
 
 pub fn run_app() {
@@ -448,10 +485,58 @@ pub fn set_overlay_top_stream_content(draft: &str, activity: &[f32], busy_phase:
 }
 
 pub fn set_overlay_notice_content(title: &str, body: &str) {
+    set_overlay_notice_content_styled(
+        title,
+        &[OverlayNoticeSegment::Text(body.to_string())],
+        OverlayNoticeStyle::Standard,
+        None,
+    );
+}
+
+pub fn set_overlay_listen_toggle_notice_content(
+    title: &str,
+    body_segments: &[OverlayNoticeSegment],
+    shortcut: Option<OverlayNoticeShortcut>,
+    enabled: bool,
+    progress: f32,
+) {
+    set_overlay_notice_content_styled(
+        title,
+        body_segments,
+        OverlayNoticeStyle::ListenToggle {
+            enabled,
+            progress: progress.clamp(0.0, 1.0),
+        },
+        shortcut,
+    );
+}
+
+fn render_overlay_notice_body(segments: &[OverlayNoticeSegment]) -> String {
+    let mut out = String::new();
+    for seg in segments {
+        match seg {
+            OverlayNoticeSegment::Text(t) => out.push_str(t),
+            OverlayNoticeSegment::Keycap(k) => {
+                out.push('[');
+                out.push_str(k);
+                out.push(']');
+            }
+        }
+    }
+    out
+}
+
+fn set_overlay_notice_content_styled(
+    title: &str,
+    body_segments: &[OverlayNoticeSegment],
+    style: OverlayNoticeStyle,
+    shortcut: Option<OverlayNoticeShortcut>,
+) {
     let Some(refs) = current_overlay() else {
         return;
     };
     let title = title.trim();
+    let body = render_overlay_notice_body(body_segments);
     let body = body.trim();
     let rendered = if body.is_empty() {
         title.to_string()
@@ -461,7 +546,15 @@ pub fn set_overlay_notice_content(title: &str, body: &str) {
 
     unsafe {
         move_overlay_to_cursor_screen(refs, false);
-        render_overlay_text(refs, &rendered, &[], None, false, false);
+        let notice_activity = match style {
+            OverlayNoticeStyle::Standard => Vec::new(),
+            OverlayNoticeStyle::ListenToggle { enabled, progress } => {
+                listen_toggle_notice_activity(enabled, progress)
+            }
+        };
+        render_overlay_text(refs, &rendered, &notice_activity, None, false, false);
+        apply_overlay_notice_style(refs, style);
+        apply_overlay_notice_shortcut(refs, shortcut, style);
     }
 }
 
@@ -490,6 +583,15 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
         return PasteResult::AccessibilityRequired;
     }
 
+    let force_clipboard_bundle = if matches!(
+        method,
+        PasteMethod::DirectTyping | PasteMethod::DirectTypingAndCopyClipboard
+    ) {
+        unsafe { frontmost_bundle_id().filter(|bundle| is_terminal_like_bundle_id(bundle)) }
+    } else {
+        None
+    };
+
     unsafe {
         match method {
             PasteMethod::ClipboardPaste => {
@@ -502,18 +604,42 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
                 send_command_v_robust();
             }
             PasteMethod::DirectTyping => {
-                if !send_direct_text_input(text) {
+                if let Some(bundle) = force_clipboard_bundle.as_deref() {
+                    eprintln!(
+                        "Azad: direct typing fallback to clipboard paste for frontmost app bundle={bundle}"
+                    );
+                    if !write_pasteboard_string(text) {
+                        eprintln!("Azad: failed to write transcript to pasteboard");
+                        return PasteResult::ClipboardWriteFailed;
+                    }
+                    std::thread::sleep(Duration::from_millis(paste_delay_ms));
+                    send_command_v_robust();
+                } else if !send_direct_text_input(text) {
                     eprintln!("Azad: failed to send direct text input");
                     return PasteResult::InputEventFailed;
                 }
             }
             PasteMethod::DirectTypingAndCopyClipboard => {
-                if !send_direct_text_input(text) {
-                    eprintln!("Azad: failed to send direct text input");
-                    return PasteResult::InputEventFailed;
-                }
-                if !write_pasteboard_string(text) {
-                    eprintln!("Azad: direct input succeeded but failed to copy text to pasteboard");
+                if let Some(bundle) = force_clipboard_bundle.as_deref() {
+                    eprintln!(
+                        "Azad: direct typing+copy fallback to clipboard paste for frontmost app bundle={bundle}"
+                    );
+                    if !write_pasteboard_string(text) {
+                        eprintln!("Azad: failed to write transcript to pasteboard");
+                        return PasteResult::ClipboardWriteFailed;
+                    }
+                    std::thread::sleep(Duration::from_millis(paste_delay_ms));
+                    send_command_v_robust();
+                } else {
+                    if !send_direct_text_input(text) {
+                        eprintln!("Azad: failed to send direct text input");
+                        return PasteResult::InputEventFailed;
+                    }
+                    if !write_pasteboard_string(text) {
+                        eprintln!(
+                            "Azad: direct input succeeded but failed to copy text to pasteboard"
+                        );
+                    }
                 }
             }
         }
@@ -536,6 +662,21 @@ pub fn send_auto_submit(mode: AutoSubmitMode) -> bool {
             send_key_chord(KEYCODE_RETURN, CGEventFlags::CGEventFlagShift)
         },
     }
+}
+
+fn is_terminal_like_bundle_id(bundle_id: &str) -> bool {
+    matches!(
+        bundle_id,
+        "com.apple.Terminal"
+            | "com.googlecode.iterm2"
+            | "com.github.wez.wezterm"
+            | "dev.warp.Warp-Stable"
+            | "dev.warp.Warp"
+            | "net.kovidgoyal.kitty"
+            | "org.alacritty"
+            | "io.alacritty"
+            | "com.mitchellh.ghostty"
+    )
 }
 
 fn register_delegate_class() -> &'static Class {
@@ -2076,6 +2217,15 @@ unsafe fn render_overlay_text(
 
     let card_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
     let _: () = msg_send![refs.card_view, setFrame: card_frame];
+    let card_layer: id = msg_send![refs.card_view, layer];
+    if card_layer != nil {
+        let card_color =
+            NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
+        let card_cg: id = msg_send![card_color, CGColor];
+        let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
+    }
+    let default_text = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+    let _: () = msg_send![refs.label, setTextColor: default_text];
 
     apply_busy_border_style(refs, busy_phase, width, height);
 
@@ -2132,12 +2282,146 @@ unsafe fn render_overlay_text(
     let _: () = msg_send![refs.label, setAlignment: 1isize];
     let _: () =
         msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
+    hide_overlay_notice_shortcut(refs);
     render_activity_wave(
         refs,
         activity,
         meter_frame.size.width,
         meter_frame.size.height,
     );
+}
+
+unsafe fn hide_overlay_notice_shortcut(refs: OverlayRefs) {
+    if refs.notice_shortcut_row != nil {
+        let _: () = msg_send![refs.notice_shortcut_row, setHidden: YES];
+    }
+}
+
+unsafe fn apply_overlay_notice_shortcut(
+    refs: OverlayRefs,
+    shortcut: Option<OverlayNoticeShortcut>,
+    style: OverlayNoticeStyle,
+) {
+    let Some(shortcut) = shortcut else {
+        hide_overlay_notice_shortcut(refs);
+        return;
+    };
+    if refs.notice_shortcut_row == nil {
+        return;
+    }
+
+    let enabled = match style {
+        OverlayNoticeStyle::ListenToggle { enabled, .. } => enabled,
+        OverlayNoticeStyle::Standard => false,
+    };
+    match shortcut {
+        OverlayNoticeShortcut::OptionSpace => {
+            let row_width = OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH
+                + OVERLAY_NOTICE_KEYCAP_GAP
+                + OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH
+                + OVERLAY_NOTICE_KEYCAP_GAP
+                + OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH;
+            let label_frame: NSRect = msg_send![refs.label, frame];
+            let row_x =
+                label_frame.origin.x + ((label_frame.size.width - row_width).max(0.0) * 0.5);
+            let row_y = OVERLAY_NOTICE_KEYCAP_BOTTOM_INSET;
+            let row_frame = NSRect::new(
+                NSPoint::new(row_x, row_y),
+                NSSize::new(row_width, OVERLAY_NOTICE_KEYCAP_HEIGHT),
+            );
+            let _: () = msg_send![refs.notice_shortcut_row, setFrame: row_frame];
+
+            let option_frame = NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(
+                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH,
+                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
+                ),
+            );
+            let plus_frame = NSRect::new(
+                NSPoint::new(
+                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH + OVERLAY_NOTICE_KEYCAP_GAP,
+                    0.0,
+                ),
+                NSSize::new(
+                    OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH,
+                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
+                ),
+            );
+            let space_frame = NSRect::new(
+                NSPoint::new(
+                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH
+                        + OVERLAY_NOTICE_KEYCAP_GAP
+                        + OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH
+                        + OVERLAY_NOTICE_KEYCAP_GAP,
+                    0.0,
+                ),
+                NSSize::new(
+                    OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH,
+                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
+                ),
+            );
+            let _: () = msg_send![refs.notice_option_key, setFrame: option_frame];
+            let _: () = msg_send![refs.notice_plus_label, setFrame: plus_frame];
+            let _: () = msg_send![refs.notice_space_key, setFrame: space_frame];
+
+            let option_label_frame = NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(
+                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH,
+                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
+                ),
+            );
+            let space_label_frame = NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(
+                    OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH,
+                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
+                ),
+            );
+            let _: () = msg_send![refs.notice_option_label, setFrame: option_label_frame];
+            let _: () = msg_send![refs.notice_space_label, setFrame: space_label_frame];
+
+            let (r, g, b) = if enabled {
+                (0.25, 0.84, 0.78)
+            } else {
+                (0.98, 0.58, 0.20)
+            };
+            let border_color =
+                NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, 0.96);
+            let border_cg: id = msg_send![border_color, CGColor];
+            for key in [refs.notice_option_key, refs.notice_space_key] {
+                if key == nil {
+                    continue;
+                }
+                let layer: id = msg_send![key, layer];
+                if layer == nil {
+                    continue;
+                }
+                let fill = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, 0.12);
+                let fill_cg: id = msg_send![fill, CGColor];
+                let _: () = msg_send![layer, setBackgroundColor: fill_cg];
+                let _: () = msg_send![layer, setBorderWidth: OVERLAY_NOTICE_KEYCAP_BORDER_WIDTH];
+                let _: () = msg_send![layer, setBorderColor: border_cg];
+                let _: () = msg_send![layer, setCornerRadius: OVERLAY_NOTICE_KEYCAP_CORNER_RADIUS];
+            }
+
+            let text_color =
+                NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.98);
+            for label in [
+                refs.notice_option_label,
+                refs.notice_space_label,
+                refs.notice_plus_label,
+            ] {
+                if label == nil {
+                    continue;
+                }
+                let _: () = msg_send![label, setTextColor: text_color];
+            }
+
+            let _: () = msg_send![refs.notice_shortcut_row, setHidden: NO];
+        }
+    }
 }
 
 fn main_screen_frame() -> NSRect {
@@ -2426,6 +2710,111 @@ unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, 
         if layer != nil {
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
             let _: () = msg_send![layer, setCornerRadius: (bar_width * 0.5).max(0.5)];
+        }
+    }
+}
+
+fn listen_toggle_notice_activity(enabled: bool, progress: f32) -> Vec<f32> {
+    let p = progress.clamp(0.0, 1.0);
+    let mut samples = vec![0.0; OVERLAY_WAVE_BAR_COUNT];
+    if samples.is_empty() {
+        return samples;
+    }
+
+    let center = if enabled {
+        0.46 + (p as f64 * 0.24)
+    } else {
+        0.54 - (p as f64 * 0.24)
+    };
+    let pulse = ((1.0 - ((p as f64 - 0.38).abs() / 0.40)).clamp(0.0, 1.0)).powf(0.75);
+    let energy = 0.22 + pulse * 0.45;
+
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        let x = idx as f64 / (OVERLAY_WAVE_BAR_COUNT.saturating_sub(1).max(1) as f64);
+        let dist = (x - center).abs();
+        let envelope = (1.0 - dist / 0.62).clamp(0.0, 1.0).powf(1.5);
+        let ripple = ((x * 18.0 + p as f64 * 10.0).sin() * 0.5 + 0.5).powf(0.9);
+        let v = 0.08 + envelope * (0.20 + energy * (0.42 + ripple * 0.58));
+        *sample = v.clamp(0.0, 1.0) as f32;
+    }
+
+    samples
+}
+
+fn mix(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t.clamp(0.0, 1.0)
+}
+
+unsafe fn apply_overlay_notice_style(refs: OverlayRefs, style: OverlayNoticeStyle) {
+    let card_layer: id = msg_send![refs.card_view, layer];
+    if card_layer == nil {
+        return;
+    }
+
+    match style {
+        OverlayNoticeStyle::Standard => {}
+        OverlayNoticeStyle::ListenToggle { enabled, progress } => {
+            let p = progress.clamp(0.0, 1.0) as f64;
+            let pulse = ((1.0 - ((p - 0.38).abs() / 0.40)).clamp(0.0, 1.0)).powf(0.75);
+
+            let (base_r, base_g, base_b, glow_r, glow_g, glow_b) = if enabled {
+                (0.03, 0.07, 0.08, 0.15, 0.80, 0.70)
+            } else {
+                (0.08, 0.05, 0.03, 0.98, 0.54, 0.16)
+            };
+            let bg_mix = 0.20 + pulse * 0.22;
+            let bg = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+                nil,
+                mix(base_r, glow_r, bg_mix).clamp(0.0, 1.0),
+                mix(base_g, glow_g, bg_mix).clamp(0.0, 1.0),
+                mix(base_b, glow_b, bg_mix).clamp(0.0, 1.0),
+                LISTEN_NOTICE_CARD_ALPHA,
+            );
+            let bg_cg: id = msg_send![bg, CGColor];
+            let _: () = msg_send![card_layer, setBackgroundColor: bg_cg];
+
+            let border = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+                nil,
+                mix(0.52, glow_r, 0.65).clamp(0.0, 1.0),
+                mix(0.64, glow_g, 0.65).clamp(0.0, 1.0),
+                mix(0.90, glow_b, 0.65).clamp(0.0, 1.0),
+                (0.34 + pulse * 0.46).clamp(0.0, 1.0),
+            );
+            let border_cg: id = msg_send![border, CGColor];
+            let _: () = msg_send![card_layer, setBorderColor: border_cg];
+
+            let text = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.98);
+            let _: () = msg_send![refs.label, setTextColor: text];
+
+            let wave_alpha = (LISTEN_NOTICE_WAVE_BASE_ALPHA
+                + pulse * LISTEN_NOTICE_WAVE_PEAK_ALPHA)
+                .clamp(0.0, 1.0);
+            for bar in refs.wave_bars {
+                if bar == nil {
+                    continue;
+                }
+                let hidden: i8 = msg_send![bar, isHidden];
+                if hidden != 0 {
+                    continue;
+                }
+                let layer: id = msg_send![bar, layer];
+                if layer == nil {
+                    continue;
+                }
+                let tinted = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+                    nil,
+                    glow_r.clamp(0.0, 1.0),
+                    glow_g.clamp(0.0, 1.0),
+                    glow_b.clamp(0.0, 1.0),
+                    wave_alpha,
+                );
+                let tinted_cg: id = msg_send![tinted, CGColor];
+                let _: () = msg_send![layer, setBackgroundColor: tinted_cg];
+            }
+
+            if refs.busy_gradient_layer != nil {
+                let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];
+            }
         }
     }
 }
@@ -2872,6 +3261,80 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let _: () = msg_send![hold_badge, setHidden: YES];
     let _: () = msg_send![card_view, addSubview: hold_badge];
 
+    let notice_shortcut_row: id = msg_send![class!(NSView), alloc];
+    let notice_shortcut_row: id = msg_send![notice_shortcut_row, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(1.0, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+    )];
+    let _: () = msg_send![notice_shortcut_row, setWantsLayer: YES];
+    let _: () = msg_send![notice_shortcut_row, setHidden: YES];
+    let _: () = msg_send![card_view, addSubview: notice_shortcut_row];
+
+    let notice_option_key: id = msg_send![class!(NSView), alloc];
+    let notice_option_key: id = msg_send![notice_option_key, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+    )];
+    let _: () = msg_send![notice_option_key, setWantsLayer: YES];
+    let _: () = msg_send![notice_shortcut_row, addSubview: notice_option_key];
+
+    let notice_option_label: id = msg_send![class!(NSTextField), alloc];
+    let notice_option_label: id = msg_send![notice_option_label, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+    )];
+    let _: () = msg_send![notice_option_label, setStringValue: NSString::alloc(nil).init_str("⌥")];
+    let _: () = msg_send![notice_option_label, setBezeled: NO];
+    let _: () = msg_send![notice_option_label, setDrawsBackground: NO];
+    let _: () = msg_send![notice_option_label, setEditable: NO];
+    let _: () = msg_send![notice_option_label, setSelectable: NO];
+    let _: () = msg_send![notice_option_label, setAlignment: 1isize];
+    let notice_key_font: id =
+        msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
+    let _: () = msg_send![notice_option_label, setFont: notice_key_font];
+    let _: () = msg_send![notice_option_key, addSubview: notice_option_label];
+
+    let notice_plus_label: id = msg_send![class!(NSTextField), alloc];
+    let notice_plus_label: id = msg_send![notice_plus_label, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+    )];
+    let _: () = msg_send![notice_plus_label, setStringValue: NSString::alloc(nil).init_str("+")];
+    let _: () = msg_send![notice_plus_label, setBezeled: NO];
+    let _: () = msg_send![notice_plus_label, setDrawsBackground: NO];
+    let _: () = msg_send![notice_plus_label, setEditable: NO];
+    let _: () = msg_send![notice_plus_label, setSelectable: NO];
+    let _: () = msg_send![notice_plus_label, setAlignment: 1isize];
+    let notice_plus_font: id =
+        msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
+    let _: () = msg_send![notice_plus_label, setFont: notice_plus_font];
+    let _: () = msg_send![notice_shortcut_row, addSubview: notice_plus_label];
+
+    let notice_space_key: id = msg_send![class!(NSView), alloc];
+    let notice_space_key: id = msg_send![notice_space_key, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+    )];
+    let _: () = msg_send![notice_space_key, setWantsLayer: YES];
+    let _: () = msg_send![notice_shortcut_row, addSubview: notice_space_key];
+
+    let notice_space_label: id = msg_send![class!(NSTextField), alloc];
+    let notice_space_label: id = msg_send![notice_space_label, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+    )];
+    let _: () =
+        msg_send![notice_space_label, setStringValue: NSString::alloc(nil).init_str("Space")];
+    let _: () = msg_send![notice_space_label, setBezeled: NO];
+    let _: () = msg_send![notice_space_label, setDrawsBackground: NO];
+    let _: () = msg_send![notice_space_label, setEditable: NO];
+    let _: () = msg_send![notice_space_label, setSelectable: NO];
+    let _: () = msg_send![notice_space_label, setAlignment: 1isize];
+    let notice_space_font: id =
+        msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
+    let _: () = msg_send![notice_space_label, setFont: notice_space_font];
+    let _: () = msg_send![notice_space_key, addSubview: notice_space_label];
+
     let busy_gradient_layer: id = msg_send![class!(CAGradientLayer), layer];
     let busy_mask_layer: id = msg_send![class!(CALayer), layer];
     if busy_gradient_layer != nil && busy_mask_layer != nil {
@@ -2933,6 +3396,12 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
         wave_bars,
         busy_gradient_layer,
         busy_mask_layer,
+        notice_shortcut_row,
+        notice_option_key,
+        notice_option_label,
+        notice_plus_label,
+        notice_space_key,
+        notice_space_label,
     };
     render_overlay_text(refs, "", &[], None, false, false);
     refs
@@ -3130,16 +3599,27 @@ unsafe fn send_direct_text_input(text: &str) -> bool {
     };
     release_modifiers(&source);
 
-    let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), 0, true) else {
-        return false;
-    };
-    key_down.set_string(text);
-    key_down.post(CGEventTapLocation::HID);
+    // Dispatch per-character Unicode key events. Some targets appear to ignore or
+    // truncate multi-character Unicode payloads in a single CGEvent.
+    // Use a neutral printable keycode while attaching Unicode payload so we avoid
+    // posting modifier/function-key events into terminal protocols.
+    for ch in text.chars() {
+        let mut one = String::new();
+        one.push(ch);
 
-    let Ok(key_up) = CGEvent::new_keyboard_event(source, 0, false) else {
-        return false;
-    };
-    key_up.post(CGEventTapLocation::HID);
+        let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, true)
+        else {
+            return false;
+        };
+        key_down.set_string(&one);
+        key_down.post(CGEventTapLocation::HID);
+
+        let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, false)
+        else {
+            return false;
+        };
+        key_up.post(CGEventTapLocation::HID);
+    }
     true
 }
 
@@ -3359,6 +3839,19 @@ unsafe fn bundle_resources_dir() -> Option<PathBuf> {
     nsstring_to_path(resource_path)
 }
 
+unsafe fn frontmost_bundle_id() -> Option<String> {
+    let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+    if workspace == nil {
+        return None;
+    }
+    let frontmost: id = msg_send![workspace, frontmostApplication];
+    if frontmost == nil {
+        return None;
+    }
+    let bundle_id: id = msg_send![frontmost, bundleIdentifier];
+    nsstring_to_string(bundle_id)
+}
+
 unsafe fn nsstring_to_path(value: id) -> Option<PathBuf> {
     if value == nil {
         return None;
@@ -3372,4 +3865,17 @@ unsafe fn nsstring_to_path(value: id) -> Option<PathBuf> {
     Some(PathBuf::from(
         CStr::from_ptr(ptr).to_string_lossy().into_owned(),
     ))
+}
+
+unsafe fn nsstring_to_string(value: id) -> Option<String> {
+    if value == nil {
+        return None;
+    }
+
+    let ptr: *const c_char = msg_send![value, UTF8String];
+    if ptr.is_null() {
+        return None;
+    }
+
+    Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
 }

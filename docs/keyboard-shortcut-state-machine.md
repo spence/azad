@@ -1,128 +1,187 @@
 # Keyboard Shortcut State Machine
 
-This document defines the keyboard shortcut behavior in Azad, including how
-global VAD mode and manual hold-to-talk interact.
+This document defines the current interaction state machine in `azad` for
+hotkeys, listen mode, and overlay behavior (including split overlay lanes).
 
-It is the source of truth for expected behavior during future changes.
+It is the source of truth for expected behavior and regression testing.
 
-## Scope
+## Boundary
 
-- Hold-to-talk hotkey: `Option+Space` press/release
-- VAD toggle gesture: `Option+Space` double tap
-- Manual finalize key: Enter / Numpad Enter
-- Overlay lifecycle and paste behavior
+- `asr` does not know hotkeys, overlay UI, or listen-mode toggles.
+- `azad` translates keyboard and menu events into:
+  - state-machine inputs (`src/interaction_sm.rs`)
+  - runtime actions against `SpeechSession` and platform overlay APIs.
 
-Raw mode badges/formatting are out of scope here.
+## Runtime Inputs
 
-## Design Boundary
+- `Option+Space` press/release (hold-to-talk and double-tap detector)
+- `Option+Space+Space` within tap window (listen mode toggle gesture)
+- `Enter` and `Numpad Enter` (finalize)
+- `Esc` (cancel current overlay turn)
+- Menu toggle for listen mode
+- Speech runtime events (`DraftUpdated`, `Finalizing`, `FinalText`, `Status`, etc.)
 
-`asr` does not know about keyboard shortcuts.
+## Core Runtime Flags
 
-`azad` translates keyboard gestures into `SpeechSession` controls:
+- `always_listening_enabled`: global listen mode on/off.
+- `manual_hold_active`: hold hotkey currently down.
+- `hold_saw_speech`: current hold produced non-empty draft text.
+- `overlay_visible`: main overlay visibility.
+- `current_turn_id`: most recent live turn id.
+- `finalizing_turn_id`: turn id currently finalizing.
+- `latest_draft`: live lane text.
+- `finalizing_draft`: finalizing lane text.
+- `saw_vad_start_during_finalizing`: hint that a new lane started while top lane finalizes.
 
-- `start_or_resume_manual_hold()`
-- `release_manual_hold()`
-- `set_auto_vad_enabled(bool)`
-- `set_capture_enabled(bool)`
-- `finalize_current_turn()`
-- `cancel_current_turn()`
+## Interaction Reducer
 
-## State Model
+`src/interaction_sm.rs` is a pure reducer:
 
-Primary state flags in `src/app.rs`:
+- Input type: `InteractionInput`
+- State type: `InteractionState`
+- Output type: `InteractionEffect`
 
-- `always_listening_enabled`: global VAD mode (`on`/`off`)
-- `manual_hold_active`: whether hold key is currently down
-- `release_should_finalize_turn`: whether current key release should force finalize
-- `manual_finalize_pending`: previous manual finalize requested, waiting on turn completion
-- `engine_state` + `finalizing_turn_id` + `latest_draft`: active-turn context
-- `last_hold_hotkey_pressed_at`: double-tap detector
-- `last_pasted_turn_id`: dedupe paste per turn id (not per app session)
+The reducer has no platform calls. It only emits effects for `app.rs` to apply.
 
-Derived term used by routing logic:
+## High-Level Mode Flow
 
-- `has_turn_context`:
-  - speech is active, or
-  - finalizing is active, or
-  - there is visible draft text, or
-  - manual finalize is pending
+```mermaid
+flowchart TD
+  Start((Start)) --> OffIdle["Idle
+(Listen=OFF)"]
+  Start --> OnIdle["Idle
+(Listen=ON)"]
 
-## Rules
+  OffIdle -- "Option+Space press" --> CaptureOff["Capture active
+(Listen=OFF)
+manual hold active"]
+  OnIdle -- "Option+Space press" --> CaptureOn["Capture active
+(Listen=ON)
+manual hold active"]
 
-1. Single press starts/continues manual hold.
-2. Releasing hold finalizes if `release_should_finalize_turn` is true.
-3. Double tap toggles VAD only when:
-  - VAD is currently on, or
-  - VAD is off and there is no active turn context.
-4. VAD-off, rapid release/re-press must allow multiple consecutive pastes:
-  - prior turn finalizes/pastes,
-  - next turn remains visible and active,
-  - next release also finalizes/pastes.
-5. Paste dedupe is per turn id, not per process session.
-6. If a finalize arrives while another hold is active, do not hide overlay for the active hold.
+  CaptureOff -- "Space release" --> WindowOff["Double-tap timer running
+(capture still active)"]
+  CaptureOn -- "Space release" --> WindowOn["Double-tap timer running
+(capture still active)"]
 
-## Transition Table
+  WindowOff -- "Second Space press
+within window" --> ToggleOn["Immediate interrupt:
+cancel current overlay/session
+enable Listen"]
+  ToggleOn --> OnIdle
 
-### A. VAD OFF (manual mode)
+  WindowOn -- "Second Space press
+within window" --> ToggleOff["Immediate interrupt:
+cancel current overlay/session
+disable Listen"]
+  ToggleOff --> OffIdle
 
-| Start | Event | Action | Result |
+  CaptureOff -- "Normal release/finalize path" --> OffIdle
+  CaptureOn -- "Normal release/finalize path" --> OnIdle
+
+  OnIdle -- "VAD speech start" --> CaptureVAD["Capture active
+(started by VAD)"]
+  CaptureVAD -- "Option+Space down
+while VAD-started capture is active" --> VadAssist["Manual VAD override
+(capture stays live through silence)"]
+  VadAssist -- "Space release
+(single press path)" --> CaptureVAD
+  VadAssist -- "Second Space press
+within window" --> CaptureVAD
+```
+
+## Hold Origin Semantics
+
+- `Option+Space` press must respond regardless of listen mode (`always_listening_enabled` on or off).
+- Turn end behavior is based on how the active turn started:
+  - Started by hold hotkey:
+    - releasing hold ends/finalizes that turn.
+  - Started by auto listen (VAD):
+    - pressing hold enables manual VAD override (capture stays live through silence);
+    - releasing hold does not force end.
+  - Double-tap listen toggle gesture:
+    - only valid before transcription has started for the current turn;
+    - cancels in-flight overlay/session content;
+    - does not finalize or paste the canceled text.
+
+## Double-Tap Interpretation
+
+- Double-tap timing is measured from the first `Option+Space` press timestamp.
+- While that window is open, capture remains active.
+- If the second Space press happens inside the window:
+  - before transcription starts: immediately cancel the current overlay/session, then toggle Listen ON/OFF;
+  - after transcription starts: do not toggle; continue normal capture path.
+- If the window expires first:
+  - no-op for toggle logic: no transition and no side effects.
+
+## Overlay Lane Flow
+
+```mermaid
+flowchart LR
+    A["Single Lane
+(finalizing_turn_id absent)"] -->|Finalizing(turn N)| B["Top Lane Active
+finalizing_turn_id=N"]
+    B -->|DraftUpdated(turn N+1)| C["Split Lane Visible
+Top=finalizing_draft
+Bottom=latest_draft"]
+    C -->|FinalText(turn N)| D["Top Lane Paste + Keep Bottom Live"]
+    D -->|Bottom continues| E["Bottom Lane Finalizes Later"]
+    B -->|No next lane speech| F["Single Finalizing Lane"]
+    F -->|FinalText(turn N)| A
+```
+
+## Rule Table
+
+| Case | Start | Event | Expected behavior |
 |---|---|---|---|
-| idle | press hold | start manual hold | overlay visible, draft starts |
-| holding speech | release hold | finalize current turn | paste turn N when final arrives |
-| finalize pending from turn N | press hold quickly again | keep pending finalize context, start new hold | turn N can still paste; turn N+1 visible/live |
-| holding turn N+1 | release hold | finalize turn N+1 | paste turn N+1 |
+| 1 | Listen off, idle | `HoldPressed` | Manual hold starts, capture on, overlay shown. |
+| 2 | Listen off, manual hold | `HoldReleased` | If turn started, finalize/paste; else close overlay. |
+| 3 | Listen off, idle | Double tap (`Option+Space+Space`) | Enable listen mode without starting hold. |
+| 4 | Listen on, idle | Double tap | Disable listen mode without starting hold. |
+| 5 | Listen on, idle | `HoldPressed` then `HoldReleased` | Behaves like manual hold session: release finalizes/pastes. |
+| 6 | Listen on, active VAD turn | `HoldPressed` then `HoldReleased` | Hold is assist only; release returns to VAD flow, no forced finalize. |
+| 7 | Listen on, active VAD turn (transcription already started) | Double tap second press | No listen toggle; continue active VAD-started capture flow. |
+| 8 | Capture active, no transcription started yet | Double tap second press within window | Toggle listen and cancel in-flight overlay/session text (no finalize/paste). |
+| 9 | Listen off, rapid release/re-press | First release then second hold | First turn can still paste while second turn is live. |
+| 10 | Any visible actionable overlay | `Enter`/`Numpad Enter` | Finalize current actionable turn. |
+| 11 | Any visible overlay | `Esc` | Cancel current turn and close overlay/lane as applicable. |
+| 12 | Top lane finalizing, new speech starts | `DraftUpdated` for newer turn | Show split overlay once new lane has text. |
 
-Expected: each released segment pastes independently.
+## Invariants
 
-### B. VAD ON (always listening)
+- A pure listen-mode toggle gesture from idle must not leave an empty stuck overlay.
+- Releasing hold with no session must still clean up overlay state.
+- Stale turn context without `has_started_turn` must not block listen-enable double tap.
+- Split overlay only shows second lane when live lane has non-empty text.
+- Finalizing completion for the top lane must not hide an active bottom lane.
 
-| Start | Event | Action | Result |
-|---|---|---|---|
-| active VAD turn | press hold | manual assist on same turn | continue capture through pauses |
-| assisted VAD turn | release hold | release assist only | VAD logic continues |
-| active VAD turn | double tap | disable VAD immediately, continue as manual while key held | release of second tap finalizes/pastes |
+## Test Coverage Mapping
 
-### C. Pure VAD Mode Toggle
+- Reducer sequence coverage lives in `src/interaction_sm.rs` unit tests.
+- Overlay lane logic coverage lives in `src/app.rs` unit tests (`split_overlay_*` and
+  completion helpers).
+- Runtime adapter coverage asserts effect application paths in `src/app.rs`.
 
-| Start | Event | Action | Result |
-|---|---|---|---|
-| VAD OFF, no turn context | double tap | enable VAD | no manual turn started |
-| VAD ON, no turn context | double tap | disable VAD | no manual turn started |
+## Transition Intent (Behavior-Level)
 
-## Overlay + Paste Contract
+This section describes why each transition exists and what user-facing goal it preserves.
 
-- Overlay is shown while actively capturing or finalizing current visible turn.
-- When a finalized turn pastes during an active new hold, overlay stays visible.
-- Overlay hide is suppressed during active hold to avoid dropping live feedback.
-- `Esc` cancels current turn and closes overlay.
-- Enter finalizes only when overlay/session context exists.
+| Transition group | Intent |
+|---|---|
+| Idle -> manual hold capture (`Option+Space`) | User can always force speech capture instantly, regardless of listen mode. |
+| Manual hold release (listen off) | End the active hold-started turn predictably: if speech exists, finalize/paste; if not, close quietly. |
+| Manual hold press/release during VAD-started turn (listen on) | Hold acts as a temporary silence override and must not force-end the VAD turn on release. |
+| Double tap (`Option+Space+Space`) | Global listen toggle gesture; cancels current in-flight capture instead of finalizing stale/partial text. |
+| Double tap timing window expiry | Expiry is a no-op for mode toggle; capture continues naturally with no surprise side effects. |
+| Enter/Numpad Enter finalize | Deterministic "finish now" behavior for currently actionable overlay content. |
+| Esc cancel | Deterministic "discard current turn" behavior without hidden paste/finalize effects. |
+| Single lane -> split lanes while previous turn finalizes | Preserve continuity when user keeps speaking: earlier turn finalizes/pastes while new speech remains visible/live. |
+| Top-lane completion while bottom lane is active | Completing previous turn must not collapse or lose the ongoing next turn. |
+| Listen toggle from idle | Must never leave empty stuck overlays or lock UI controls. |
 
-## Implementation Pointers
+## Test Strategy (High Level)
 
-Main routing:
-
-- `handle_hotkey_pressed`
-- `handle_hotkey_released`
-- `handle_finalize_hotkey_pressed`
-- `apply_always_listening_toggle`
-
-Finalize/paste handling:
-
-- `SpeechEvent::Finalizing`
-- `SpeechEvent::FinalText`
-- `SpeechEvent::SessionEnded`
-
-Reset paths:
-
-- `reset_turn_state`
-- `handle_overlay_cancel`
-
-## Regression Checklist
-
-Before merging keyboard logic changes, verify:
-
-1. VAD off: release/paste, quick repress, release/paste again.
-2. VAD off: double tap toggles on without starting/sticking overlay.
-3. VAD on: active speech + double tap transitions to manual hold and finalizes on release.
-4. Active second hold does not get hidden by first turn's final paste.
-5. No turn pastes more than once.
+- Reducer tests validate pure transition behavior and guard conditions.
+- Adapter tests validate effect application to runtime/session/overlay state.
+- Overlay tests validate lane visibility/completion behavior across turn boundaries.
+- Regression tests are required for every bug in hotkey toggle, finalize/cancel, and split-lane behavior.

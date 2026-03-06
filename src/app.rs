@@ -23,7 +23,11 @@ const OVERLAY_ACTIVITY_HISTORY_LEN: usize = 96;
 const OVERLAY_ACTIVITY_IDLE_TIMEOUT_MS: u64 = 220;
 const OVERLAY_ACTIVITY_DECAY_PER_TICK: f32 = 0.88;
 const OVERLAY_BUSY_PHASE_STEP: f32 = 0.24;
-const LISTEN_TOGGLE_NOTICE_DURATION_MS: u64 = 900;
+const LISTEN_TOGGLE_NOTICE_DURATION_MS: u64 = 600;
+const LISTEN_RECOVERING_NOTICE_DURATION_MS: u64 = 1200;
+const SESSION_FAULT_WINDOW_MS: u64 = 30_000;
+const SESSION_IMMEDIATE_RETRY_LIMIT: usize = 2;
+const SESSION_DEGRADED_THRESHOLD: usize = 3;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -108,8 +112,10 @@ struct AppController {
     device_snapshot: Option<DeviceStateSnapshot>,
     device_menu_expanded: bool,
     always_listening_enabled: bool,
+    pending_always_listening_enabled: Option<bool>,
 
     manual_hold_active: bool,
+    hold_saw_speech: bool,
     overlay_visible: bool,
     overlay_pending_vad_text: bool,
     cancelled: bool,
@@ -126,6 +132,7 @@ struct AppController {
     raw_handled_turn_id: Option<u64>,
     deferred_vad_start: bool,
     accessibility_notice_deadline: Option<Instant>,
+    listen_toggle_notice: Option<ListenToggleNotice>,
     latest_seen_turn_id: u64,
     turn_accept_floor: u64,
     current_turn_id: Option<u64>,
@@ -144,12 +151,43 @@ struct AppController {
     debug_stats_enabled: bool,
     turn_started_at: HashMap<u64, Instant>,
     turn_finalize_outcomes: HashMap<u64, (String, String)>,
+    session_recovery_state: SessionRecoveryState,
+    session_fault_window: Vec<Instant>,
+    last_session_error_was_stream_fault: bool,
+    pending_recovery_restart: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RawFinalizeUiPlan {
     hide_overlay: bool,
     disable_capture: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ManualHoldReleasePlan {
+    capture_enabled: bool,
+    action: ManualHoldReleaseAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualHoldReleaseAction {
+    KeepLive,
+    HideOverlay,
+    FinalizeTurn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionRecoveryState {
+    Healthy,
+    Recovering,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ListenToggleNotice {
+    enabled: bool,
+    started_at: Instant,
+    duration: Duration,
 }
 
 fn raw_finalize_ui_plan(
@@ -160,6 +198,27 @@ fn raw_finalize_ui_plan(
     RawFinalizeUiPlan {
         hide_overlay: forced_by_finalize_hotkey || !manual_hold_active,
         disable_capture: !always_listening_enabled && !manual_hold_active,
+    }
+}
+
+fn manual_hold_release_plan(
+    always_listening_enabled: bool,
+    should_finalize: bool,
+    has_started_turn: bool,
+) -> ManualHoldReleasePlan {
+    let action = if should_finalize {
+        if has_started_turn {
+            ManualHoldReleaseAction::FinalizeTurn
+        } else {
+            ManualHoldReleaseAction::HideOverlay
+        }
+    } else {
+        ManualHoldReleaseAction::KeepLive
+    };
+
+    ManualHoldReleasePlan {
+        capture_enabled: always_listening_enabled,
+        action,
     }
 }
 
@@ -346,11 +405,22 @@ fn has_actionable_turn_context_for_snapshot(
         || manual_hold_active
 }
 
-fn has_started_turn_for_snapshot(_manual_hold_active: bool, has_turn_context: bool) -> bool {
-    // Manual hold by itself does not prove a speech turn started.
-    // This keeps idle double-tap mode toggles from being blocked by a
-    // press/release that produced no speech context.
-    has_turn_context
+fn has_started_turn_for_snapshot(
+    manual_hold_active: bool,
+    hold_saw_speech: bool,
+    engine_state: EngineState,
+    finalizing_turn_id: Option<u64>,
+    latest_draft: &str,
+) -> bool {
+    if manual_hold_active {
+        return hold_saw_speech;
+    }
+    // Outside active hold, treat engine speech/finalizing as active turn
+    // progress for state decisions.
+    if engine_state == EngineState::Speech || finalizing_turn_id.is_some() {
+        return true;
+    }
+    !latest_draft.trim().is_empty()
 }
 
 fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
@@ -400,12 +470,50 @@ fn auto_submit_mode_label(mode: AutoSubmitMode) -> &'static str {
     }
 }
 
-fn listen_toggle_notice(enabled: bool) -> (&'static str, &'static str) {
+fn listen_toggle_notice(
+    enabled: bool,
+) -> (
+    &'static str,
+    Vec<platform::OverlayNoticeSegment>,
+    Option<platform::OverlayNoticeShortcut>,
+) {
     if enabled {
-        ("Listen enabled", "Auto listen is on")
+        (
+            "Listen enabled",
+            vec![platform::OverlayNoticeSegment::Text(
+                "Auto listen is on".to_string(),
+            )],
+            None,
+        )
     } else {
-        ("Listen disabled", "Hold Option+Space to talk")
+        (
+            "Listen disabled",
+            Vec::new(),
+            Some(platform::OverlayNoticeShortcut::OptionSpace),
+        )
     }
+}
+
+fn is_stream_fault_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("audio input stream ended after error")
+        || msg.contains("audio input stream error")
+        || msg.contains("failed to open microphone capture")
+        || msg.contains("requested device is no longer available")
+}
+
+fn recovery_state_for_fault_count(faults_in_window: usize) -> SessionRecoveryState {
+    if faults_in_window >= SESSION_DEGRADED_THRESHOLD {
+        SessionRecoveryState::Degraded
+    } else if faults_in_window > 0 {
+        SessionRecoveryState::Recovering
+    } else {
+        SessionRecoveryState::Healthy
+    }
+}
+
+fn allow_immediate_restart_for_fault_count(faults_in_window: usize) -> bool {
+    faults_in_window <= SESSION_IMMEDIATE_RETRY_LIMIT
 }
 
 impl AppController {
@@ -424,7 +532,9 @@ impl AppController {
             device_snapshot: None,
             device_menu_expanded: false,
             always_listening_enabled,
+            pending_always_listening_enabled: None,
             manual_hold_active: false,
+            hold_saw_speech: false,
             overlay_visible: false,
             overlay_pending_vad_text: false,
             cancelled: false,
@@ -441,6 +551,7 @@ impl AppController {
             raw_handled_turn_id: None,
             deferred_vad_start: false,
             accessibility_notice_deadline: None,
+            listen_toggle_notice: None,
             latest_seen_turn_id: 0,
             turn_accept_floor: 1,
             current_turn_id: None,
@@ -459,6 +570,10 @@ impl AppController {
             debug_stats_enabled,
             turn_started_at: HashMap::new(),
             turn_finalize_outcomes: HashMap::new(),
+            session_recovery_state: SessionRecoveryState::Healthy,
+            session_fault_window: Vec::new(),
+            last_session_error_was_stream_fault: false,
+            pending_recovery_restart: false,
         }
     }
 
@@ -493,6 +608,71 @@ impl AppController {
         self.device_snapshot
             .as_ref()
             .and_then(|s| s.current_id.as_deref())
+    }
+
+    fn prune_session_fault_window(&mut self, now: Instant) {
+        self.session_fault_window.retain(|ts| {
+            now.saturating_duration_since(*ts) <= Duration::from_millis(SESSION_FAULT_WINDOW_MS)
+        });
+    }
+
+    fn note_stream_fault(&mut self, message: &str) {
+        let now = Instant::now();
+        self.prune_session_fault_window(now);
+        self.session_fault_window.push(now);
+
+        let faults = self.session_fault_window.len();
+        self.session_recovery_state = recovery_state_for_fault_count(faults);
+        self.last_session_error_was_stream_fault = true;
+        self.pending_recovery_restart = true;
+
+        eprintln!(
+            "Azad: stream fault detected faults_window={} recovery_state={:?} message={}",
+            faults, self.session_recovery_state, message
+        );
+
+        let body = if self.session_recovery_state == SessionRecoveryState::Degraded {
+            "Audio unstable; waiting for device change or hold hotkey retry"
+        } else {
+            "Audio stream interrupted; retrying live"
+        };
+        self.show_overlay_notice(
+            "Listening recovering",
+            body,
+            Duration::from_millis(LISTEN_RECOVERING_NOTICE_DURATION_MS),
+        );
+    }
+
+    fn note_stable_stream_progress(&mut self) {
+        if self.session_recovery_state == SessionRecoveryState::Healthy
+            && self.session_fault_window.is_empty()
+            && !self.pending_recovery_restart
+        {
+            return;
+        }
+
+        self.session_recovery_state = SessionRecoveryState::Healthy;
+        self.session_fault_window.clear();
+        self.last_session_error_was_stream_fault = false;
+        self.pending_recovery_restart = false;
+    }
+
+    fn should_restart_after_session_end(&mut self) -> bool {
+        if !self.last_session_error_was_stream_fault {
+            return true;
+        }
+
+        self.last_session_error_was_stream_fault = false;
+        let faults = self.session_fault_window.len();
+        if allow_immediate_restart_for_fault_count(faults) {
+            self.session_recovery_state = SessionRecoveryState::Recovering;
+            self.pending_recovery_restart = true;
+            true
+        } else {
+            self.session_recovery_state = SessionRecoveryState::Degraded;
+            self.pending_recovery_restart = true;
+            false
+        }
     }
 
     fn handle_event(&mut self, event: AppEvent) {
@@ -555,6 +735,7 @@ impl AppController {
         self.accessibility_notice_deadline = None;
         self.last_pasted_turn_id = None;
         self.cancelled = false;
+        self.hold_saw_speech = false;
         self.overlay_pending_vad_text = false;
         self.latest_seen_turn_id = 0;
         self.turn_accept_floor = 1;
@@ -652,11 +833,35 @@ impl AppController {
         self.dispatch_hotkey_input(HotkeyInput::MenuToggleAlwaysListening);
     }
 
-    fn apply_always_listening_toggle(&mut self) {
-        self.always_listening_enabled = !self.always_listening_enabled;
-        preferred_store::save_always_listening_enabled(self.always_listening_enabled);
-        if self.always_listening_enabled && !self.ensure_paste_accessibility_or_disable_listening()
-        {
+    fn has_active_transcription_turn(&self) -> bool {
+        let has_started_turn = has_started_turn_for_snapshot(
+            self.manual_hold_active,
+            self.hold_saw_speech,
+            self.engine_state,
+            self.finalizing_turn_id,
+            &self.latest_draft,
+        );
+        has_started_turn
+            && has_actionable_turn_context_for_snapshot(
+                self.engine_state,
+                self.current_turn_id,
+                self.finalizing_turn_id,
+                &self.latest_draft,
+                self.overlay_visible,
+                self.manual_hold_active,
+            )
+    }
+
+    fn next_menu_toggle_target(&self) -> bool {
+        !self
+            .pending_always_listening_enabled
+            .unwrap_or(self.always_listening_enabled)
+    }
+
+    fn apply_always_listening_state(&mut self, enabled: bool, show_toggle_notice: bool) {
+        self.always_listening_enabled = enabled;
+        preferred_store::save_always_listening_enabled(enabled);
+        if enabled && !self.ensure_paste_accessibility_or_disable_listening() {
             return;
         }
 
@@ -668,12 +873,49 @@ impl AppController {
         }
         self.overlay_pending_vad_text = false;
         self.render_device_menu();
-        let (title, body) = listen_toggle_notice(self.always_listening_enabled);
-        self.show_overlay_notice(
-            title,
-            body,
-            Duration::from_millis(LISTEN_TOGGLE_NOTICE_DURATION_MS),
-        );
+        if show_toggle_notice && !cfg!(test) {
+            self.show_listen_toggle_notice(
+                enabled,
+                Duration::from_millis(LISTEN_TOGGLE_NOTICE_DURATION_MS),
+            );
+        }
+    }
+
+    fn maybe_apply_pending_always_listening_toggle(&mut self) {
+        let Some(target) = self.pending_always_listening_enabled else {
+            return;
+        };
+        if self.has_active_transcription_turn() {
+            return;
+        }
+        self.pending_always_listening_enabled = None;
+        if target == self.always_listening_enabled {
+            self.render_device_menu();
+            return;
+        }
+        self.apply_always_listening_state(target, true);
+    }
+
+    fn interrupt_current_turn_for_hotkey_toggle(&mut self) {
+        self.manual_hold_active = false;
+        self.hold_saw_speech = false;
+        self.pending_always_listening_enabled = None;
+        self.raw_finalize_requested = false;
+        self.overlay_pending_vad_text = false;
+        self.clear_held_top_overlay();
+
+        if let Some(session) = &self.session {
+            session.release_manual_hold();
+            session.cancel_current_turn();
+        }
+
+        self.hide_overlay();
+        self.reset_turn_state();
+    }
+
+    fn apply_always_listening_toggle(&mut self) {
+        let target = !self.always_listening_enabled;
+        self.apply_always_listening_state(target, true);
     }
 
     fn hotkey_now_ms(&self) -> u64 {
@@ -692,8 +934,13 @@ impl AppController {
             self.overlay_visible,
             self.manual_hold_active,
         );
-        let has_started_turn =
-            has_started_turn_for_snapshot(self.manual_hold_active, has_turn_context);
+        let has_started_turn = has_started_turn_for_snapshot(
+            self.manual_hold_active,
+            self.hold_saw_speech,
+            self.engine_state,
+            self.finalizing_turn_id,
+            &self.latest_draft,
+        );
         RuntimeSnapshot {
             always_listening_enabled: self.always_listening_enabled,
             has_active_speech_turn,
@@ -756,6 +1003,7 @@ impl AppController {
     fn clear_live_lane_state(&mut self) {
         self.cancelled = false;
         self.last_pasted_turn_id = None;
+        self.hold_saw_speech = false;
         self.latest_draft.clear();
         self.finalizing_draft.clear();
         self.finalizing_activity_history
@@ -783,15 +1031,18 @@ impl AppController {
 
     fn apply_hotkey_effect(&mut self, effect: HotkeyEffect) {
         match effect {
-            HotkeyEffect::ToggleAlwaysListening => self.apply_always_listening_toggle(),
-            HotkeyEffect::CompletePureToggleGesture => {
-                self.manual_hold_active = false;
-                if let Some(session) = &self.session {
-                    session.release_manual_hold();
-                    session.set_capture_enabled(self.always_listening_enabled);
-                }
-                if self.accessibility_notice_deadline.is_none() {
-                    self.hide_overlay();
+            HotkeyEffect::InterruptAndToggleAlwaysListening => {
+                self.interrupt_current_turn_for_hotkey_toggle();
+                self.apply_always_listening_toggle();
+            }
+            HotkeyEffect::MenuToggleAlwaysListening => {
+                let target = self.next_menu_toggle_target();
+                if self.has_active_transcription_turn() {
+                    self.pending_always_listening_enabled = Some(target);
+                    self.render_device_menu();
+                } else {
+                    self.pending_always_listening_enabled = None;
+                    self.apply_always_listening_state(target, true);
                 }
             }
             HotkeyEffect::ActivateManualHold {
@@ -802,6 +1053,7 @@ impl AppController {
                     return;
                 }
                 self.manual_hold_active = true;
+                self.hold_saw_speech = false;
                 self.overlay_pending_vad_text = false;
                 if reset_turn_state {
                     self.reset_turn_state_preserving_hotkey_state();
@@ -818,18 +1070,30 @@ impl AppController {
                 has_started_turn,
             } => {
                 self.manual_hold_active = false;
+                self.hold_saw_speech = false;
+                let plan = manual_hold_release_plan(
+                    self.always_listening_enabled,
+                    should_finalize,
+                    has_started_turn,
+                );
                 if let Some(session) = &self.session {
                     session.release_manual_hold();
-                    if should_finalize {
-                        if has_started_turn {
-                            session.finalize_current_turn();
-                        } else {
-                            session.set_capture_enabled(self.always_listening_enabled);
+                    // Keep capture state in sync immediately on hold release so
+                    // hotkey-driven listen disable mirrors menu-toggle behavior.
+                    session.set_capture_enabled(plan.capture_enabled);
+                    match plan.action {
+                        ManualHoldReleaseAction::FinalizeTurn => session.finalize_current_turn(),
+                        ManualHoldReleaseAction::HideOverlay => {
                             self.hide_overlay();
+                            self.reset_turn_state();
                         }
-                    } else {
-                        session.set_capture_enabled(self.always_listening_enabled);
+                        ManualHoldReleaseAction::KeepLive => {}
                     }
+                } else if should_finalize {
+                    // If no live session exists, treat release-finalize as an empty
+                    // turn cleanup so overlay state cannot get stuck open.
+                    self.hide_overlay();
+                    self.reset_turn_state();
                 }
             }
             HotkeyEffect::FinalizeFromHotkey => {
@@ -837,6 +1101,7 @@ impl AppController {
                     return;
                 }
                 self.manual_hold_active = false;
+                self.hold_saw_speech = false;
                 if let Some(session) = &self.session {
                     session.release_manual_hold();
                     session.finalize_current_turn();
@@ -946,6 +1211,7 @@ impl AppController {
         let split_active = self.split_overlay_visible();
         self.cancelled = true;
         self.manual_hold_active = false;
+        self.hold_saw_speech = false;
         self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
         self.raw_finalize_requested = false;
         self.overlay_pending_vad_text = false;
@@ -1015,6 +1281,15 @@ impl AppController {
             self.pending_device_switch_target = Some(next_current);
             self.pending_device_switch_deadline =
                 Some(Instant::now() + Duration::from_millis(DEVICE_SWITCH_RESTART_DEBOUNCE_MS));
+        }
+
+        if self.session.is_none() && self.pending_recovery_restart {
+            eprintln!(
+                "Azad: recovery restart triggered by device update state={:?}",
+                self.session_recovery_state
+            );
+            self.pending_recovery_restart = false;
+            self.start_session();
         }
     }
 
@@ -1088,6 +1363,7 @@ impl AppController {
                 }
             }
             SpeechEvent::SpeechStartedByVad { .. } => {
+                self.note_stable_stream_progress();
                 if self.finalizing_turn_id.is_some() {
                     // Keep finalizing lane visible and prepare a fresh live lane below it.
                     self.saw_vad_start_during_finalizing = true;
@@ -1114,10 +1390,14 @@ impl AppController {
                 if !self.accept_turn(turn_id) {
                     return;
                 }
+                self.note_stable_stream_progress();
                 self.observe_turn(turn_id);
                 let merged = format!("{committed}{live}");
                 let merged = merged.trim().to_string();
                 if !merged.is_empty() {
+                    if self.manual_hold_active {
+                        self.hold_saw_speech = true;
+                    }
                     if self.held_top_overlay_active() {
                         self.clear_held_top_overlay();
                     }
@@ -1181,6 +1461,9 @@ impl AppController {
 
                 self.observe_turn(turn_id);
                 if !current_draft.trim().is_empty() {
+                    if self.manual_hold_active {
+                        self.hold_saw_speech = true;
+                    }
                     self.finalizing_draft = current_draft.trim().to_string();
                     if self.current_turn_id == Some(turn_id) {
                         self.latest_draft = self.finalizing_draft.clone();
@@ -1336,6 +1619,8 @@ impl AppController {
                 }
             }
             SpeechEvent::SessionEnded { .. } => {
+                let should_restart =
+                    self.should_restart_after_session_end() || self.manual_hold_active;
                 self.engine_state = EngineState::Idle;
                 if !self.cancelled
                     && self.latest_seen_turn_id > 0
@@ -1368,6 +1653,7 @@ impl AppController {
                 self.clear_held_top_overlay();
                 self.raw_handled_turn_id = None;
                 self.raw_finalize_requested = false;
+                self.hold_saw_speech = false;
                 self.deferred_vad_start = false;
                 self.accessibility_notice_deadline = None;
                 self.overlay_pending_vad_text = false;
@@ -1379,22 +1665,32 @@ impl AppController {
                 self.busy_border_phase = 0.0;
                 self.turn_started_at.clear();
 
-                self.start_session();
+                if should_restart {
+                    self.start_session();
 
-                if self.manual_hold_active {
-                    if let Some(session) = &self.session {
-                        session.set_capture_enabled(true);
-                        session.start_or_resume_manual_hold();
+                    if self.manual_hold_active {
+                        if let Some(session) = &self.session {
+                            session.set_capture_enabled(true);
+                            session.start_or_resume_manual_hold();
+                        }
+                        self.show_overlay_listening();
+                    } else if !self.always_listening_enabled {
+                        if let Some(session) = &self.session {
+                            session.set_capture_enabled(false);
+                        }
                     }
-                    self.show_overlay_listening();
-                } else if !self.always_listening_enabled {
-                    if let Some(session) = &self.session {
-                        session.set_capture_enabled(false);
-                    }
+                } else if self.pending_recovery_restart {
+                    self.show_overlay_notice(
+                        "Listening recovering",
+                        "Waiting for audio device change or hold hotkey retry",
+                        Duration::from_millis(LISTEN_RECOVERING_NOTICE_DURATION_MS),
+                    );
                 }
             }
             SpeechEvent::Error { message, .. } => {
-                if self.overlay_visible {
+                if is_stream_fault_message(&message) {
+                    self.note_stream_fault(&message);
+                } else if self.overlay_visible {
                     platform::set_overlay_notice_content("Error", &message);
                 }
             }
@@ -1429,6 +1725,7 @@ impl AppController {
 
     fn on_tick(&mut self) {
         self.advance_activity_timeline();
+        self.maybe_apply_pending_always_listening_toggle();
 
         if let Some(deadline) = self.pending_device_switch_deadline {
             if Instant::now() >= deadline {
@@ -1464,8 +1761,25 @@ impl AppController {
         }
 
         if let Some(deadline) = self.accessibility_notice_deadline {
+            if let Some(notice) = self.listen_toggle_notice {
+                let (title, body_segments, shortcut) = listen_toggle_notice(notice.enabled);
+                let elapsed = notice.started_at.elapsed();
+                let progress = if notice.duration.is_zero() {
+                    1.0
+                } else {
+                    (elapsed.as_secs_f32() / notice.duration.as_secs_f32()).clamp(0.0, 1.0)
+                };
+                platform::set_overlay_listen_toggle_notice_content(
+                    title,
+                    &body_segments,
+                    shortcut,
+                    notice.enabled,
+                    progress,
+                );
+            }
             if Instant::now() >= deadline {
                 self.accessibility_notice_deadline = None;
+                self.listen_toggle_notice = None;
                 if self.overlay_visible
                     && !self.manual_hold_active
                     && self.finalizing_deadline.is_none()
@@ -1572,8 +1886,31 @@ impl AppController {
             self.overlay_visible = true;
         }
         platform::hide_overlay_top();
+        self.listen_toggle_notice = None;
         self.accessibility_notice_deadline = Some(Instant::now() + duration);
         platform::set_overlay_notice_content(title, body);
+    }
+
+    fn show_listen_toggle_notice(&mut self, enabled: bool, duration: Duration) {
+        if !self.overlay_visible {
+            platform::show_overlay();
+            self.overlay_visible = true;
+        }
+        platform::hide_overlay_top();
+        let (title, body_segments, shortcut) = listen_toggle_notice(enabled);
+        self.listen_toggle_notice = Some(ListenToggleNotice {
+            enabled,
+            started_at: Instant::now(),
+            duration,
+        });
+        self.accessibility_notice_deadline = Some(Instant::now() + duration);
+        platform::set_overlay_listen_toggle_notice_content(
+            title,
+            &body_segments,
+            shortcut,
+            enabled,
+            0.0,
+        );
     }
 
     fn show_accessibility_overlay_notice(&mut self) {
@@ -1586,8 +1923,10 @@ impl AppController {
 
     fn disable_listening_due_to_accessibility(&mut self) {
         self.always_listening_enabled = false;
+        self.pending_always_listening_enabled = None;
         preferred_store::save_always_listening_enabled(false);
         self.manual_hold_active = false;
+        self.hold_saw_speech = false;
         self.overlay_pending_vad_text = false;
         self.raw_finalize_requested = false;
         self.deferred_vad_start = false;
@@ -1602,8 +1941,13 @@ impl AppController {
         self.clear_held_top_overlay();
         self.reset_activity_history();
         self.busy_border_phase = 0.0;
+        self.listen_toggle_notice = None;
         self.dispatch_hotkey_input(HotkeyInput::TurnReset);
         self.render_device_menu();
+        self.session_recovery_state = SessionRecoveryState::Healthy;
+        self.session_fault_window.clear();
+        self.last_session_error_was_stream_fault = false;
+        self.pending_recovery_restart = false;
         if let Some(session) = &self.session {
             session.release_manual_hold();
             session.cancel_current_turn();
@@ -1629,6 +1973,19 @@ impl AppController {
             .is_some_and(|ch| ch.is_whitespace())
         {
             paste_text.push(' ');
+        }
+
+        if !matches!(self.paste_method, PasteMethod::ClipboardPaste) {
+            let payload_json = serde_json::to_string(&paste_text)
+                .unwrap_or_else(|_| "\"<serialize_error>\"".to_string());
+            eprintln!(
+                "AZAD_DIRECT_PAYLOAD turn_id={} transcript_mode={} method={} chars={} payload={}",
+                turn_id,
+                transcript_mode_label(mode),
+                paste_method_label(self.paste_method),
+                paste_text.chars().count(),
+                payload_json
+            );
         }
 
         let paste_started = Instant::now();
@@ -1725,6 +2082,7 @@ impl AppController {
     fn hide_overlay(&mut self) {
         self.overlay_pending_vad_text = false;
         self.clear_held_top_overlay();
+        self.listen_toggle_notice = None;
         if self.overlay_visible {
             platform::hide_overlay();
             self.overlay_visible = false;
@@ -1739,6 +2097,7 @@ impl AppController {
     fn reset_turn_state_preserving_hotkey_state(&mut self) {
         self.cancelled = false;
         self.last_pasted_turn_id = None;
+        self.hold_saw_speech = false;
         self.latest_draft.clear();
         self.latest_final = None;
         self.finalizing_deadline = None;
@@ -1747,6 +2106,7 @@ impl AppController {
         self.raw_finalize_requested = false;
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
+        self.listen_toggle_notice = None;
         self.overlay_pending_vad_text = false;
         self.clear_held_top_overlay();
         self.current_turn_id = None;
@@ -1966,12 +2326,15 @@ impl AppController {
 #[cfg(test)]
 mod tests {
     use super::{
-        EngineState, RawFinalizeUiPlan, draft_matches_finalized_text,
+        AppController, AzadConfig, EngineState, HotkeyEffect, ManualHoldReleaseAction,
+        ManualHoldReleasePlan, RawFinalizeUiPlan, SessionRecoveryState,
+        allow_immediate_restart_for_fault_count, draft_matches_finalized_text,
         has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
-        has_turn_context_for_snapshot, listen_toggle_notice, next_current_turn_id,
-        raw_finalize_target_turn_id_for_state, raw_finalize_ui_plan,
-        should_ignore_finalizing_event, split_overlay_active_for_turns,
-        split_overlay_visible_for_state, split_overlay_visible_with_hold_for_state,
+        has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
+        manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
+        raw_finalize_ui_plan, recovery_state_for_fault_count, should_ignore_finalizing_event,
+        split_overlay_active_for_turns, split_overlay_visible_for_state,
+        split_overlay_visible_with_hold_for_state,
         split_overlay_visible_with_live_divergence_for_state,
         split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
     };
@@ -2022,6 +2385,68 @@ mod tests {
                 disable_capture: false,
             }
         );
+    }
+
+    #[test]
+    fn manual_hold_release_plan_disables_capture_when_listen_is_off() {
+        let plan = manual_hold_release_plan(false, true, true);
+        assert_eq!(
+            plan,
+            ManualHoldReleasePlan {
+                capture_enabled: false,
+                action: ManualHoldReleaseAction::FinalizeTurn,
+            }
+        );
+    }
+
+    #[test]
+    fn manual_hold_release_plan_keeps_capture_when_listen_is_on() {
+        let plan = manual_hold_release_plan(true, true, false);
+        assert_eq!(
+            plan,
+            ManualHoldReleasePlan {
+                capture_enabled: true,
+                action: ManualHoldReleaseAction::HideOverlay,
+            }
+        );
+    }
+
+    #[test]
+    fn manual_hold_release_plan_keeps_live_when_not_finalizing() {
+        let plan = manual_hold_release_plan(false, false, true);
+        assert_eq!(
+            plan,
+            ManualHoldReleasePlan {
+                capture_enabled: false,
+                action: ManualHoldReleaseAction::KeepLive,
+            }
+        );
+    }
+
+    #[test]
+    fn release_manual_hold_without_session_hides_overlay_for_empty_turn() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.overlay_visible = true;
+        controller.manual_hold_active = true;
+        controller.apply_hotkey_effect(HotkeyEffect::ReleaseManualHold {
+            should_finalize: true,
+            has_started_turn: false,
+        });
+        assert!(!controller.overlay_visible);
+        assert!(!controller.manual_hold_active);
+    }
+
+    #[test]
+    fn release_manual_hold_without_session_hides_overlay_for_started_turn() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.overlay_visible = true;
+        controller.manual_hold_active = true;
+        controller.apply_hotkey_effect(HotkeyEffect::ReleaseManualHold {
+            should_finalize: true,
+            has_started_turn: true,
+        });
+        assert!(!controller.overlay_visible);
+        assert!(!controller.manual_hold_active);
     }
 
     #[test]
@@ -2215,19 +2640,65 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_snapshot_manual_hold_alone_is_not_started_turn() {
-        assert!(!has_started_turn_for_snapshot(true, false));
+    fn hotkey_snapshot_idle_without_draft_is_not_started_turn() {
+        assert!(!has_started_turn_for_snapshot(
+            false,
+            false,
+            EngineState::Idle,
+            None,
+            "",
+        ));
     }
 
     #[test]
-    fn hotkey_snapshot_without_hold_requires_runtime_turn_signal() {
-        assert!(!has_started_turn_for_snapshot(false, false));
+    fn hotkey_snapshot_speech_marks_started_turn() {
+        assert!(has_started_turn_for_snapshot(
+            false,
+            false,
+            EngineState::Speech,
+            None,
+            "",
+        ));
     }
 
     #[test]
-    fn hotkey_snapshot_with_turn_context_marks_started_turn() {
-        assert!(has_started_turn_for_snapshot(true, true));
-        assert!(has_started_turn_for_snapshot(false, true));
+    fn hotkey_snapshot_finalizing_or_draft_marks_started_turn() {
+        assert!(has_started_turn_for_snapshot(
+            false,
+            false,
+            EngineState::Idle,
+            Some(9),
+            "",
+        ));
+        assert!(has_started_turn_for_snapshot(
+            false,
+            false,
+            EngineState::Idle,
+            None,
+            "draft text",
+        ));
+    }
+
+    #[test]
+    fn hotkey_snapshot_active_hold_ignores_stale_draft_without_speech() {
+        assert!(!has_started_turn_for_snapshot(
+            true,
+            false,
+            EngineState::Idle,
+            None,
+            "stale draft",
+        ));
+    }
+
+    #[test]
+    fn hotkey_snapshot_active_hold_uses_hold_speech_signal() {
+        assert!(has_started_turn_for_snapshot(
+            true,
+            true,
+            EngineState::Idle,
+            None,
+            "",
+        ));
     }
 
     #[test]
@@ -2266,13 +2737,179 @@ mod tests {
 
     #[test]
     fn listen_toggle_notice_uses_listen_wording() {
+        let (enabled_title, enabled_segments, enabled_shortcut) = listen_toggle_notice(true);
+        assert_eq!(enabled_title, "Listen enabled");
         assert_eq!(
-            listen_toggle_notice(true),
-            ("Listen enabled", "Auto listen is on")
+            enabled_segments,
+            vec![crate::platform::OverlayNoticeSegment::Text(
+                "Auto listen is on".to_string()
+            )]
+        );
+        assert_eq!(enabled_shortcut, None);
+
+        let (disabled_title, disabled_segments, disabled_shortcut) = listen_toggle_notice(false);
+        assert_eq!(disabled_title, "Listen disabled");
+        assert!(disabled_segments.is_empty());
+        assert_eq!(
+            disabled_shortcut,
+            Some(crate::platform::OverlayNoticeShortcut::OptionSpace)
+        );
+    }
+
+    #[test]
+    fn stream_fault_classifier_matches_core_audio_failure_signals() {
+        assert!(is_stream_fault_message(
+            "audio input stream ended after error: The requested device is no longer available"
+        ));
+        assert!(is_stream_fault_message(
+            "failed to open microphone capture: device not found"
+        ));
+        assert!(!is_stream_fault_message("clipboard write failed"));
+    }
+
+    #[test]
+    fn recovery_state_progresses_from_recovering_to_degraded() {
+        assert_eq!(
+            recovery_state_for_fault_count(0),
+            SessionRecoveryState::Healthy
         );
         assert_eq!(
-            listen_toggle_notice(false),
-            ("Listen disabled", "Hold Option+Space to talk")
+            recovery_state_for_fault_count(1),
+            SessionRecoveryState::Recovering
         );
+        assert_eq!(
+            recovery_state_for_fault_count(2),
+            SessionRecoveryState::Recovering
+        );
+        assert_eq!(
+            recovery_state_for_fault_count(3),
+            SessionRecoveryState::Degraded
+        );
+    }
+
+    #[test]
+    fn immediate_restart_is_bounded_for_repeated_faults() {
+        assert!(allow_immediate_restart_for_fault_count(1));
+        assert!(allow_immediate_restart_for_fault_count(2));
+        assert!(!allow_immediate_restart_for_fault_count(3));
+    }
+
+    #[test]
+    fn menu_toggle_defers_while_transcription_is_active() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.always_listening_enabled = true;
+        controller.engine_state = EngineState::Speech;
+        controller.current_turn_id = Some(7);
+        controller.latest_draft = "active text".to_string();
+        controller.manual_hold_active = true;
+        controller.hold_saw_speech = true;
+
+        controller.apply_hotkey_effect(HotkeyEffect::MenuToggleAlwaysListening);
+        assert_eq!(controller.pending_always_listening_enabled, Some(false));
+        assert!(controller.always_listening_enabled);
+    }
+
+    #[test]
+    fn menu_toggle_applies_immediately_when_idle() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.always_listening_enabled = false;
+        controller.apply_hotkey_effect(HotkeyEffect::MenuToggleAlwaysListening);
+        assert!(controller.always_listening_enabled);
+        assert_eq!(controller.pending_always_listening_enabled, None);
+    }
+
+    #[test]
+    fn deferred_menu_toggle_applies_on_turn_boundary() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.always_listening_enabled = true;
+        controller.pending_always_listening_enabled = Some(false);
+        controller.engine_state = EngineState::Idle;
+        controller.current_turn_id = None;
+        controller.finalizing_turn_id = None;
+        controller.latest_draft.clear();
+        controller.manual_hold_active = false;
+        controller.hold_saw_speech = false;
+        controller.overlay_visible = false;
+
+        controller.on_tick();
+        assert!(!controller.always_listening_enabled);
+        assert_eq!(controller.pending_always_listening_enabled, None);
+    }
+
+    #[test]
+    fn deferred_menu_toggle_can_be_reversed_before_turn_boundary() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.always_listening_enabled = true;
+        controller.engine_state = EngineState::Speech;
+        controller.current_turn_id = Some(9);
+        controller.finalizing_turn_id = None;
+        controller.latest_draft = "still speaking".to_string();
+        controller.manual_hold_active = true;
+        controller.hold_saw_speech = true;
+
+        controller.apply_hotkey_effect(HotkeyEffect::MenuToggleAlwaysListening);
+        assert_eq!(controller.pending_always_listening_enabled, Some(false));
+
+        controller.apply_hotkey_effect(HotkeyEffect::MenuToggleAlwaysListening);
+        assert_eq!(controller.pending_always_listening_enabled, Some(true));
+        assert!(controller.always_listening_enabled);
+    }
+
+    #[test]
+    fn active_transcription_detection_ignores_pre_speech_hold() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.engine_state = EngineState::Idle;
+        controller.manual_hold_active = true;
+        controller.hold_saw_speech = false;
+        controller.overlay_visible = true;
+        controller.latest_draft.clear();
+        controller.current_turn_id = None;
+        controller.finalizing_turn_id = None;
+
+        assert!(!controller.has_active_transcription_turn());
+    }
+
+    #[test]
+    fn started_turn_snapshot_ignores_stale_engine_speech_during_pre_speech_hold() {
+        assert!(!has_started_turn_for_snapshot(
+            true,
+            false,
+            EngineState::Speech,
+            None,
+            "",
+        ));
+    }
+
+    #[test]
+    fn started_turn_snapshot_marks_hold_as_started_after_speech_is_seen() {
+        assert!(has_started_turn_for_snapshot(
+            true,
+            true,
+            EngineState::Idle,
+            None,
+            "",
+        ));
+    }
+
+    #[test]
+    fn release_without_started_turn_clears_stale_turn_state() {
+        let mut controller = AppController::new(AzadConfig::default());
+        controller.manual_hold_active = true;
+        controller.overlay_visible = true;
+        controller.latest_draft = "stale draft".to_string();
+        controller.current_turn_id = Some(5);
+        controller.finalizing_turn_id = Some(5);
+        controller.turn_accept_floor = 2;
+
+        controller.apply_hotkey_effect(HotkeyEffect::ReleaseManualHold {
+            should_finalize: true,
+            has_started_turn: false,
+        });
+
+        assert!(!controller.overlay_visible);
+        assert!(controller.latest_draft.is_empty());
+        assert_eq!(controller.current_turn_id, None);
+        assert_eq!(controller.finalizing_turn_id, None);
+        assert!(controller.turn_accept_floor >= 1);
     }
 }

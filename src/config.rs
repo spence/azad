@@ -10,6 +10,7 @@ pub struct AzadConfig {
     pub chunk_ms: u32,
     pub buffer_ms: u32,
     pub paste_delay_ms: u64,
+    pub native_engine_logs_enabled: bool,
     pub pipeline: PipelineConfig,
 }
 
@@ -28,6 +29,7 @@ impl AzadConfig {
             auto_vad_enabled,
             capture_enabled,
             debug_stats_enabled,
+            native_engine_logs_enabled: self.native_engine_logs_enabled,
             pipeline: self.pipeline.clone(),
         }
     }
@@ -42,6 +44,7 @@ impl Default for AzadConfig {
             chunk_ms: 20,
             buffer_ms: 120_000,
             paste_delay_ms: 120,
+            native_engine_logs_enabled: env_flag_enabled("AZAD_NATIVE_ENGINE_LOGS"),
             pipeline: PipelineConfig {
                 vad_model_path: root
                     .join("whisper.cpp")
@@ -66,6 +69,13 @@ impl Default for AzadConfig {
             },
         }
     }
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
 }
 
 fn workspace_root() -> PathBuf {

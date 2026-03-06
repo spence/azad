@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use asr::embed::{
-    spawn_session, SessionConfig, SessionControl, SessionEvent as ToonSessionEvent, SessionHandle,
-    SessionSink as ToonSessionSink,
+    SessionConfig, SessionControl, SessionEvent as ToonSessionEvent, SessionHandle,
+    SessionSink as ToonSessionSink, spawn_session,
 };
 use asr::pipeline::{DebugStatsEvent, EngineState};
 

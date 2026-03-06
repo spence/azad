@@ -1,9 +1,11 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use asr::devices::{
-    start_device_controller, DeviceControllerHandle, DeviceEvent as ToonDeviceEvent,
+    DeviceControllerConfig, DeviceControllerHandle, DeviceEvent as ToonDeviceEvent,
     DeviceEventSink as ToonDeviceEventSink, DeviceStateSnapshot,
+    start_device_controller_with_config,
 };
 
 #[derive(Debug, Clone)]
@@ -24,7 +26,16 @@ impl DeviceController {
         let sink: Arc<dyn ToonDeviceEventSink> = Arc::new(ForwardingSink {
             handler: event_handler,
         });
-        let handle = start_device_controller(preferred_id, sink)?;
+        let handle = start_device_controller_with_config(
+            preferred_id,
+            sink,
+            DeviceControllerConfig {
+                enable_safety_poll: true,
+                safety_poll_interval: Duration::from_secs(60),
+                watcher_event_coalescing: true,
+                watcher_max_drain: 1024,
+            },
+        )?;
         Ok(Self { handle })
     }
 

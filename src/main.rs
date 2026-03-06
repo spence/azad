@@ -6,6 +6,7 @@ mod app;
 mod config;
 mod device;
 mod hotkey_sm;
+mod interaction_sm;
 mod metrics_log;
 mod platform;
 mod preferred_store;
