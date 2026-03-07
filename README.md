@@ -39,3 +39,4 @@ Azad also checks Accessibility permission on startup (required for auto-paste) a
 ## Behavior Docs
 
 - `docs/keyboard-shortcut-state-machine.md` - Hotkey/VAD interaction rules and transitions.
+- `SPECIFICATION.md` - architecture, design decisions, subsystem boundaries, and change playbooks.
