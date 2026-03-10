@@ -472,25 +472,11 @@ fn auto_submit_mode_label(mode: AutoSubmitMode) -> &'static str {
 
 fn listen_toggle_notice(
     enabled: bool,
-) -> (
-    &'static str,
-    Vec<platform::OverlayNoticeSegment>,
-    Option<platform::OverlayNoticeShortcut>,
-) {
+) -> (&'static str, Vec<platform::OverlayNoticeSegment>) {
     if enabled {
-        (
-            "Listen enabled",
-            vec![platform::OverlayNoticeSegment::Text(
-                "Auto listen is on".to_string(),
-            )],
-            None,
-        )
+        ("Listen ENABLED", Vec::new())
     } else {
-        (
-            "Listen disabled",
-            Vec::new(),
-            Some(platform::OverlayNoticeShortcut::OptionSpace),
-        )
+        ("Listen DISABLED", Vec::new())
     }
 }
 
@@ -1762,7 +1748,7 @@ impl AppController {
 
         if let Some(deadline) = self.accessibility_notice_deadline {
             if let Some(notice) = self.listen_toggle_notice {
-                let (title, body_segments, shortcut) = listen_toggle_notice(notice.enabled);
+                let (title, body_segments) = listen_toggle_notice(notice.enabled);
                 let elapsed = notice.started_at.elapsed();
                 let progress = if notice.duration.is_zero() {
                     1.0
@@ -1772,7 +1758,6 @@ impl AppController {
                 platform::set_overlay_listen_toggle_notice_content(
                     title,
                     &body_segments,
-                    shortcut,
                     notice.enabled,
                     progress,
                 );
@@ -1897,7 +1882,7 @@ impl AppController {
             self.overlay_visible = true;
         }
         platform::hide_overlay_top();
-        let (title, body_segments, shortcut) = listen_toggle_notice(enabled);
+        let (title, body_segments) = listen_toggle_notice(enabled);
         self.listen_toggle_notice = Some(ListenToggleNotice {
             enabled,
             started_at: Instant::now(),
@@ -1907,7 +1892,6 @@ impl AppController {
         platform::set_overlay_listen_toggle_notice_content(
             title,
             &body_segments,
-            shortcut,
             enabled,
             0.0,
         );
@@ -2737,23 +2721,13 @@ mod tests {
 
     #[test]
     fn listen_toggle_notice_uses_listen_wording() {
-        let (enabled_title, enabled_segments, enabled_shortcut) = listen_toggle_notice(true);
-        assert_eq!(enabled_title, "Listen enabled");
-        assert_eq!(
-            enabled_segments,
-            vec![crate::platform::OverlayNoticeSegment::Text(
-                "Auto listen is on".to_string()
-            )]
-        );
-        assert_eq!(enabled_shortcut, None);
+        let (enabled_title, enabled_segments) = listen_toggle_notice(true);
+        assert_eq!(enabled_title, "Listen ENABLED");
+        assert!(enabled_segments.is_empty());
 
-        let (disabled_title, disabled_segments, disabled_shortcut) = listen_toggle_notice(false);
-        assert_eq!(disabled_title, "Listen disabled");
+        let (disabled_title, disabled_segments) = listen_toggle_notice(false);
+        assert_eq!(disabled_title, "Listen DISABLED");
         assert!(disabled_segments.is_empty());
-        assert_eq!(
-            disabled_shortcut,
-            Some(crate::platform::OverlayNoticeShortcut::OptionSpace)
-        );
     }
 
     #[test]

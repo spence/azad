@@ -102,15 +102,14 @@ const SETTINGS_CONTROL_VERTICAL_GAP: f64 = 14.0;
 const LISTEN_NOTICE_CARD_ALPHA: f64 = 0.92;
 const LISTEN_NOTICE_WAVE_BASE_ALPHA: f64 = 0.060;
 const LISTEN_NOTICE_WAVE_PEAK_ALPHA: f64 = 0.170;
-const OVERLAY_NOTICE_KEYCAP_HEIGHT: f64 = 18.0;
-const OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH: f64 = 24.0;
-const OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH: f64 = 62.0;
-const OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH: f64 = 14.0;
-const OVERLAY_NOTICE_KEYCAP_GAP: f64 = 6.0;
-const OVERLAY_NOTICE_KEYCAP_BORDER_WIDTH: f64 = 1.2;
-const OVERLAY_NOTICE_KEYCAP_CORNER_RADIUS: f64 = 5.0;
-const OVERLAY_NOTICE_KEYCAP_FONT_SIZE: f64 = 12.0;
-const OVERLAY_NOTICE_KEYCAP_BOTTOM_INSET: f64 = 8.0;
+const OVERLAY_NOTICE_KEYCAP_HEIGHT: f64 = 22.0;
+const OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH: f64 = 30.0;
+const OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH: f64 = 82.0;
+const OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH: f64 = 16.0;
+const OVERLAY_NOTICE_KEYCAP_FONT_SIZE: f64 = 13.0;
+const OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH: f64 = 96.0;
+const OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT: f64 = 22.0;
+const OVERLAY_NOTICE_AUTO_ON_FONT_SIZE: f64 = 11.5;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -164,12 +163,14 @@ struct OverlayRefs {
     wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
     busy_gradient_layer: id,
     busy_mask_layer: id,
-    notice_shortcut_row: id,
+    notice_accessory_row: id,
     notice_option_key: id,
     notice_option_label: id,
     notice_plus_label: id,
     notice_space_key: id,
     notice_space_label: id,
+    notice_auto_on_chip: id,
+    notice_auto_on_label: id,
 }
 
 #[derive(Clone, Copy)]
@@ -231,11 +232,6 @@ pub enum OverlayNoticeSegment {
     Text(String),
     #[allow(dead_code)]
     Keycap(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayNoticeShortcut {
-    OptionSpace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -489,14 +485,12 @@ pub fn set_overlay_notice_content(title: &str, body: &str) {
         title,
         &[OverlayNoticeSegment::Text(body.to_string())],
         OverlayNoticeStyle::Standard,
-        None,
     );
 }
 
 pub fn set_overlay_listen_toggle_notice_content(
     title: &str,
     body_segments: &[OverlayNoticeSegment],
-    shortcut: Option<OverlayNoticeShortcut>,
     enabled: bool,
     progress: f32,
 ) {
@@ -507,7 +501,6 @@ pub fn set_overlay_listen_toggle_notice_content(
             enabled,
             progress: progress.clamp(0.0, 1.0),
         },
-        shortcut,
     );
 }
 
@@ -530,7 +523,6 @@ fn set_overlay_notice_content_styled(
     title: &str,
     body_segments: &[OverlayNoticeSegment],
     style: OverlayNoticeStyle,
-    shortcut: Option<OverlayNoticeShortcut>,
 ) {
     let Some(refs) = current_overlay() else {
         return;
@@ -552,9 +544,16 @@ fn set_overlay_notice_content_styled(
                 listen_toggle_notice_activity(enabled, progress)
             }
         };
-        render_overlay_text(refs, &rendered, &notice_activity, None, false, false);
+        render_overlay_text(
+            refs,
+            &rendered,
+            &notice_activity,
+            None,
+            false,
+            false,
+        );
         apply_overlay_notice_style(refs, style);
-        apply_overlay_notice_shortcut(refs, shortcut, style);
+        hide_overlay_notice_accessory(refs);
     }
 }
 
@@ -2282,7 +2281,7 @@ unsafe fn render_overlay_text(
     let _: () = msg_send![refs.label, setAlignment: 1isize];
     let _: () =
         msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
-    hide_overlay_notice_shortcut(refs);
+    hide_overlay_notice_accessory(refs);
     render_activity_wave(
         refs,
         activity,
@@ -2291,135 +2290,23 @@ unsafe fn render_overlay_text(
     );
 }
 
-unsafe fn hide_overlay_notice_shortcut(refs: OverlayRefs) {
-    if refs.notice_shortcut_row != nil {
-        let _: () = msg_send![refs.notice_shortcut_row, setHidden: YES];
+unsafe fn hide_overlay_notice_accessory(refs: OverlayRefs) {
+    if refs.notice_accessory_row != nil {
+        let _: () = msg_send![refs.notice_accessory_row, setHidden: YES];
     }
-}
-
-unsafe fn apply_overlay_notice_shortcut(
-    refs: OverlayRefs,
-    shortcut: Option<OverlayNoticeShortcut>,
-    style: OverlayNoticeStyle,
-) {
-    let Some(shortcut) = shortcut else {
-        hide_overlay_notice_shortcut(refs);
-        return;
-    };
-    if refs.notice_shortcut_row == nil {
-        return;
+    for view in [refs.notice_option_key, refs.notice_space_key, refs.notice_auto_on_chip] {
+        if view != nil {
+            let _: () = msg_send![view, setHidden: YES];
+        }
     }
-
-    let enabled = match style {
-        OverlayNoticeStyle::ListenToggle { enabled, .. } => enabled,
-        OverlayNoticeStyle::Standard => false,
-    };
-    match shortcut {
-        OverlayNoticeShortcut::OptionSpace => {
-            let row_width = OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH
-                + OVERLAY_NOTICE_KEYCAP_GAP
-                + OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH
-                + OVERLAY_NOTICE_KEYCAP_GAP
-                + OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH;
-            let label_frame: NSRect = msg_send![refs.label, frame];
-            let row_x =
-                label_frame.origin.x + ((label_frame.size.width - row_width).max(0.0) * 0.5);
-            let row_y = OVERLAY_NOTICE_KEYCAP_BOTTOM_INSET;
-            let row_frame = NSRect::new(
-                NSPoint::new(row_x, row_y),
-                NSSize::new(row_width, OVERLAY_NOTICE_KEYCAP_HEIGHT),
-            );
-            let _: () = msg_send![refs.notice_shortcut_row, setFrame: row_frame];
-
-            let option_frame = NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(
-                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH,
-                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
-                ),
-            );
-            let plus_frame = NSRect::new(
-                NSPoint::new(
-                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH + OVERLAY_NOTICE_KEYCAP_GAP,
-                    0.0,
-                ),
-                NSSize::new(
-                    OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH,
-                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
-                ),
-            );
-            let space_frame = NSRect::new(
-                NSPoint::new(
-                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH
-                        + OVERLAY_NOTICE_KEYCAP_GAP
-                        + OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH
-                        + OVERLAY_NOTICE_KEYCAP_GAP,
-                    0.0,
-                ),
-                NSSize::new(
-                    OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH,
-                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
-                ),
-            );
-            let _: () = msg_send![refs.notice_option_key, setFrame: option_frame];
-            let _: () = msg_send![refs.notice_plus_label, setFrame: plus_frame];
-            let _: () = msg_send![refs.notice_space_key, setFrame: space_frame];
-
-            let option_label_frame = NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(
-                    OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH,
-                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
-                ),
-            );
-            let space_label_frame = NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(
-                    OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH,
-                    OVERLAY_NOTICE_KEYCAP_HEIGHT,
-                ),
-            );
-            let _: () = msg_send![refs.notice_option_label, setFrame: option_label_frame];
-            let _: () = msg_send![refs.notice_space_label, setFrame: space_label_frame];
-
-            let (r, g, b) = if enabled {
-                (0.25, 0.84, 0.78)
-            } else {
-                (0.98, 0.58, 0.20)
-            };
-            let border_color =
-                NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, 0.96);
-            let border_cg: id = msg_send![border_color, CGColor];
-            for key in [refs.notice_option_key, refs.notice_space_key] {
-                if key == nil {
-                    continue;
-                }
-                let layer: id = msg_send![key, layer];
-                if layer == nil {
-                    continue;
-                }
-                let fill = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, 0.12);
-                let fill_cg: id = msg_send![fill, CGColor];
-                let _: () = msg_send![layer, setBackgroundColor: fill_cg];
-                let _: () = msg_send![layer, setBorderWidth: OVERLAY_NOTICE_KEYCAP_BORDER_WIDTH];
-                let _: () = msg_send![layer, setBorderColor: border_cg];
-                let _: () = msg_send![layer, setCornerRadius: OVERLAY_NOTICE_KEYCAP_CORNER_RADIUS];
-            }
-
-            let text_color =
-                NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.98);
-            for label in [
-                refs.notice_option_label,
-                refs.notice_space_label,
-                refs.notice_plus_label,
-            ] {
-                if label == nil {
-                    continue;
-                }
-                let _: () = msg_send![label, setTextColor: text_color];
-            }
-
-            let _: () = msg_send![refs.notice_shortcut_row, setHidden: NO];
+    for label in [
+        refs.notice_option_label,
+        refs.notice_plus_label,
+        refs.notice_space_label,
+        refs.notice_auto_on_label,
+    ] {
+        if label != nil {
+            let _: () = msg_send![label, setHidden: YES];
         }
     }
 }
@@ -3261,14 +3148,14 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let _: () = msg_send![hold_badge, setHidden: YES];
     let _: () = msg_send![card_view, addSubview: hold_badge];
 
-    let notice_shortcut_row: id = msg_send![class!(NSView), alloc];
-    let notice_shortcut_row: id = msg_send![notice_shortcut_row, initWithFrame: NSRect::new(
+    let notice_accessory_row: id = msg_send![class!(NSView), alloc];
+    let notice_accessory_row: id = msg_send![notice_accessory_row, initWithFrame: NSRect::new(
         NSPoint::new(0.0, 0.0),
         NSSize::new(1.0, OVERLAY_NOTICE_KEYCAP_HEIGHT)
     )];
-    let _: () = msg_send![notice_shortcut_row, setWantsLayer: YES];
-    let _: () = msg_send![notice_shortcut_row, setHidden: YES];
-    let _: () = msg_send![card_view, addSubview: notice_shortcut_row];
+    let _: () = msg_send![notice_accessory_row, setWantsLayer: YES];
+    let _: () = msg_send![notice_accessory_row, setHidden: YES];
+    let _: () = msg_send![card_view, addSubview: notice_accessory_row];
 
     let notice_option_key: id = msg_send![class!(NSView), alloc];
     let notice_option_key: id = msg_send![notice_option_key, initWithFrame: NSRect::new(
@@ -3276,7 +3163,8 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
         NSSize::new(OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
     )];
     let _: () = msg_send![notice_option_key, setWantsLayer: YES];
-    let _: () = msg_send![notice_shortcut_row, addSubview: notice_option_key];
+    let _: () = msg_send![notice_option_key, setHidden: YES];
+    let _: () = msg_send![notice_accessory_row, addSubview: notice_option_key];
 
     let notice_option_label: id = msg_send![class!(NSTextField), alloc];
     let notice_option_label: id = msg_send![notice_option_label, initWithFrame: NSRect::new(
@@ -3292,6 +3180,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let notice_key_font: id =
         msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
     let _: () = msg_send![notice_option_label, setFont: notice_key_font];
+    let _: () = msg_send![notice_option_label, setHidden: YES];
     let _: () = msg_send![notice_option_key, addSubview: notice_option_label];
 
     let notice_plus_label: id = msg_send![class!(NSTextField), alloc];
@@ -3308,7 +3197,8 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let notice_plus_font: id =
         msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
     let _: () = msg_send![notice_plus_label, setFont: notice_plus_font];
-    let _: () = msg_send![notice_shortcut_row, addSubview: notice_plus_label];
+    let _: () = msg_send![notice_plus_label, setHidden: YES];
+    let _: () = msg_send![notice_accessory_row, addSubview: notice_plus_label];
 
     let notice_space_key: id = msg_send![class!(NSView), alloc];
     let notice_space_key: id = msg_send![notice_space_key, initWithFrame: NSRect::new(
@@ -3316,7 +3206,8 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
         NSSize::new(OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
     )];
     let _: () = msg_send![notice_space_key, setWantsLayer: YES];
-    let _: () = msg_send![notice_shortcut_row, addSubview: notice_space_key];
+    let _: () = msg_send![notice_space_key, setHidden: YES];
+    let _: () = msg_send![notice_accessory_row, addSubview: notice_space_key];
 
     let notice_space_label: id = msg_send![class!(NSTextField), alloc];
     let notice_space_label: id = msg_send![notice_space_label, initWithFrame: NSRect::new(
@@ -3333,7 +3224,36 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let notice_space_font: id =
         msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
     let _: () = msg_send![notice_space_label, setFont: notice_space_font];
+    let _: () = msg_send![notice_space_label, setHidden: YES];
     let _: () = msg_send![notice_space_key, addSubview: notice_space_label];
+
+    let notice_auto_on_chip: id = msg_send![class!(NSView), alloc];
+    let notice_auto_on_chip: id = msg_send![notice_auto_on_chip, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH, OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT)
+    )];
+    let _: () = msg_send![notice_auto_on_chip, setWantsLayer: YES];
+    let _: () = msg_send![notice_auto_on_chip, setHidden: YES];
+    let _: () = msg_send![notice_accessory_row, addSubview: notice_auto_on_chip];
+
+    let notice_auto_on_label: id = msg_send![class!(NSTextField), alloc];
+    let notice_auto_on_label: id = msg_send![notice_auto_on_label, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH, OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT)
+    )];
+    let _: () =
+        msg_send![notice_auto_on_label, setStringValue: NSString::alloc(nil).init_str("AUTO ON")];
+    let _: () = msg_send![notice_auto_on_label, setBezeled: NO];
+    let _: () = msg_send![notice_auto_on_label, setDrawsBackground: NO];
+    let _: () = msg_send![notice_auto_on_label, setEditable: NO];
+    let _: () = msg_send![notice_auto_on_label, setSelectable: NO];
+    let _: () = msg_send![notice_auto_on_label, setAlignment: 1isize];
+    let _: () = msg_send![notice_auto_on_label, setUsesSingleLineMode: YES];
+    let notice_on_font: id =
+        msg_send![class!(NSFont), boldSystemFontOfSize: OVERLAY_NOTICE_AUTO_ON_FONT_SIZE];
+    let _: () = msg_send![notice_auto_on_label, setFont: notice_on_font];
+    let _: () = msg_send![notice_auto_on_label, setHidden: YES];
+    let _: () = msg_send![notice_auto_on_chip, addSubview: notice_auto_on_label];
 
     let busy_gradient_layer: id = msg_send![class!(CAGradientLayer), layer];
     let busy_mask_layer: id = msg_send![class!(CALayer), layer];
@@ -3396,12 +3316,14 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
         wave_bars,
         busy_gradient_layer,
         busy_mask_layer,
-        notice_shortcut_row,
+        notice_accessory_row,
         notice_option_key,
         notice_option_label,
         notice_plus_label,
         notice_space_key,
         notice_space_label,
+        notice_auto_on_chip,
+        notice_auto_on_label,
     };
     render_overlay_text(refs, "", &[], None, false, false);
     refs
