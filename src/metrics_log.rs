@@ -118,6 +118,8 @@ pub struct RecentTranscriptSummary {
     pub transcription_duration_ms: u64,
     pub partial_count: Option<usize>,
     pub quality_score_pct: Option<f64>,
+    pub quality_pending: bool,
+    pub quality_error: bool,
     pub fallback: bool,
     pub text_preview: String,
 }
@@ -296,6 +298,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
     let mut outcomes: HashMap<u64, (i64, String, String)> = HashMap::new();
     let mut audits: HashMap<u64, (i64, bool, usize, f64, f64)> = HashMap::new();
     let mut partial_counts: HashMap<u64, (i64, usize)> = HashMap::new();
+    let mut audit_errors: HashMap<u64, (i64, String)> = HashMap::new();
     let mut recent_snapshots: Vec<(i64, RecentTranscriptSummary)> = Vec::new();
 
     for record in records {
@@ -357,6 +360,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
             MetricsLogEvent::PartialAuditError {
                 turn_id,
                 partial_count,
+                message,
                 ..
             } => {
                 upsert_latest(
@@ -364,6 +368,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
                     *turn_id,
                     (record.ts_ms, *partial_count),
                 );
+                upsert_latest(&mut audit_errors, *turn_id, (record.ts_ms, message.clone()));
             }
             MetricsLogEvent::TurnSnapshot {
                 turn_id,
@@ -381,6 +386,8 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
                         transcription_duration_ms: *transcription_duration_ms,
                         partial_count: None,
                         quality_score_pct: None,
+                        quality_pending: false,
+                        quality_error: false,
                         fallback: *fallback,
                         text_preview: text_preview.clone(),
                     },
@@ -464,6 +471,12 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
         }
         if let Some((_, exact, _, wer_like, _)) = audits.get(&sample.turn_id) {
             sample.quality_score_pct = Some(quality_score_pct(*exact, *wer_like));
+        } else if audit_errors.contains_key(&sample.turn_id) {
+            sample.quality_error = true;
+        } else if let Some((_, outcome, _)) = outcomes.get(&sample.turn_id) {
+            if outcome == "assembled" || outcome == "draft_emit" {
+                sample.quality_pending = true;
+            }
         }
     }
 
@@ -506,6 +519,12 @@ impl HasTsMs for (i64, bool, usize, f64, f64) {
 }
 
 impl HasTsMs for (i64, usize) {
+    fn ts_ms(&self) -> i64 {
+        self.0
+    }
+}
+
+impl HasTsMs for (i64, String) {
     fn ts_ms(&self) -> i64 {
         self.0
     }
@@ -626,10 +645,16 @@ fn recent_mode_label(sample: &RecentTranscriptSummary) -> &'static str {
 }
 
 fn recent_quality_label(sample: &RecentTranscriptSummary) -> String {
-    sample
-        .quality_score_pct
-        .map(|pct| format!("{pct:.1}%"))
-        .unwrap_or_else(|| "-".to_string())
+    if let Some(pct) = sample.quality_score_pct {
+        return format!("{pct:.1}%");
+    }
+    if sample.quality_error {
+        return "error".to_string();
+    }
+    if sample.quality_pending {
+        return "queued".to_string();
+    }
+    "-".to_string()
 }
 
 fn quality_score_pct(exact: bool, wer_like: f64) -> f64 {
@@ -783,5 +808,81 @@ mod tests {
         assert_eq!(quality_score_pct(true, 0.7), 100.0);
         assert!((quality_score_pct(false, 0.03) - 97.0).abs() < 1e-9);
         assert!((quality_score_pct(false, 2.0) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn summarize_marks_queued_when_audit_is_missing_after_assembled_finalize() {
+        let records = vec![
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 1,
+                event: MetricsLogEvent::TurnSnapshot {
+                    turn_id: 7,
+                    mode: TranscriptMode::Normal,
+                    transcription_duration_ms: 1500,
+                    fallback: false,
+                    fallback_reason: "na".to_string(),
+                    text_preview: "queued sample".to_string(),
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 2,
+                event: MetricsLogEvent::PartialFinalizeOutcome {
+                    turn_id: 7,
+                    outcome: "assembled".to_string(),
+                    reason: "na".to_string(),
+                },
+            },
+        ];
+
+        let summary = summarize(&records);
+        assert_eq!(summary.recent_transcripts.len(), 1);
+        assert!(summary.recent_transcripts[0].quality_pending);
+        assert!(!summary.recent_transcripts[0].quality_error);
+        assert_eq!(summary.recent_transcripts[0].quality_score_pct, None);
+    }
+
+    #[test]
+    fn summarize_marks_error_when_partial_audit_errors() {
+        let records = vec![
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 1,
+                event: MetricsLogEvent::TurnSnapshot {
+                    turn_id: 9,
+                    mode: TranscriptMode::Normal,
+                    transcription_duration_ms: 2200,
+                    fallback: false,
+                    fallback_reason: "na".to_string(),
+                    text_preview: "error sample".to_string(),
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 2,
+                event: MetricsLogEvent::PartialFinalizeOutcome {
+                    turn_id: 9,
+                    outcome: "assembled".to_string(),
+                    reason: "na".to_string(),
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 3,
+                event: MetricsLogEvent::PartialAuditError {
+                    turn_id: 9,
+                    emitted_kind: "assembled".to_string(),
+                    partial_count: 2,
+                    message: "audit queue unavailable".to_string(),
+                },
+            },
+        ];
+
+        let summary = summarize(&records);
+        assert_eq!(summary.recent_transcripts.len(), 1);
+        assert!(!summary.recent_transcripts[0].quality_pending);
+        assert!(summary.recent_transcripts[0].quality_error);
+        assert_eq!(summary.recent_transcripts[0].quality_score_pct, None);
     }
 }
