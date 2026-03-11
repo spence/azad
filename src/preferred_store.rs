@@ -13,6 +13,7 @@ const DEBUG_STATS_ENABLED_KEY: &str = "AzadDebugStatsEnabled";
 const RUN_ON_STARTUP_KEY: &str = "AzadRunOnStartup";
 const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
 const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
+const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 
 pub fn load_preferred_device_id() -> Option<String> {
     unsafe {
@@ -188,6 +189,37 @@ pub fn save_auto_submit_mode(mode: AutoSubmitMode) {
         let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
         let value = NSString::alloc(nil).init_str(mode.prefs_value());
         let _: () = msg_send![defaults, setObject: value forKey: key];
+    }
+}
+
+pub fn load_append_trailing_space_on_paste() -> bool {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return true;
+        }
+
+        let key = NSString::alloc(nil).init_str(APPEND_TRAILING_SPACE_KEY);
+        let existing: id = msg_send![defaults, objectForKey: key];
+        if existing == nil {
+            return true;
+        }
+
+        let value: i8 = msg_send![defaults, boolForKey: key];
+        value != 0
+    }
+}
+
+pub fn save_append_trailing_space_on_paste(enabled: bool) {
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        if defaults == nil {
+            return;
+        }
+
+        let key = NSString::alloc(nil).init_str(APPEND_TRAILING_SPACE_KEY);
+        let value = if enabled { YES } else { NO };
+        let _: () = msg_send![defaults, setBool: value forKey: key];
     }
 }
 

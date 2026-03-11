@@ -182,6 +182,7 @@ struct SettingsWindowRefs {
     run_on_startup_checkbox: id,
     paste_method_popup: id,
     auto_submit_popup: id,
+    append_trailing_space_checkbox: id,
     debug_checkbox: id,
     metrics_text_view: id,
 }
@@ -207,6 +208,7 @@ pub struct SettingsViewModel {
     pub run_on_startup_enabled: bool,
     pub paste_method: PasteMethod,
     pub auto_submit_mode: AutoSubmitMode,
+    pub append_trailing_space_on_paste: bool,
     pub debug_stats_enabled: bool,
     pub metrics_text: String,
 }
@@ -544,14 +546,7 @@ fn set_overlay_notice_content_styled(
                 listen_toggle_notice_activity(enabled, progress)
             }
         };
-        render_overlay_text(
-            refs,
-            &rendered,
-            &notice_activity,
-            None,
-            false,
-            false,
-        );
+        render_overlay_text(refs, &rendered, &notice_activity, None, false, false);
         apply_overlay_notice_style(refs, style);
         hide_overlay_notice_accessory(refs);
     }
@@ -714,6 +709,10 @@ fn register_delegate_class() -> &'static Class {
         decl.add_method(
             sel!(settingsSelectAutoSubmit:),
             settings_select_auto_submit as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(settingsToggleAppendTrailingSpace:),
+            settings_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
             sel!(windowWillClose:),
@@ -952,6 +951,17 @@ extern "C" fn settings_select_auto_submit(_: &Object, _: Sel, sender: id) {
         crate::app::send_event(AppEvent::SettingsSelectAutoSubmit(
             AutoSubmitMode::from_ui_index(index),
         ));
+        crate::app::drain_events();
+    }
+}
+
+extern "C" fn settings_toggle_append_trailing_space(_: &Object, _: Sel, sender: id) {
+    unsafe {
+        if sender == nil {
+            return;
+        }
+        let state: i64 = msg_send![sender, state];
+        crate::app::send_event(AppEvent::SettingsToggleAppendTrailingSpace(state != 0));
         crate::app::drain_events();
     }
 }
@@ -2151,6 +2161,15 @@ unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsVi
         refs.auto_submit_popup,
         selectItemAtIndex: model.auto_submit_mode.ui_index()
     ];
+    let append_trailing_space_state: i64 = if model.append_trailing_space_on_paste {
+        1
+    } else {
+        0
+    };
+    let _: () = msg_send![
+        refs.append_trailing_space_checkbox,
+        setState: append_trailing_space_state
+    ];
 
     let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
     let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
@@ -2294,7 +2313,11 @@ unsafe fn hide_overlay_notice_accessory(refs: OverlayRefs) {
     if refs.notice_accessory_row != nil {
         let _: () = msg_send![refs.notice_accessory_row, setHidden: YES];
     }
-    for view in [refs.notice_option_key, refs.notice_space_key, refs.notice_auto_on_chip] {
+    for view in [
+        refs.notice_option_key,
+        refs.notice_space_key,
+        refs.notice_auto_on_chip,
+    ] {
         if view != nil {
             let _: () = msg_send![view, setHidden: YES];
         }
@@ -2932,6 +2955,28 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     let _: () = msg_send![auto_submit_popup, setAction: sel!(settingsSelectAutoSubmit:)];
     let _: () = msg_send![general_container, addSubview: auto_submit_popup];
 
+    let append_trailing_space_y =
+        auto_submit_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+    let append_trailing_space_frame = NSRect::new(
+        NSPoint::new(0.0, append_trailing_space_y),
+        NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+    );
+    let append_trailing_space_checkbox: id = msg_send![class!(NSButton), alloc];
+    let append_trailing_space_checkbox: id = msg_send![
+        append_trailing_space_checkbox,
+        initWithFrame: append_trailing_space_frame
+    ];
+    let _: () = msg_send![append_trailing_space_checkbox, setButtonType: 3usize];
+    let _: () = msg_send![
+        append_trailing_space_checkbox,
+        setTitle: NSString::alloc(nil).init_str("Append trailing space after paste")
+    ];
+    let _: () = msg_send![
+        append_trailing_space_checkbox,
+        setAction: sel!(settingsToggleAppendTrailingSpace:)
+    ];
+    let _: () = msg_send![general_container, addSubview: append_trailing_space_checkbox];
+
     let debug_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
     let debug_checkbox_frame = NSRect::new(
         NSPoint::new(0.0, debug_top_y),
@@ -2990,6 +3035,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
         let _: () = msg_send![run_on_startup_checkbox, setTarget: delegate];
         let _: () = msg_send![paste_method_popup, setTarget: delegate];
         let _: () = msg_send![auto_submit_popup, setTarget: delegate];
+        let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
         let _: () = msg_send![debug_checkbox, setTarget: delegate];
         let _: () = msg_send![refresh_button, setTarget: delegate];
     }
@@ -3010,6 +3056,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
         run_on_startup_checkbox,
         paste_method_popup,
         auto_submit_popup,
+        append_trailing_space_checkbox,
         debug_checkbox,
         metrics_text_view,
     };

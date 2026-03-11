@@ -44,6 +44,7 @@ pub enum AppEvent {
     SettingsToggleDebugStats(bool),
     SettingsSelectPasteMethod(PasteMethod),
     SettingsSelectAutoSubmit(AutoSubmitMode),
+    SettingsToggleAppendTrailingSpace(bool),
     SettingsRefresh,
     OverlayCancel,
     Speech(SpeechEvent),
@@ -148,6 +149,7 @@ struct AppController {
     run_on_startup_enabled: bool,
     paste_method: PasteMethod,
     auto_submit_mode: AutoSubmitMode,
+    append_trailing_space_on_paste: bool,
     debug_stats_enabled: bool,
     turn_started_at: HashMap<u64, Instant>,
     turn_finalize_outcomes: HashMap<u64, (String, String)>,
@@ -470,9 +472,20 @@ fn auto_submit_mode_label(mode: AutoSubmitMode) -> &'static str {
     }
 }
 
-fn listen_toggle_notice(
-    enabled: bool,
-) -> (&'static str, Vec<platform::OverlayNoticeSegment>) {
+fn build_paste_text(text: &str, append_trailing_space: bool) -> String {
+    let mut paste_text = text.to_string();
+    if append_trailing_space
+        && !paste_text
+            .chars()
+            .last()
+            .is_some_and(|ch| ch.is_whitespace())
+    {
+        paste_text.push(' ');
+    }
+    paste_text
+}
+
+fn listen_toggle_notice(enabled: bool) -> (&'static str, Vec<platform::OverlayNoticeSegment>) {
     if enabled {
         ("Listen ENABLED", Vec::new())
     } else {
@@ -508,6 +521,7 @@ impl AppController {
         let run_on_startup_enabled = preferred_store::load_run_on_startup_enabled();
         let paste_method = preferred_store::load_paste_method();
         let auto_submit_mode = preferred_store::load_auto_submit_mode();
+        let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
         let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
         Self {
             cfg,
@@ -553,6 +567,7 @@ impl AppController {
             run_on_startup_enabled,
             paste_method,
             auto_submit_mode,
+            append_trailing_space_on_paste,
             debug_stats_enabled,
             turn_started_at: HashMap::new(),
             turn_finalize_outcomes: HashMap::new(),
@@ -685,6 +700,9 @@ impl AppController {
             }
             AppEvent::SettingsSelectAutoSubmit(mode) => {
                 self.handle_settings_select_auto_submit(mode)
+            }
+            AppEvent::SettingsToggleAppendTrailingSpace(enabled) => {
+                self.handle_settings_toggle_append_trailing_space(enabled)
             }
             AppEvent::SettingsRefresh => self.handle_settings_refresh(),
             AppEvent::OverlayCancel => self.handle_overlay_cancel(),
@@ -1156,6 +1174,12 @@ impl AppController {
         platform::update_settings_window(self.settings_view_model());
     }
 
+    fn handle_settings_toggle_append_trailing_space(&mut self, enabled: bool) {
+        self.append_trailing_space_on_paste = enabled;
+        preferred_store::save_append_trailing_space_on_paste(enabled);
+        platform::update_settings_window(self.settings_view_model());
+    }
+
     fn handle_settings_refresh(&mut self) {
         platform::update_settings_window(self.settings_view_model());
     }
@@ -1171,6 +1195,7 @@ impl AppController {
             run_on_startup_enabled: self.run_on_startup_enabled,
             paste_method: self.paste_method,
             auto_submit_mode: self.auto_submit_mode,
+            append_trailing_space_on_paste: self.append_trailing_space_on_paste,
             debug_stats_enabled: self.debug_stats_enabled,
             metrics_text,
         }
@@ -1889,12 +1914,7 @@ impl AppController {
             duration,
         });
         self.accessibility_notice_deadline = Some(Instant::now() + duration);
-        platform::set_overlay_listen_toggle_notice_content(
-            title,
-            &body_segments,
-            enabled,
-            0.0,
-        );
+        platform::set_overlay_listen_toggle_notice_content(title, &body_segments, enabled, 0.0);
     }
 
     fn show_accessibility_overlay_notice(&mut self) {
@@ -1950,14 +1970,7 @@ impl AppController {
     }
 
     fn try_paste(&mut self, turn_id: u64, mode: TranscriptMode, text: &str) -> bool {
-        let mut paste_text = text.to_string();
-        if !paste_text
-            .chars()
-            .last()
-            .is_some_and(|ch| ch.is_whitespace())
-        {
-            paste_text.push(' ');
-        }
+        let paste_text = build_paste_text(text, self.append_trailing_space_on_paste);
 
         if !matches!(self.paste_method, PasteMethod::ClipboardPaste) {
             let payload_json = serde_json::to_string(&paste_text)
@@ -2312,7 +2325,7 @@ mod tests {
     use super::{
         AppController, AzadConfig, EngineState, HotkeyEffect, ManualHoldReleaseAction,
         ManualHoldReleasePlan, RawFinalizeUiPlan, SessionRecoveryState,
-        allow_immediate_restart_for_fault_count, draft_matches_finalized_text,
+        allow_immediate_restart_for_fault_count, build_paste_text, draft_matches_finalized_text,
         has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
         has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
         manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
@@ -2728,6 +2741,18 @@ mod tests {
         let (disabled_title, disabled_segments) = listen_toggle_notice(false);
         assert_eq!(disabled_title, "Listen DISABLED");
         assert!(disabled_segments.is_empty());
+    }
+
+    #[test]
+    fn build_paste_text_appends_trailing_space_when_enabled() {
+        assert_eq!(build_paste_text("hello", true), "hello ");
+        assert_eq!(build_paste_text("hello ", true), "hello ");
+    }
+
+    #[test]
+    fn build_paste_text_preserves_input_when_trailing_space_is_disabled() {
+        assert_eq!(build_paste_text("hello", false), "hello");
+        assert_eq!(build_paste_text("hello ", false), "hello ");
     }
 
     #[test]
