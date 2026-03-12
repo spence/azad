@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 const METRICS_LOG_SCHEMA_VERSION: u8 = 1;
 const LAST_24_HOURS_MS: i64 = 24 * 60 * 60 * 1000;
 const RECENT_TRANSCRIPTS_LIMIT: usize = 10;
+const RECENT_EVENT_ASSOCIATION_MAX_GAP_MS: u64 = 5 * 60 * 1000;
 const SUMMARY_TRAILING_BLANK_LINES: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -293,49 +294,60 @@ pub fn now_epoch_ms() -> i64 {
 }
 
 fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
-    let mut turns: HashMap<u64, (i64, TranscriptMode, u64)> = HashMap::new();
-    let mut pastes: HashMap<u64, (i64, TranscriptMode, u64)> = HashMap::new();
-    let mut outcomes: HashMap<u64, (i64, String, String)> = HashMap::new();
-    let mut audits: HashMap<u64, (i64, bool, usize, f64, f64)> = HashMap::new();
-    let mut partial_counts: HashMap<u64, (i64, usize)> = HashMap::new();
-    let mut audit_errors: HashMap<u64, (i64, String)> = HashMap::new();
+    let mut outcomes_by_turn: HashMap<u64, Vec<(i64, String, String)>> = HashMap::new();
+    let mut audits_by_turn: HashMap<u64, Vec<(i64, bool, usize, f64, f64)>> = HashMap::new();
+    let mut audit_errors_by_turn: HashMap<u64, Vec<(i64, usize, String)>> = HashMap::new();
     let mut recent_snapshots: Vec<(i64, RecentTranscriptSummary)> = Vec::new();
+    let mut summary = MetricsSummary::default();
+    let mut trans_all = Vec::new();
+    let mut trans_raw = Vec::new();
+    let mut trans_normal = Vec::new();
+    let mut paste_values = Vec::new();
+    let mut exact_count = 0usize;
+    let mut sum_edit = 0usize;
+    let mut sum_wer = 0.0f64;
+    let mut sum_lcp = 0.0f64;
 
     for record in records {
         match &record.event {
             MetricsLogEvent::TurnCompleted {
-                turn_id,
                 mode,
                 transcription_duration_ms,
+                ..
             } => {
-                upsert_latest(
-                    &mut turns,
-                    *turn_id,
-                    (record.ts_ms, *mode, *transcription_duration_ms),
-                );
+                summary.total_transcriptions += 1;
+                trans_all.push(*transcription_duration_ms);
+                match mode {
+                    TranscriptMode::Raw => {
+                        summary.raw_transcriptions += 1;
+                        trans_raw.push(*transcription_duration_ms);
+                    }
+                    TranscriptMode::Normal => {
+                        summary.normal_transcriptions += 1;
+                        trans_normal.push(*transcription_duration_ms);
+                    }
+                }
             }
             MetricsLogEvent::PasteCompleted {
-                turn_id,
-                mode,
                 paste_duration_ms,
                 ..
             } => {
-                upsert_latest(
-                    &mut pastes,
-                    *turn_id,
-                    (record.ts_ms, *mode, *paste_duration_ms),
-                );
+                paste_values.push(*paste_duration_ms);
             }
             MetricsLogEvent::PartialFinalizeOutcome {
                 turn_id,
                 outcome,
                 reason,
             } => {
-                upsert_latest(
-                    &mut outcomes,
-                    *turn_id,
-                    (record.ts_ms, outcome.clone(), reason.clone()),
-                );
+                summary.fallback_attempts += 1;
+                if outcome == "full_pass_bailout" {
+                    summary.fallback_count += 1;
+                }
+                outcomes_by_turn.entry(*turn_id).or_default().push((
+                    record.ts_ms,
+                    outcome.clone(),
+                    reason.clone(),
+                ));
             }
             MetricsLogEvent::PartialAuditResult {
                 turn_id,
@@ -346,16 +358,20 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
                 lcp_pct,
                 ..
             } => {
-                upsert_latest(
-                    &mut audits,
-                    *turn_id,
-                    (record.ts_ms, *exact, *edit_distance, *wer_like, *lcp_pct),
-                );
-                upsert_latest(
-                    &mut partial_counts,
-                    *turn_id,
-                    (record.ts_ms, *partial_count),
-                );
+                summary.quality_samples += 1;
+                if *exact {
+                    exact_count += 1;
+                }
+                sum_edit += *edit_distance;
+                sum_wer += *wer_like;
+                sum_lcp += *lcp_pct;
+                audits_by_turn.entry(*turn_id).or_default().push((
+                    record.ts_ms,
+                    *exact,
+                    *partial_count,
+                    *wer_like,
+                    *lcp_pct,
+                ));
             }
             MetricsLogEvent::PartialAuditError {
                 turn_id,
@@ -363,12 +379,11 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
                 message,
                 ..
             } => {
-                upsert_latest(
-                    &mut partial_counts,
-                    *turn_id,
-                    (record.ts_ms, *partial_count),
-                );
-                upsert_latest(&mut audit_errors, *turn_id, (record.ts_ms, message.clone()));
+                audit_errors_by_turn.entry(*turn_id).or_default().push((
+                    record.ts_ms,
+                    *partial_count,
+                    message.clone(),
+                ));
             }
             MetricsLogEvent::TurnSnapshot {
                 turn_id,
@@ -396,60 +411,16 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
         }
     }
 
-    let mut summary = MetricsSummary::default();
-
-    let mut trans_all = Vec::new();
-    let mut trans_raw = Vec::new();
-    let mut trans_normal = Vec::new();
-    for (_, mode, duration) in turns.values().copied() {
-        summary.total_transcriptions += 1;
-        trans_all.push(duration);
-        match mode {
-            TranscriptMode::Raw => {
-                summary.raw_transcriptions += 1;
-                trans_raw.push(duration);
-            }
-            TranscriptMode::Normal => {
-                summary.normal_transcriptions += 1;
-                trans_normal.push(duration);
-            }
-        }
-    }
     summary.transcription_all = duration_stats(&trans_all);
     summary.transcription_raw = duration_stats(&trans_raw);
     summary.transcription_normal = duration_stats(&trans_normal);
-
-    let mut paste_values = Vec::new();
-    for (_, _, duration) in pastes.values().copied() {
-        paste_values.push(duration);
-    }
     summary.paste = duration_stats(&paste_values);
 
-    for (_, outcome, _) in outcomes.values() {
-        summary.fallback_attempts += 1;
-        if outcome == "full_pass_bailout" {
-            summary.fallback_count += 1;
-        }
-    }
     summary.fallback_rate_pct = if summary.fallback_attempts == 0 {
         0.0
     } else {
         summary.fallback_count as f64 * 100.0 / summary.fallback_attempts as f64
     };
-
-    let mut exact_count = 0usize;
-    let mut sum_edit = 0usize;
-    let mut sum_wer = 0.0f64;
-    let mut sum_lcp = 0.0f64;
-    for (_, exact, edit_distance, wer_like, lcp_pct) in audits.values().copied() {
-        summary.quality_samples += 1;
-        if exact {
-            exact_count += 1;
-        }
-        sum_edit += edit_distance;
-        sum_wer += wer_like;
-        sum_lcp += lcp_pct;
-    }
 
     if summary.quality_samples > 0 {
         let denom = summary.quality_samples as f64;
@@ -460,73 +431,67 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
     }
 
     recent_snapshots.sort_by(|a, b| b.0.cmp(&a.0));
-    summary.recent_transcripts = recent_snapshots
+    let mut recent_samples: Vec<(i64, RecentTranscriptSummary)> = recent_snapshots
         .into_iter()
         .take(RECENT_TRANSCRIPTS_LIMIT)
-        .map(|(_, summary)| summary)
         .collect();
-    for sample in &mut summary.recent_transcripts {
-        if let Some((_, count)) = partial_counts.get(&sample.turn_id) {
-            sample.partial_count = Some(*count);
+
+    for (snapshot_ts, sample) in &mut recent_samples {
+        if let Some(audits) = audits_by_turn.get(&sample.turn_id) {
+            if let Some((_, exact, partial_count, wer_like, _)) =
+                nearest_by_ts(audits, *snapshot_ts, |item| item.0)
+            {
+                sample.partial_count = Some(*partial_count);
+                sample.quality_score_pct = Some(quality_score_pct(*exact, *wer_like));
+                continue;
+            }
         }
-        if let Some((_, exact, _, wer_like, _)) = audits.get(&sample.turn_id) {
-            sample.quality_score_pct = Some(quality_score_pct(*exact, *wer_like));
-        } else if audit_errors.contains_key(&sample.turn_id) {
-            sample.quality_error = true;
-        } else if let Some((_, outcome, _)) = outcomes.get(&sample.turn_id) {
-            if outcome == "assembled" || outcome == "draft_emit" {
-                sample.quality_pending = true;
+
+        if let Some(errors) = audit_errors_by_turn.get(&sample.turn_id) {
+            if let Some((_, partial_count, _)) = nearest_by_ts(errors, *snapshot_ts, |item| item.0)
+            {
+                sample.partial_count = Some(*partial_count);
+                sample.quality_error = true;
+                continue;
+            }
+        }
+
+        if let Some(outcomes) = outcomes_by_turn.get(&sample.turn_id) {
+            if let Some((_, outcome, _)) = nearest_by_ts(outcomes, *snapshot_ts, |item| item.0) {
+                if outcome == "assembled" || outcome == "draft_emit" {
+                    sample.quality_pending = true;
+                }
             }
         }
     }
 
+    summary.recent_transcripts = recent_samples
+        .into_iter()
+        .map(|(_, sample)| sample)
+        .collect();
+
     summary
 }
 
-fn upsert_latest<V>(map: &mut HashMap<u64, V>, key: u64, value: V)
+fn nearest_by_ts<T, F>(items: &[T], target_ts: i64, ts_of: F) -> Option<&T>
 where
-    V: Clone + HasTsMs,
+    F: Fn(&T) -> i64,
 {
-    let should_replace = map
-        .get(&key)
-        .map(|existing| value.ts_ms() >= existing.ts_ms())
-        .unwrap_or(true);
-    if should_replace {
-        map.insert(key, value);
-    }
+    items
+        .iter()
+        .filter_map(|item| {
+            let delta = abs_diff_ms(ts_of(item), target_ts);
+            (delta <= RECENT_EVENT_ASSOCIATION_MAX_GAP_MS).then_some((delta, item))
+        })
+        .min_by_key(|(delta, _)| *delta)
+        .map(|(_, item)| item)
 }
 
-trait HasTsMs {
-    fn ts_ms(&self) -> i64;
-}
-
-impl HasTsMs for (i64, TranscriptMode, u64) {
-    fn ts_ms(&self) -> i64 {
-        self.0
-    }
-}
-
-impl HasTsMs for (i64, String, String) {
-    fn ts_ms(&self) -> i64 {
-        self.0
-    }
-}
-
-impl HasTsMs for (i64, bool, usize, f64, f64) {
-    fn ts_ms(&self) -> i64 {
-        self.0
-    }
-}
-
-impl HasTsMs for (i64, usize) {
-    fn ts_ms(&self) -> i64 {
-        self.0
-    }
-}
-
-impl HasTsMs for (i64, String) {
-    fn ts_ms(&self) -> i64 {
-        self.0
+fn abs_diff_ms(lhs: i64, rhs: i64) -> u64 {
+    if lhs >= rhs {
+        lhs.saturating_sub(rhs) as u64
+    } else {
+        rhs.saturating_sub(lhs) as u64
     }
 }
 
@@ -884,5 +849,146 @@ mod tests {
         assert!(!summary.recent_transcripts[0].quality_pending);
         assert!(summary.recent_transcripts[0].quality_error);
         assert_eq!(summary.recent_transcripts[0].quality_score_pct, None);
+    }
+
+    #[test]
+    fn summarize_counts_reused_turn_ids_across_sessions() {
+        let records = vec![
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 10,
+                event: MetricsLogEvent::TurnCompleted {
+                    turn_id: 3,
+                    mode: TranscriptMode::Normal,
+                    transcription_duration_ms: 120,
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 20,
+                event: MetricsLogEvent::TurnCompleted {
+                    turn_id: 3,
+                    mode: TranscriptMode::Raw,
+                    transcription_duration_ms: 80,
+                },
+            },
+        ];
+
+        let summary = summarize(&records);
+        assert_eq!(summary.total_transcriptions, 2);
+        assert_eq!(summary.normal_transcriptions, 1);
+        assert_eq!(summary.raw_transcriptions, 1);
+    }
+
+    #[test]
+    fn summarize_recent_quality_uses_nearest_turn_instance() {
+        let records = vec![
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 10,
+                event: MetricsLogEvent::TurnSnapshot {
+                    turn_id: 18,
+                    mode: TranscriptMode::Normal,
+                    transcription_duration_ms: 900,
+                    fallback: false,
+                    fallback_reason: "na".to_string(),
+                    text_preview: "older turn".to_string(),
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 12,
+                event: MetricsLogEvent::PartialAuditResult {
+                    turn_id: 18,
+                    emitted_kind: "assembled".to_string(),
+                    exact: true,
+                    partial_count: 1,
+                    emitted_tokens: 5,
+                    full_tokens: 5,
+                    edit_distance: 0,
+                    wer_like: 0.0,
+                    lcp_tokens: 5,
+                    lcp_pct: 100.0,
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 1000,
+                event: MetricsLogEvent::TurnSnapshot {
+                    turn_id: 18,
+                    mode: TranscriptMode::Normal,
+                    transcription_duration_ms: 1500,
+                    fallback: false,
+                    fallback_reason: "na".to_string(),
+                    text_preview: "newer turn".to_string(),
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 1025,
+                event: MetricsLogEvent::PartialAuditResult {
+                    turn_id: 18,
+                    emitted_kind: "assembled".to_string(),
+                    exact: false,
+                    partial_count: 4,
+                    emitted_tokens: 12,
+                    full_tokens: 16,
+                    edit_distance: 4,
+                    wer_like: 0.25,
+                    lcp_tokens: 10,
+                    lcp_pct: 62.5,
+                },
+            },
+        ];
+
+        let summary = summarize(&records);
+        assert_eq!(summary.recent_transcripts.len(), 2);
+        assert_eq!(summary.recent_transcripts[0].text_preview, "newer turn");
+        assert_eq!(summary.recent_transcripts[0].partial_count, Some(4));
+        assert_eq!(summary.recent_transcripts[0].quality_score_pct, Some(75.0));
+        assert_eq!(summary.recent_transcripts[1].text_preview, "older turn");
+        assert_eq!(summary.recent_transcripts[1].partial_count, Some(1));
+        assert_eq!(summary.recent_transcripts[1].quality_score_pct, Some(100.0));
+    }
+
+    #[test]
+    fn summarize_ignores_stale_quality_from_far_away_turn_instance() {
+        let records = vec![
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 1,
+                event: MetricsLogEvent::PartialAuditResult {
+                    turn_id: 44,
+                    emitted_kind: "assembled".to_string(),
+                    exact: true,
+                    partial_count: 2,
+                    emitted_tokens: 8,
+                    full_tokens: 8,
+                    edit_distance: 0,
+                    wer_like: 0.0,
+                    lcp_tokens: 8,
+                    lcp_pct: 100.0,
+                },
+            },
+            MetricsLogRecord {
+                schema_version: 1,
+                ts_ms: 1_000_000,
+                event: MetricsLogEvent::TurnSnapshot {
+                    turn_id: 44,
+                    mode: TranscriptMode::Normal,
+                    transcription_duration_ms: 1300,
+                    fallback: false,
+                    fallback_reason: "na".to_string(),
+                    text_preview: "current session".to_string(),
+                },
+            },
+        ];
+
+        let summary = summarize(&records);
+        assert_eq!(summary.recent_transcripts.len(), 1);
+        assert_eq!(summary.recent_transcripts[0].partial_count, None);
+        assert_eq!(summary.recent_transcripts[0].quality_score_pct, None);
+        assert!(!summary.recent_transcripts[0].quality_pending);
+        assert!(!summary.recent_transcripts[0].quality_error);
     }
 }
