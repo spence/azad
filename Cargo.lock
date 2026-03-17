@@ -165,6 +165,7 @@ dependencies = [
  "objc",
  "serde",
  "serde_json",
+ "ureq 3.2.0",
 ]
 
 [[package]]
@@ -3042,14 +3043,17 @@ checksum = "fdc97a28575b85cfedf2a7e7d3cc64b3e11bd8ac766666318003abbacc7a21fc"
 dependencies = [
  "base64 0.22.1",
  "der",
+ "flate2",
  "log",
  "native-tls",
  "percent-encoding",
+ "rustls",
  "rustls-pki-types",
  "socks",
  "ureq-proto",
  "utf-8",
  "webpki-root-certs",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]

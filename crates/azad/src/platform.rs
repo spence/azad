@@ -8,10 +8,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cocoa::appkit::{
-    NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSImage,
-    NSMainMenuWindowLevel, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSScreen,
-    NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWindow, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+  NSApp,
+  NSApplication,
+  NSApplicationActivationPolicy,
+  NSBackingStoreType,
+  NSColor,
+  NSImage,
+  NSMainMenuWindowLevel,
+  NSMenu,
+  NSMenuItem,
+  NSPasteboard,
+  NSPasteboardTypeString,
+  NSScreen,
+  NSStatusBar,
+  NSStatusItem,
+  NSVariableStatusItemLength,
+  NSWindow,
+  NSWindowCollectionBehavior,
+  NSWindowStyleMask,
 };
 use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
@@ -79,7 +93,7 @@ const ALWAYS_LISTENING_SWITCH_WIDTH: f64 = 32.0;
 const ALWAYS_LISTENING_SWITCH_HEIGHT: f64 = 18.0;
 const ALWAYS_LISTENING_SWITCH_INSET: f64 = 2.0;
 const ALWAYS_LISTENING_SWITCH_THUMB_SIZE: f64 =
-    ALWAYS_LISTENING_SWITCH_HEIGHT - (ALWAYS_LISTENING_SWITCH_INSET * 2.0);
+  ALWAYS_LISTENING_SWITCH_HEIGHT - (ALWAYS_LISTENING_SWITCH_INSET * 2.0);
 const DEVICE_MENU_ROW_CHROME_WIDTH: f64 = 46.0;
 const DEVICE_MENU_INDENT_LEVEL_WIDTH: f64 = 16.0;
 const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
@@ -154,3697 +168,3696 @@ thread_local! {
 
 #[derive(Clone, Copy)]
 struct OverlayRefs {
-    window: id,
-    card_view: id,
-    label: id,
-    hold_badge: id,
-    raw_badge: id,
-    meter_view: id,
-    wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
-    busy_gradient_layer: id,
-    busy_mask_layer: id,
-    notice_accessory_row: id,
-    notice_option_key: id,
-    notice_option_label: id,
-    notice_plus_label: id,
-    notice_space_key: id,
-    notice_space_label: id,
-    notice_auto_on_chip: id,
-    notice_auto_on_label: id,
+  window: id,
+  card_view: id,
+  label: id,
+  hold_badge: id,
+  raw_badge: id,
+  meter_view: id,
+  wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
+  busy_gradient_layer: id,
+  busy_mask_layer: id,
+  notice_accessory_row: id,
+  notice_option_key: id,
+  notice_option_label: id,
+  notice_plus_label: id,
+  notice_space_key: id,
+  notice_space_label: id,
+  notice_auto_on_chip: id,
+  notice_auto_on_label: id,
 }
 
 #[derive(Clone, Copy)]
 struct SettingsWindowRefs {
-    window: id,
-    tab_list_view: id,
-    general_container: id,
-    debug_container: id,
-    run_on_startup_checkbox: id,
-    paste_method_popup: id,
-    auto_submit_popup: id,
-    append_trailing_space_checkbox: id,
-    debug_checkbox: id,
-    metrics_text_view: id,
+  window: id,
+  tab_list_view: id,
+  general_container: id,
+  models_container: id,
+  debug_container: id,
+  run_on_startup_checkbox: id,
+  paste_method_popup: id,
+  auto_submit_popup: id,
+  append_trailing_space_checkbox: id,
+  debug_checkbox: id,
+  metrics_text_view: id,
+  models_status_label: id,
+  models_progress_indicator: id,
+  models_download_button: id,
+  models_cancel_button: id,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct DeviceMenuModel {
-    pub always_listening_enabled: bool,
-    pub header_label: String,
-    pub expanded: bool,
-    pub rows: Vec<DeviceMenuRow>,
+  pub always_listening_enabled: bool,
+  pub header_label: String,
+  pub expanded: bool,
+  pub rows: Vec<DeviceMenuRow>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DeviceMenuRow {
-    pub id: String,
-    pub label: String,
-    pub checked: bool,
+  pub id: String,
+  pub label: String,
+  pub checked: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct SettingsViewModel {
-    pub selected_tab: SettingsTab,
-    pub run_on_startup_enabled: bool,
-    pub paste_method: PasteMethod,
-    pub auto_submit_mode: AutoSubmitMode,
-    pub append_trailing_space_on_paste: bool,
-    pub debug_stats_enabled: bool,
-    pub metrics_text: String,
+  pub selected_tab: SettingsTab,
+  pub run_on_startup_enabled: bool,
+  pub paste_method: PasteMethod,
+  pub auto_submit_mode: AutoSubmitMode,
+  pub append_trailing_space_on_paste: bool,
+  pub debug_stats_enabled: bool,
+  pub metrics_text: String,
+  pub model_pack_size_label: String,
+  pub model_pack_status: crate::models::PackStatus,
+  pub model_download_bytes_done: u64,
+  pub model_download_bytes_total: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
-    #[default]
-    General,
-    Debug,
+  #[default]
+  General,
+  Models,
+  Debug,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasteResult {
-    Pasted,
-    EmptyText,
-    ClipboardWriteFailed,
-    InputEventFailed,
-    AccessibilityRequired,
+  Pasted,
+  EmptyText,
+  ClipboardWriteFailed,
+  InputEventFailed,
+  AccessibilityRequired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverlayNoticeSegment {
-    Text(String),
-    #[allow(dead_code)]
-    Keycap(String),
+  Text(String),
+  #[allow(dead_code)]
+  Keycap(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OverlayNoticeStyle {
-    Standard,
-    ListenToggle { enabled: bool, progress: f32 },
+  Standard,
+  ListenToggle { enabled: bool, progress: f32 },
 }
 
 pub fn run_app() {
-    unsafe {
-        let _pool = NSAutoreleasePool::new(nil);
-        let app = NSApp();
-        app.setActivationPolicy_(
-            NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
-        );
+  unsafe {
+    let _pool = NSAutoreleasePool::new(nil);
+    let app = NSApp();
+    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
 
-        let delegate_class = register_delegate_class();
-        let delegate: id = msg_send![delegate_class, new];
+    let delegate_class = register_delegate_class();
+    let delegate: id = msg_send![delegate_class, new];
 
-        STATUS_DELEGATE_REF.with(|r| {
-            r.borrow_mut().replace(delegate);
-        });
+    STATUS_DELEGATE_REF.with(|r| {
+      r.borrow_mut().replace(delegate);
+    });
 
-        setup_status_bar(delegate);
-        install_global_hotkeys();
+    setup_status_bar(delegate);
+    install_global_hotkeys();
 
-        let _: () = msg_send![app, setDelegate: delegate];
-        app.run();
-    }
+    let _: () = msg_send![app, setDelegate: delegate];
+    app.run();
+  }
 }
 
 pub fn check_required_permissions_on_startup() {
-    let _ = ensure_accessibility_for_auto_paste();
+  let _ = ensure_accessibility_for_auto_paste();
 }
 
 pub fn ensure_accessibility_for_auto_paste() -> bool {
-    if is_accessibility_trusted() {
-        return true;
-    }
-    maybe_request_accessibility_permission_once();
-    eprintln!(
-        "Azad: Accessibility permission missing. Enable Azad in System Settings -> Privacy & Security -> Accessibility."
-    );
-    false
+  if is_accessibility_trusted() {
+    return true;
+  }
+  maybe_request_accessibility_permission_once();
+  eprintln!(
+    "Azad: Accessibility permission missing. Enable Azad in System Settings -> Privacy & Security -> Accessibility."
+  );
+  false
 }
 
 pub fn set_device_menu(model: DeviceMenuModel) {
-    DEVICE_MENU_MODEL.with(|slot| {
-        slot.borrow_mut().clone_from(&model);
-    });
-    rebuild_status_menu();
+  DEVICE_MENU_MODEL.with(|slot| {
+    slot.borrow_mut().clone_from(&model);
+  });
+  rebuild_status_menu();
 }
 
 pub fn show_settings_window(model: SettingsViewModel) {
-    unsafe {
-        let refs = ensure_settings_window();
-        apply_settings_view_model(refs, &model);
-        let app = NSApp();
-        let _: () = msg_send![app, activateIgnoringOtherApps: YES];
-        let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
-    }
+  unsafe {
+    let refs = ensure_settings_window();
+    apply_settings_view_model(refs, &model);
+    let app = NSApp();
+    let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+    let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
+  }
 }
 
 pub fn update_settings_window(model: SettingsViewModel) {
-    if let Some(refs) = current_settings_window() {
-        unsafe {
-            apply_settings_view_model(refs, &model);
-        }
+  if let Some(refs) = current_settings_window() {
+    unsafe {
+      apply_settings_view_model(refs, &model);
     }
+  }
 }
 
 pub fn set_launch_agent_startup_enabled(enabled: bool) -> bool {
-    let plist_path = match launch_agent_plist_path() {
-        Some(path) => path,
-        None => {
-            eprintln!("Azad: unable to resolve LaunchAgent plist path for startup toggle");
-            return false;
-        }
-    };
-
-    if !plist_path.exists() {
-        eprintln!(
-            "Azad: LaunchAgent plist not found at {} (run install first)",
-            plist_path.display()
-        );
-        return false;
+  let plist_path = match launch_agent_plist_path() {
+    Some(path) => path,
+    None => {
+      eprintln!("Azad: unable to resolve LaunchAgent plist path for startup toggle");
+      return false;
     }
+  };
 
-    let output = match Command::new("plutil")
-        .arg("-replace")
-        .arg("RunAtLoad")
-        .arg("-bool")
-        .arg(if enabled { "true" } else { "false" })
-        .arg(plist_path.as_os_str())
-        .output()
-    {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("Azad: failed to update RunAtLoad in LaunchAgent plist: {err}");
-            return false;
-        }
-    };
+  if !plist_path.exists() {
+    eprintln!("Azad: LaunchAgent plist not found at {} (run install first)", plist_path.display());
+    return false;
+  }
 
-    if output.status.success() {
-        return true;
+  let output = match Command::new("plutil")
+    .arg("-replace")
+    .arg("RunAtLoad")
+    .arg("-bool")
+    .arg(if enabled { "true" } else { "false" })
+    .arg(plist_path.as_os_str())
+    .output()
+  {
+    Ok(output) => output,
+    Err(err) => {
+      eprintln!("Azad: failed to update RunAtLoad in LaunchAgent plist: {err}");
+      return false;
     }
+  };
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if stderr.is_empty() {
-        eprintln!(
-            "Azad: failed to update RunAtLoad (status {})",
-            output.status
-        );
-    } else {
-        eprintln!("Azad: failed to update RunAtLoad: {stderr}");
-    }
-    false
+  if output.status.success() {
+    return true;
+  }
+
+  let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+  if stderr.is_empty() {
+    eprintln!("Azad: failed to update RunAtLoad (status {})", output.status);
+  } else {
+    eprintln!("Azad: failed to update RunAtLoad: {stderr}");
+  }
+  false
 }
 
 pub fn focus_existing_instance(bundle_id: &str) -> bool {
-    unsafe {
-        let _pool = NSAutoreleasePool::new(nil);
-        let bundle = NSString::alloc(nil).init_str(bundle_id);
-        if bundle == nil {
-            return false;
-        }
-
-        let running_apps: id = msg_send![
-            class!(NSRunningApplication),
-            runningApplicationsWithBundleIdentifier: bundle
-        ];
-        if running_apps == nil {
-            return false;
-        }
-
-        let current_pid = std::process::id() as i32;
-        let count: usize = msg_send![running_apps, count];
-        for idx in 0..count {
-            let running: id = msg_send![running_apps, objectAtIndex: idx];
-            if running == nil {
-                continue;
-            }
-
-            let pid: i32 = msg_send![running, processIdentifier];
-            if pid == current_pid {
-                continue;
-            }
-
-            let activated: bool = msg_send![running, activateWithOptions: (1u64 << 1)];
-            if activated {
-                return true;
-            }
-        }
+  unsafe {
+    let _pool = NSAutoreleasePool::new(nil);
+    let bundle = NSString::alloc(nil).init_str(bundle_id);
+    if bundle == nil {
+      return false;
     }
 
-    false
+    let running_apps: id = msg_send![
+        class!(NSRunningApplication),
+        runningApplicationsWithBundleIdentifier: bundle
+    ];
+    if running_apps == nil {
+      return false;
+    }
+
+    let current_pid = std::process::id() as i32;
+    let count: usize = msg_send![running_apps, count];
+    for idx in 0..count {
+      let running: id = msg_send![running_apps, objectAtIndex: idx];
+      if running == nil {
+        continue;
+      }
+
+      let pid: i32 = msg_send![running, processIdentifier];
+      if pid == current_pid {
+        continue;
+      }
+
+      let activated: bool = msg_send![running, activateWithOptions: (1u64 << 1)];
+      if activated {
+        return true;
+      }
+    }
+  }
+
+  false
 }
 
 fn launch_agent_plist_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    let mut path = PathBuf::from(home);
-    path.push("Library");
-    path.push("LaunchAgents");
-    path.push("ai.azad.plist");
-    Some(path)
+  let home = std::env::var_os("HOME")?;
+  let mut path = PathBuf::from(home);
+  path.push("Library");
+  path.push("LaunchAgents");
+  path.push("ai.azad.plist");
+  Some(path)
 }
 
 pub fn show_overlay() {
-    unsafe {
-        let refs = ensure_overlay();
-        move_overlay_to_cursor_screen(refs, true);
-        let _: () = msg_send![refs.window, orderFrontRegardless];
-    }
-    set_escape_hotkey_enabled(true);
-    set_enter_hotkey_enabled(true);
+  unsafe {
+    let refs = ensure_overlay();
+    move_overlay_to_cursor_screen(refs, true);
+    let _: () = msg_send![refs.window, orderFrontRegardless];
+  }
+  set_escape_hotkey_enabled(true);
+  set_enter_hotkey_enabled(true);
 }
 
 pub fn show_overlay_top() {
-    unsafe {
-        let refs = ensure_overlay_top();
-        if let Some(bottom) = current_overlay() {
-            position_overlay_top_relative_to_bottom(refs, bottom);
-        } else {
-            move_overlay_to_cursor_screen(refs, true);
-        }
-        let _: () = msg_send![refs.window, orderFrontRegardless];
+  unsafe {
+    let refs = ensure_overlay_top();
+    if let Some(bottom) = current_overlay() {
+      position_overlay_top_relative_to_bottom(refs, bottom);
+    } else {
+      move_overlay_to_cursor_screen(refs, true);
     }
+    let _: () = msg_send![refs.window, orderFrontRegardless];
+  }
 }
 
 pub fn hide_overlay() {
-    hide_overlay_top();
-    if let Some(refs) = current_overlay() {
-        unsafe {
-            let _: () = msg_send![refs.window, orderOut: nil];
-            let app = NSApp();
-            let _: () = msg_send![app, updateWindows];
-        }
+  hide_overlay_top();
+  if let Some(refs) = current_overlay() {
+    unsafe {
+      let _: () = msg_send![refs.window, orderOut: nil];
+      let app = NSApp();
+      let _: () = msg_send![app, updateWindows];
     }
-    set_escape_hotkey_enabled(false);
-    set_enter_hotkey_enabled(false);
+  }
+  set_escape_hotkey_enabled(false);
+  set_enter_hotkey_enabled(false);
 }
 
 pub fn hide_overlay_top() {
-    if let Some(refs) = current_overlay_top() {
-        unsafe {
-            let _: () = msg_send![refs.window, orderOut: nil];
-        }
+  if let Some(refs) = current_overlay_top() {
+    unsafe {
+      let _: () = msg_send![refs.window, orderOut: nil];
     }
+  }
 }
 
 pub fn set_overlay_stream_content(
-    draft: &str,
-    activity: &[f32],
-    busy_phase: Option<f32>,
-    show_raw_badge: bool,
-    show_hold_badge: bool,
+  draft: &str,
+  activity: &[f32],
+  busy_phase: Option<f32>,
+  show_raw_badge: bool,
+  show_hold_badge: bool,
 ) {
-    let Some(refs) = current_overlay() else {
-        return;
-    };
-    unsafe {
-        move_overlay_to_cursor_screen(refs, false);
-        render_overlay_text(
-            refs,
-            draft,
-            activity,
-            busy_phase,
-            show_raw_badge,
-            show_hold_badge,
-        );
-    }
+  let Some(refs) = current_overlay() else {
+    return;
+  };
+  unsafe {
+    move_overlay_to_cursor_screen(refs, false);
+    render_overlay_text(refs, draft, activity, busy_phase, show_raw_badge, show_hold_badge);
+  }
 }
 
 pub fn set_overlay_top_stream_content(draft: &str, activity: &[f32], busy_phase: Option<f32>) {
-    let Some(refs) = current_overlay_top() else {
-        return;
-    };
-    unsafe {
-        if let Some(bottom) = current_overlay() {
-            position_overlay_top_relative_to_bottom(refs, bottom);
-        }
-        render_overlay_text(refs, draft, activity, busy_phase, false, false);
-        if let Some(bottom) = current_overlay() {
-            position_overlay_top_relative_to_bottom(refs, bottom);
-        }
+  let Some(refs) = current_overlay_top() else {
+    return;
+  };
+  unsafe {
+    if let Some(bottom) = current_overlay() {
+      position_overlay_top_relative_to_bottom(refs, bottom);
     }
+    render_overlay_text(refs, draft, activity, busy_phase, false, false);
+    if let Some(bottom) = current_overlay() {
+      position_overlay_top_relative_to_bottom(refs, bottom);
+    }
+  }
 }
 
 pub fn set_overlay_notice_content(title: &str, body: &str) {
-    set_overlay_notice_content_styled(
-        title,
-        &[OverlayNoticeSegment::Text(body.to_string())],
-        OverlayNoticeStyle::Standard,
-    );
+  set_overlay_notice_content_styled(
+    title,
+    &[OverlayNoticeSegment::Text(body.to_string())],
+    OverlayNoticeStyle::Standard,
+  );
 }
 
 pub fn set_overlay_listen_toggle_notice_content(
-    title: &str,
-    body_segments: &[OverlayNoticeSegment],
-    enabled: bool,
-    progress: f32,
+  title: &str,
+  body_segments: &[OverlayNoticeSegment],
+  enabled: bool,
+  progress: f32,
 ) {
-    set_overlay_notice_content_styled(
-        title,
-        body_segments,
-        OverlayNoticeStyle::ListenToggle {
-            enabled,
-            progress: progress.clamp(0.0, 1.0),
-        },
-    );
+  set_overlay_notice_content_styled(title, body_segments, OverlayNoticeStyle::ListenToggle {
+    enabled,
+    progress: progress.clamp(0.0, 1.0),
+  });
 }
 
 fn render_overlay_notice_body(segments: &[OverlayNoticeSegment]) -> String {
-    let mut out = String::new();
-    for seg in segments {
-        match seg {
-            OverlayNoticeSegment::Text(t) => out.push_str(t),
-            OverlayNoticeSegment::Keycap(k) => {
-                out.push('[');
-                out.push_str(k);
-                out.push(']');
-            }
-        }
+  let mut out = String::new();
+  for seg in segments {
+    match seg {
+      OverlayNoticeSegment::Text(t) => out.push_str(t),
+      OverlayNoticeSegment::Keycap(k) => {
+        out.push('[');
+        out.push_str(k);
+        out.push(']');
+      }
     }
-    out
+  }
+  out
 }
 
 fn set_overlay_notice_content_styled(
-    title: &str,
-    body_segments: &[OverlayNoticeSegment],
-    style: OverlayNoticeStyle,
+  title: &str,
+  body_segments: &[OverlayNoticeSegment],
+  style: OverlayNoticeStyle,
 ) {
-    let Some(refs) = current_overlay() else {
-        return;
-    };
-    let title = title.trim();
-    let body = render_overlay_notice_body(body_segments);
-    let body = body.trim();
-    let rendered = if body.is_empty() {
-        title.to_string()
-    } else {
-        format!("{title}\n{body}")
-    };
+  let Some(refs) = current_overlay() else {
+    return;
+  };
+  let title = title.trim();
+  let body = render_overlay_notice_body(body_segments);
+  let body = body.trim();
+  let rendered = if body.is_empty() { title.to_string() } else { format!("{title}\n{body}") };
 
-    unsafe {
-        move_overlay_to_cursor_screen(refs, false);
-        let notice_activity = match style {
-            OverlayNoticeStyle::Standard => Vec::new(),
-            OverlayNoticeStyle::ListenToggle { enabled, progress } => {
-                listen_toggle_notice_activity(enabled, progress)
-            }
-        };
-        render_overlay_text(refs, &rendered, &notice_activity, None, false, false);
-        apply_overlay_notice_style(refs, style);
-        hide_overlay_notice_accessory(refs);
-    }
+  unsafe {
+    move_overlay_to_cursor_screen(refs, false);
+    let notice_activity = match style {
+      OverlayNoticeStyle::Standard => Vec::new(),
+      OverlayNoticeStyle::ListenToggle { enabled, progress } => {
+        listen_toggle_notice_activity(enabled, progress)
+      }
+    };
+    render_overlay_text(refs, &rendered, &notice_activity, None, false, false);
+    apply_overlay_notice_style(refs, style);
+    hide_overlay_notice_accessory(refs);
+  }
 }
 
 pub fn is_option_pressed() -> bool {
-    unsafe {
-        let flags: u64 = msg_send![class!(NSEvent), modifierFlags];
-        (flags & NSEVENT_MODIFIER_FLAG_OPTION) != 0
-    }
+  unsafe {
+    let flags: u64 = msg_send![class!(NSEvent), modifierFlags];
+    (flags & NSEVENT_MODIFIER_FLAG_OPTION) != 0
+  }
 }
 
 pub fn is_raw_mode_pressed() -> bool {
-    is_option_pressed()
+  is_option_pressed()
 }
 
 pub fn hold_hotkey_overlaps_raw_modifier() -> bool {
-    HOLD_HOTKEY_MODIFIERS.contains(Modifiers::ALT)
+  HOLD_HOTKEY_MODIFIERS.contains(Modifiers::ALT)
 }
 
 pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> PasteResult {
-    if text.trim().is_empty() {
-        return PasteResult::EmptyText;
-    }
+  if text.trim().is_empty() {
+    return PasteResult::EmptyText;
+  }
 
-    if !ensure_accessibility_for_auto_paste() {
-        eprintln!("Azad: insert skipped due to missing Accessibility permission");
-        return PasteResult::AccessibilityRequired;
-    }
+  if !ensure_accessibility_for_auto_paste() {
+    eprintln!("Azad: insert skipped due to missing Accessibility permission");
+    return PasteResult::AccessibilityRequired;
+  }
 
-    let force_clipboard_bundle = if matches!(
-        method,
-        PasteMethod::DirectTyping | PasteMethod::DirectTypingAndCopyClipboard
-    ) {
-        unsafe { frontmost_bundle_id().filter(|bundle| is_terminal_like_bundle_id(bundle)) }
+  let force_clipboard_bundle =
+    if matches!(method, PasteMethod::DirectTyping | PasteMethod::DirectTypingAndCopyClipboard) {
+      unsafe { frontmost_bundle_id().filter(|bundle| is_terminal_like_bundle_id(bundle)) }
     } else {
-        None
+      None
     };
 
-    unsafe {
-        match method {
-            PasteMethod::ClipboardPaste => {
-                if !write_pasteboard_string(text) {
-                    eprintln!("Azad: failed to write transcript to pasteboard");
-                    return PasteResult::ClipboardWriteFailed;
-                }
-                // Clipboard propagation delay so focused target app sees the new value.
-                std::thread::sleep(Duration::from_millis(paste_delay_ms));
-                send_command_v_robust();
-            }
-            PasteMethod::DirectTyping => {
-                if let Some(bundle) = force_clipboard_bundle.as_deref() {
-                    eprintln!(
-                        "Azad: direct typing fallback to clipboard paste for frontmost app bundle={bundle}"
-                    );
-                    if !write_pasteboard_string(text) {
-                        eprintln!("Azad: failed to write transcript to pasteboard");
-                        return PasteResult::ClipboardWriteFailed;
-                    }
-                    std::thread::sleep(Duration::from_millis(paste_delay_ms));
-                    send_command_v_robust();
-                } else if !send_direct_text_input(text) {
-                    eprintln!("Azad: failed to send direct text input");
-                    return PasteResult::InputEventFailed;
-                }
-            }
-            PasteMethod::DirectTypingAndCopyClipboard => {
-                if let Some(bundle) = force_clipboard_bundle.as_deref() {
-                    eprintln!(
-                        "Azad: direct typing+copy fallback to clipboard paste for frontmost app bundle={bundle}"
-                    );
-                    if !write_pasteboard_string(text) {
-                        eprintln!("Azad: failed to write transcript to pasteboard");
-                        return PasteResult::ClipboardWriteFailed;
-                    }
-                    std::thread::sleep(Duration::from_millis(paste_delay_ms));
-                    send_command_v_robust();
-                } else {
-                    if !send_direct_text_input(text) {
-                        eprintln!("Azad: failed to send direct text input");
-                        return PasteResult::InputEventFailed;
-                    }
-                    if !write_pasteboard_string(text) {
-                        eprintln!(
-                            "Azad: direct input succeeded but failed to copy text to pasteboard"
-                        );
-                    }
-                }
-            }
+  unsafe {
+    match method {
+      PasteMethod::ClipboardPaste => {
+        if !write_pasteboard_string(text) {
+          eprintln!("Azad: failed to write transcript to pasteboard");
+          return PasteResult::ClipboardWriteFailed;
         }
+        // Clipboard propagation delay so focused target app sees the new value.
+        std::thread::sleep(Duration::from_millis(paste_delay_ms));
+        send_command_v_robust();
+      }
+      PasteMethod::DirectTyping => {
+        if let Some(bundle) = force_clipboard_bundle.as_deref() {
+          eprintln!(
+            "Azad: direct typing fallback to clipboard paste for frontmost app bundle={bundle}"
+          );
+          if !write_pasteboard_string(text) {
+            eprintln!("Azad: failed to write transcript to pasteboard");
+            return PasteResult::ClipboardWriteFailed;
+          }
+          std::thread::sleep(Duration::from_millis(paste_delay_ms));
+          send_command_v_robust();
+        } else if !send_direct_text_input(text) {
+          eprintln!("Azad: failed to send direct text input");
+          return PasteResult::InputEventFailed;
+        }
+      }
+      PasteMethod::DirectTypingAndCopyClipboard => {
+        if let Some(bundle) = force_clipboard_bundle.as_deref() {
+          eprintln!(
+            "Azad: direct typing+copy fallback to clipboard paste for frontmost app bundle={bundle}"
+          );
+          if !write_pasteboard_string(text) {
+            eprintln!("Azad: failed to write transcript to pasteboard");
+            return PasteResult::ClipboardWriteFailed;
+          }
+          std::thread::sleep(Duration::from_millis(paste_delay_ms));
+          send_command_v_robust();
+        } else {
+          if !send_direct_text_input(text) {
+            eprintln!("Azad: failed to send direct text input");
+            return PasteResult::InputEventFailed;
+          }
+          if !write_pasteboard_string(text) {
+            eprintln!("Azad: direct input succeeded but failed to copy text to pasteboard");
+          }
+        }
+      }
     }
+  }
 
-    // Give the target app a short settle window after synthetic paste.
-    std::thread::sleep(Duration::from_millis(POST_PASTE_SETTLE_MS));
+  // Give the target app a short settle window after synthetic paste.
+  std::thread::sleep(Duration::from_millis(POST_PASTE_SETTLE_MS));
 
-    PasteResult::Pasted
+  PasteResult::Pasted
 }
 
 pub fn send_auto_submit(mode: AutoSubmitMode) -> bool {
-    match mode {
-        AutoSubmitMode::Off => true,
-        AutoSubmitMode::Enter => unsafe { send_key_chord(KEYCODE_RETURN, CGEventFlags::empty()) },
-        AutoSubmitMode::CtrlEnter => unsafe {
-            send_key_chord(KEYCODE_RETURN, CGEventFlags::CGEventFlagControl)
-        },
-        AutoSubmitMode::ShiftEnter => unsafe {
-            send_key_chord(KEYCODE_RETURN, CGEventFlags::CGEventFlagShift)
-        },
-    }
+  match mode {
+    AutoSubmitMode::Off => true,
+    AutoSubmitMode::Enter => unsafe { send_key_chord(KEYCODE_RETURN, CGEventFlags::empty()) },
+    AutoSubmitMode::CtrlEnter => unsafe {
+      send_key_chord(KEYCODE_RETURN, CGEventFlags::CGEventFlagControl)
+    },
+    AutoSubmitMode::ShiftEnter => unsafe {
+      send_key_chord(KEYCODE_RETURN, CGEventFlags::CGEventFlagShift)
+    },
+  }
 }
 
 fn is_terminal_like_bundle_id(bundle_id: &str) -> bool {
-    matches!(
-        bundle_id,
-        "com.apple.Terminal"
-            | "com.googlecode.iterm2"
-            | "com.github.wez.wezterm"
-            | "dev.warp.Warp-Stable"
-            | "dev.warp.Warp"
-            | "net.kovidgoyal.kitty"
-            | "org.alacritty"
-            | "io.alacritty"
-            | "com.mitchellh.ghostty"
-    )
+  matches!(
+    bundle_id,
+    "com.apple.Terminal"
+      | "com.googlecode.iterm2"
+      | "com.github.wez.wezterm"
+      | "dev.warp.Warp-Stable"
+      | "dev.warp.Warp"
+      | "net.kovidgoyal.kitty"
+      | "org.alacritty"
+      | "io.alacritty"
+      | "com.mitchellh.ghostty"
+  )
 }
 
 fn register_delegate_class() -> &'static Class {
-    DELEGATE_CLASS.get_or_init(|| unsafe {
-        let superclass = class!(NSObject);
-        let mut decl =
-            ClassDecl::new("AzadStatusDelegate", superclass).expect("failed to declare delegate");
+  DELEGATE_CLASS.get_or_init(|| unsafe {
+    let superclass = class!(NSObject);
+    let mut decl =
+      ClassDecl::new("AzadStatusDelegate", superclass).expect("failed to declare delegate");
 
-        decl.add_ivar::<id>("statusItem");
-        decl.add_method(
-            sel!(toggleAlwaysListening:),
-            toggle_always_listening as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(sel!(quit:), quit as extern "C" fn(&Object, Sel, id));
-        decl.add_method(sel!(tick:), tick as extern "C" fn(&Object, Sel, id));
-        decl.add_method(
-            sel!(toggleDevices:),
-            toggle_devices as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(openSettings:),
-            open_settings as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(settingsToggleRunOnStartup:),
-            settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(settingsToggleDebug:),
-            settings_toggle_debug as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(settingsSelectPasteMethod:),
-            settings_select_paste_method as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(settingsSelectAutoSubmit:),
-            settings_select_auto_submit as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(settingsToggleAppendTrailingSpace:),
-            settings_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowWillClose:),
-            settings_window_will_close as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(settingsRefresh:),
-            settings_refresh as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(numberOfRowsInTableView:),
-            settings_tab_rows as extern "C" fn(&Object, Sel, id) -> isize,
-        );
-        decl.add_method(
-            sel!(tableView:viewForTableColumn:row:),
-            settings_tab_row_view as extern "C" fn(&Object, Sel, id, id, isize) -> id,
-        );
-        decl.add_method(
-            sel!(tableViewSelectionDidChange:),
-            settings_tab_selection_did_change as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(selectDevice:),
-            select_device as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(menuWillOpen:),
-            menu_will_open as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(menuDidClose:),
-            menu_did_close as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(menu:willHighlightItem:),
-            menu_will_highlight_item as extern "C" fn(&Object, Sel, id, id),
-        );
-        decl.add_method(
-            sel!(syncMenuLayout:),
-            sync_menu_layout as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(sel!(noop:), noop as extern "C" fn(&Object, Sel, id));
+    decl.add_ivar::<id>("statusItem");
+    decl.add_method(
+      sel!(toggleAlwaysListening:),
+      toggle_always_listening as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(sel!(quit:), quit as extern "C" fn(&Object, Sel, id));
+    decl.add_method(sel!(tick:), tick as extern "C" fn(&Object, Sel, id));
+    decl.add_method(sel!(toggleDevices:), toggle_devices as extern "C" fn(&Object, Sel, id));
+    decl.add_method(sel!(openSettings:), open_settings as extern "C" fn(&Object, Sel, id));
+    decl.add_method(
+      sel!(settingsToggleRunOnStartup:),
+      settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(settingsToggleDebug:),
+      settings_toggle_debug as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(settingsSelectPasteMethod:),
+      settings_select_paste_method as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(settingsSelectAutoSubmit:),
+      settings_select_auto_submit as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(settingsToggleAppendTrailingSpace:),
+      settings_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(windowWillClose:),
+      settings_window_will_close as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(sel!(settingsRefresh:), settings_refresh as extern "C" fn(&Object, Sel, id));
+    decl.add_method(
+      sel!(settingsDownloadModel:),
+      settings_download_model as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(settingsCancelDownload:),
+      settings_cancel_download as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(numberOfRowsInTableView:),
+      settings_tab_rows as extern "C" fn(&Object, Sel, id) -> isize,
+    );
+    decl.add_method(
+      sel!(tableView:viewForTableColumn:row:),
+      settings_tab_row_view as extern "C" fn(&Object, Sel, id, id, isize) -> id,
+    );
+    decl.add_method(
+      sel!(tableViewSelectionDidChange:),
+      settings_tab_selection_did_change as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(sel!(selectDevice:), select_device as extern "C" fn(&Object, Sel, id));
+    decl.add_method(sel!(menuWillOpen:), menu_will_open as extern "C" fn(&Object, Sel, id));
+    decl.add_method(sel!(menuDidClose:), menu_did_close as extern "C" fn(&Object, Sel, id));
+    decl.add_method(
+      sel!(menu:willHighlightItem:),
+      menu_will_highlight_item as extern "C" fn(&Object, Sel, id, id),
+    );
+    decl.add_method(sel!(syncMenuLayout:), sync_menu_layout as extern "C" fn(&Object, Sel, id));
+    decl.add_method(sel!(noop:), noop as extern "C" fn(&Object, Sel, id));
 
-        decl.register()
-    })
+    decl.register()
+  })
 }
 
 fn register_overlay_window_class() -> &'static Class {
-    OVERLAY_WINDOW_CLASS.get_or_init(|| unsafe {
-        let superclass = class!(NSWindow);
-        let mut decl = ClassDecl::new("AzadOverlayWindow", superclass)
-            .expect("failed to declare overlay window class");
+  OVERLAY_WINDOW_CLASS.get_or_init(|| unsafe {
+    let superclass = class!(NSWindow);
+    let mut decl = ClassDecl::new("AzadOverlayWindow", superclass)
+      .expect("failed to declare overlay window class");
 
-        decl.add_method(
-            sel!(canBecomeKeyWindow),
-            overlay_can_become_key_window as extern "C" fn(&Object, Sel) -> bool,
-        );
-        decl.add_method(
-            sel!(canBecomeMainWindow),
-            overlay_can_become_main_window as extern "C" fn(&Object, Sel) -> bool,
-        );
-        decl.add_method(
-            sel!(keyDown:),
-            overlay_key_down as extern "C" fn(&Object, Sel, id),
-        );
+    decl.add_method(
+      sel!(canBecomeKeyWindow),
+      overlay_can_become_key_window as extern "C" fn(&Object, Sel) -> bool,
+    );
+    decl.add_method(
+      sel!(canBecomeMainWindow),
+      overlay_can_become_main_window as extern "C" fn(&Object, Sel) -> bool,
+    );
+    decl.add_method(sel!(keyDown:), overlay_key_down as extern "C" fn(&Object, Sel, id));
 
-        decl.register()
-    })
+    decl.register()
+  })
 }
 
 fn register_device_header_view_class() -> &'static Class {
-    DEVICE_HEADER_VIEW_CLASS.get_or_init(|| unsafe {
-        let superclass = class!(NSView);
-        let mut decl = ClassDecl::new("AzadDeviceHeaderView", superclass)
-            .expect("failed to declare device header view class");
+  DEVICE_HEADER_VIEW_CLASS.get_or_init(|| unsafe {
+    let superclass = class!(NSView);
+    let mut decl = ClassDecl::new("AzadDeviceHeaderView", superclass)
+      .expect("failed to declare device header view class");
 
-        decl.add_method(
-            sel!(setFrame:),
-            device_header_view_set_frame as extern "C" fn(&Object, Sel, NSRect),
-        );
-        decl.add_method(
-            sel!(setFrameSize:),
-            device_header_view_set_frame_size as extern "C" fn(&Object, Sel, NSSize),
-        );
-        decl.add_method(
-            sel!(viewDidMoveToWindow),
-            device_header_view_did_move_to_window as extern "C" fn(&Object, Sel),
-        );
-        decl.add_method(
-            sel!(viewDidMoveToSuperview),
-            device_header_view_did_move_to_superview as extern "C" fn(&Object, Sel),
-        );
+    decl.add_method(
+      sel!(setFrame:),
+      device_header_view_set_frame as extern "C" fn(&Object, Sel, NSRect),
+    );
+    decl.add_method(
+      sel!(setFrameSize:),
+      device_header_view_set_frame_size as extern "C" fn(&Object, Sel, NSSize),
+    );
+    decl.add_method(
+      sel!(viewDidMoveToWindow),
+      device_header_view_did_move_to_window as extern "C" fn(&Object, Sel),
+    );
+    decl.add_method(
+      sel!(viewDidMoveToSuperview),
+      device_header_view_did_move_to_superview as extern "C" fn(&Object, Sel),
+    );
 
-        decl.register()
-    })
+    decl.register()
+  })
 }
 
 unsafe fn menu_window_content_width_for_view(view: id) -> Option<f64> {
-    if view == nil {
-        return None;
-    }
+  if view == nil {
+    return None;
+  }
 
-    let window: id = msg_send![view, window];
-    if window == nil {
-        return None;
-    }
+  let window: id = msg_send![view, window];
+  if window == nil {
+    return None;
+  }
 
-    let content_view: id = msg_send![window, contentView];
-    if content_view != nil {
-        let bounds: NSRect = msg_send![content_view, bounds];
-        if bounds.size.width.is_finite() && bounds.size.width > 0.0 {
-            return Some(bounds.size.width);
-        }
+  let content_view: id = msg_send![window, contentView];
+  if content_view != nil {
+    let bounds: NSRect = msg_send![content_view, bounds];
+    if bounds.size.width.is_finite() && bounds.size.width > 0.0 {
+      return Some(bounds.size.width);
     }
+  }
 
-    let frame: NSRect = msg_send![window, frame];
-    if frame.size.width.is_finite() && frame.size.width > 0.0 {
-        return Some(frame.size.width);
-    }
+  let frame: NSRect = msg_send![window, frame];
+  if frame.size.width.is_finite() && frame.size.width > 0.0 {
+    return Some(frame.size.width);
+  }
 
-    None
+  None
 }
 
 extern "C" fn device_header_view_set_frame(this: &Object, _: Sel, mut rect: NSRect) {
-    unsafe {
-        let view_id = this as *const Object as id;
-        if let Some(window_width) = menu_window_content_width_for_view(view_id) {
-            // Pin the custom row width to the *rendered menu window* width.
-            // This prevents AppKit from leaving our custom view narrower than the
-            // outer menu background during expand/collapse transitions.
-            rect.size.width = window_width;
-        }
-        let _: () = msg_send![super(view_id, class!(NSView)), setFrame: rect];
+  unsafe {
+    let view_id = this as *const Object as id;
+    if let Some(window_width) = menu_window_content_width_for_view(view_id) {
+      // Pin the custom row width to the *rendered menu window* width.
+      // This prevents AppKit from leaving our custom view narrower than the
+      // outer menu background during expand/collapse transitions.
+      rect.size.width = window_width;
     }
+    let _: () = msg_send![super(view_id, class!(NSView)), setFrame: rect];
+  }
 }
 
 extern "C" fn device_header_view_set_frame_size(this: &Object, _: Sel, mut size: NSSize) {
-    unsafe {
-        let view_id = this as *const Object as id;
-        if let Some(window_width) = menu_window_content_width_for_view(view_id) {
-            size.width = window_width;
-        }
-        let _: () = msg_send![super(view_id, class!(NSView)), setFrameSize: size];
+  unsafe {
+    let view_id = this as *const Object as id;
+    if let Some(window_width) = menu_window_content_width_for_view(view_id) {
+      size.width = window_width;
     }
+    let _: () = msg_send![super(view_id, class!(NSView)), setFrameSize: size];
+  }
 }
 
 extern "C" fn device_header_view_did_move_to_window(this: &Object, _: Sel) {
-    unsafe {
-        let view_id = this as *const Object as id;
-        let _: () = msg_send![super(view_id, class!(NSView)), viewDidMoveToWindow];
-        // Re-apply pinned width now that we have a window (menu attaches lazily).
-        let frame: NSRect = msg_send![view_id, frame];
-        let _: () = msg_send![view_id, setFrame: frame];
-    }
+  unsafe {
+    let view_id = this as *const Object as id;
+    let _: () = msg_send![super(view_id, class!(NSView)), viewDidMoveToWindow];
+    // Re-apply pinned width now that we have a window (menu attaches lazily).
+    let frame: NSRect = msg_send![view_id, frame];
+    let _: () = msg_send![view_id, setFrame: frame];
+  }
 }
 
 extern "C" fn device_header_view_did_move_to_superview(this: &Object, _: Sel) {
-    unsafe {
-        let view_id = this as *const Object as id;
-        let _: () = msg_send![super(view_id, class!(NSView)), viewDidMoveToSuperview];
-        // In some transitions AppKit re-parents/re-lays out menu item views.
-        // Re-assert our pinned width on reattachment.
-        let frame: NSRect = msg_send![view_id, frame];
-        let _: () = msg_send![view_id, setFrame: frame];
-    }
+  unsafe {
+    let view_id = this as *const Object as id;
+    let _: () = msg_send![super(view_id, class!(NSView)), viewDidMoveToSuperview];
+    // In some transitions AppKit re-parents/re-lays out menu item views.
+    // Re-assert our pinned width on reattachment.
+    let frame: NSRect = msg_send![view_id, frame];
+    let _: () = msg_send![view_id, setFrame: frame];
+  }
 }
 
 extern "C" fn toggle_always_listening(_: &Object, _: Sel, _: id) {
-    crate::app::send_event(AppEvent::MenuToggleAlwaysListening);
-    crate::app::drain_events();
+  crate::app::send_event(AppEvent::MenuToggleAlwaysListening);
+  crate::app::drain_events();
 }
 
 extern "C" fn quit(_: &Object, _: Sel, _: id) {
-    unsafe {
-        let app = NSApp();
-        let _: () = msg_send![app, terminate: nil];
-    }
+  unsafe {
+    let app = NSApp();
+    let _: () = msg_send![app, terminate: nil];
+  }
 }
 
 extern "C" fn tick(_: &Object, _: Sel, _: id) {
-    crate::app::drain_events();
+  crate::app::drain_events();
 }
 
 extern "C" fn toggle_devices(this: &Object, _: Sel, _: id) {
-    crate::app::send_event(AppEvent::MenuToggleDevices);
-    crate::app::drain_events();
-    schedule_menu_layout_sync(this as *const Object as id);
+  crate::app::send_event(AppEvent::MenuToggleDevices);
+  crate::app::drain_events();
+  schedule_menu_layout_sync(this as *const Object as id);
 }
 
 extern "C" fn open_settings(_: &Object, _: Sel, _: id) {
-    crate::app::send_event(AppEvent::MenuOpenSettings);
-    crate::app::drain_events();
+  crate::app::send_event(AppEvent::MenuOpenSettings);
+  crate::app::drain_events();
 }
 
 extern "C" fn settings_toggle_run_on_startup(_: &Object, _: Sel, sender: id) {
-    unsafe {
-        if sender == nil {
-            return;
-        }
-        let state: i64 = msg_send![sender, state];
-        crate::app::send_event(AppEvent::SettingsToggleRunOnStartup(state != 0));
-        crate::app::drain_events();
+  unsafe {
+    if sender == nil {
+      return;
     }
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::SettingsToggleRunOnStartup(state != 0));
+    crate::app::drain_events();
+  }
 }
 
 extern "C" fn settings_toggle_debug(_: &Object, _: Sel, sender: id) {
-    unsafe {
-        if sender == nil {
-            return;
-        }
-        let state: i64 = msg_send![sender, state];
-        crate::app::send_event(AppEvent::SettingsToggleDebugStats(state != 0));
-        crate::app::drain_events();
+  unsafe {
+    if sender == nil {
+      return;
     }
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::SettingsToggleDebugStats(state != 0));
+    crate::app::drain_events();
+  }
 }
 
 extern "C" fn settings_select_paste_method(_: &Object, _: Sel, sender: id) {
-    unsafe {
-        if sender == nil {
-            return;
-        }
-        let index: i64 = msg_send![sender, indexOfSelectedItem];
-        crate::app::send_event(AppEvent::SettingsSelectPasteMethod(
-            PasteMethod::from_ui_index(index),
-        ));
-        crate::app::drain_events();
+  unsafe {
+    if sender == nil {
+      return;
     }
+    let index: i64 = msg_send![sender, indexOfSelectedItem];
+    crate::app::send_event(AppEvent::SettingsSelectPasteMethod(PasteMethod::from_ui_index(index)));
+    crate::app::drain_events();
+  }
 }
 
 extern "C" fn settings_select_auto_submit(_: &Object, _: Sel, sender: id) {
-    unsafe {
-        if sender == nil {
-            return;
-        }
-        let index: i64 = msg_send![sender, indexOfSelectedItem];
-        crate::app::send_event(AppEvent::SettingsSelectAutoSubmit(
-            AutoSubmitMode::from_ui_index(index),
-        ));
-        crate::app::drain_events();
+  unsafe {
+    if sender == nil {
+      return;
     }
+    let index: i64 = msg_send![sender, indexOfSelectedItem];
+    crate::app::send_event(AppEvent::SettingsSelectAutoSubmit(AutoSubmitMode::from_ui_index(
+      index,
+    )));
+    crate::app::drain_events();
+  }
 }
 
 extern "C" fn settings_toggle_append_trailing_space(_: &Object, _: Sel, sender: id) {
-    unsafe {
-        if sender == nil {
-            return;
-        }
-        let state: i64 = msg_send![sender, state];
-        crate::app::send_event(AppEvent::SettingsToggleAppendTrailingSpace(state != 0));
-        crate::app::drain_events();
+  unsafe {
+    if sender == nil {
+      return;
     }
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::SettingsToggleAppendTrailingSpace(state != 0));
+    crate::app::drain_events();
+  }
 }
 
 extern "C" fn settings_refresh(_: &Object, _: Sel, _: id) {
-    crate::app::send_event(AppEvent::SettingsRefresh);
+  crate::app::send_event(AppEvent::SettingsRefresh);
+  crate::app::drain_events();
+}
+
+extern "C" fn settings_download_model(_: &Object, _: Sel, _: id) {
+  if let Some(refs) = current_settings_window() {
+    let pack_id = unsafe {
+      let tag: isize = msg_send![refs.models_download_button, tag];
+      settings_pack_id_for_tag(tag)
+    };
+    crate::app::send_event(AppEvent::SettingsDownloadModel(pack_id));
     crate::app::drain_events();
+  }
+}
+
+extern "C" fn settings_cancel_download(_: &Object, _: Sel, _: id) {
+  crate::app::send_event(AppEvent::SettingsCancelDownload);
+  crate::app::drain_events();
+}
+
+fn settings_pack_id_for_tag(_tag: isize) -> String {
+  crate::models::default_pack().id.to_string()
 }
 
 extern "C" fn settings_tab_rows(_: &Object, _: Sel, _: id) -> isize {
-    2
+  3
 }
 
 unsafe fn settings_tab_label(row: isize) -> &'static str {
-    match row {
-        1 => "Debug",
-        _ => "General",
-    }
+  match row {
+    1 => "Models",
+    2 => "Debug",
+    _ => "General",
+  }
 }
 
 unsafe fn settings_tab_from_row(row: isize) -> SettingsTab {
-    match row {
-        1 => SettingsTab::Debug,
-        _ => SettingsTab::General,
-    }
+  match row {
+    1 => SettingsTab::Models,
+    2 => SettingsTab::Debug,
+    _ => SettingsTab::General,
+  }
 }
 
 unsafe fn settings_row_for_tab(tab: SettingsTab) -> isize {
-    match tab {
-        SettingsTab::General => 0,
-        SettingsTab::Debug => 1,
-    }
+  match tab {
+    SettingsTab::General => 0,
+    SettingsTab::Models => 1,
+    SettingsTab::Debug => 2,
+  }
 }
 
 extern "C" fn settings_tab_row_view(_: &Object, _: Sel, table_view: id, _: id, row: isize) -> id {
-    unsafe {
-        if table_view == nil {
-            return nil;
-        }
-
-        let identifier = NSString::alloc(nil).init_str("AzadSettingsTabCell");
-        let mut cell: id = msg_send![table_view, makeViewWithIdentifier: identifier owner: nil];
-        if cell == nil {
-            let row_height: f64 = msg_send![table_view, rowHeight];
-            let bounds: NSRect = msg_send![table_view, bounds];
-            let width = bounds.size.width.max(SETTINGS_SIDEBAR_WIDTH);
-
-            let created: id = msg_send![class!(NSTableCellView), alloc];
-            cell = msg_send![created, initWithFrame: NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(width, row_height.max(SETTINGS_SIDEBAR_ROW_HEIGHT))
-            )];
-            let _: () = msg_send![cell, setIdentifier: identifier];
-
-            let text: id = msg_send![class!(NSTextField), alloc];
-            let text: id = msg_send![text, initWithFrame: NSRect::new(
-                NSPoint::new(10.0, 4.0),
-                NSSize::new((width - 20.0).max(1.0), (row_height - 8.0).max(1.0))
-            )];
-            let _: () = msg_send![text, setBezeled: NO];
-            let _: () = msg_send![text, setDrawsBackground: NO];
-            let _: () = msg_send![text, setEditable: NO];
-            let _: () = msg_send![text, setSelectable: NO];
-            let _: () = msg_send![text, setAlignment: 0usize];
-            let _: () = msg_send![text, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
-            let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
-            if font != nil {
-                let _: () = msg_send![text, setFont: font];
-            }
-            let _: () = msg_send![cell, addSubview: text];
-            let _: () = msg_send![cell, setTextField: text];
-        }
-
-        let text_field: id = msg_send![cell, textField];
-        if text_field != nil {
-            let label = NSString::alloc(nil).init_str(settings_tab_label(row));
-            let _: () = msg_send![text_field, setStringValue: label];
-        }
-        cell
+  unsafe {
+    if table_view == nil {
+      return nil;
     }
+
+    let identifier = NSString::alloc(nil).init_str("AzadSettingsTabCell");
+    let mut cell: id = msg_send![table_view, makeViewWithIdentifier: identifier owner: nil];
+    if cell == nil {
+      let row_height: f64 = msg_send![table_view, rowHeight];
+      let bounds: NSRect = msg_send![table_view, bounds];
+      let width = bounds.size.width.max(SETTINGS_SIDEBAR_WIDTH);
+
+      let created: id = msg_send![class!(NSTableCellView), alloc];
+      cell = msg_send![created, initWithFrame: NSRect::new(
+          NSPoint::new(0.0, 0.0),
+          NSSize::new(width, row_height.max(SETTINGS_SIDEBAR_ROW_HEIGHT))
+      )];
+      let _: () = msg_send![cell, setIdentifier: identifier];
+
+      let text: id = msg_send![class!(NSTextField), alloc];
+      let text: id = msg_send![text, initWithFrame: NSRect::new(
+          NSPoint::new(10.0, 4.0),
+          NSSize::new((width - 20.0).max(1.0), (row_height - 8.0).max(1.0))
+      )];
+      let _: () = msg_send![text, setBezeled: NO];
+      let _: () = msg_send![text, setDrawsBackground: NO];
+      let _: () = msg_send![text, setEditable: NO];
+      let _: () = msg_send![text, setSelectable: NO];
+      let _: () = msg_send![text, setAlignment: 0usize];
+      let _: () = msg_send![text, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+      let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
+      if font != nil {
+        let _: () = msg_send![text, setFont: font];
+      }
+      let _: () = msg_send![cell, addSubview: text];
+      let _: () = msg_send![cell, setTextField: text];
+    }
+
+    let text_field: id = msg_send![cell, textField];
+    if text_field != nil {
+      let label = NSString::alloc(nil).init_str(settings_tab_label(row));
+      let _: () = msg_send![text_field, setStringValue: label];
+    }
+    cell
+  }
 }
 
 extern "C" fn settings_tab_selection_did_change(_: &Object, _: Sel, notification: id) {
-    unsafe {
-        if notification == nil {
-            return;
-        }
-        let table_view: id = msg_send![notification, object];
-        if table_view == nil {
-            return;
-        }
-        let row: isize = msg_send![table_view, selectedRow];
-        if row < 0 {
-            return;
-        }
-        if let Some(refs) = current_settings_window() {
-            if refs.tab_list_view != table_view {
-                return;
-            }
-            apply_settings_selected_tab(refs, settings_tab_from_row(row));
-        }
+  unsafe {
+    if notification == nil {
+      return;
     }
+    let table_view: id = msg_send![notification, object];
+    if table_view == nil {
+      return;
+    }
+    let row: isize = msg_send![table_view, selectedRow];
+    if row < 0 {
+      return;
+    }
+    if let Some(refs) = current_settings_window() {
+      if refs.tab_list_view != table_view {
+        return;
+      }
+      apply_settings_selected_tab(refs, settings_tab_from_row(row));
+    }
+  }
 }
 
 extern "C" fn settings_window_will_close(_: &Object, _: Sel, _: id) {
-    SETTINGS_WINDOW_REFS.with(|store| {
-        store.borrow_mut().take();
-    });
+  SETTINGS_WINDOW_REFS.with(|store| {
+    store.borrow_mut().take();
+  });
 }
 
 extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
-    unsafe {
-        let tag: i64 = msg_send![sender, tag];
-        if tag < 0 {
-            return;
-        }
-
-        let selected = DEVICE_ROW_IDS.with(|rows| rows.borrow().get(tag as usize).cloned());
-        if let Some(device_id) = selected {
-            crate::app::send_event(AppEvent::MenuSelectDevice(device_id));
-        }
+  unsafe {
+    let tag: i64 = msg_send![sender, tag];
+    if tag < 0 {
+      return;
     }
+
+    let selected = DEVICE_ROW_IDS.with(|rows| rows.borrow().get(tag as usize).cloned());
+    if let Some(device_id) = selected {
+      crate::app::send_event(AppEvent::MenuSelectDevice(device_id));
+    }
+  }
 }
 
 extern "C" fn menu_will_open(_: &Object, _: Sel, _: id) {
-    crate::app::send_event(AppEvent::MenuOpened);
+  crate::app::send_event(AppEvent::MenuOpened);
 
-    let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
-    let Some(menu) = menu else {
-        return;
-    };
+  let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
+  let Some(menu) = menu else {
+    return;
+  };
 
-    let model = DEVICE_MENU_MODEL.with(|slot| slot.borrow().clone());
-    let target_width = compute_device_menu_target_width(&model);
-    apply_device_menu_layout(menu, target_width);
+  let model = DEVICE_MENU_MODEL.with(|slot| slot.borrow().clone());
+  let target_width = compute_device_menu_target_width(&model);
+  apply_device_menu_layout(menu, target_width);
 
-    let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow());
-    if let Some(delegate) = delegate {
-        schedule_menu_layout_sync(delegate);
-    }
+  let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow());
+  if let Some(delegate) = delegate {
+    schedule_menu_layout_sync(delegate);
+  }
 }
 
 extern "C" fn menu_did_close(_: &Object, _: Sel, _: id) {
-    crate::app::send_event(AppEvent::MenuClosed);
-    set_device_header_highlighted(false);
-    reset_device_menu_open_width_sticky_state();
+  crate::app::send_event(AppEvent::MenuClosed);
+  set_device_header_highlighted(false);
+  reset_device_menu_open_width_sticky_state();
 }
 
 extern "C" fn menu_will_highlight_item(_: &Object, _: Sel, _: id, item: id) {
-    let is_header = unsafe {
-        if item == nil {
-            false
-        } else {
-            let item_view: id = msg_send![item, view];
-            DEVICE_HEADER_VIEW_REF.with(|slot| {
-                slot.borrow()
-                    .is_some_and(|header_view| header_view == item_view)
-            })
-        }
-    };
-    set_device_header_highlighted(is_header);
+  let is_header = unsafe {
+    if item == nil {
+      false
+    } else {
+      let item_view: id = msg_send![item, view];
+      DEVICE_HEADER_VIEW_REF
+        .with(|slot| slot.borrow().is_some_and(|header_view| header_view == item_view))
+    }
+  };
+  set_device_header_highlighted(is_header);
 }
 
 extern "C" fn sync_menu_layout(_: &Object, _: Sel, _: id) {
-    sync_device_header_width_to_live_menu();
+  sync_device_header_width_to_live_menu();
 }
 
 extern "C" fn noop(_: &Object, _: Sel, _: id) {}
 
 extern "C" fn overlay_can_become_key_window(_: &Object, _: Sel) -> bool {
-    false
+  false
 }
 
 extern "C" fn overlay_can_become_main_window(_: &Object, _: Sel) -> bool {
-    false
+  false
 }
 
 extern "C" fn overlay_key_down(this: &Object, _: Sel, event: id) {
-    unsafe {
-        let key_code: u16 = msg_send![event, keyCode];
-        if key_code == 53 {
-            crate::app::send_event(AppEvent::OverlayCancel);
-            return;
-        }
-
-        let window_id = this as *const Object as id;
-        let _: () = msg_send![super(window_id, class!(NSWindow)), keyDown: event];
+  unsafe {
+    let key_code: u16 = msg_send![event, keyCode];
+    if key_code == 53 {
+      crate::app::send_event(AppEvent::OverlayCancel);
+      return;
     }
+
+    let window_id = this as *const Object as id;
+    let _: () = msg_send![super(window_id, class!(NSWindow)), keyDown: event];
+  }
 }
 
 unsafe fn setup_status_bar(delegate: id) {
-    let status_item =
-        NSStatusBar::systemStatusBar(nil).statusItemWithLength_(NSVariableStatusItemLength);
-    let menu = NSMenu::new(nil).autorelease();
+  let status_item =
+    NSStatusBar::systemStatusBar(nil).statusItemWithLength_(NSVariableStatusItemLength);
+  let menu = NSMenu::new(nil).autorelease();
 
-    let _: () = msg_send![menu, setDelegate: delegate];
+  let _: () = msg_send![menu, setDelegate: delegate];
 
-    status_item.setMenu_(menu);
-    assign_status_icon(status_item);
+  status_item.setMenu_(menu);
+  assign_status_icon(status_item);
 
-    STATUS_MENU_REF.with(|slot| {
-        slot.borrow_mut().replace(menu);
-    });
+  STATUS_MENU_REF.with(|slot| {
+    slot.borrow_mut().replace(menu);
+  });
 
-    // Poll app events on the main thread.
-    let timer: id = msg_send![
-        class!(NSTimer),
-        scheduledTimerWithTimeInterval: 0.05f64
-        target: delegate
-        selector: sel!(tick:)
-        userInfo: nil
-        repeats: YES
-    ];
-    let run_loop: id = msg_send![class!(NSRunLoop), mainRunLoop];
-    let tracking_mode = NSString::alloc(nil).init_str("NSEventTrackingRunLoopMode");
-    // Also run while the menu is open and tracking mouse hover.
-    let _: () = msg_send![run_loop, addTimer: timer forMode: tracking_mode];
+  // Poll app events on the main thread.
+  let timer: id = msg_send![
+      class!(NSTimer),
+      scheduledTimerWithTimeInterval: 0.05f64
+      target: delegate
+      selector: sel!(tick:)
+      userInfo: nil
+      repeats: YES
+  ];
+  let run_loop: id = msg_send![class!(NSRunLoop), mainRunLoop];
+  let tracking_mode = NSString::alloc(nil).init_str("NSEventTrackingRunLoopMode");
+  // Also run while the menu is open and tracking mouse hover.
+  let _: () = msg_send![run_loop, addTimer: timer forMode: tracking_mode];
 
-    let delegate_obj = &mut *(delegate as *mut Object);
-    delegate_obj.set_ivar("statusItem", status_item);
+  let delegate_obj = &mut *(delegate as *mut Object);
+  delegate_obj.set_ivar("statusItem", status_item);
 
-    rebuild_status_menu();
+  rebuild_status_menu();
 }
 
 fn rebuild_status_menu() {
-    let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
-    let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow());
-    let model = DEVICE_MENU_MODEL.with(|slot| slot.borrow().clone());
+  let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
+  let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow());
+  let model = DEVICE_MENU_MODEL.with(|slot| slot.borrow().clone());
 
-    let (Some(menu), Some(delegate)) = (menu, delegate) else {
-        return;
-    };
+  let (Some(menu), Some(delegate)) = (menu, delegate) else {
+    return;
+  };
 
-    let target_width = compute_device_menu_target_width(&model);
-    if menu_is_open(menu) {
-        update_menu_inline(menu, delegate, &model);
-    } else {
-        build_menu_fresh(menu, delegate, &model);
-    }
-    apply_device_menu_layout(menu, target_width);
+  let target_width = compute_device_menu_target_width(&model);
+  if menu_is_open(menu) {
+    update_menu_inline(menu, delegate, &model);
+  } else {
+    build_menu_fresh(menu, delegate, &model);
+  }
+  apply_device_menu_layout(menu, target_width);
 }
 
 fn menu_is_open(menu: id) -> bool {
-    unsafe {
-        let attached: i8 = msg_send![menu, isAttached];
-        attached != 0
-    }
+  unsafe {
+    let attached: i8 = msg_send![menu, isAttached];
+    attached != 0
+  }
 }
 
 fn apply_device_menu_layout(menu: id, target_width: f64) {
-    if !target_width.is_finite() || target_width <= 0.0 {
-        return;
+  if !target_width.is_finite() || target_width <= 0.0 {
+    return;
+  }
+
+  let max_width = menu_screen_width_cap();
+  let min_width = DEVICE_HEADER_MIN_WIDTH.min(max_width);
+  let width = target_width.max(min_width).min(max_width);
+  let menu_width = if menu_is_open(menu) { sticky_menu_open_width(width) } else { width };
+
+  unsafe {
+    let can_set_minimum: i8 = msg_send![menu, respondsToSelector: sel!(setMinimumWidth:)];
+    if can_set_minimum != 0 {
+      let _: () = msg_send![menu, setMinimumWidth: menu_width];
     }
-
-    let max_width = menu_screen_width_cap();
-    let min_width = DEVICE_HEADER_MIN_WIDTH.min(max_width);
-    let width = target_width.max(min_width).min(max_width);
-    let menu_width = if menu_is_open(menu) {
-        sticky_menu_open_width(width)
-    } else {
-        width
-    };
-
-    unsafe {
-        let can_set_minimum: i8 = msg_send![menu, respondsToSelector: sel!(setMinimumWidth:)];
-        if can_set_minimum != 0 {
-            let _: () = msg_send![menu, setMinimumWidth: menu_width];
-        }
-        let can_size_to_fit: i8 = msg_send![menu, respondsToSelector: sel!(sizeToFit)];
-        if can_size_to_fit != 0 {
-            let _: () = msg_send![menu, sizeToFit];
-        }
+    let can_size_to_fit: i8 = msg_send![menu, respondsToSelector: sel!(sizeToFit)];
+    if can_size_to_fit != 0 {
+      let _: () = msg_send![menu, sizeToFit];
     }
+  }
 
-    let row_width = adjusted_header_row_width(menu_width);
-    let final_width = if menu_is_open(menu) {
-        sticky_header_open_width(row_width)
-    } else {
-        row_width
-    };
-    relayout_device_header_row(final_width);
+  let row_width = adjusted_header_row_width(menu_width);
+  let final_width =
+    if menu_is_open(menu) { sticky_header_open_width(row_width) } else { row_width };
+  relayout_device_header_row(final_width);
 }
 
 fn sync_device_header_width_to_live_menu() {
-    let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
-    let Some(menu) = menu else {
-        return;
-    };
-    if !menu_is_open(menu) {
-        return;
-    }
+  let menu = STATUS_MENU_REF.with(|slot| *slot.borrow());
+  let Some(menu) = menu else {
+    return;
+  };
+  if !menu_is_open(menu) {
+    return;
+  }
 
-    let width = current_menu_width(menu);
-    if width > 0.0 {
-        let stable_menu_width = sticky_menu_open_width(width);
-        let final_width = sticky_header_open_width(adjusted_header_row_width(stable_menu_width));
-        relayout_device_header_row(final_width);
-    }
+  let width = current_menu_width(menu);
+  if width > 0.0 {
+    let stable_menu_width = sticky_menu_open_width(width);
+    let final_width = sticky_header_open_width(adjusted_header_row_width(stable_menu_width));
+    relayout_device_header_row(final_width);
+  }
 }
 
 fn sticky_header_open_width(candidate: f64) -> f64 {
-    if !candidate.is_finite() || candidate <= 0.0 {
-        return candidate;
-    }
+  if !candidate.is_finite() || candidate <= 0.0 {
+    return candidate;
+  }
 
-    DEVICE_HEADER_OPEN_MAX_WIDTH.with(|slot| {
-        let mut current = slot.borrow_mut();
-        let next = match *current {
-            Some(previous) => previous.max(candidate),
-            None => candidate,
-        };
-        *current = Some(next);
-        next
-    })
+  DEVICE_HEADER_OPEN_MAX_WIDTH.with(|slot| {
+    let mut current = slot.borrow_mut();
+    let next = match *current {
+      Some(previous) => previous.max(candidate),
+      None => candidate,
+    };
+    *current = Some(next);
+    next
+  })
 }
 
 fn sticky_menu_open_width(candidate: f64) -> f64 {
-    if !candidate.is_finite() || candidate <= 0.0 {
-        return candidate;
-    }
+  if !candidate.is_finite() || candidate <= 0.0 {
+    return candidate;
+  }
 
-    DEVICE_MENU_OPEN_MAX_WIDTH.with(|slot| {
-        let mut current = slot.borrow_mut();
-        let next = match *current {
-            Some(previous) => previous.max(candidate),
-            None => candidate,
-        };
-        *current = Some(next);
-        next
-    })
+  DEVICE_MENU_OPEN_MAX_WIDTH.with(|slot| {
+    let mut current = slot.borrow_mut();
+    let next = match *current {
+      Some(previous) => previous.max(candidate),
+      None => candidate,
+    };
+    *current = Some(next);
+    next
+  })
 }
 
 fn reset_device_menu_open_width_sticky_state() {
-    DEVICE_HEADER_OPEN_MAX_WIDTH.with(|slot| {
-        slot.borrow_mut().take();
-    });
-    DEVICE_MENU_OPEN_MAX_WIDTH.with(|slot| {
-        slot.borrow_mut().take();
-    });
+  DEVICE_HEADER_OPEN_MAX_WIDTH.with(|slot| {
+    slot.borrow_mut().take();
+  });
+  DEVICE_MENU_OPEN_MAX_WIDTH.with(|slot| {
+    slot.borrow_mut().take();
+  });
 }
 
 fn adjusted_header_row_width(base_width: f64) -> f64 {
-    let max_width = menu_screen_width_cap();
-    let adjusted = (base_width + DEVICE_HEADER_MENU_COMPENSATION).min(max_width);
-    if adjusted.is_finite() && adjusted > 0.0 {
-        adjusted
-    } else {
-        base_width
-    }
+  let max_width = menu_screen_width_cap();
+  let adjusted = (base_width + DEVICE_HEADER_MENU_COMPENSATION).min(max_width);
+  if adjusted.is_finite() && adjusted > 0.0 { adjusted } else { base_width }
 }
 
 fn schedule_menu_layout_sync(delegate: id) {
-    unsafe {
-        if delegate == nil {
-            return;
-        }
-        let _: () = msg_send![
-            delegate,
-            performSelector: sel!(syncMenuLayout:)
-            withObject: nil
-            afterDelay: 0.0f64
-        ];
+  unsafe {
+    if delegate == nil {
+      return;
     }
+    let _: () = msg_send![
+        delegate,
+        performSelector: sel!(syncMenuLayout:)
+        withObject: nil
+        afterDelay: 0.0f64
+    ];
+  }
 }
 
 fn current_menu_width(menu: id) -> f64 {
-    unsafe {
-        if menu == nil {
-            return 0.0;
-        }
-
-        let header_context_width = DEVICE_HEADER_VIEW_REF.with(|slot| {
-            let Some(view) = *slot.borrow() else {
-                return None;
-            };
-
-            // Prefer the menu window's content width. This matches the rendered
-            // menu background and stays stable across expand/collapse.
-            if let Some(width) = menu_window_content_width_for_view(view) {
-                return Some(width);
-            }
-
-            // Fallback: immediate superview width (can be narrower than the
-            // menu background on some AppKit transitions).
-            let superview: id = msg_send![view, superview];
-            if superview == nil {
-                return None;
-            }
-
-            let bounds: NSRect = msg_send![superview, bounds];
-            if bounds.size.width.is_finite() && bounds.size.width > 0.0 {
-                return Some(bounds.size.width);
-            }
-
-            let frame: NSRect = msg_send![superview, frame];
-            if frame.size.width.is_finite() && frame.size.width > 0.0 {
-                return Some(frame.size.width);
-            }
-
-            None
-        });
-        if let Some(width) = header_context_width {
-            return width;
-        }
-
-        let menu_size: NSSize = msg_send![menu, size];
-        if menu_size.width.is_finite() && menu_size.width > 0.0 {
-            menu_size.width
-        } else {
-            DEVICE_HEADER_WIDTH
-        }
+  unsafe {
+    if menu == nil {
+      return 0.0;
     }
+
+    let header_context_width = DEVICE_HEADER_VIEW_REF.with(|slot| {
+      let Some(view) = *slot.borrow() else {
+        return None;
+      };
+
+      // Prefer the menu window's content width. This matches the rendered
+      // menu background and stays stable across expand/collapse.
+      if let Some(width) = menu_window_content_width_for_view(view) {
+        return Some(width);
+      }
+
+      // Fallback: immediate superview width (can be narrower than the
+      // menu background on some AppKit transitions).
+      let superview: id = msg_send![view, superview];
+      if superview == nil {
+        return None;
+      }
+
+      let bounds: NSRect = msg_send![superview, bounds];
+      if bounds.size.width.is_finite() && bounds.size.width > 0.0 {
+        return Some(bounds.size.width);
+      }
+
+      let frame: NSRect = msg_send![superview, frame];
+      if frame.size.width.is_finite() && frame.size.width > 0.0 {
+        return Some(frame.size.width);
+      }
+
+      None
+    });
+    if let Some(width) = header_context_width {
+      return width;
+    }
+
+    let menu_size: NSSize = msg_send![menu, size];
+    if menu_size.width.is_finite() && menu_size.width > 0.0 {
+      menu_size.width
+    } else {
+      DEVICE_HEADER_WIDTH
+    }
+  }
 }
 
 fn relayout_device_header_row(view_width: f64) {
-    if !view_width.is_finite() || view_width <= 0.0 {
-        return;
-    }
-    let view_height = DEVICE_HEADER_HEIGHT;
+  if !view_width.is_finite() || view_width <= 0.0 {
+    return;
+  }
+  let view_height = DEVICE_HEADER_HEIGHT;
 
-    unsafe {
-        DEVICE_HEADER_VIEW_REF.with(|slot| {
-            if let Some(view) = *slot.borrow() {
-                let _: () = msg_send![
-                    view,
-                    setFrame: NSRect::new(
-                        NSPoint::new(0.0, 0.0),
-                        NSSize::new(view_width, view_height)
-                    )
-                ];
-            }
-        });
-    }
+  unsafe {
+    DEVICE_HEADER_VIEW_REF.with(|slot| {
+      if let Some(view) = *slot.borrow() {
+        let _: () = msg_send![
+            view,
+            setFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(view_width, view_height)
+            )
+        ];
+      }
+    });
+  }
 }
 
 fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
-    unsafe {
-        let font = menu_row_font();
-        let mut max_width = DEVICE_HEADER_MIN_WIDTH;
+  unsafe {
+    let font = menu_row_font();
+    let mut max_width = DEVICE_HEADER_MIN_WIDTH;
 
-        max_width = max_width.max(always_listening_row_width(font));
-        max_width = max_width.max(menu_row_width_for_text("Quit", font, 0, false));
-        max_width = max_width.max(menu_row_width_for_text("Settings...", font, 0, false));
+    max_width = max_width.max(always_listening_row_width(font));
+    max_width = max_width.max(menu_row_width_for_text("Quit", font, 0, false));
+    max_width = max_width.max(menu_row_width_for_text("Settings...", font, 0, false));
 
-        if model.expanded {
-            if model.rows.is_empty() {
-                max_width =
-                    max_width.max(menu_row_width_for_text("No input devices", font, 1, false));
-            } else {
-                for row in &model.rows {
-                    max_width = max_width.max(menu_row_width_for_text(&row.label, font, 1, true));
-                }
-            }
+    if model.expanded {
+      if model.rows.is_empty() {
+        max_width = max_width.max(menu_row_width_for_text("No input devices", font, 1, false));
+      } else {
+        for row in &model.rows {
+          max_width = max_width.max(menu_row_width_for_text(&row.label, font, 1, true));
         }
-
-        max_width = max_width.max(device_header_width_for_label(
-            &device_header_label(model),
-            font,
-        ));
-
-        let screen_cap = menu_screen_width_cap();
-        max_width.min(screen_cap)
+      }
     }
+
+    max_width = max_width.max(device_header_width_for_label(&device_header_label(model), font));
+
+    let screen_cap = menu_screen_width_cap();
+    max_width.min(screen_cap)
+  }
 }
 
 unsafe fn always_listening_row_width(font: id) -> f64 {
-    let text_width = measure_text_width("Listen", font);
-    ALWAYS_LISTENING_LABEL_LEADING
-        + text_width
-        + ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP
-        + ALWAYS_LISTENING_SWITCH_WIDTH
-        + DEVICE_HEADER_TRAILING
-        + DEVICE_MENU_TEXT_SAFETY_PADDING
+  let text_width = measure_text_width("Listen", font);
+  ALWAYS_LISTENING_LABEL_LEADING
+    + text_width
+    + ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP
+    + ALWAYS_LISTENING_SWITCH_WIDTH
+    + DEVICE_HEADER_TRAILING
+    + DEVICE_MENU_TEXT_SAFETY_PADDING
 }
 
 unsafe fn menu_row_font() -> id {
-    let font_class = class!(NSFont);
-    let supports_menu_font: i8 = msg_send![font_class, respondsToSelector: sel!(menuFontOfSize:)];
-    if supports_menu_font != 0 {
-        let menu_font: id = msg_send![font_class, menuFontOfSize: 0.0f64];
-        if menu_font != nil {
-            return menu_font;
-        }
+  let font_class = class!(NSFont);
+  let supports_menu_font: i8 = msg_send![font_class, respondsToSelector: sel!(menuFontOfSize:)];
+  if supports_menu_font != 0 {
+    let menu_font: id = msg_send![font_class, menuFontOfSize: 0.0f64];
+    if menu_font != nil {
+      return menu_font;
     }
-    msg_send![font_class, systemFontOfSize: 13.0f64]
+  }
+  msg_send![font_class, systemFontOfSize: 13.0f64]
 }
 
 unsafe fn measure_text_width(text: &str, font: id) -> f64 {
-    if text.is_empty() {
-        return 0.0;
-    }
+  if text.is_empty() {
+    return 0.0;
+  }
 
-    let ns_text = NSString::alloc(nil).init_str(text);
-    if ns_text == nil {
-        return text.chars().count() as f64 * 7.0;
-    }
+  let ns_text = NSString::alloc(nil).init_str(text);
+  if ns_text == nil {
+    return text.chars().count() as f64 * 7.0;
+  }
 
-    let size: NSSize = if font != nil {
-        let key = NSString::alloc(nil).init_str("NSFont");
-        let attrs: id = msg_send![class!(NSDictionary), dictionaryWithObject: font forKey: key];
-        msg_send![ns_text, sizeWithAttributes: attrs]
-    } else {
-        msg_send![ns_text, sizeWithAttributes: nil]
-    };
+  let size: NSSize = if font != nil {
+    let key = NSString::alloc(nil).init_str("NSFont");
+    let attrs: id = msg_send![class!(NSDictionary), dictionaryWithObject: font forKey: key];
+    msg_send![ns_text, sizeWithAttributes: attrs]
+  } else {
+    msg_send![ns_text, sizeWithAttributes: nil]
+  };
 
-    if size.width.is_finite() && size.width > 0.0 {
-        size.width
-    } else {
-        text.chars().count() as f64 * 7.0
-    }
+  if size.width.is_finite() && size.width > 0.0 {
+    size.width
+  } else {
+    text.chars().count() as f64 * 7.0
+  }
 }
 
 unsafe fn menu_row_width_for_text(
-    text: &str,
-    font: id,
-    indent_level: usize,
-    with_checkmark: bool,
+  text: &str,
+  font: id,
+  indent_level: usize,
+  with_checkmark: bool,
 ) -> f64 {
-    let text_width = measure_text_width(text, font);
-    let mut width = text_width + DEVICE_MENU_ROW_CHROME_WIDTH + DEVICE_MENU_TEXT_SAFETY_PADDING;
-    width += indent_level as f64 * DEVICE_MENU_INDENT_LEVEL_WIDTH;
-    if with_checkmark {
-        width += DEVICE_MENU_CHECKMARK_WIDTH;
-    }
-    width
+  let text_width = measure_text_width(text, font);
+  let mut width = text_width + DEVICE_MENU_ROW_CHROME_WIDTH + DEVICE_MENU_TEXT_SAFETY_PADDING;
+  width += indent_level as f64 * DEVICE_MENU_INDENT_LEVEL_WIDTH;
+  if with_checkmark {
+    width += DEVICE_MENU_CHECKMARK_WIDTH;
+  }
+  width
 }
 
 unsafe fn device_header_width_for_label(label: &str, font: id) -> f64 {
-    let text_width = measure_text_width(label, font);
-    let mut width = text_width
-        + DEVICE_HEADER_TEXT_LEADING
-        + DEVICE_HEADER_LABEL_TO_CHEVRON_GAP
-        + DEVICE_HEADER_CHEVRON_SIZE
-        + DEVICE_HEADER_TRAILING
-        + DEVICE_MENU_TEXT_SAFETY_PADDING;
-    width += 6.0 + (DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0);
-    width
+  let text_width = measure_text_width(label, font);
+  let mut width = text_width
+    + DEVICE_HEADER_TEXT_LEADING
+    + DEVICE_HEADER_LABEL_TO_CHEVRON_GAP
+    + DEVICE_HEADER_CHEVRON_SIZE
+    + DEVICE_HEADER_TRAILING
+    + DEVICE_MENU_TEXT_SAFETY_PADDING;
+  width += 6.0 + (DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0);
+  width
 }
 
 fn menu_screen_width_cap() -> f64 {
-    unsafe {
-        let screen = NSScreen::mainScreen(nil);
-        if screen == nil {
-            return DEVICE_HEADER_WIDTH * 2.5;
-        }
-
-        let frame = NSScreen::frame(screen);
-        let cap = frame.size.width - (DEVICE_MENU_SCREEN_EDGE_MARGIN * 2.0);
-        if cap.is_finite() && cap > DEVICE_HEADER_MIN_WIDTH {
-            cap
-        } else {
-            DEVICE_HEADER_WIDTH * 2.5
-        }
+  unsafe {
+    let screen = NSScreen::mainScreen(nil);
+    if screen == nil {
+      return DEVICE_HEADER_WIDTH * 2.5;
     }
+
+    let frame = NSScreen::frame(screen);
+    let cap = frame.size.width - (DEVICE_MENU_SCREEN_EDGE_MARGIN * 2.0);
+    if cap.is_finite() && cap > DEVICE_HEADER_MIN_WIDTH { cap } else { DEVICE_HEADER_WIDTH * 2.5 }
+  }
 }
 
 fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
-    unsafe {
-        let _: () = msg_send![menu, removeAllItems];
+  unsafe {
+    let _: () = msg_send![menu, removeAllItems];
 
-        let always_item = make_always_listening_item(delegate, model.always_listening_enabled);
-        menu.addItem_(always_item);
+    let always_item = make_always_listening_item(delegate, model.always_listening_enabled);
+    menu.addItem_(always_item);
 
-        let separator_top: id = msg_send![class!(NSMenuItem), separatorItem];
-        menu.addItem_(separator_top);
+    let separator_top: id = msg_send![class!(NSMenuItem), separatorItem];
+    menu.addItem_(separator_top);
 
-        let header_item = make_device_header_item(delegate, model);
-        menu.addItem_(header_item);
+    let header_item = make_device_header_item(delegate, model);
+    menu.addItem_(header_item);
 
-        insert_device_rows(menu, delegate, model, 3);
+    insert_device_rows(menu, delegate, model, 3);
 
-        let separator_bottom: id = msg_send![class!(NSMenuItem), separatorItem];
-        menu.addItem_(separator_bottom);
+    let separator_bottom: id = msg_send![class!(NSMenuItem), separatorItem];
+    menu.addItem_(separator_bottom);
 
-        let settings_item = NSMenuItem::alloc(nil)
-            .initWithTitle_action_keyEquivalent_(
-                NSString::alloc(nil).init_str("Settings..."),
-                sel!(openSettings:),
-                NSString::alloc(nil).init_str(","),
-            )
-            .autorelease();
-        settings_item.setTarget_(delegate);
-        menu.addItem_(settings_item);
+    let settings_item = NSMenuItem::alloc(nil)
+      .initWithTitle_action_keyEquivalent_(
+        NSString::alloc(nil).init_str("Settings..."),
+        sel!(openSettings:),
+        NSString::alloc(nil).init_str(","),
+      )
+      .autorelease();
+    settings_item.setTarget_(delegate);
+    menu.addItem_(settings_item);
 
-        let quit_item = NSMenuItem::alloc(nil)
-            .initWithTitle_action_keyEquivalent_(
-                NSString::alloc(nil).init_str("Quit"),
-                sel!(quit:),
-                NSString::alloc(nil).init_str("q"),
-            )
-            .autorelease();
-        quit_item.setTarget_(delegate);
-        menu.addItem_(quit_item);
-    }
+    let quit_item = NSMenuItem::alloc(nil)
+      .initWithTitle_action_keyEquivalent_(
+        NSString::alloc(nil).init_str("Quit"),
+        sel!(quit:),
+        NSString::alloc(nil).init_str("q"),
+      )
+      .autorelease();
+    quit_item.setTarget_(delegate);
+    menu.addItem_(quit_item);
+  }
 }
 
 fn update_menu_inline(menu: id, delegate: id, model: &DeviceMenuModel) {
-    set_always_listening_switch_state(model.always_listening_enabled);
-    set_device_header_title(model);
-    clear_device_rows(menu);
+  set_always_listening_switch_state(model.always_listening_enabled);
+  set_device_header_title(model);
+  clear_device_rows(menu);
 
-    unsafe {
-        let count: i64 = msg_send![menu, numberOfItems];
-        // Items are [Listen, Separator, Header, ..., Separator, Settings..., Quit]
-        let insert_at = if count >= 3 { count - 3 } else { 0 };
-        insert_device_rows(menu, delegate, model, insert_at);
-    }
+  unsafe {
+    let count: i64 = msg_send![menu, numberOfItems];
+    // Items are [Listen, Separator, Header, ..., Separator, Settings..., Quit]
+    let insert_at = if count >= 3 { count - 3 } else { 0 };
+    insert_device_rows(menu, delegate, model, insert_at);
+  }
 }
 
 fn set_always_listening_switch_state(enabled: bool) {
-    unsafe {
-        ALWAYS_LISTENING_TRACK_REF.with(|slot| {
-            if let Some(track) = *slot.borrow() {
-                let layer: id = msg_send![track, layer];
-                if layer != nil {
-                    let color = always_listening_track_color(track, enabled);
-                    if color != nil {
-                        let cg_color: id = msg_send![color, CGColor];
-                        let _: () = msg_send![layer, setBackgroundColor: cg_color];
-                    }
-                }
-            }
-        });
-        ALWAYS_LISTENING_THUMB_REF.with(|slot| {
-            if let Some(thumb) = *slot.borrow() {
-                let _: () = msg_send![thumb, setFrame: always_listening_thumb_frame(enabled)];
-            }
-        });
-    }
+  unsafe {
+    ALWAYS_LISTENING_TRACK_REF.with(|slot| {
+      if let Some(track) = *slot.borrow() {
+        let layer: id = msg_send![track, layer];
+        if layer != nil {
+          let color = always_listening_track_color(track, enabled);
+          if color != nil {
+            let cg_color: id = msg_send![color, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg_color];
+          }
+        }
+      }
+    });
+    ALWAYS_LISTENING_THUMB_REF.with(|slot| {
+      if let Some(thumb) = *slot.borrow() {
+        let _: () = msg_send![thumb, setFrame: always_listening_thumb_frame(enabled)];
+      }
+    });
+  }
 }
 
 unsafe fn always_listening_track_color(view: id, enabled: bool) -> id {
-    let ns_color_class = class!(NSColor);
-    let base_color: id = if enabled {
-        msg_send![ns_color_class, systemBlueColor]
-    } else {
-        msg_send![ns_color_class, systemGrayColor]
-    };
+  let ns_color_class = class!(NSColor);
+  let base_color: id = if enabled {
+    msg_send![ns_color_class, systemBlueColor]
+  } else {
+    msg_send![ns_color_class, systemGrayColor]
+  };
 
-    if view == nil || base_color == nil {
-        return base_color;
+  if view == nil || base_color == nil {
+    return base_color;
+  }
+
+  let appearance: id = msg_send![view, effectiveAppearance];
+  let has_resolve: i8 =
+    msg_send![base_color, respondsToSelector: sel!(resolvedColorWithAppearance:)];
+  if appearance != nil && has_resolve != 0 {
+    let resolved: id = msg_send![base_color, resolvedColorWithAppearance: appearance];
+    if resolved != nil {
+      return resolved;
     }
+  }
 
-    let appearance: id = msg_send![view, effectiveAppearance];
-    let has_resolve: i8 =
-        msg_send![base_color, respondsToSelector: sel!(resolvedColorWithAppearance:)];
-    if appearance != nil && has_resolve != 0 {
-        let resolved: id = msg_send![base_color, resolvedColorWithAppearance: appearance];
-        if resolved != nil {
-            return resolved;
-        }
-    }
-
-    base_color
+  base_color
 }
 
 fn always_listening_thumb_frame(enabled: bool) -> NSRect {
-    let x = if enabled {
-        ALWAYS_LISTENING_SWITCH_WIDTH
-            - ALWAYS_LISTENING_SWITCH_INSET
-            - ALWAYS_LISTENING_SWITCH_THUMB_SIZE
-    } else {
-        ALWAYS_LISTENING_SWITCH_INSET
-    };
-    NSRect::new(
-        NSPoint::new(x, ALWAYS_LISTENING_SWITCH_INSET),
-        NSSize::new(
-            ALWAYS_LISTENING_SWITCH_THUMB_SIZE,
-            ALWAYS_LISTENING_SWITCH_THUMB_SIZE,
-        ),
-    )
+  let x = if enabled {
+    ALWAYS_LISTENING_SWITCH_WIDTH
+      - ALWAYS_LISTENING_SWITCH_INSET
+      - ALWAYS_LISTENING_SWITCH_THUMB_SIZE
+  } else {
+    ALWAYS_LISTENING_SWITCH_INSET
+  };
+  NSRect::new(
+    NSPoint::new(x, ALWAYS_LISTENING_SWITCH_INSET),
+    NSSize::new(ALWAYS_LISTENING_SWITCH_THUMB_SIZE, ALWAYS_LISTENING_SWITCH_THUMB_SIZE),
+  )
 }
 
 fn device_header_label(model: &DeviceMenuModel) -> String {
-    if model.header_label.trim().is_empty() {
-        "No Input Device".to_string()
-    } else {
-        model.header_label.clone()
-    }
+  if model.header_label.trim().is_empty() {
+    "No Input Device".to_string()
+  } else {
+    model.header_label.clone()
+  }
 }
 
 fn device_header_chevron_image_name(model: &DeviceMenuModel) -> &'static str {
-    if model.expanded {
-        "NSTouchBarGoDownTemplate"
-    } else {
-        "NSGoRightTemplate"
-    }
+  if model.expanded { "NSTouchBarGoDownTemplate" } else { "NSGoRightTemplate" }
 }
 
 unsafe fn device_header_chevron_image(model: &DeviceMenuModel) -> id {
-    let image_name = NSString::alloc(nil).init_str(device_header_chevron_image_name(model));
-    msg_send![class!(NSImage), imageNamed: image_name]
+  let image_name = NSString::alloc(nil).init_str(device_header_chevron_image_name(model));
+  msg_send![class!(NSImage), imageNamed: image_name]
 }
 
 unsafe fn set_image_view_tint_if_supported(image_view: id, tint_color: id) {
-    let supports_tint: i8 = msg_send![image_view, respondsToSelector: sel!(setContentTintColor:)];
-    if supports_tint != 0 {
-        let _: () = msg_send![image_view, setContentTintColor: tint_color];
-    }
+  let supports_tint: i8 = msg_send![image_view, respondsToSelector: sel!(setContentTintColor:)];
+  if supports_tint != 0 {
+    let _: () = msg_send![image_view, setContentTintColor: tint_color];
+  }
 }
 
 unsafe fn resolved_menu_highlight_color_for_view(view: id) -> id {
-    let ns_color_class = class!(NSColor);
-    let has_selected_content_bg: i8 =
-        msg_send![ns_color_class, respondsToSelector: sel!(selectedContentBackgroundColor)];
-    let base_color: id = if has_selected_content_bg != 0 {
-        msg_send![ns_color_class, selectedContentBackgroundColor]
-    } else {
-        msg_send![ns_color_class, selectedMenuItemColor]
-    };
+  let ns_color_class = class!(NSColor);
+  let has_selected_content_bg: i8 =
+    msg_send![ns_color_class, respondsToSelector: sel!(selectedContentBackgroundColor)];
+  let base_color: id = if has_selected_content_bg != 0 {
+    msg_send![ns_color_class, selectedContentBackgroundColor]
+  } else {
+    msg_send![ns_color_class, selectedMenuItemColor]
+  };
 
-    if view == nil || base_color == nil {
-        return base_color;
+  if view == nil || base_color == nil {
+    return base_color;
+  }
+
+  let appearance: id = msg_send![view, effectiveAppearance];
+  let has_resolve: i8 =
+    msg_send![base_color, respondsToSelector: sel!(resolvedColorWithAppearance:)];
+  if appearance != nil && has_resolve != 0 {
+    let resolved: id = msg_send![base_color, resolvedColorWithAppearance: appearance];
+    if resolved != nil {
+      return resolved;
     }
+  }
 
-    let appearance: id = msg_send![view, effectiveAppearance];
-    let has_resolve: i8 =
-        msg_send![base_color, respondsToSelector: sel!(resolvedColorWithAppearance:)];
-    if appearance != nil && has_resolve != 0 {
-        let resolved: id = msg_send![base_color, resolvedColorWithAppearance: appearance];
-        if resolved != nil {
-            return resolved;
-        }
-    }
-
-    base_color
+  base_color
 }
 
 fn set_device_header_highlighted(is_highlighted: bool) {
-    unsafe {
-        DEVICE_HEADER_HIGHLIGHT_REF.with(|slot| {
-            if let Some(bg) = *slot.borrow() {
-                if is_highlighted {
-                    // Resolve menu selection color at highlight time so the custom row
-                    // follows current macOS appearance/accent.
-                    let layer: id = msg_send![bg, layer];
-                    if layer != nil {
-                        let highlight_color = resolved_menu_highlight_color_for_view(bg);
-                        let highlight_cg_color: id = msg_send![highlight_color, CGColor];
-                        let _: () = msg_send![layer, setBackgroundColor: highlight_cg_color];
-                    }
-                }
-                let _: () = msg_send![bg, setHidden: if is_highlighted { NO } else { YES }];
-            }
-        });
+  unsafe {
+    DEVICE_HEADER_HIGHLIGHT_REF.with(|slot| {
+      if let Some(bg) = *slot.borrow() {
+        if is_highlighted {
+          // Resolve menu selection color at highlight time so the custom row
+          // follows current macOS appearance/accent.
+          let layer: id = msg_send![bg, layer];
+          if layer != nil {
+            let highlight_color = resolved_menu_highlight_color_for_view(bg);
+            let highlight_cg_color: id = msg_send![highlight_color, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: highlight_cg_color];
+          }
+        }
+        let _: () = msg_send![bg, setHidden: if is_highlighted { NO } else { YES }];
+      }
+    });
 
-        DEVICE_HEADER_LABEL_REF.with(|slot| {
-            if let Some(label) = *slot.borrow() {
-                let color: id = if is_highlighted {
-                    msg_send![class!(NSColor), selectedMenuItemTextColor]
-                } else {
-                    msg_send![class!(NSColor), labelColor]
-                };
-                let _: () = msg_send![label, setTextColor: color];
-            }
-        });
+    DEVICE_HEADER_LABEL_REF.with(|slot| {
+      if let Some(label) = *slot.borrow() {
+        let color: id = if is_highlighted {
+          msg_send![class!(NSColor), selectedMenuItemTextColor]
+        } else {
+          msg_send![class!(NSColor), labelColor]
+        };
+        let _: () = msg_send![label, setTextColor: color];
+      }
+    });
 
-        DEVICE_HEADER_CHEVRON_REF.with(|slot| {
-            if let Some(image_view) = *slot.borrow() {
-                let tint: id = if is_highlighted {
-                    msg_send![class!(NSColor), selectedMenuItemTextColor]
-                } else {
-                    msg_send![class!(NSColor), secondaryLabelColor]
-                };
-                set_image_view_tint_if_supported(image_view, tint);
-            }
-        });
-    }
+    DEVICE_HEADER_CHEVRON_REF.with(|slot| {
+      if let Some(image_view) = *slot.borrow() {
+        let tint: id = if is_highlighted {
+          msg_send![class!(NSColor), selectedMenuItemTextColor]
+        } else {
+          msg_send![class!(NSColor), secondaryLabelColor]
+        };
+        set_image_view_tint_if_supported(image_view, tint);
+      }
+    });
+  }
 }
 
 unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
-    let item = NSMenuItem::alloc(nil)
-        .initWithTitle_action_keyEquivalent_(
-            NSString::alloc(nil).init_str(""),
-            sel!(noop:),
-            NSString::alloc(nil).init_str(""),
-        )
-        .autorelease();
+  let item = NSMenuItem::alloc(nil)
+    .initWithTitle_action_keyEquivalent_(
+      NSString::alloc(nil).init_str(""),
+      sel!(noop:),
+      NSString::alloc(nil).init_str(""),
+    )
+    .autorelease();
 
-    let view_frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(DEVICE_HEADER_WIDTH, ALWAYS_LISTENING_ROW_HEIGHT),
-    );
-    let view: id = msg_send![class!(NSView), alloc];
-    let view: id = msg_send![view, initWithFrame: view_frame];
-    let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+  let view_frame = NSRect::new(
+    NSPoint::new(0.0, 0.0),
+    NSSize::new(DEVICE_HEADER_WIDTH, ALWAYS_LISTENING_ROW_HEIGHT),
+  );
+  let view: id = msg_send![class!(NSView), alloc];
+  let view: id = msg_send![view, initWithFrame: view_frame];
+  let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
 
-    // Let users click anywhere on the row, not only on the switch thumb.
-    let row_button: id = msg_send![class!(NSButton), alloc];
-    let row_button: id = msg_send![row_button, initWithFrame: view_frame];
-    let _: () =
-        msg_send![row_button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
-    let _: () = msg_send![row_button, setBordered: NO];
-    let _: () = msg_send![row_button, setTitle: NSString::alloc(nil).init_str("")];
-    let _: () = msg_send![row_button, setTarget: delegate];
-    let _: () = msg_send![row_button, setAction: sel!(toggleAlwaysListening:)];
+  // Let users click anywhere on the row, not only on the switch thumb.
+  let row_button: id = msg_send![class!(NSButton), alloc];
+  let row_button: id = msg_send![row_button, initWithFrame: view_frame];
+  let _: () =
+    msg_send![row_button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
+  let _: () = msg_send![row_button, setBordered: NO];
+  let _: () = msg_send![row_button, setTitle: NSString::alloc(nil).init_str("")];
+  let _: () = msg_send![row_button, setTarget: delegate];
+  let _: () = msg_send![row_button, setAction: sel!(toggleAlwaysListening:)];
 
-    let label_width = DEVICE_HEADER_WIDTH
-        - ALWAYS_LISTENING_LABEL_LEADING
-        - DEVICE_HEADER_TRAILING
-        - ALWAYS_LISTENING_SWITCH_WIDTH
-        - ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP;
-    let label_frame = NSRect::new(
-        NSPoint::new(ALWAYS_LISTENING_LABEL_LEADING, 2.0),
-        NSSize::new(label_width, 18.0),
-    );
-    let label: id = msg_send![class!(NSTextField), alloc];
-    let label: id = msg_send![label, initWithFrame: label_frame];
-    let _: () = msg_send![label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
-    let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("Listen")];
-    let _: () = msg_send![label, setBezeled: NO];
-    let _: () = msg_send![label, setDrawsBackground: NO];
-    let _: () = msg_send![label, setEditable: NO];
-    let _: () = msg_send![label, setSelectable: NO];
-    let _: () = msg_send![label, setAlignment: 0isize];
-    let font: id = msg_send![class!(NSFont), menuFontOfSize: 0.0f64];
-    let _: () = msg_send![label, setFont: font];
-    let text_color: id = msg_send![class!(NSColor), labelColor];
-    let _: () = msg_send![label, setTextColor: text_color];
+  let label_width = DEVICE_HEADER_WIDTH
+    - ALWAYS_LISTENING_LABEL_LEADING
+    - DEVICE_HEADER_TRAILING
+    - ALWAYS_LISTENING_SWITCH_WIDTH
+    - ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP;
+  let label_frame =
+    NSRect::new(NSPoint::new(ALWAYS_LISTENING_LABEL_LEADING, 2.0), NSSize::new(label_width, 18.0));
+  let label: id = msg_send![class!(NSTextField), alloc];
+  let label: id = msg_send![label, initWithFrame: label_frame];
+  let _: () = msg_send![label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("Listen")];
+  let _: () = msg_send![label, setBezeled: NO];
+  let _: () = msg_send![label, setDrawsBackground: NO];
+  let _: () = msg_send![label, setEditable: NO];
+  let _: () = msg_send![label, setSelectable: NO];
+  let _: () = msg_send![label, setAlignment: 0isize];
+  let font: id = msg_send![class!(NSFont), menuFontOfSize: 0.0f64];
+  let _: () = msg_send![label, setFont: font];
+  let text_color: id = msg_send![class!(NSColor), labelColor];
+  let _: () = msg_send![label, setTextColor: text_color];
 
-    let switch_x = DEVICE_HEADER_WIDTH - DEVICE_HEADER_TRAILING - ALWAYS_LISTENING_SWITCH_WIDTH;
-    let switch_y = (ALWAYS_LISTENING_ROW_HEIGHT - ALWAYS_LISTENING_SWITCH_HEIGHT) * 0.5;
-    let switch_frame = NSRect::new(
-        NSPoint::new(switch_x, switch_y),
-        NSSize::new(
-            ALWAYS_LISTENING_SWITCH_WIDTH,
-            ALWAYS_LISTENING_SWITCH_HEIGHT,
-        ),
-    );
-    let switch_container: id = msg_send![class!(NSView), alloc];
-    let switch_container: id = msg_send![switch_container, initWithFrame: switch_frame];
-    let _: () = msg_send![switch_container, setAutoresizingMask: NS_VIEW_MIN_X_MARGIN];
-    let _: () = msg_send![switch_container, setWantsLayer: YES];
+  let switch_x = DEVICE_HEADER_WIDTH - DEVICE_HEADER_TRAILING - ALWAYS_LISTENING_SWITCH_WIDTH;
+  let switch_y = (ALWAYS_LISTENING_ROW_HEIGHT - ALWAYS_LISTENING_SWITCH_HEIGHT) * 0.5;
+  let switch_frame = NSRect::new(
+    NSPoint::new(switch_x, switch_y),
+    NSSize::new(ALWAYS_LISTENING_SWITCH_WIDTH, ALWAYS_LISTENING_SWITCH_HEIGHT),
+  );
+  let switch_container: id = msg_send![class!(NSView), alloc];
+  let switch_container: id = msg_send![switch_container, initWithFrame: switch_frame];
+  let _: () = msg_send![switch_container, setAutoresizingMask: NS_VIEW_MIN_X_MARGIN];
+  let _: () = msg_send![switch_container, setWantsLayer: YES];
 
-    let track_frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(
-            ALWAYS_LISTENING_SWITCH_WIDTH,
-            ALWAYS_LISTENING_SWITCH_HEIGHT,
-        ),
-    );
-    let track_view: id = msg_send![class!(NSView), alloc];
-    let track_view: id = msg_send![track_view, initWithFrame: track_frame];
-    let _: () = msg_send![track_view, setWantsLayer: YES];
-    let track_layer: id = msg_send![track_view, layer];
-    if track_layer != nil {
-        let _: () = msg_send![track_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_HEIGHT * 0.5)];
-        let color = always_listening_track_color(track_view, enabled);
-        if color != nil {
-            let cg_color: id = msg_send![color, CGColor];
-            let _: () = msg_send![track_layer, setBackgroundColor: cg_color];
-        }
+  let track_frame = NSRect::new(
+    NSPoint::new(0.0, 0.0),
+    NSSize::new(ALWAYS_LISTENING_SWITCH_WIDTH, ALWAYS_LISTENING_SWITCH_HEIGHT),
+  );
+  let track_view: id = msg_send![class!(NSView), alloc];
+  let track_view: id = msg_send![track_view, initWithFrame: track_frame];
+  let _: () = msg_send![track_view, setWantsLayer: YES];
+  let track_layer: id = msg_send![track_view, layer];
+  if track_layer != nil {
+    let _: () = msg_send![track_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_HEIGHT * 0.5)];
+    let color = always_listening_track_color(track_view, enabled);
+    if color != nil {
+      let cg_color: id = msg_send![color, CGColor];
+      let _: () = msg_send![track_layer, setBackgroundColor: cg_color];
     }
+  }
 
-    let thumb_view: id = msg_send![class!(NSView), alloc];
-    let thumb_view: id =
-        msg_send![thumb_view, initWithFrame: always_listening_thumb_frame(enabled)];
-    let _: () = msg_send![thumb_view, setWantsLayer: YES];
-    let thumb_layer: id = msg_send![thumb_view, layer];
-    if thumb_layer != nil {
-        let _: () =
-            msg_send![thumb_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_THUMB_SIZE * 0.5)];
-        let thumb_color: id = msg_send![class!(NSColor), whiteColor];
-        let thumb_cg_color: id = msg_send![thumb_color, CGColor];
-        let _: () = msg_send![thumb_layer, setBackgroundColor: thumb_cg_color];
-    }
+  let thumb_view: id = msg_send![class!(NSView), alloc];
+  let thumb_view: id = msg_send![thumb_view, initWithFrame: always_listening_thumb_frame(enabled)];
+  let _: () = msg_send![thumb_view, setWantsLayer: YES];
+  let thumb_layer: id = msg_send![thumb_view, layer];
+  if thumb_layer != nil {
+    let _: () = msg_send![thumb_layer, setCornerRadius: (ALWAYS_LISTENING_SWITCH_THUMB_SIZE * 0.5)];
+    let thumb_color: id = msg_send![class!(NSColor), whiteColor];
+    let thumb_cg_color: id = msg_send![thumb_color, CGColor];
+    let _: () = msg_send![thumb_layer, setBackgroundColor: thumb_cg_color];
+  }
 
-    let _: () = msg_send![switch_container, addSubview: track_view];
-    let _: () = msg_send![switch_container, addSubview: thumb_view];
+  let _: () = msg_send![switch_container, addSubview: track_view];
+  let _: () = msg_send![switch_container, addSubview: thumb_view];
 
-    let _: () = msg_send![view, addSubview: label];
-    let _: () = msg_send![view, addSubview: switch_container];
-    // Keep full-row click handling by layering this transparent button on top.
-    let _: () = msg_send![view, addSubview: row_button];
-    let _: () = msg_send![item, setView: view];
+  let _: () = msg_send![view, addSubview: label];
+  let _: () = msg_send![view, addSubview: switch_container];
+  // Keep full-row click handling by layering this transparent button on top.
+  let _: () = msg_send![view, addSubview: row_button];
+  let _: () = msg_send![item, setView: view];
 
-    ALWAYS_LISTENING_TRACK_REF.with(|slot| {
-        slot.borrow_mut().replace(track_view);
-    });
-    ALWAYS_LISTENING_THUMB_REF.with(|slot| {
-        slot.borrow_mut().replace(thumb_view);
-    });
-    set_always_listening_switch_state(enabled);
+  ALWAYS_LISTENING_TRACK_REF.with(|slot| {
+    slot.borrow_mut().replace(track_view);
+  });
+  ALWAYS_LISTENING_THUMB_REF.with(|slot| {
+    slot.borrow_mut().replace(thumb_view);
+  });
+  set_always_listening_switch_state(enabled);
 
-    item
+  item
 }
 
 unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
-    let item = NSMenuItem::alloc(nil)
-        .initWithTitle_action_keyEquivalent_(
-            NSString::alloc(nil).init_str(""),
-            sel!(noop:),
-            NSString::alloc(nil).init_str(""),
-        )
-        .autorelease();
+  let item = NSMenuItem::alloc(nil)
+    .initWithTitle_action_keyEquivalent_(
+      NSString::alloc(nil).init_str(""),
+      sel!(noop:),
+      NSString::alloc(nil).init_str(""),
+    )
+    .autorelease();
 
-    let view_frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_HEADER_HEIGHT),
-    );
-    let header_view_class = register_device_header_view_class();
-    let view: id = msg_send![header_view_class, alloc];
-    let view: id = msg_send![view, initWithFrame: view_frame];
-    let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+  let view_frame =
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_HEADER_HEIGHT));
+  let header_view_class = register_device_header_view_class();
+  let view: id = msg_send![header_view_class, alloc];
+  let view: id = msg_send![view, initWithFrame: view_frame];
+  let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
 
-    let highlight_frame = NSRect::new(
-        NSPoint::new(
-            3.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN,
-            1.0 + DEVICE_HEADER_EXTRA_TOP_PADDING,
-        ),
-        NSSize::new(
-            DEVICE_HEADER_WIDTH - (6.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0),
-            DEVICE_HEADER_HEIGHT - (2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
-        ),
-    );
-    let highlight_view: id = msg_send![class!(NSView), alloc];
-    let highlight_view: id = msg_send![highlight_view, initWithFrame: highlight_frame];
-    let _: () = msg_send![highlight_view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
-    let _: () = msg_send![highlight_view, setWantsLayer: YES];
-    let highlight_layer: id = msg_send![highlight_view, layer];
-    let highlight_color: id = msg_send![class!(NSColor), selectedMenuItemColor];
-    let highlight_cg_color: id = msg_send![highlight_color, CGColor];
-    let _: () = msg_send![highlight_layer, setBackgroundColor: highlight_cg_color];
-    let _: () = msg_send![highlight_layer, setCornerRadius: 4.0f64];
-    let _: () = msg_send![highlight_view, setHidden: YES];
+  let highlight_frame = NSRect::new(
+    NSPoint::new(3.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN, 1.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
+    NSSize::new(
+      DEVICE_HEADER_WIDTH - (6.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0),
+      DEVICE_HEADER_HEIGHT - (2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
+    ),
+  );
+  let highlight_view: id = msg_send![class!(NSView), alloc];
+  let highlight_view: id = msg_send![highlight_view, initWithFrame: highlight_frame];
+  let _: () = msg_send![highlight_view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+  let _: () = msg_send![highlight_view, setWantsLayer: YES];
+  let highlight_layer: id = msg_send![highlight_view, layer];
+  let highlight_color: id = msg_send![class!(NSColor), selectedMenuItemColor];
+  let highlight_cg_color: id = msg_send![highlight_color, CGColor];
+  let _: () = msg_send![highlight_layer, setBackgroundColor: highlight_cg_color];
+  let _: () = msg_send![highlight_layer, setCornerRadius: 4.0f64];
+  let _: () = msg_send![highlight_view, setHidden: YES];
 
-    let button_frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_HEADER_HEIGHT),
-    );
-    let button: id = msg_send![class!(NSButton), alloc];
-    let button: id = msg_send![button, initWithFrame: button_frame];
-    let _: () =
-        msg_send![button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
-    let _: () = msg_send![button, setBordered: NO];
-    let _: () = msg_send![button, setTarget: delegate];
-    let _: () = msg_send![button, setAction: sel!(toggleDevices:)];
-    let _: () = msg_send![button, setTitle: NSString::alloc(nil).init_str("")];
+  let button_frame =
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_HEADER_HEIGHT));
+  let button: id = msg_send![class!(NSButton), alloc];
+  let button: id = msg_send![button, initWithFrame: button_frame];
+  let _: () =
+    msg_send![button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
+  let _: () = msg_send![button, setBordered: NO];
+  let _: () = msg_send![button, setTarget: delegate];
+  let _: () = msg_send![button, setAction: sel!(toggleDevices:)];
+  let _: () = msg_send![button, setTitle: NSString::alloc(nil).init_str("")];
 
-    let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
-    let text_color: id = msg_send![class!(NSColor), labelColor];
+  let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
+  let text_color: id = msg_send![class!(NSColor), labelColor];
 
-    let title_width = DEVICE_HEADER_WIDTH
-        - DEVICE_HEADER_TEXT_LEADING
-        - DEVICE_HEADER_TRAILING
-        - DEVICE_HEADER_CHEVRON_SIZE
-        - DEVICE_HEADER_LABEL_TO_CHEVRON_GAP;
-    let title_label_frame = NSRect::new(
-        NSPoint::new(
-            DEVICE_HEADER_TEXT_LEADING,
-            2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING,
-        ),
-        NSSize::new(title_width, 18.0),
-    );
-    let title_label: id = msg_send![class!(NSTextField), alloc];
-    let title_label: id = msg_send![title_label, initWithFrame: title_label_frame];
-    let _: () = msg_send![title_label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
-    let _: () = msg_send![title_label, setStringValue: NSString::alloc(nil).init_str(&device_header_label(model))];
-    let _: () = msg_send![title_label, setBezeled: NO];
-    let _: () = msg_send![title_label, setDrawsBackground: NO];
-    let _: () = msg_send![title_label, setEditable: NO];
-    let _: () = msg_send![title_label, setSelectable: NO];
-    let _: () = msg_send![title_label, setAlignment: 0isize];
-    let _: () = msg_send![title_label, setFont: font];
-    let _: () = msg_send![title_label, setTextColor: text_color];
+  let title_width = DEVICE_HEADER_WIDTH
+    - DEVICE_HEADER_TEXT_LEADING
+    - DEVICE_HEADER_TRAILING
+    - DEVICE_HEADER_CHEVRON_SIZE
+    - DEVICE_HEADER_LABEL_TO_CHEVRON_GAP;
+  let title_label_frame = NSRect::new(
+    NSPoint::new(DEVICE_HEADER_TEXT_LEADING, 2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
+    NSSize::new(title_width, 18.0),
+  );
+  let title_label: id = msg_send![class!(NSTextField), alloc];
+  let title_label: id = msg_send![title_label, initWithFrame: title_label_frame];
+  let _: () = msg_send![title_label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+  let _: () = msg_send![title_label, setStringValue: NSString::alloc(nil).init_str(&device_header_label(model))];
+  let _: () = msg_send![title_label, setBezeled: NO];
+  let _: () = msg_send![title_label, setDrawsBackground: NO];
+  let _: () = msg_send![title_label, setEditable: NO];
+  let _: () = msg_send![title_label, setSelectable: NO];
+  let _: () = msg_send![title_label, setAlignment: 0isize];
+  let _: () = msg_send![title_label, setFont: font];
+  let _: () = msg_send![title_label, setTextColor: text_color];
 
-    let chevron_x = DEVICE_HEADER_WIDTH - DEVICE_HEADER_TRAILING - DEVICE_HEADER_CHEVRON_SIZE;
-    let chevron_y =
-        (DEVICE_HEADER_HEIGHT - DEVICE_HEADER_CHEVRON_SIZE) * 0.5 + DEVICE_HEADER_EXTRA_TOP_PADDING;
-    let chevron_frame = NSRect::new(
-        NSPoint::new(chevron_x, chevron_y),
-        NSSize::new(DEVICE_HEADER_CHEVRON_SIZE, DEVICE_HEADER_CHEVRON_SIZE),
-    );
-    let chevron_view: id = msg_send![class!(NSImageView), alloc];
-    let chevron_view: id = msg_send![chevron_view, initWithFrame: chevron_frame];
-    let _: () = msg_send![chevron_view, setAutoresizingMask: NS_VIEW_MIN_X_MARGIN];
-    let _: () = msg_send![chevron_view, setImage: device_header_chevron_image(model)];
-    let chevron_tint: id = msg_send![class!(NSColor), secondaryLabelColor];
-    set_image_view_tint_if_supported(chevron_view, chevron_tint);
+  let chevron_x = DEVICE_HEADER_WIDTH - DEVICE_HEADER_TRAILING - DEVICE_HEADER_CHEVRON_SIZE;
+  let chevron_y =
+    (DEVICE_HEADER_HEIGHT - DEVICE_HEADER_CHEVRON_SIZE) * 0.5 + DEVICE_HEADER_EXTRA_TOP_PADDING;
+  let chevron_frame = NSRect::new(
+    NSPoint::new(chevron_x, chevron_y),
+    NSSize::new(DEVICE_HEADER_CHEVRON_SIZE, DEVICE_HEADER_CHEVRON_SIZE),
+  );
+  let chevron_view: id = msg_send![class!(NSImageView), alloc];
+  let chevron_view: id = msg_send![chevron_view, initWithFrame: chevron_frame];
+  let _: () = msg_send![chevron_view, setAutoresizingMask: NS_VIEW_MIN_X_MARGIN];
+  let _: () = msg_send![chevron_view, setImage: device_header_chevron_image(model)];
+  let chevron_tint: id = msg_send![class!(NSColor), secondaryLabelColor];
+  set_image_view_tint_if_supported(chevron_view, chevron_tint);
 
-    let _: () = msg_send![view, addSubview: highlight_view];
-    let _: () = msg_send![view, addSubview: title_label];
-    let _: () = msg_send![view, addSubview: chevron_view];
-    // Add the button last so the entire row is a single click target.
-    let _: () = msg_send![view, addSubview: button];
-    let _: () = msg_send![item, setView: view];
+  let _: () = msg_send![view, addSubview: highlight_view];
+  let _: () = msg_send![view, addSubview: title_label];
+  let _: () = msg_send![view, addSubview: chevron_view];
+  // Add the button last so the entire row is a single click target.
+  let _: () = msg_send![view, addSubview: button];
+  let _: () = msg_send![item, setView: view];
 
-    DEVICE_HEADER_VIEW_REF.with(|slot| {
-        slot.borrow_mut().replace(view);
-    });
-    DEVICE_HEADER_BUTTON_REF.with(|slot| {
-        slot.borrow_mut().replace(button);
-    });
-    DEVICE_HEADER_HIGHLIGHT_REF.with(|slot| {
-        slot.borrow_mut().replace(highlight_view);
-    });
-    DEVICE_HEADER_LABEL_REF.with(|slot| {
-        slot.borrow_mut().replace(title_label);
-    });
-    DEVICE_HEADER_CHEVRON_REF.with(|slot| {
-        slot.borrow_mut().replace(chevron_view);
-    });
+  DEVICE_HEADER_VIEW_REF.with(|slot| {
+    slot.borrow_mut().replace(view);
+  });
+  DEVICE_HEADER_BUTTON_REF.with(|slot| {
+    slot.borrow_mut().replace(button);
+  });
+  DEVICE_HEADER_HIGHLIGHT_REF.with(|slot| {
+    slot.borrow_mut().replace(highlight_view);
+  });
+  DEVICE_HEADER_LABEL_REF.with(|slot| {
+    slot.borrow_mut().replace(title_label);
+  });
+  DEVICE_HEADER_CHEVRON_REF.with(|slot| {
+    slot.borrow_mut().replace(chevron_view);
+  });
 
-    item
+  item
 }
 
 fn set_device_header_title(model: &DeviceMenuModel) {
-    unsafe {
-        DEVICE_HEADER_LABEL_REF.with(|slot| {
-            if let Some(label) = *slot.borrow() {
-                let text = NSString::alloc(nil).init_str(&device_header_label(model));
-                let _: () = msg_send![label, setStringValue: text];
-            }
-        });
-        DEVICE_HEADER_CHEVRON_REF.with(|slot| {
-            if let Some(image_view) = *slot.borrow() {
-                let _: () = msg_send![image_view, setImage: device_header_chevron_image(model)];
-            }
-        });
-    }
+  unsafe {
+    DEVICE_HEADER_LABEL_REF.with(|slot| {
+      if let Some(label) = *slot.borrow() {
+        let text = NSString::alloc(nil).init_str(&device_header_label(model));
+        let _: () = msg_send![label, setStringValue: text];
+      }
+    });
+    DEVICE_HEADER_CHEVRON_REF.with(|slot| {
+      if let Some(image_view) = *slot.borrow() {
+        let _: () = msg_send![image_view, setImage: device_header_chevron_image(model)];
+      }
+    });
+  }
 }
 
 fn clear_device_rows(menu: id) {
-    unsafe {
-        let count: i64 = msg_send![menu, numberOfItems];
-        // Keep [Listen, Separator, Header, Separator, Settings..., Quit].
-        if count >= 7 {
-            for idx in (3..=(count - 4)).rev() {
-                let _: () = msg_send![menu, removeItemAtIndex: idx];
-            }
-        }
+  unsafe {
+    let count: i64 = msg_send![menu, numberOfItems];
+    // Keep [Listen, Separator, Header, Separator, Settings..., Quit].
+    if count >= 7 {
+      for idx in (3..=(count - 4)).rev() {
+        let _: () = msg_send![menu, removeItemAtIndex: idx];
+      }
     }
+  }
 
-    DEVICE_ROW_IDS.with(|rows| rows.borrow_mut().clear());
+  DEVICE_ROW_IDS.with(|rows| rows.borrow_mut().clear());
 }
 
 unsafe fn insert_device_rows(menu: id, delegate: id, model: &DeviceMenuModel, mut insert_at: i64) {
-    if !model.expanded {
-        return;
-    }
+  if !model.expanded {
+    return;
+  }
 
-    if model.rows.is_empty() {
-        let placeholder_item = NSMenuItem::alloc(nil)
-            .initWithTitle_action_keyEquivalent_(
-                NSString::alloc(nil).init_str("No input devices"),
-                sel!(noop:),
-                NSString::alloc(nil).init_str(""),
-            )
-            .autorelease();
-        placeholder_item.setTarget_(delegate);
-        let _: () = msg_send![placeholder_item, setEnabled: NO];
-        let _: () = msg_send![placeholder_item, setIndentationLevel: 1isize];
-        let _: () = msg_send![menu, insertItem: placeholder_item atIndex: insert_at];
-        return;
-    }
+  if model.rows.is_empty() {
+    let placeholder_item = NSMenuItem::alloc(nil)
+      .initWithTitle_action_keyEquivalent_(
+        NSString::alloc(nil).init_str("No input devices"),
+        sel!(noop:),
+        NSString::alloc(nil).init_str(""),
+      )
+      .autorelease();
+    placeholder_item.setTarget_(delegate);
+    let _: () = msg_send![placeholder_item, setEnabled: NO];
+    let _: () = msg_send![placeholder_item, setIndentationLevel: 1isize];
+    let _: () = msg_send![menu, insertItem: placeholder_item atIndex: insert_at];
+    return;
+  }
 
-    for row in &model.rows {
-        let tag = DEVICE_ROW_IDS.with(|rows| {
-            let mut rows = rows.borrow_mut();
-            rows.push(row.id.clone());
-            (rows.len() - 1) as i64
-        });
+  for row in &model.rows {
+    let tag = DEVICE_ROW_IDS.with(|rows| {
+      let mut rows = rows.borrow_mut();
+      rows.push(row.id.clone());
+      (rows.len() - 1) as i64
+    });
 
-        let row_item = NSMenuItem::alloc(nil)
-            .initWithTitle_action_keyEquivalent_(
-                NSString::alloc(nil).init_str(&row.label),
-                sel!(selectDevice:),
-                NSString::alloc(nil).init_str(""),
-            )
-            .autorelease();
-        row_item.setTarget_(delegate);
-        let _: () = msg_send![row_item, setTag: tag];
-        let state = if row.checked { 1isize } else { 0isize };
-        let _: () = msg_send![row_item, setState: state];
-        let _: () = msg_send![row_item, setIndentationLevel: 1isize];
-        let _: () = msg_send![menu, insertItem: row_item atIndex: insert_at];
-        insert_at += 1;
-    }
+    let row_item = NSMenuItem::alloc(nil)
+      .initWithTitle_action_keyEquivalent_(
+        NSString::alloc(nil).init_str(&row.label),
+        sel!(selectDevice:),
+        NSString::alloc(nil).init_str(""),
+      )
+      .autorelease();
+    row_item.setTarget_(delegate);
+    let _: () = msg_send![row_item, setTag: tag];
+    let state = if row.checked { 1isize } else { 0isize };
+    let _: () = msg_send![row_item, setState: state];
+    let _: () = msg_send![row_item, setIndentationLevel: 1isize];
+    let _: () = msg_send![menu, insertItem: row_item atIndex: insert_at];
+    insert_at += 1;
+  }
 }
 
 unsafe fn ensure_overlay() -> OverlayRefs {
-    if let Some(existing) = current_overlay() {
-        return existing;
-    }
+  if let Some(existing) = current_overlay() {
+    return existing;
+  }
 
-    let refs = create_overlay_window(false);
-    OVERLAY_REFS.with(|store| {
-        store.borrow_mut().replace(refs);
-    });
-    refs
+  let refs = create_overlay_window(false);
+  OVERLAY_REFS.with(|store| {
+    store.borrow_mut().replace(refs);
+  });
+  refs
 }
 
 fn current_overlay() -> Option<OverlayRefs> {
-    OVERLAY_REFS.with(|store| *store.borrow())
+  OVERLAY_REFS.with(|store| *store.borrow())
 }
 
 unsafe fn ensure_overlay_top() -> OverlayRefs {
-    if let Some(existing) = current_overlay_top() {
-        return existing;
-    }
+  if let Some(existing) = current_overlay_top() {
+    return existing;
+  }
 
-    let refs = create_overlay_window(true);
-    OVERLAY_TOP_REFS.with(|store| {
-        store.borrow_mut().replace(refs);
-    });
-    refs
+  let refs = create_overlay_window(true);
+  OVERLAY_TOP_REFS.with(|store| {
+    store.borrow_mut().replace(refs);
+  });
+  refs
 }
 
 fn current_overlay_top() -> Option<OverlayRefs> {
-    OVERLAY_TOP_REFS.with(|store| *store.borrow())
+  OVERLAY_TOP_REFS.with(|store| *store.borrow())
 }
 
 unsafe fn position_overlay_top_relative_to_bottom(top: OverlayRefs, bottom: OverlayRefs) {
-    let bottom_frame: NSRect = msg_send![bottom.window, frame];
-    if bottom_frame.size.width <= 0.0 || bottom_frame.size.height <= 0.0 {
-        return;
-    }
+  let bottom_frame: NSRect = msg_send![bottom.window, frame];
+  if bottom_frame.size.width <= 0.0 || bottom_frame.size.height <= 0.0 {
+    return;
+  }
 
-    let top_frame: NSRect = msg_send![top.window, frame];
-    let screen = overlay_screen_frame_for_window(bottom_frame);
-    let width = overlay_width_for_screen(screen);
-    let height = if top_frame.size.height > 0.0 {
-        top_frame
-            .size
-            .height
-            .clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX)
-    } else {
-        OVERLAY_HEIGHT_MIN
-    };
+  let top_frame: NSRect = msg_send![top.window, frame];
+  let screen = overlay_screen_frame_for_window(bottom_frame);
+  let width = overlay_width_for_screen(screen);
+  let height = if top_frame.size.height > 0.0 {
+    top_frame.size.height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX)
+  } else {
+    OVERLAY_HEIGHT_MIN
+  };
 
-    let mut x = bottom_frame.origin.x;
-    let mut y = bottom_frame.origin.y + bottom_frame.size.height + OVERLAY_STACK_GAP;
-    let max_x = (screen.origin.x + screen.size.width - width).max(screen.origin.x);
-    let max_y = (screen.origin.y + screen.size.height - height).max(screen.origin.y);
-    x = x.clamp(screen.origin.x, max_x);
-    y = y.clamp(screen.origin.y, max_y);
+  let mut x = bottom_frame.origin.x;
+  let mut y = bottom_frame.origin.y + bottom_frame.size.height + OVERLAY_STACK_GAP;
+  let max_x = (screen.origin.x + screen.size.width - width).max(screen.origin.x);
+  let max_y = (screen.origin.y + screen.size.height - height).max(screen.origin.y);
+  x = x.clamp(screen.origin.x, max_x);
+  y = y.clamp(screen.origin.y, max_y);
 
-    let target_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
-    if (top_frame.origin.x - target_frame.origin.x).abs() > 0.05
-        || (top_frame.origin.y - target_frame.origin.y).abs() > 0.05
-        || (top_frame.size.width - target_frame.size.width).abs() > 0.05
-        || (top_frame.size.height - target_frame.size.height).abs() > 0.05
-    {
-        let _: () = msg_send![top.window, setFrame: target_frame display: YES];
-    }
+  let target_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+  if (top_frame.origin.x - target_frame.origin.x).abs() > 0.05
+    || (top_frame.origin.y - target_frame.origin.y).abs() > 0.05
+    || (top_frame.size.width - target_frame.size.width).abs() > 0.05
+    || (top_frame.size.height - target_frame.size.height).abs() > 0.05
+  {
+    let _: () = msg_send![top.window, setFrame: target_frame display: YES];
+  }
 }
 
 unsafe fn ensure_settings_window() -> SettingsWindowRefs {
-    if let Some(existing) = current_settings_window() {
-        return existing;
-    }
+  if let Some(existing) = current_settings_window() {
+    return existing;
+  }
 
-    let refs = create_settings_window();
-    SETTINGS_WINDOW_REFS.with(|store| {
-        store.borrow_mut().replace(refs);
-    });
-    refs
+  let refs = create_settings_window();
+  SETTINGS_WINDOW_REFS.with(|store| {
+    store.borrow_mut().replace(refs);
+  });
+  refs
 }
 
 fn current_settings_window() -> Option<SettingsWindowRefs> {
-    SETTINGS_WINDOW_REFS.with(|store| *store.borrow())
+  SETTINGS_WINDOW_REFS.with(|store| *store.borrow())
 }
 
 unsafe fn apply_settings_selected_tab(refs: SettingsWindowRefs, tab: SettingsTab) {
-    let (general_hidden, debug_hidden) = match tab {
-        SettingsTab::General => (NO, YES),
-        SettingsTab::Debug => (YES, NO),
-    };
-    let _: () = msg_send![refs.general_container, setHidden: general_hidden];
-    let _: () = msg_send![refs.debug_container, setHidden: debug_hidden];
+  let (general_hidden, models_hidden, debug_hidden) = match tab {
+    SettingsTab::General => (NO, YES, YES),
+    SettingsTab::Models => (YES, NO, YES),
+    SettingsTab::Debug => (YES, YES, NO),
+  };
+  let _: () = msg_send![refs.general_container, setHidden: general_hidden];
+  let _: () = msg_send![refs.models_container, setHidden: models_hidden];
+  let _: () = msg_send![refs.debug_container, setHidden: debug_hidden];
 
-    if refs.tab_list_view != nil {
-        let row = settings_row_for_tab(tab);
-        if row >= 0 {
-            let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
-            if selected_row != row {
-                let selection: id = msg_send![class!(NSIndexSet), indexSetWithIndex: row as usize];
-                let _: () = msg_send![
-                    refs.tab_list_view,
-                    selectRowIndexes: selection
-                    byExtendingSelection: NO
-                ];
-            }
-        }
+  if refs.tab_list_view != nil {
+    let row = settings_row_for_tab(tab);
+    if row >= 0 {
+      let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
+      if selected_row != row {
+        let selection: id = msg_send![class!(NSIndexSet), indexSetWithIndex: row as usize];
+        let _: () = msg_send![
+            refs.tab_list_view,
+            selectRowIndexes: selection
+            byExtendingSelection: NO
+        ];
+      }
     }
+  }
 }
 
 unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsViewModel) {
-    let run_on_startup_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
-    let _: () = msg_send![refs.run_on_startup_checkbox, setState: run_on_startup_state];
+  let run_on_startup_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
+  let _: () = msg_send![refs.run_on_startup_checkbox, setState: run_on_startup_state];
 
-    let _: () = msg_send![
-        refs.paste_method_popup,
-        selectItemAtIndex: model.paste_method.ui_index()
-    ];
-    let _: () = msg_send![
-        refs.auto_submit_popup,
-        selectItemAtIndex: model.auto_submit_mode.ui_index()
-    ];
-    let append_trailing_space_state: i64 = if model.append_trailing_space_on_paste {
-        1
-    } else {
-        0
+  let _: () = msg_send![
+      refs.paste_method_popup,
+      selectItemAtIndex: model.paste_method.ui_index()
+  ];
+  let _: () = msg_send![
+      refs.auto_submit_popup,
+      selectItemAtIndex: model.auto_submit_mode.ui_index()
+  ];
+  let append_trailing_space_state: i64 = if model.append_trailing_space_on_paste { 1 } else { 0 };
+  let _: () = msg_send![
+      refs.append_trailing_space_checkbox,
+      setState: append_trailing_space_state
+  ];
+
+  let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
+  let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
+
+  let metrics = NSString::alloc(nil).init_str(&model.metrics_text);
+  let _: () = msg_send![refs.metrics_text_view, setString: metrics];
+
+  apply_models_view_state(refs, model);
+
+  let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
+  if selected_row >= 0 {
+    apply_settings_selected_tab(refs, settings_tab_from_row(selected_row));
+  } else {
+    apply_settings_selected_tab(refs, model.selected_tab);
+  }
+}
+
+unsafe fn apply_models_view_state(refs: SettingsWindowRefs, model: &SettingsViewModel) {
+  use crate::models::{PackStatus, format_size};
+
+  let (status_text, show_download, show_cancel, show_progress, progress_value) =
+    match &model.model_pack_status {
+      PackStatus::Ready => ("Installed".to_string(), false, false, false, 0.0),
+      PackStatus::NotDownloaded => {
+        let label = format!("Not downloaded ({})", model.model_pack_size_label);
+        (label, true, false, false, 0.0)
+      }
+      PackStatus::Incomplete => {
+        let label = format!("Incomplete ({})", model.model_pack_size_label);
+        (label, true, false, false, 0.0)
+      }
+      PackStatus::Downloading { progress_pct } => {
+        let done = format_size(model.model_download_bytes_done);
+        let total = format_size(model.model_download_bytes_total);
+        let label = format!("Downloading... {done} / {total} ({progress_pct}%)");
+        (label, false, true, true, *progress_pct as f64)
+      }
     };
-    let _: () = msg_send![
-        refs.append_trailing_space_checkbox,
-        setState: append_trailing_space_state
-    ];
 
-    let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
-    let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
+  let status_ns = NSString::alloc(nil).init_str(&status_text);
+  let _: () = msg_send![refs.models_status_label, setStringValue: status_ns];
 
-    let metrics = NSString::alloc(nil).init_str(&model.metrics_text);
-    let _: () = msg_send![refs.metrics_text_view, setString: metrics];
+  let _: () =
+    msg_send![refs.models_download_button, setHidden: if show_download { NO } else { YES }];
+  let _: () = msg_send![refs.models_cancel_button, setHidden: if show_cancel { NO } else { YES }];
+  let _: () =
+    msg_send![refs.models_progress_indicator, setHidden: if show_progress { NO } else { YES }];
 
-    let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
-    if selected_row >= 0 {
-        apply_settings_selected_tab(refs, settings_tab_from_row(selected_row));
-    } else {
-        apply_settings_selected_tab(refs, model.selected_tab);
-    }
+  if show_progress {
+    let _: () = msg_send![refs.models_progress_indicator, setDoubleValue: progress_value];
+  }
 }
 
 unsafe fn render_overlay_text(
-    refs: OverlayRefs,
-    body_text: &str,
-    activity: &[f32],
-    busy_phase: Option<f32>,
-    show_raw_badge: bool,
-    show_hold_badge: bool,
+  refs: OverlayRefs,
+  body_text: &str,
+  activity: &[f32],
+  busy_phase: Option<f32>,
+  show_raw_badge: bool,
+  show_hold_badge: bool,
 ) {
-    let current_frame: NSRect = msg_send![refs.window, frame];
-    let screen = overlay_screen_frame_for_window(current_frame);
-    let width = overlay_width_for_screen(screen);
-    let max_body_height = (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
-    let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
+  let current_frame: NSRect = msg_send![refs.window, frame];
+  let screen = overlay_screen_frame_for_window(current_frame);
+  let width = overlay_width_for_screen(screen);
+  let max_body_height = (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
+  let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
 
-    let (rendered_body, mut measured_body_height) =
-        fit_rendered_body_for_height(refs.label, body_text, content_width, max_body_height);
-    if rendered_body.is_empty() {
-        measured_body_height = OVERLAY_TEXT_LINE_HEIGHT.min(max_body_height);
-    }
-    let body_height = measured_body_height
-        .max(OVERLAY_TEXT_LINE_HEIGHT.min(max_body_height))
-        .min(max_body_height);
-    let is_single_line = rendered_body.is_empty()
-        || (!rendered_body.contains('\n') && body_height <= OVERLAY_TEXT_LINE_HEIGHT * 1.35);
-    let content_height = OVERLAY_PAD_TOP + body_height + OVERLAY_PAD_BOTTOM;
-    let height = content_height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
+  let (rendered_body, mut measured_body_height) =
+    fit_rendered_body_for_height(refs.label, body_text, content_width, max_body_height);
+  if rendered_body.is_empty() {
+    measured_body_height = OVERLAY_TEXT_LINE_HEIGHT.min(max_body_height);
+  }
+  let body_height = measured_body_height
+    .max(OVERLAY_TEXT_LINE_HEIGHT.min(max_body_height))
+    .min(max_body_height);
+  let is_single_line = rendered_body.is_empty()
+    || (!rendered_body.contains('\n') && body_height <= OVERLAY_TEXT_LINE_HEIGHT * 1.35);
+  let content_height = OVERLAY_PAD_TOP + body_height + OVERLAY_PAD_BOTTOM;
+  let height = content_height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
 
-    let default_x = screen.origin.x + (screen.size.width - width) * 0.5;
-    let default_y = screen.origin.y + screen.size.height * 0.08;
-    let x = if current_frame.size.width <= 0.0 {
-        default_x
-    } else {
-        current_frame.origin.x
-    };
-    let y = if current_frame.size.height <= 0.0 {
-        default_y
-    } else {
-        current_frame.origin.y
-    };
-    let overlay_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
-    if (current_frame.origin.x - overlay_frame.origin.x).abs() > 0.05
-        || (current_frame.origin.y - overlay_frame.origin.y).abs() > 0.05
-        || (current_frame.size.width - overlay_frame.size.width).abs() > 0.05
-        || (current_frame.size.height - overlay_frame.size.height).abs() > 0.05
-    {
-        let _: () = msg_send![refs.window, setFrame: overlay_frame display: YES];
-    }
+  let default_x = screen.origin.x + (screen.size.width - width) * 0.5;
+  let default_y = screen.origin.y + screen.size.height * 0.08;
+  let x = if current_frame.size.width <= 0.0 { default_x } else { current_frame.origin.x };
+  let y = if current_frame.size.height <= 0.0 { default_y } else { current_frame.origin.y };
+  let overlay_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+  if (current_frame.origin.x - overlay_frame.origin.x).abs() > 0.05
+    || (current_frame.origin.y - overlay_frame.origin.y).abs() > 0.05
+    || (current_frame.size.width - overlay_frame.size.width).abs() > 0.05
+    || (current_frame.size.height - overlay_frame.size.height).abs() > 0.05
+  {
+    let _: () = msg_send![refs.window, setFrame: overlay_frame display: YES];
+  }
 
-    let card_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
-    let _: () = msg_send![refs.card_view, setFrame: card_frame];
-    let card_layer: id = msg_send![refs.card_view, layer];
-    if card_layer != nil {
-        let card_color =
-            NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
-        let card_cg: id = msg_send![card_color, CGColor];
-        let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
-    }
-    let default_text = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
-    let _: () = msg_send![refs.label, setTextColor: default_text];
+  let card_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
+  let _: () = msg_send![refs.card_view, setFrame: card_frame];
+  let card_layer: id = msg_send![refs.card_view, layer];
+  if card_layer != nil {
+    let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
+    let card_cg: id = msg_send![card_color, CGColor];
+    let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
+  }
+  let default_text = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+  let _: () = msg_send![refs.label, setTextColor: default_text];
 
-    apply_busy_border_style(refs, busy_phase, width, height);
+  apply_busy_border_style(refs, busy_phase, width, height);
 
-    let available_height = (height - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
-    let body_text_height = body_height.min(available_height).max(1.0);
-    let body_y = if is_single_line {
-        OVERLAY_PAD_BOTTOM + ((available_height - body_text_height) * 0.5).max(0.0)
-    } else {
-        OVERLAY_PAD_BOTTOM
-    };
-    let meter_height = body_text_height
-        .max(OVERLAY_WAVE_BG_HEIGHT)
-        .min(available_height)
-        .max(1.0);
-    let meter_y = OVERLAY_PAD_BOTTOM;
-    let body_frame = NSRect::new(
-        NSPoint::new(OVERLAY_PAD_X, body_y),
-        NSSize::new(content_width, body_text_height),
+  let available_height = (height - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
+  let body_text_height = body_height.min(available_height).max(1.0);
+  let body_y = if is_single_line {
+    OVERLAY_PAD_BOTTOM + ((available_height - body_text_height) * 0.5).max(0.0)
+  } else {
+    OVERLAY_PAD_BOTTOM
+  };
+  let meter_height = body_text_height.max(OVERLAY_WAVE_BG_HEIGHT).min(available_height).max(1.0);
+  let meter_y = OVERLAY_PAD_BOTTOM;
+  let body_frame =
+    NSRect::new(NSPoint::new(OVERLAY_PAD_X, body_y), NSSize::new(content_width, body_text_height));
+  let meter_frame =
+    NSRect::new(NSPoint::new(OVERLAY_PAD_X, meter_y), NSSize::new(content_width, meter_height));
+  let _: () = msg_send![refs.label, setFrame: body_frame];
+  let _: () = msg_send![refs.meter_view, setFrame: meter_frame];
+  let mut badge_right = (width - OVERLAY_RAW_BADGE_RIGHT_INSET).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
+  if show_raw_badge {
+    let raw_badge_x = (badge_right - OVERLAY_RAW_BADGE_WIDTH).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
+    let raw_badge_frame = NSRect::new(
+      NSPoint::new(raw_badge_x, OVERLAY_RAW_BADGE_BOTTOM_INSET),
+      NSSize::new(OVERLAY_RAW_BADGE_WIDTH, OVERLAY_RAW_BADGE_HEIGHT),
     );
-    let meter_frame = NSRect::new(
-        NSPoint::new(OVERLAY_PAD_X, meter_y),
-        NSSize::new(content_width, meter_height),
+    let _: () = msg_send![refs.raw_badge, setFrame: raw_badge_frame];
+    let _: () = msg_send![refs.raw_badge, setHidden: NO];
+    badge_right = raw_badge_x - OVERLAY_BADGE_GAP;
+  } else {
+    let _: () = msg_send![refs.raw_badge, setHidden: YES];
+  }
+  if show_hold_badge {
+    let hold_badge_x = (badge_right - OVERLAY_HOLD_BADGE_WIDTH).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
+    let hold_badge_frame = NSRect::new(
+      NSPoint::new(hold_badge_x, OVERLAY_RAW_BADGE_BOTTOM_INSET),
+      NSSize::new(OVERLAY_HOLD_BADGE_WIDTH, OVERLAY_HOLD_BADGE_HEIGHT),
     );
-    let _: () = msg_send![refs.label, setFrame: body_frame];
-    let _: () = msg_send![refs.meter_view, setFrame: meter_frame];
-    let mut badge_right =
-        (width - OVERLAY_RAW_BADGE_RIGHT_INSET).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
-    if show_raw_badge {
-        let raw_badge_x =
-            (badge_right - OVERLAY_RAW_BADGE_WIDTH).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
-        let raw_badge_frame = NSRect::new(
-            NSPoint::new(raw_badge_x, OVERLAY_RAW_BADGE_BOTTOM_INSET),
-            NSSize::new(OVERLAY_RAW_BADGE_WIDTH, OVERLAY_RAW_BADGE_HEIGHT),
-        );
-        let _: () = msg_send![refs.raw_badge, setFrame: raw_badge_frame];
-        let _: () = msg_send![refs.raw_badge, setHidden: NO];
-        badge_right = raw_badge_x - OVERLAY_BADGE_GAP;
-    } else {
-        let _: () = msg_send![refs.raw_badge, setHidden: YES];
-    }
-    if show_hold_badge {
-        let hold_badge_x =
-            (badge_right - OVERLAY_HOLD_BADGE_WIDTH).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
-        let hold_badge_frame = NSRect::new(
-            NSPoint::new(hold_badge_x, OVERLAY_RAW_BADGE_BOTTOM_INSET),
-            NSSize::new(OVERLAY_HOLD_BADGE_WIDTH, OVERLAY_HOLD_BADGE_HEIGHT),
-        );
-        let _: () = msg_send![refs.hold_badge, setFrame: hold_badge_frame];
-        let _: () = msg_send![refs.hold_badge, setHidden: NO];
-    } else {
-        let _: () = msg_send![refs.hold_badge, setHidden: YES];
-    }
+    let _: () = msg_send![refs.hold_badge, setFrame: hold_badge_frame];
+    let _: () = msg_send![refs.hold_badge, setHidden: NO];
+  } else {
+    let _: () = msg_send![refs.hold_badge, setHidden: YES];
+  }
 
-    let _: () = msg_send![refs.label, setAlignment: 1isize];
-    let _: () =
-        msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
-    hide_overlay_notice_accessory(refs);
-    render_activity_wave(
-        refs,
-        activity,
-        meter_frame.size.width,
-        meter_frame.size.height,
-    );
+  let _: () = msg_send![refs.label, setAlignment: 1isize];
+  let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
+  hide_overlay_notice_accessory(refs);
+  render_activity_wave(refs, activity, meter_frame.size.width, meter_frame.size.height);
 }
 
 unsafe fn hide_overlay_notice_accessory(refs: OverlayRefs) {
-    if refs.notice_accessory_row != nil {
-        let _: () = msg_send![refs.notice_accessory_row, setHidden: YES];
+  if refs.notice_accessory_row != nil {
+    let _: () = msg_send![refs.notice_accessory_row, setHidden: YES];
+  }
+  for view in [refs.notice_option_key, refs.notice_space_key, refs.notice_auto_on_chip] {
+    if view != nil {
+      let _: () = msg_send![view, setHidden: YES];
     }
-    for view in [
-        refs.notice_option_key,
-        refs.notice_space_key,
-        refs.notice_auto_on_chip,
-    ] {
-        if view != nil {
-            let _: () = msg_send![view, setHidden: YES];
-        }
+  }
+  for label in [
+    refs.notice_option_label,
+    refs.notice_plus_label,
+    refs.notice_space_label,
+    refs.notice_auto_on_label,
+  ] {
+    if label != nil {
+      let _: () = msg_send![label, setHidden: YES];
     }
-    for label in [
-        refs.notice_option_label,
-        refs.notice_plus_label,
-        refs.notice_space_label,
-        refs.notice_auto_on_label,
-    ] {
-        if label != nil {
-            let _: () = msg_send![label, setHidden: YES];
-        }
-    }
+  }
 }
 
 fn main_screen_frame() -> NSRect {
-    unsafe {
-        let screen = NSScreen::mainScreen(nil);
-        if screen == nil {
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1280.0, 720.0))
-        } else {
-            NSScreen::frame(screen)
-        }
+  unsafe {
+    let screen = NSScreen::mainScreen(nil);
+    if screen == nil {
+      NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1280.0, 720.0))
+    } else {
+      NSScreen::frame(screen)
     }
+  }
 }
 
 fn cursor_screen_frame() -> Option<NSRect> {
-    unsafe {
-        let point: NSPoint = msg_send![class!(NSEvent), mouseLocation];
-        screen_frame_for_point(point)
-    }
+  unsafe {
+    let point: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+    screen_frame_for_point(point)
+  }
 }
 
 fn is_left_mouse_button_down() -> bool {
-    unsafe {
-        let pressed: u64 = msg_send![class!(NSEvent), pressedMouseButtons];
-        (pressed & 1) != 0
-    }
+  unsafe {
+    let pressed: u64 = msg_send![class!(NSEvent), pressedMouseButtons];
+    (pressed & 1) != 0
+  }
 }
 
 fn screen_frame_for_point(point: NSPoint) -> Option<NSRect> {
-    unsafe {
-        let screens: id = msg_send![class!(NSScreen), screens];
-        if screens == nil {
-            return None;
-        }
-
-        let count: usize = msg_send![screens, count];
-        for idx in 0..count {
-            let screen: id = msg_send![screens, objectAtIndex: idx];
-            if screen == nil {
-                continue;
-            }
-            let frame = NSScreen::frame(screen);
-            let min_x = frame.origin.x;
-            let min_y = frame.origin.y;
-            let max_x = frame.origin.x + frame.size.width;
-            let max_y = frame.origin.y + frame.size.height;
-            if point.x >= min_x && point.x < max_x && point.y >= min_y && point.y < max_y {
-                return Some(frame);
-            }
-        }
-
-        None
-    }
-}
-
-fn overlay_screen_frame_for_window(frame: NSRect) -> NSRect {
-    if let Some(screen) = current_overlay_screen_frame(frame) {
-        return screen;
+  unsafe {
+    let screens: id = msg_send![class!(NSScreen), screens];
+    if screens == nil {
+      return None;
     }
 
-    cursor_screen_frame().unwrap_or_else(main_screen_frame)
-}
-
-fn current_overlay_screen_frame(frame: NSRect) -> Option<NSRect> {
-    if frame.size.width > 0.0 && frame.size.height > 0.0 {
-        let center = NSPoint::new(
-            frame.origin.x + frame.size.width * 0.5,
-            frame.origin.y + frame.size.height * 0.5,
-        );
-        return screen_frame_for_point(center);
+    let count: usize = msg_send![screens, count];
+    for idx in 0..count {
+      let screen: id = msg_send![screens, objectAtIndex: idx];
+      if screen == nil {
+        continue;
+      }
+      let frame = NSScreen::frame(screen);
+      let min_x = frame.origin.x;
+      let min_y = frame.origin.y;
+      let max_x = frame.origin.x + frame.size.width;
+      let max_y = frame.origin.y + frame.size.height;
+      if point.x >= min_x && point.x < max_x && point.y >= min_y && point.y < max_y {
+        return Some(frame);
+      }
     }
 
     None
+  }
+}
+
+fn overlay_screen_frame_for_window(frame: NSRect) -> NSRect {
+  if let Some(screen) = current_overlay_screen_frame(frame) {
+    return screen;
+  }
+
+  cursor_screen_frame().unwrap_or_else(main_screen_frame)
+}
+
+fn current_overlay_screen_frame(frame: NSRect) -> Option<NSRect> {
+  if frame.size.width > 0.0 && frame.size.height > 0.0 {
+    let center = NSPoint::new(
+      frame.origin.x + frame.size.width * 0.5,
+      frame.origin.y + frame.size.height * 0.5,
+    );
+    return screen_frame_for_point(center);
+  }
+
+  None
 }
 
 fn same_screen_frame(a: NSRect, b: NSRect) -> bool {
-    const EPS: f64 = 0.5;
-    (a.origin.x - b.origin.x).abs() <= EPS
-        && (a.origin.y - b.origin.y).abs() <= EPS
-        && (a.size.width - b.size.width).abs() <= EPS
-        && (a.size.height - b.size.height).abs() <= EPS
+  const EPS: f64 = 0.5;
+  (a.origin.x - b.origin.x).abs() <= EPS
+    && (a.origin.y - b.origin.y).abs() <= EPS
+    && (a.size.width - b.size.width).abs() <= EPS
+    && (a.size.height - b.size.height).abs() <= EPS
 }
 
 fn remap_origin_proportionally(
-    current_origin: f64,
-    source_origin: f64,
-    source_size: f64,
-    current_size: f64,
-    target_origin: f64,
-    target_size: f64,
-    target_current_size: f64,
+  current_origin: f64,
+  source_origin: f64,
+  source_size: f64,
+  current_size: f64,
+  target_origin: f64,
+  target_size: f64,
+  target_current_size: f64,
 ) -> f64 {
-    let source_range = (source_size - current_size).max(0.0);
-    let target_range = (target_size - target_current_size).max(0.0);
-    if source_range <= 0.5 || target_range <= 0.5 {
-        return target_origin + target_range * 0.5;
-    }
+  let source_range = (source_size - current_size).max(0.0);
+  let target_range = (target_size - target_current_size).max(0.0);
+  if source_range <= 0.5 || target_range <= 0.5 {
+    return target_origin + target_range * 0.5;
+  }
 
-    let source_ratio = ((current_origin - source_origin) / source_range).clamp(0.0, 1.0);
-    target_origin + source_ratio * target_range
+  let source_ratio = ((current_origin - source_origin) / source_range).clamp(0.0, 1.0);
+  target_origin + source_ratio * target_range
 }
 
 unsafe fn move_overlay_to_cursor_screen(refs: OverlayRefs, force_default_anchor: bool) {
-    if !force_default_anchor && is_left_mouse_button_down() {
-        return;
-    }
+  if !force_default_anchor && is_left_mouse_button_down() {
+    return;
+  }
 
-    let target_screen = cursor_screen_frame().unwrap_or_else(main_screen_frame);
-    let current_frame: NSRect = msg_send![refs.window, frame];
-    let current_screen = current_overlay_screen_frame(current_frame);
-    if !force_default_anchor
-        && current_screen.is_some_and(|screen| same_screen_frame(screen, target_screen))
-    {
-        return;
-    }
+  let target_screen = cursor_screen_frame().unwrap_or_else(main_screen_frame);
+  let current_frame: NSRect = msg_send![refs.window, frame];
+  let current_screen = current_overlay_screen_frame(current_frame);
+  if !force_default_anchor
+    && current_screen.is_some_and(|screen| same_screen_frame(screen, target_screen))
+  {
+    return;
+  }
 
-    let width = overlay_width_for_screen(target_screen);
-    let height = if current_frame.size.height > 0.0 {
-        current_frame
-            .size
-            .height
-            .clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX)
-    } else {
-        OVERLAY_HEIGHT_MIN
-    };
-    let (mut x, mut y) = if force_default_anchor || current_screen.is_none() {
-        (
-            target_screen.origin.x + (target_screen.size.width - width) * 0.5,
-            target_screen.origin.y + target_screen.size.height * 0.08,
-        )
-    } else {
-        let source = current_screen.unwrap();
-        (
-            remap_origin_proportionally(
-                current_frame.origin.x,
-                source.origin.x,
-                source.size.width,
-                current_frame.size.width,
-                target_screen.origin.x,
-                target_screen.size.width,
-                width,
-            ),
-            remap_origin_proportionally(
-                current_frame.origin.y,
-                source.origin.y,
-                source.size.height,
-                current_frame.size.height,
-                target_screen.origin.y,
-                target_screen.size.height,
-                height,
-            ),
-        )
-    };
-    let max_x =
-        (target_screen.origin.x + target_screen.size.width - width).max(target_screen.origin.x);
-    let max_y =
-        (target_screen.origin.y + target_screen.size.height - height).max(target_screen.origin.y);
-    x = x.clamp(target_screen.origin.x, max_x);
-    y = y.clamp(target_screen.origin.y, max_y);
-    let target_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
-    if (current_frame.origin.x - target_frame.origin.x).abs() > 0.05
-        || (current_frame.origin.y - target_frame.origin.y).abs() > 0.05
-        || (current_frame.size.width - target_frame.size.width).abs() > 0.05
-        || (current_frame.size.height - target_frame.size.height).abs() > 0.05
-    {
-        let _: () = msg_send![refs.window, setFrame: target_frame display: YES];
-    }
+  let width = overlay_width_for_screen(target_screen);
+  let height = if current_frame.size.height > 0.0 {
+    current_frame.size.height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX)
+  } else {
+    OVERLAY_HEIGHT_MIN
+  };
+  let (mut x, mut y) = if force_default_anchor || current_screen.is_none() {
+    (
+      target_screen.origin.x + (target_screen.size.width - width) * 0.5,
+      target_screen.origin.y + target_screen.size.height * 0.08,
+    )
+  } else {
+    let source = current_screen.unwrap();
+    (
+      remap_origin_proportionally(
+        current_frame.origin.x,
+        source.origin.x,
+        source.size.width,
+        current_frame.size.width,
+        target_screen.origin.x,
+        target_screen.size.width,
+        width,
+      ),
+      remap_origin_proportionally(
+        current_frame.origin.y,
+        source.origin.y,
+        source.size.height,
+        current_frame.size.height,
+        target_screen.origin.y,
+        target_screen.size.height,
+        height,
+      ),
+    )
+  };
+  let max_x =
+    (target_screen.origin.x + target_screen.size.width - width).max(target_screen.origin.x);
+  let max_y =
+    (target_screen.origin.y + target_screen.size.height - height).max(target_screen.origin.y);
+  x = x.clamp(target_screen.origin.x, max_x);
+  y = y.clamp(target_screen.origin.y, max_y);
+  let target_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+  if (current_frame.origin.x - target_frame.origin.x).abs() > 0.05
+    || (current_frame.origin.y - target_frame.origin.y).abs() > 0.05
+    || (current_frame.size.width - target_frame.size.width).abs() > 0.05
+    || (current_frame.size.height - target_frame.size.height).abs() > 0.05
+  {
+    let _: () = msg_send![refs.window, setFrame: target_frame display: YES];
+  }
 }
 
 fn overlay_width_for_screen(frame: NSRect) -> f64 {
-    (frame.size.width * 0.44).clamp(OVERLAY_WIDTH_MIN, OVERLAY_WIDTH_MAX)
+  (frame.size.width * 0.44).clamp(OVERLAY_WIDTH_MIN, OVERLAY_WIDTH_MAX)
 }
 
 unsafe fn fit_rendered_body_for_height(
-    label: id,
-    body_text: &str,
-    width: f64,
-    max_height: f64,
+  label: id,
+  body_text: &str,
+  width: f64,
+  max_height: f64,
 ) -> (String, f64) {
-    let trimmed = body_text.trim();
-    if trimmed.is_empty() {
-        return (String::new(), OVERLAY_TEXT_LINE_HEIGHT.min(max_height));
-    }
+  let trimmed = body_text.trim();
+  if trimmed.is_empty() {
+    return (String::new(), OVERLAY_TEXT_LINE_HEIGHT.min(max_height));
+  }
 
-    let measured_full = measure_label_height(label, trimmed, width);
-    if measured_full <= max_height + 0.5 {
-        return (trimmed.to_string(), measured_full);
-    }
+  let measured_full = measure_label_height(label, trimmed, width);
+  if measured_full <= max_height + 0.5 {
+    return (trimmed.to_string(), measured_full);
+  }
 
-    let mut word_starts = Vec::new();
-    let mut prev_ws = true;
-    for (idx, ch) in trimmed.char_indices() {
-        let is_ws = ch.is_whitespace();
-        if !is_ws && prev_ws {
-            word_starts.push(idx);
-        }
-        prev_ws = is_ws;
+  let mut word_starts = Vec::new();
+  let mut prev_ws = true;
+  for (idx, ch) in trimmed.char_indices() {
+    let is_ws = ch.is_whitespace();
+    if !is_ws && prev_ws {
+      word_starts.push(idx);
     }
+    prev_ws = is_ws;
+  }
 
-    if word_starts.is_empty() {
-        return (trimmed.to_string(), measured_full);
+  if word_starts.is_empty() {
+    return (trimmed.to_string(), measured_full);
+  }
+
+  let mut lo = 0usize;
+  let mut hi = word_starts.len() - 1;
+  while lo < hi {
+    let mid = (lo + hi) / 2;
+    let candidate = trimmed[word_starts[mid]..].trim_start();
+    let measured = measure_label_height(label, candidate, width);
+    if measured <= max_height + 0.5 {
+      hi = mid;
+    } else {
+      lo = mid + 1;
     }
+  }
 
-    let mut lo = 0usize;
-    let mut hi = word_starts.len() - 1;
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        let candidate = trimmed[word_starts[mid]..].trim_start();
-        let measured = measure_label_height(label, candidate, width);
-        if measured <= max_height + 0.5 {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-
-    let rendered = trimmed[word_starts[lo]..].trim_start().to_string();
-    let measured = measure_label_height(label, &rendered, width);
-    (rendered, measured)
+  let rendered = trimmed[word_starts[lo]..].trim_start().to_string();
+  let measured = measure_label_height(label, &rendered, width);
+  (rendered, measured)
 }
 
 unsafe fn measure_label_height(label: id, text: &str, width: f64) -> f64 {
-    let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
-    let cell: id = msg_send![label, cell];
-    if cell == nil {
-        return OVERLAY_TEXT_LINE_HEIGHT;
-    }
-    let probe_bounds = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(width.max(1.0), OVERLAY_HEIGHT_MAX * 4.0),
-    );
-    let measured_size: NSSize = msg_send![cell, cellSizeForBounds: probe_bounds];
-    (measured_size.height + 2.0).max(1.0)
+  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
+  let cell: id = msg_send![label, cell];
+  if cell == nil {
+    return OVERLAY_TEXT_LINE_HEIGHT;
+  }
+  let probe_bounds =
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width.max(1.0), OVERLAY_HEIGHT_MAX * 4.0));
+  let measured_size: NSSize = msg_send![cell, cellSizeForBounds: probe_bounds];
+  (measured_size.height + 2.0).max(1.0)
 }
 
 unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, height: f64) {
-    let view_layer: id = msg_send![refs.meter_view, layer];
-    if view_layer != nil {
-        let bg = NSColor::clearColor(nil);
-        let bg_cg: id = msg_send![bg, CGColor];
-        let _: () = msg_send![view_layer, setBackgroundColor: bg_cg];
-        let _: () = msg_send![view_layer, setCornerRadius: 0.0f64];
-        let _: () = msg_send![view_layer, setMasksToBounds: YES];
+  let view_layer: id = msg_send![refs.meter_view, layer];
+  if view_layer != nil {
+    let bg = NSColor::clearColor(nil);
+    let bg_cg: id = msg_send![bg, CGColor];
+    let _: () = msg_send![view_layer, setBackgroundColor: bg_cg];
+    let _: () = msg_send![view_layer, setCornerRadius: 0.0f64];
+    let _: () = msg_send![view_layer, setMasksToBounds: YES];
+  }
+
+  let count = refs.wave_bars.len().max(1);
+  let spacing = (width / count as f64).max(1.0);
+  let bar_width = (spacing * 0.82).clamp(1.0, 6.0);
+  let max_h = height.max(1.0);
+  let samples_len = activity.len();
+
+  for (i, bar) in refs.wave_bars.iter().enumerate() {
+    if *bar == nil {
+      continue;
     }
+    let level = if samples_len == 0 {
+      0.0
+    } else {
+      let sample_idx = ((i as f64 / (count.saturating_sub(1).max(1) as f64))
+        * (samples_len - 1) as f64)
+        .round() as usize;
+      activity[sample_idx].clamp(0.0, 1.0)
+    };
+    let normalized = level as f64;
+    let shaped = ((normalized - 0.08) / 0.92).clamp(0.0, 1.0).powf(1.8);
+    let dramatic = shaped.powf(0.44);
+    let bar_h = (OVERLAY_WAVE_BAR_MIN_HEIGHT + dramatic * (max_h - OVERLAY_WAVE_BAR_MIN_HEIGHT))
+      .clamp(OVERLAY_WAVE_BAR_MIN_HEIGHT, max_h);
+    let y = (max_h - bar_h) * 0.5;
+    let x = i as f64 * spacing + (spacing - bar_width) * 0.5;
+    let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(bar_width, bar_h));
+    let _: () = msg_send![*bar, setFrame: frame];
+    let _: () = msg_send![*bar, setHidden: if samples_len == 0 { YES } else { NO }];
 
-    let count = refs.wave_bars.len().max(1);
-    let spacing = (width / count as f64).max(1.0);
-    let bar_width = (spacing * 0.82).clamp(1.0, 6.0);
-    let max_h = height.max(1.0);
-    let samples_len = activity.len();
-
-    for (i, bar) in refs.wave_bars.iter().enumerate() {
-        if *bar == nil {
-            continue;
-        }
-        let level = if samples_len == 0 {
-            0.0
-        } else {
-            let sample_idx = ((i as f64 / (count.saturating_sub(1).max(1) as f64))
-                * (samples_len - 1) as f64)
-                .round() as usize;
-            activity[sample_idx].clamp(0.0, 1.0)
-        };
-        let normalized = level as f64;
-        let shaped = ((normalized - 0.08) / 0.92).clamp(0.0, 1.0).powf(1.8);
-        let dramatic = shaped.powf(0.44);
-        let bar_h = (OVERLAY_WAVE_BAR_MIN_HEIGHT
-            + dramatic * (max_h - OVERLAY_WAVE_BAR_MIN_HEIGHT))
-            .clamp(OVERLAY_WAVE_BAR_MIN_HEIGHT, max_h);
-        let y = (max_h - bar_h) * 0.5;
-        let x = i as f64 * spacing + (spacing - bar_width) * 0.5;
-        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(bar_width, bar_h));
-        let _: () = msg_send![*bar, setFrame: frame];
-        let _: () = msg_send![*bar, setHidden: if samples_len == 0 { YES } else { NO }];
-
-        let hue = 0.48 + (dramatic * 0.10);
-        let alpha = 0.024 + (dramatic * 0.09);
-        let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
-            nil,
-            (0.10 + hue * 0.08).clamp(0.0, 1.0),
-            (0.56 + dramatic * 0.22).clamp(0.0, 1.0),
-            (0.72 + dramatic * 0.18).clamp(0.0, 1.0),
-            alpha.clamp(0.0, 1.0),
-        );
-        let cg_color: id = msg_send![color, CGColor];
-        let layer: id = msg_send![*bar, layer];
-        if layer != nil {
-            let _: () = msg_send![layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![layer, setCornerRadius: (bar_width * 0.5).max(0.5)];
-        }
+    let hue = 0.48 + (dramatic * 0.10);
+    let alpha = 0.024 + (dramatic * 0.09);
+    let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+      nil,
+      (0.10 + hue * 0.08).clamp(0.0, 1.0),
+      (0.56 + dramatic * 0.22).clamp(0.0, 1.0),
+      (0.72 + dramatic * 0.18).clamp(0.0, 1.0),
+      alpha.clamp(0.0, 1.0),
+    );
+    let cg_color: id = msg_send![color, CGColor];
+    let layer: id = msg_send![*bar, layer];
+    if layer != nil {
+      let _: () = msg_send![layer, setBackgroundColor: cg_color];
+      let _: () = msg_send![layer, setCornerRadius: (bar_width * 0.5).max(0.5)];
     }
+  }
 }
 
 fn listen_toggle_notice_activity(enabled: bool, progress: f32) -> Vec<f32> {
-    let p = progress.clamp(0.0, 1.0);
-    let mut samples = vec![0.0; OVERLAY_WAVE_BAR_COUNT];
-    if samples.is_empty() {
-        return samples;
-    }
+  let p = progress.clamp(0.0, 1.0);
+  let mut samples = vec![0.0; OVERLAY_WAVE_BAR_COUNT];
+  if samples.is_empty() {
+    return samples;
+  }
 
-    let center = if enabled {
-        0.46 + (p as f64 * 0.24)
-    } else {
-        0.54 - (p as f64 * 0.24)
-    };
-    let pulse = ((1.0 - ((p as f64 - 0.38).abs() / 0.40)).clamp(0.0, 1.0)).powf(0.75);
-    let energy = 0.22 + pulse * 0.45;
+  let center = if enabled { 0.46 + (p as f64 * 0.24) } else { 0.54 - (p as f64 * 0.24) };
+  let pulse = ((1.0 - ((p as f64 - 0.38).abs() / 0.40)).clamp(0.0, 1.0)).powf(0.75);
+  let energy = 0.22 + pulse * 0.45;
 
-    for (idx, sample) in samples.iter_mut().enumerate() {
-        let x = idx as f64 / (OVERLAY_WAVE_BAR_COUNT.saturating_sub(1).max(1) as f64);
-        let dist = (x - center).abs();
-        let envelope = (1.0 - dist / 0.62).clamp(0.0, 1.0).powf(1.5);
-        let ripple = ((x * 18.0 + p as f64 * 10.0).sin() * 0.5 + 0.5).powf(0.9);
-        let v = 0.08 + envelope * (0.20 + energy * (0.42 + ripple * 0.58));
-        *sample = v.clamp(0.0, 1.0) as f32;
-    }
+  for (idx, sample) in samples.iter_mut().enumerate() {
+    let x = idx as f64 / (OVERLAY_WAVE_BAR_COUNT.saturating_sub(1).max(1) as f64);
+    let dist = (x - center).abs();
+    let envelope = (1.0 - dist / 0.62).clamp(0.0, 1.0).powf(1.5);
+    let ripple = ((x * 18.0 + p as f64 * 10.0).sin() * 0.5 + 0.5).powf(0.9);
+    let v = 0.08 + envelope * (0.20 + energy * (0.42 + ripple * 0.58));
+    *sample = v.clamp(0.0, 1.0) as f32;
+  }
 
-    samples
+  samples
 }
 
 fn mix(a: f64, b: f64, t: f64) -> f64 {
-    a + (b - a) * t.clamp(0.0, 1.0)
+  a + (b - a) * t.clamp(0.0, 1.0)
 }
 
 unsafe fn apply_overlay_notice_style(refs: OverlayRefs, style: OverlayNoticeStyle) {
-    let card_layer: id = msg_send![refs.card_view, layer];
-    if card_layer == nil {
-        return;
-    }
+  let card_layer: id = msg_send![refs.card_view, layer];
+  if card_layer == nil {
+    return;
+  }
 
-    match style {
-        OverlayNoticeStyle::Standard => {}
-        OverlayNoticeStyle::ListenToggle { enabled, progress } => {
-            let p = progress.clamp(0.0, 1.0) as f64;
-            let pulse = ((1.0 - ((p - 0.38).abs() / 0.40)).clamp(0.0, 1.0)).powf(0.75);
+  match style {
+    OverlayNoticeStyle::Standard => {}
+    OverlayNoticeStyle::ListenToggle { enabled, progress } => {
+      let p = progress.clamp(0.0, 1.0) as f64;
+      let pulse = ((1.0 - ((p - 0.38).abs() / 0.40)).clamp(0.0, 1.0)).powf(0.75);
 
-            let (base_r, base_g, base_b, glow_r, glow_g, glow_b) = if enabled {
-                (0.03, 0.07, 0.08, 0.15, 0.80, 0.70)
-            } else {
-                (0.08, 0.05, 0.03, 0.98, 0.54, 0.16)
-            };
-            let bg_mix = 0.20 + pulse * 0.22;
-            let bg = NSColor::colorWithCalibratedRed_green_blue_alpha_(
-                nil,
-                mix(base_r, glow_r, bg_mix).clamp(0.0, 1.0),
-                mix(base_g, glow_g, bg_mix).clamp(0.0, 1.0),
-                mix(base_b, glow_b, bg_mix).clamp(0.0, 1.0),
-                LISTEN_NOTICE_CARD_ALPHA,
-            );
-            let bg_cg: id = msg_send![bg, CGColor];
-            let _: () = msg_send![card_layer, setBackgroundColor: bg_cg];
+      let (base_r, base_g, base_b, glow_r, glow_g, glow_b) = if enabled {
+        (0.03, 0.07, 0.08, 0.15, 0.80, 0.70)
+      } else {
+        (0.08, 0.05, 0.03, 0.98, 0.54, 0.16)
+      };
+      let bg_mix = 0.20 + pulse * 0.22;
+      let bg = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+        nil,
+        mix(base_r, glow_r, bg_mix).clamp(0.0, 1.0),
+        mix(base_g, glow_g, bg_mix).clamp(0.0, 1.0),
+        mix(base_b, glow_b, bg_mix).clamp(0.0, 1.0),
+        LISTEN_NOTICE_CARD_ALPHA,
+      );
+      let bg_cg: id = msg_send![bg, CGColor];
+      let _: () = msg_send![card_layer, setBackgroundColor: bg_cg];
 
-            let border = NSColor::colorWithCalibratedRed_green_blue_alpha_(
-                nil,
-                mix(0.52, glow_r, 0.65).clamp(0.0, 1.0),
-                mix(0.64, glow_g, 0.65).clamp(0.0, 1.0),
-                mix(0.90, glow_b, 0.65).clamp(0.0, 1.0),
-                (0.34 + pulse * 0.46).clamp(0.0, 1.0),
-            );
-            let border_cg: id = msg_send![border, CGColor];
-            let _: () = msg_send![card_layer, setBorderColor: border_cg];
+      let border = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+        nil,
+        mix(0.52, glow_r, 0.65).clamp(0.0, 1.0),
+        mix(0.64, glow_g, 0.65).clamp(0.0, 1.0),
+        mix(0.90, glow_b, 0.65).clamp(0.0, 1.0),
+        (0.34 + pulse * 0.46).clamp(0.0, 1.0),
+      );
+      let border_cg: id = msg_send![border, CGColor];
+      let _: () = msg_send![card_layer, setBorderColor: border_cg];
 
-            let text = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.98);
-            let _: () = msg_send![refs.label, setTextColor: text];
+      let text = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.98);
+      let _: () = msg_send![refs.label, setTextColor: text];
 
-            let wave_alpha = (LISTEN_NOTICE_WAVE_BASE_ALPHA
-                + pulse * LISTEN_NOTICE_WAVE_PEAK_ALPHA)
-                .clamp(0.0, 1.0);
-            for bar in refs.wave_bars {
-                if bar == nil {
-                    continue;
-                }
-                let hidden: i8 = msg_send![bar, isHidden];
-                if hidden != 0 {
-                    continue;
-                }
-                let layer: id = msg_send![bar, layer];
-                if layer == nil {
-                    continue;
-                }
-                let tinted = NSColor::colorWithCalibratedRed_green_blue_alpha_(
-                    nil,
-                    glow_r.clamp(0.0, 1.0),
-                    glow_g.clamp(0.0, 1.0),
-                    glow_b.clamp(0.0, 1.0),
-                    wave_alpha,
-                );
-                let tinted_cg: id = msg_send![tinted, CGColor];
-                let _: () = msg_send![layer, setBackgroundColor: tinted_cg];
-            }
-
-            if refs.busy_gradient_layer != nil {
-                let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];
-            }
+      let wave_alpha =
+        (LISTEN_NOTICE_WAVE_BASE_ALPHA + pulse * LISTEN_NOTICE_WAVE_PEAK_ALPHA).clamp(0.0, 1.0);
+      for bar in refs.wave_bars {
+        if bar == nil {
+          continue;
         }
+        let hidden: i8 = msg_send![bar, isHidden];
+        if hidden != 0 {
+          continue;
+        }
+        let layer: id = msg_send![bar, layer];
+        if layer == nil {
+          continue;
+        }
+        let tinted = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+          nil,
+          glow_r.clamp(0.0, 1.0),
+          glow_g.clamp(0.0, 1.0),
+          glow_b.clamp(0.0, 1.0),
+          wave_alpha,
+        );
+        let tinted_cg: id = msg_send![tinted, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: tinted_cg];
+      }
+
+      if refs.busy_gradient_layer != nil {
+        let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];
+      }
     }
+  }
 }
 
 unsafe fn apply_busy_border_style(
-    refs: OverlayRefs,
-    busy_phase: Option<f32>,
-    width: f64,
-    height: f64,
+  refs: OverlayRefs,
+  busy_phase: Option<f32>,
+  width: f64,
+  height: f64,
 ) {
-    let card_layer: id = msg_send![refs.card_view, layer];
-    if card_layer == nil {
-        return;
-    }
+  let card_layer: id = msg_send![refs.card_view, layer];
+  if card_layer == nil {
+    return;
+  }
 
-    let subtle = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.22);
-    let subtle_cg: id = msg_send![subtle, CGColor];
-    let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
-    let _: () = msg_send![card_layer, setBorderColor: subtle_cg];
+  let subtle = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.22);
+  let subtle_cg: id = msg_send![subtle, CGColor];
+  let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
+  let _: () = msg_send![card_layer, setBorderColor: subtle_cg];
 
-    if refs.busy_gradient_layer == nil || refs.busy_mask_layer == nil {
-        return;
-    }
+  if refs.busy_gradient_layer == nil || refs.busy_mask_layer == nil {
+    return;
+  }
 
-    let frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(width.max(1.0), height.max(1.0)),
-    );
-    let _: () = msg_send![refs.busy_gradient_layer, setFrame: frame];
-    let _: () = msg_send![refs.busy_mask_layer, setFrame: frame];
-    let _: () = msg_send![refs.busy_mask_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
-    let _: () = msg_send![refs.busy_mask_layer, setBorderWidth: OVERLAY_BUSY_RING_THICKNESS];
+  let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width.max(1.0), height.max(1.0)));
+  let _: () = msg_send![refs.busy_gradient_layer, setFrame: frame];
+  let _: () = msg_send![refs.busy_mask_layer, setFrame: frame];
+  let _: () = msg_send![refs.busy_mask_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
+  let _: () = msg_send![refs.busy_mask_layer, setBorderWidth: OVERLAY_BUSY_RING_THICKNESS];
 
-    let Some(phase) = busy_phase else {
-        let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];
-        return;
-    };
+  let Some(phase) = busy_phase else {
+    let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];
+    return;
+  };
 
-    let brightness = 0.98 + 0.02 * (phase as f64 * 1.4).sin().abs();
-    let _: () = msg_send![refs.busy_gradient_layer, setHidden: NO];
-    let _: () = msg_send![refs.busy_gradient_layer, setOpacity: brightness as f32];
+  let brightness = 0.98 + 0.02 * (phase as f64 * 1.4).sin().abs();
+  let _: () = msg_send![refs.busy_gradient_layer, setHidden: NO];
+  let _: () = msg_send![refs.busy_gradient_layer, setOpacity: brightness as f32];
 
-    let angle = (phase as f64).rem_euclid(std::f64::consts::TAU);
-    let dx = angle.cos();
-    let dy = angle.sin();
-    let center = NSPoint::new(0.5, 0.5);
-    let end = NSPoint::new(0.5 + dx * 0.5, 0.5 + dy * 0.5);
-    let _: () = msg_send![refs.busy_gradient_layer, setStartPoint: center];
-    let _: () = msg_send![refs.busy_gradient_layer, setEndPoint: end];
+  let angle = (phase as f64).rem_euclid(std::f64::consts::TAU);
+  let dx = angle.cos();
+  let dy = angle.sin();
+  let center = NSPoint::new(0.5, 0.5);
+  let end = NSPoint::new(0.5 + dx * 0.5, 0.5 + dy * 0.5);
+  let _: () = msg_send![refs.busy_gradient_layer, setStartPoint: center];
+  let _: () = msg_send![refs.busy_gradient_layer, setEndPoint: end];
 }
 
 unsafe fn create_settings_window() -> SettingsWindowRefs {
-    let frame = main_screen_frame();
-    let x = frame.origin.x + (frame.size.width - SETTINGS_WINDOW_WIDTH) * 0.5;
-    let y = frame.origin.y + (frame.size.height - SETTINGS_WINDOW_HEIGHT) * 0.5;
-    let window_frame = NSRect::new(
-        NSPoint::new(x, y),
-        NSSize::new(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT),
-    );
+  let frame = main_screen_frame();
+  let x = frame.origin.x + (frame.size.width - SETTINGS_WINDOW_WIDTH) * 0.5;
+  let y = frame.origin.y + (frame.size.height - SETTINGS_WINDOW_HEIGHT) * 0.5;
+  let window_frame =
+    NSRect::new(NSPoint::new(x, y), NSSize::new(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT));
 
-    let style = NSWindowStyleMask::NSTitledWindowMask
-        | NSWindowStyleMask::NSClosableWindowMask
-        | NSWindowStyleMask::NSMiniaturizableWindowMask;
-    let window: id = msg_send![class!(NSWindow), alloc];
-    let window: id = msg_send![window, initWithContentRect: window_frame
+  let style = NSWindowStyleMask::NSTitledWindowMask
+    | NSWindowStyleMask::NSClosableWindowMask
+    | NSWindowStyleMask::NSMiniaturizableWindowMask;
+  let window: id = msg_send![class!(NSWindow), alloc];
+  let window: id = msg_send![window, initWithContentRect: window_frame
                                                 styleMask: style
                                                   backing: NSBackingStoreType::NSBackingStoreBuffered
                                                     defer: NO];
-    let _: () = msg_send![window, setReleasedWhenClosed: NO];
-    let _: () = msg_send![window, setTitle: NSString::alloc(nil).init_str("Azad Settings")];
+  let _: () = msg_send![window, setReleasedWhenClosed: NO];
+  let _: () = msg_send![window, setTitle: NSString::alloc(nil).init_str("Azad Settings")];
 
-    let content_view: id = msg_send![window, contentView];
+  let content_view: id = msg_send![window, contentView];
 
-    let body_frame = NSRect::new(
-        NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
-        NSSize::new(
-            SETTINGS_WINDOW_WIDTH - (SETTINGS_INSET_X * 2.0),
-            SETTINGS_WINDOW_HEIGHT - (SETTINGS_INSET_X * 2.0),
-        ),
-    );
-    let body_view: id = msg_send![class!(NSView), alloc];
-    let body_view: id = msg_send![body_view, initWithFrame: body_frame];
-    let _: () = msg_send![
-        body_view,
-        setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-    ];
-    let _: () = msg_send![content_view, addSubview: body_view];
+  let body_frame = NSRect::new(
+    NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
+    NSSize::new(
+      SETTINGS_WINDOW_WIDTH - (SETTINGS_INSET_X * 2.0),
+      SETTINGS_WINDOW_HEIGHT - (SETTINGS_INSET_X * 2.0),
+    ),
+  );
+  let body_view: id = msg_send![class!(NSView), alloc];
+  let body_view: id = msg_send![body_view, initWithFrame: body_frame];
+  let _: () = msg_send![
+      body_view,
+      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+  ];
+  let _: () = msg_send![content_view, addSubview: body_view];
 
-    let sidebar_height = body_frame.size.height.max(220.0);
-    let sidebar_frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(SETTINGS_SIDEBAR_WIDTH, sidebar_height),
-    );
-    let sidebar_scroll: id = msg_send![class!(NSScrollView), alloc];
-    let sidebar_scroll: id = msg_send![sidebar_scroll, initWithFrame: sidebar_frame];
-    let _: () = msg_send![sidebar_scroll, setHasVerticalScroller: NO];
-    let _: () = msg_send![sidebar_scroll, setBorderType: 0usize];
-    let _: () = msg_send![sidebar_scroll, setDrawsBackground: NO];
-    let _: () = msg_send![body_view, addSubview: sidebar_scroll];
+  let sidebar_height = body_frame.size.height.max(220.0);
+  let sidebar_frame =
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SETTINGS_SIDEBAR_WIDTH, sidebar_height));
+  let sidebar_scroll: id = msg_send![class!(NSScrollView), alloc];
+  let sidebar_scroll: id = msg_send![sidebar_scroll, initWithFrame: sidebar_frame];
+  let _: () = msg_send![sidebar_scroll, setHasVerticalScroller: NO];
+  let _: () = msg_send![sidebar_scroll, setBorderType: 0usize];
+  let _: () = msg_send![sidebar_scroll, setDrawsBackground: NO];
+  let _: () = msg_send![body_view, addSubview: sidebar_scroll];
 
-    let tab_list_view: id = msg_send![class!(NSTableView), alloc];
-    let tab_list_view: id = msg_send![tab_list_view, initWithFrame: sidebar_frame];
-    let _: () = msg_send![tab_list_view, setHeaderView: nil];
-    let _: () = msg_send![tab_list_view, setUsesAlternatingRowBackgroundColors: NO];
-    let _: () = msg_send![tab_list_view, setAllowsMultipleSelection: NO];
-    let _: () = msg_send![tab_list_view, setAllowsEmptySelection: NO];
-    let _: () = msg_send![tab_list_view, setRowHeight: SETTINGS_SIDEBAR_ROW_HEIGHT];
-    let _: () = msg_send![tab_list_view, setIntercellSpacing: NSSize::new(0.0, 2.0)];
-    let _: () = msg_send![tab_list_view, setBackgroundColor: NSColor::clearColor(nil)];
-    let supports_style: i8 = msg_send![tab_list_view, respondsToSelector: sel!(setStyle:)];
-    if supports_style != 0 {
-        // NSTableViewStyleSourceList
-        let _: () = msg_send![tab_list_view, setStyle: 3usize];
-    } else {
-        // NSTableViewSelectionHighlightStyleSourceList
-        let _: () = msg_send![tab_list_view, setSelectionHighlightStyle: 1isize];
-    }
+  let tab_list_view: id = msg_send![class!(NSTableView), alloc];
+  let tab_list_view: id = msg_send![tab_list_view, initWithFrame: sidebar_frame];
+  let _: () = msg_send![tab_list_view, setHeaderView: nil];
+  let _: () = msg_send![tab_list_view, setUsesAlternatingRowBackgroundColors: NO];
+  let _: () = msg_send![tab_list_view, setAllowsMultipleSelection: NO];
+  let _: () = msg_send![tab_list_view, setAllowsEmptySelection: NO];
+  let _: () = msg_send![tab_list_view, setRowHeight: SETTINGS_SIDEBAR_ROW_HEIGHT];
+  let _: () = msg_send![tab_list_view, setIntercellSpacing: NSSize::new(0.0, 2.0)];
+  let _: () = msg_send![tab_list_view, setBackgroundColor: NSColor::clearColor(nil)];
+  let supports_style: i8 = msg_send![tab_list_view, respondsToSelector: sel!(setStyle:)];
+  if supports_style != 0 {
+    // NSTableViewStyleSourceList
+    let _: () = msg_send![tab_list_view, setStyle: 3usize];
+  } else {
+    // NSTableViewSelectionHighlightStyleSourceList
+    let _: () = msg_send![tab_list_view, setSelectionHighlightStyle: 1isize];
+  }
 
-    let tab_column_identifier = NSString::alloc(nil).init_str("azad-settings-tabs-column");
-    let tab_column: id = msg_send![class!(NSTableColumn), alloc];
-    let tab_column: id = msg_send![tab_column, initWithIdentifier: tab_column_identifier];
-    let _: () = msg_send![tab_column, setWidth: SETTINGS_SIDEBAR_WIDTH];
-    let _: () = msg_send![tab_column, setMinWidth: SETTINGS_SIDEBAR_WIDTH];
-    let _: () = msg_send![tab_column, setMaxWidth: SETTINGS_SIDEBAR_WIDTH];
-    let _: () = msg_send![tab_list_view, addTableColumn: tab_column];
+  let tab_column_identifier = NSString::alloc(nil).init_str("azad-settings-tabs-column");
+  let tab_column: id = msg_send![class!(NSTableColumn), alloc];
+  let tab_column: id = msg_send![tab_column, initWithIdentifier: tab_column_identifier];
+  let _: () = msg_send![tab_column, setWidth: SETTINGS_SIDEBAR_WIDTH];
+  let _: () = msg_send![tab_column, setMinWidth: SETTINGS_SIDEBAR_WIDTH];
+  let _: () = msg_send![tab_column, setMaxWidth: SETTINGS_SIDEBAR_WIDTH];
+  let _: () = msg_send![tab_list_view, addTableColumn: tab_column];
 
-    let content_origin_x = SETTINGS_SIDEBAR_WIDTH + SETTINGS_SIDEBAR_TO_CONTENT_GAP;
-    let content_height = body_frame.size.height.max(220.0);
-    let content_width = (body_frame.size.width - content_origin_x).max(420.0);
-    let content_frame = NSRect::new(
-        NSPoint::new(content_origin_x, 0.0),
-        NSSize::new(content_width, content_height),
-    );
+  let content_origin_x = SETTINGS_SIDEBAR_WIDTH + SETTINGS_SIDEBAR_TO_CONTENT_GAP;
+  let content_height = body_frame.size.height.max(220.0);
+  let content_width = (body_frame.size.width - content_origin_x).max(420.0);
+  let content_frame =
+    NSRect::new(NSPoint::new(content_origin_x, 0.0), NSSize::new(content_width, content_height));
 
-    let general_container: id = msg_send![class!(NSView), alloc];
-    let general_container: id = msg_send![general_container, initWithFrame: content_frame];
-    let _: () = msg_send![
-        general_container,
-        setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-    ];
-    let debug_container: id = msg_send![class!(NSView), alloc];
-    let debug_container: id = msg_send![debug_container, initWithFrame: content_frame];
-    let _: () = msg_send![
-        debug_container,
-        setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-    ];
+  let general_container: id = msg_send![class!(NSView), alloc];
+  let general_container: id = msg_send![general_container, initWithFrame: content_frame];
+  let _: () = msg_send![
+      general_container,
+      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+  ];
+  let models_container: id = msg_send![class!(NSView), alloc];
+  let models_container: id = msg_send![models_container, initWithFrame: content_frame];
+  let _: () = msg_send![
+      models_container,
+      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+  ];
+  let debug_container: id = msg_send![class!(NSView), alloc];
+  let debug_container: id = msg_send![debug_container, initWithFrame: content_frame];
+  let _: () = msg_send![
+      debug_container,
+      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+  ];
 
-    let general_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-    let run_on_startup_frame = NSRect::new(
-        NSPoint::new(0.0, general_top_y),
-        NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-    );
-    let run_on_startup_checkbox: id = msg_send![class!(NSButton), alloc];
-    let run_on_startup_checkbox: id =
-        msg_send![run_on_startup_checkbox, initWithFrame: run_on_startup_frame];
-    let _: () = msg_send![run_on_startup_checkbox, setButtonType: 3usize];
-    let _: () = msg_send![
-        run_on_startup_checkbox,
-        setTitle: NSString::alloc(nil).init_str("Run Azad on startup")
-    ];
-    let _: () = msg_send![
-        run_on_startup_checkbox,
-        setAction: sel!(settingsToggleRunOnStartup:)
-    ];
-    let _: () = msg_send![general_container, addSubview: run_on_startup_checkbox];
+  let general_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
+  let run_on_startup_frame = NSRect::new(
+    NSPoint::new(0.0, general_top_y),
+    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+  );
+  let run_on_startup_checkbox: id = msg_send![class!(NSButton), alloc];
+  let run_on_startup_checkbox: id =
+    msg_send![run_on_startup_checkbox, initWithFrame: run_on_startup_frame];
+  let _: () = msg_send![run_on_startup_checkbox, setButtonType: 3usize];
+  let _: () = msg_send![
+      run_on_startup_checkbox,
+      setTitle: NSString::alloc(nil).init_str("Run Azad on startup")
+  ];
+  let _: () = msg_send![
+      run_on_startup_checkbox,
+      setAction: sel!(settingsToggleRunOnStartup:)
+  ];
+  let _: () = msg_send![general_container, addSubview: run_on_startup_checkbox];
 
-    let paste_method_y = general_top_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-    let paste_method_label_frame = NSRect::new(
-        NSPoint::new(0.0, paste_method_y),
-        NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
-    );
-    let paste_method_label: id = msg_send![class!(NSTextField), alloc];
-    let paste_method_label: id =
-        msg_send![paste_method_label, initWithFrame: paste_method_label_frame];
-    let _: () = msg_send![paste_method_label, setStringValue: NSString::alloc(nil).init_str("Insert method")];
-    let _: () = msg_send![paste_method_label, setBezeled: NO];
-    let _: () = msg_send![paste_method_label, setDrawsBackground: NO];
-    let _: () = msg_send![paste_method_label, setEditable: NO];
-    let _: () = msg_send![paste_method_label, setSelectable: NO];
-    let _: () = msg_send![paste_method_label, setAlignment: 0isize];
-    let _: () = msg_send![general_container, addSubview: paste_method_label];
+  let paste_method_y = general_top_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let paste_method_label_frame = NSRect::new(
+    NSPoint::new(0.0, paste_method_y),
+    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
+  );
+  let paste_method_label: id = msg_send![class!(NSTextField), alloc];
+  let paste_method_label: id =
+    msg_send![paste_method_label, initWithFrame: paste_method_label_frame];
+  let _: () =
+    msg_send![paste_method_label, setStringValue: NSString::alloc(nil).init_str("Insert method")];
+  let _: () = msg_send![paste_method_label, setBezeled: NO];
+  let _: () = msg_send![paste_method_label, setDrawsBackground: NO];
+  let _: () = msg_send![paste_method_label, setEditable: NO];
+  let _: () = msg_send![paste_method_label, setSelectable: NO];
+  let _: () = msg_send![paste_method_label, setAlignment: 0isize];
+  let _: () = msg_send![general_container, addSubview: paste_method_label];
 
-    let paste_method_popup_x = SETTINGS_LABEL_WIDTH + 10.0;
-    let paste_method_popup_frame = NSRect::new(
-        NSPoint::new(paste_method_popup_x, paste_method_y - 2.0),
-        NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
-    );
-    let paste_method_popup: id = msg_send![class!(NSPopUpButton), alloc];
-    let paste_method_popup: id =
-        msg_send![paste_method_popup, initWithFrame: paste_method_popup_frame pullsDown: NO];
-    let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Clipboard paste")];
-    let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing")];
-    let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing + copy clipboard")];
-    let _: () = msg_send![paste_method_popup, setAction: sel!(settingsSelectPasteMethod:)];
-    let _: () = msg_send![general_container, addSubview: paste_method_popup];
+  let paste_method_popup_x = SETTINGS_LABEL_WIDTH + 10.0;
+  let paste_method_popup_frame = NSRect::new(
+    NSPoint::new(paste_method_popup_x, paste_method_y - 2.0),
+    NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
+  );
+  let paste_method_popup: id = msg_send![class!(NSPopUpButton), alloc];
+  let paste_method_popup: id =
+    msg_send![paste_method_popup, initWithFrame: paste_method_popup_frame pullsDown: NO];
+  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Clipboard paste")];
+  let _: () =
+    msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing")];
+  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing + copy clipboard")];
+  let _: () = msg_send![paste_method_popup, setAction: sel!(settingsSelectPasteMethod:)];
+  let _: () = msg_send![general_container, addSubview: paste_method_popup];
 
-    let auto_submit_y = paste_method_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-    let auto_submit_label_frame = NSRect::new(
-        NSPoint::new(0.0, auto_submit_y),
-        NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
-    );
-    let auto_submit_label: id = msg_send![class!(NSTextField), alloc];
-    let auto_submit_label: id =
-        msg_send![auto_submit_label, initWithFrame: auto_submit_label_frame];
-    let _: () =
-        msg_send![auto_submit_label, setStringValue: NSString::alloc(nil).init_str("Auto submit")];
-    let _: () = msg_send![auto_submit_label, setBezeled: NO];
-    let _: () = msg_send![auto_submit_label, setDrawsBackground: NO];
-    let _: () = msg_send![auto_submit_label, setEditable: NO];
-    let _: () = msg_send![auto_submit_label, setSelectable: NO];
-    let _: () = msg_send![auto_submit_label, setAlignment: 0isize];
-    let _: () = msg_send![general_container, addSubview: auto_submit_label];
+  let auto_submit_y = paste_method_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let auto_submit_label_frame = NSRect::new(
+    NSPoint::new(0.0, auto_submit_y),
+    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
+  );
+  let auto_submit_label: id = msg_send![class!(NSTextField), alloc];
+  let auto_submit_label: id = msg_send![auto_submit_label, initWithFrame: auto_submit_label_frame];
+  let _: () =
+    msg_send![auto_submit_label, setStringValue: NSString::alloc(nil).init_str("Auto submit")];
+  let _: () = msg_send![auto_submit_label, setBezeled: NO];
+  let _: () = msg_send![auto_submit_label, setDrawsBackground: NO];
+  let _: () = msg_send![auto_submit_label, setEditable: NO];
+  let _: () = msg_send![auto_submit_label, setSelectable: NO];
+  let _: () = msg_send![auto_submit_label, setAlignment: 0isize];
+  let _: () = msg_send![general_container, addSubview: auto_submit_label];
 
-    let auto_submit_popup_frame = NSRect::new(
-        NSPoint::new(paste_method_popup_x, auto_submit_y - 2.0),
-        NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
-    );
-    let auto_submit_popup: id = msg_send![class!(NSPopUpButton), alloc];
-    let auto_submit_popup: id =
-        msg_send![auto_submit_popup, initWithFrame: auto_submit_popup_frame pullsDown: NO];
-    let _: () =
-        msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Off")];
-    let _: () =
-        msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Enter")];
-    let _: () =
-        msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Ctrl+Enter")];
-    let _: () = msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Shift+Enter")];
-    let _: () = msg_send![auto_submit_popup, setAction: sel!(settingsSelectAutoSubmit:)];
-    let _: () = msg_send![general_container, addSubview: auto_submit_popup];
+  let auto_submit_popup_frame = NSRect::new(
+    NSPoint::new(paste_method_popup_x, auto_submit_y - 2.0),
+    NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
+  );
+  let auto_submit_popup: id = msg_send![class!(NSPopUpButton), alloc];
+  let auto_submit_popup: id =
+    msg_send![auto_submit_popup, initWithFrame: auto_submit_popup_frame pullsDown: NO];
+  let _: () = msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Off")];
+  let _: () =
+    msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Enter")];
+  let _: () =
+    msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Ctrl+Enter")];
+  let _: () =
+    msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Shift+Enter")];
+  let _: () = msg_send![auto_submit_popup, setAction: sel!(settingsSelectAutoSubmit:)];
+  let _: () = msg_send![general_container, addSubview: auto_submit_popup];
 
-    let append_trailing_space_y =
-        auto_submit_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-    let append_trailing_space_frame = NSRect::new(
-        NSPoint::new(0.0, append_trailing_space_y),
-        NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-    );
-    let append_trailing_space_checkbox: id = msg_send![class!(NSButton), alloc];
-    let append_trailing_space_checkbox: id = msg_send![
-        append_trailing_space_checkbox,
-        initWithFrame: append_trailing_space_frame
-    ];
-    let _: () = msg_send![append_trailing_space_checkbox, setButtonType: 3usize];
-    let _: () = msg_send![
-        append_trailing_space_checkbox,
-        setTitle: NSString::alloc(nil).init_str("Append trailing space after paste")
-    ];
-    let _: () = msg_send![
-        append_trailing_space_checkbox,
-        setAction: sel!(settingsToggleAppendTrailingSpace:)
-    ];
-    let _: () = msg_send![general_container, addSubview: append_trailing_space_checkbox];
+  let append_trailing_space_y =
+    auto_submit_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let append_trailing_space_frame = NSRect::new(
+    NSPoint::new(0.0, append_trailing_space_y),
+    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+  );
+  let append_trailing_space_checkbox: id = msg_send![class!(NSButton), alloc];
+  let append_trailing_space_checkbox: id = msg_send![
+      append_trailing_space_checkbox,
+      initWithFrame: append_trailing_space_frame
+  ];
+  let _: () = msg_send![append_trailing_space_checkbox, setButtonType: 3usize];
+  let _: () = msg_send![
+      append_trailing_space_checkbox,
+      setTitle: NSString::alloc(nil).init_str("Append trailing space after paste")
+  ];
+  let _: () = msg_send![
+      append_trailing_space_checkbox,
+      setAction: sel!(settingsToggleAppendTrailingSpace:)
+  ];
+  let _: () = msg_send![general_container, addSubview: append_trailing_space_checkbox];
 
-    let debug_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-    let debug_checkbox_frame = NSRect::new(
-        NSPoint::new(0.0, debug_top_y),
-        NSSize::new(320.0, SETTINGS_CONTROL_HEIGHT),
-    );
-    let debug_checkbox: id = msg_send![class!(NSButton), alloc];
-    let debug_checkbox: id = msg_send![debug_checkbox, initWithFrame: debug_checkbox_frame];
-    let _: () = msg_send![debug_checkbox, setButtonType: 3usize];
-    let _: () = msg_send![
-        debug_checkbox,
-        setTitle: NSString::alloc(nil).init_str("Enable debug statistics")
-    ];
-    let _: () = msg_send![debug_checkbox, setAction: sel!(settingsToggleDebug:)];
+  // -- Models tab content --
+  let models_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
 
-    let refresh_x = content_width - SETTINGS_REFRESH_WIDTH;
-    let refresh_frame = NSRect::new(
-        NSPoint::new(refresh_x, debug_top_y),
-        NSSize::new(SETTINGS_REFRESH_WIDTH, SETTINGS_CONTROL_HEIGHT),
-    );
-    let refresh_button: id = msg_send![class!(NSButton), alloc];
-    let refresh_button: id = msg_send![refresh_button, initWithFrame: refresh_frame];
-    let _: () = msg_send![refresh_button, setBezelStyle: 1usize];
-    let _: () = msg_send![refresh_button, setTitle: NSString::alloc(nil).init_str("Refresh")];
-    let _: () = msg_send![refresh_button, setAction: sel!(settingsRefresh:)];
+  let models_name_frame = NSRect::new(
+    NSPoint::new(0.0, models_top_y),
+    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+  );
+  let models_name_label: id = msg_send![class!(NSTextField), alloc];
+  let models_name_label: id = msg_send![models_name_label, initWithFrame: models_name_frame];
+  let _: () = msg_send![
+      models_name_label,
+      setStringValue: NSString::alloc(nil).init_str("Parakeet v1")
+  ];
+  let _: () = msg_send![models_name_label, setBezeled: NO];
+  let _: () = msg_send![models_name_label, setDrawsBackground: NO];
+  let _: () = msg_send![models_name_label, setEditable: NO];
+  let _: () = msg_send![models_name_label, setSelectable: NO];
+  let bold_font: id = msg_send![class!(NSFont), boldSystemFontOfSize: 14.0f64];
+  if bold_font != nil {
+    let _: () = msg_send![models_name_label, setFont: bold_font];
+  }
+  let _: () = msg_send![models_container, addSubview: models_name_label];
 
-    let metrics_height =
-        (debug_top_y - SETTINGS_METRICS_TOP_GAP).max(SETTINGS_CONTROL_HEIGHT * 2.0);
-    let scroll_frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(content_width, metrics_height),
-    );
-    let scroll_view: id = msg_send![class!(NSScrollView), alloc];
-    let scroll_view: id = msg_send![scroll_view, initWithFrame: scroll_frame];
-    let _: () = msg_send![scroll_view, setHasVerticalScroller: YES];
+  let models_desc_y = models_top_y - SETTINGS_CONTROL_HEIGHT - 4.0;
+  let models_desc_frame = NSRect::new(
+    NSPoint::new(0.0, models_desc_y),
+    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+  );
+  let models_desc_label: id = msg_send![class!(NSTextField), alloc];
+  let models_desc_label: id = msg_send![models_desc_label, initWithFrame: models_desc_frame];
+  let _: () = msg_send![
+      models_desc_label,
+      setStringValue: NSString::alloc(nil).init_str("Silero VAD + Parakeet streaming/finalization ASR")
+  ];
+  let _: () = msg_send![models_desc_label, setBezeled: NO];
+  let _: () = msg_send![models_desc_label, setDrawsBackground: NO];
+  let _: () = msg_send![models_desc_label, setEditable: NO];
+  let _: () = msg_send![models_desc_label, setSelectable: NO];
+  let secondary_color: id = msg_send![class!(NSColor), secondaryLabelColor];
+  let _: () = msg_send![models_desc_label, setTextColor: secondary_color];
+  let _: () = msg_send![models_container, addSubview: models_desc_label];
 
-    let text_frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(scroll_frame.size.width, scroll_frame.size.height),
-    );
-    let metrics_text_view: id = msg_send![class!(NSTextView), alloc];
-    let metrics_text_view: id = msg_send![metrics_text_view, initWithFrame: text_frame];
-    let _: () = msg_send![metrics_text_view, setEditable: NO];
-    let _: () = msg_send![metrics_text_view, setSelectable: YES];
-    let _: () = msg_send![metrics_text_view, setRichText: NO];
-    let mono_font: id = msg_send![class!(NSFont), userFixedPitchFontOfSize: 12.0f64];
-    if mono_font != nil {
-        let _: () = msg_send![metrics_text_view, setFont: mono_font];
-    }
-    let _: () = msg_send![metrics_text_view, setString: NSString::alloc(nil).init_str("")];
-    let _: () = msg_send![scroll_view, setDocumentView: metrics_text_view];
+  let models_status_y = models_desc_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let models_status_frame = NSRect::new(
+    NSPoint::new(0.0, models_status_y),
+    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+  );
+  let models_status_label: id = msg_send![class!(NSTextField), alloc];
+  let models_status_label: id = msg_send![models_status_label, initWithFrame: models_status_frame];
+  let _: () = msg_send![
+      models_status_label,
+      setStringValue: NSString::alloc(nil).init_str("Checking...")
+  ];
+  let _: () = msg_send![models_status_label, setBezeled: NO];
+  let _: () = msg_send![models_status_label, setDrawsBackground: NO];
+  let _: () = msg_send![models_status_label, setEditable: NO];
+  let _: () = msg_send![models_status_label, setSelectable: NO];
+  let _: () = msg_send![models_container, addSubview: models_status_label];
 
-    if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
-        let _: () = msg_send![window, setDelegate: delegate];
-        let _: () = msg_send![tab_list_view, setDelegate: delegate];
-        let _: () = msg_send![tab_list_view, setDataSource: delegate];
-        let _: () = msg_send![run_on_startup_checkbox, setTarget: delegate];
-        let _: () = msg_send![paste_method_popup, setTarget: delegate];
-        let _: () = msg_send![auto_submit_popup, setTarget: delegate];
-        let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
-        let _: () = msg_send![debug_checkbox, setTarget: delegate];
-        let _: () = msg_send![refresh_button, setTarget: delegate];
-    }
+  let models_progress_y = models_status_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let models_progress_frame =
+    NSRect::new(NSPoint::new(0.0, models_progress_y + 4.0), NSSize::new(content_width, 16.0));
+  let models_progress_indicator: id = msg_send![class!(NSProgressIndicator), alloc];
+  let models_progress_indicator: id =
+    msg_send![models_progress_indicator, initWithFrame: models_progress_frame];
+  let _: () = msg_send![models_progress_indicator, setStyle: 0isize]; // NSProgressIndicatorStyleBar
+  let _: () = msg_send![models_progress_indicator, setIndeterminate: NO];
+  let _: () = msg_send![models_progress_indicator, setMinValue: 0.0f64];
+  let _: () = msg_send![models_progress_indicator, setMaxValue: 100.0f64];
+  let _: () = msg_send![models_progress_indicator, setDoubleValue: 0.0f64];
+  let _: () = msg_send![models_progress_indicator, setHidden: YES];
+  let _: () = msg_send![models_container, addSubview: models_progress_indicator];
 
-    let _: () = msg_send![sidebar_scroll, setDocumentView: tab_list_view];
-    let _: () = msg_send![body_view, addSubview: general_container];
-    let _: () = msg_send![debug_container, addSubview: debug_checkbox];
-    let _: () = msg_send![debug_container, addSubview: refresh_button];
-    let _: () = msg_send![debug_container, addSubview: scroll_view];
-    let _: () = msg_send![body_view, addSubview: debug_container];
-    let _: () = msg_send![tab_list_view, reloadData];
+  let models_button_y = models_progress_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let models_download_frame =
+    NSRect::new(NSPoint::new(0.0, models_button_y), NSSize::new(120.0, SETTINGS_CONTROL_HEIGHT));
+  let models_download_button: id = msg_send![class!(NSButton), alloc];
+  let models_download_button: id =
+    msg_send![models_download_button, initWithFrame: models_download_frame];
+  let _: () = msg_send![models_download_button, setBezelStyle: 1usize];
+  let _: () = msg_send![
+      models_download_button,
+      setTitle: NSString::alloc(nil).init_str("Download")
+  ];
+  let _: () = msg_send![models_download_button, setAction: sel!(settingsDownloadModel:)];
+  let _: () = msg_send![models_download_button, setTag: 0isize];
+  let _: () = msg_send![models_container, addSubview: models_download_button];
 
-    let refs = SettingsWindowRefs {
-        window,
-        tab_list_view,
-        general_container,
-        debug_container,
-        run_on_startup_checkbox,
-        paste_method_popup,
-        auto_submit_popup,
-        append_trailing_space_checkbox,
-        debug_checkbox,
-        metrics_text_view,
-    };
-    apply_settings_selected_tab(refs, SettingsTab::General);
-    refs
+  let models_cancel_frame =
+    NSRect::new(NSPoint::new(130.0, models_button_y), NSSize::new(90.0, SETTINGS_CONTROL_HEIGHT));
+  let models_cancel_button: id = msg_send![class!(NSButton), alloc];
+  let models_cancel_button: id =
+    msg_send![models_cancel_button, initWithFrame: models_cancel_frame];
+  let _: () = msg_send![models_cancel_button, setBezelStyle: 1usize];
+  let _: () = msg_send![
+      models_cancel_button,
+      setTitle: NSString::alloc(nil).init_str("Cancel")
+  ];
+  let _: () = msg_send![models_cancel_button, setAction: sel!(settingsCancelDownload:)];
+  let _: () = msg_send![models_cancel_button, setHidden: YES];
+  let _: () = msg_send![models_container, addSubview: models_cancel_button];
+
+  // -- Debug tab content --
+  let debug_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
+  let debug_checkbox_frame =
+    NSRect::new(NSPoint::new(0.0, debug_top_y), NSSize::new(320.0, SETTINGS_CONTROL_HEIGHT));
+  let debug_checkbox: id = msg_send![class!(NSButton), alloc];
+  let debug_checkbox: id = msg_send![debug_checkbox, initWithFrame: debug_checkbox_frame];
+  let _: () = msg_send![debug_checkbox, setButtonType: 3usize];
+  let _: () = msg_send![
+      debug_checkbox,
+      setTitle: NSString::alloc(nil).init_str("Enable debug statistics")
+  ];
+  let _: () = msg_send![debug_checkbox, setAction: sel!(settingsToggleDebug:)];
+
+  let refresh_x = content_width - SETTINGS_REFRESH_WIDTH;
+  let refresh_frame = NSRect::new(
+    NSPoint::new(refresh_x, debug_top_y),
+    NSSize::new(SETTINGS_REFRESH_WIDTH, SETTINGS_CONTROL_HEIGHT),
+  );
+  let refresh_button: id = msg_send![class!(NSButton), alloc];
+  let refresh_button: id = msg_send![refresh_button, initWithFrame: refresh_frame];
+  let _: () = msg_send![refresh_button, setBezelStyle: 1usize];
+  let _: () = msg_send![refresh_button, setTitle: NSString::alloc(nil).init_str("Refresh")];
+  let _: () = msg_send![refresh_button, setAction: sel!(settingsRefresh:)];
+
+  let metrics_height = (debug_top_y - SETTINGS_METRICS_TOP_GAP).max(SETTINGS_CONTROL_HEIGHT * 2.0);
+  let scroll_frame =
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(content_width, metrics_height));
+  let scroll_view: id = msg_send![class!(NSScrollView), alloc];
+  let scroll_view: id = msg_send![scroll_view, initWithFrame: scroll_frame];
+  let _: () = msg_send![scroll_view, setHasVerticalScroller: YES];
+
+  let text_frame = NSRect::new(
+    NSPoint::new(0.0, 0.0),
+    NSSize::new(scroll_frame.size.width, scroll_frame.size.height),
+  );
+  let metrics_text_view: id = msg_send![class!(NSTextView), alloc];
+  let metrics_text_view: id = msg_send![metrics_text_view, initWithFrame: text_frame];
+  let _: () = msg_send![metrics_text_view, setEditable: NO];
+  let _: () = msg_send![metrics_text_view, setSelectable: YES];
+  let _: () = msg_send![metrics_text_view, setRichText: NO];
+  let mono_font: id = msg_send![class!(NSFont), userFixedPitchFontOfSize: 12.0f64];
+  if mono_font != nil {
+    let _: () = msg_send![metrics_text_view, setFont: mono_font];
+  }
+  let _: () = msg_send![metrics_text_view, setString: NSString::alloc(nil).init_str("")];
+  let _: () = msg_send![scroll_view, setDocumentView: metrics_text_view];
+
+  if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
+    let _: () = msg_send![window, setDelegate: delegate];
+    let _: () = msg_send![tab_list_view, setDelegate: delegate];
+    let _: () = msg_send![tab_list_view, setDataSource: delegate];
+    let _: () = msg_send![run_on_startup_checkbox, setTarget: delegate];
+    let _: () = msg_send![paste_method_popup, setTarget: delegate];
+    let _: () = msg_send![auto_submit_popup, setTarget: delegate];
+    let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
+    let _: () = msg_send![models_download_button, setTarget: delegate];
+    let _: () = msg_send![models_cancel_button, setTarget: delegate];
+    let _: () = msg_send![debug_checkbox, setTarget: delegate];
+    let _: () = msg_send![refresh_button, setTarget: delegate];
+  }
+
+  let _: () = msg_send![sidebar_scroll, setDocumentView: tab_list_view];
+  let _: () = msg_send![body_view, addSubview: general_container];
+  let _: () = msg_send![body_view, addSubview: models_container];
+  let _: () = msg_send![debug_container, addSubview: debug_checkbox];
+  let _: () = msg_send![debug_container, addSubview: refresh_button];
+  let _: () = msg_send![debug_container, addSubview: scroll_view];
+  let _: () = msg_send![body_view, addSubview: debug_container];
+  let _: () = msg_send![tab_list_view, reloadData];
+
+  let refs = SettingsWindowRefs {
+    window,
+    tab_list_view,
+    general_container,
+    models_container,
+    debug_container,
+    run_on_startup_checkbox,
+    paste_method_popup,
+    auto_submit_popup,
+    append_trailing_space_checkbox,
+    debug_checkbox,
+    metrics_text_view,
+    models_status_label,
+    models_progress_indicator,
+    models_download_button,
+    models_cancel_button,
+  };
+  apply_settings_selected_tab(refs, SettingsTab::General);
+  refs
 }
 
 unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
-    let frame = cursor_screen_frame().unwrap_or_else(main_screen_frame);
+  let frame = cursor_screen_frame().unwrap_or_else(main_screen_frame);
 
-    let overlay_width = overlay_width_for_screen(frame);
-    let overlay_height = OVERLAY_HEIGHT_MIN;
-    let x = frame.origin.x + (frame.size.width - overlay_width) * 0.5;
-    let y = frame.origin.y + frame.size.height * 0.08;
+  let overlay_width = overlay_width_for_screen(frame);
+  let overlay_height = OVERLAY_HEIGHT_MIN;
+  let x = frame.origin.x + (frame.size.width - overlay_width) * 0.5;
+  let y = frame.origin.y + frame.size.height * 0.08;
 
-    let overlay_frame = NSRect::new(
-        NSPoint::new(x, y),
-        NSSize::new(overlay_width, overlay_height),
-    );
+  let overlay_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(overlay_width, overlay_height));
 
-    let overlay_class = register_overlay_window_class();
-    let window: id = msg_send![overlay_class, alloc];
-    let window: id = msg_send![window, initWithContentRect: overlay_frame
+  let overlay_class = register_overlay_window_class();
+  let window: id = msg_send![overlay_class, alloc];
+  let window: id = msg_send![window, initWithContentRect: overlay_frame
                                                 styleMask: NSWindowStyleMask::NSBorderlessWindowMask
                                                   backing: NSBackingStoreType::NSBackingStoreBuffered
                                                     defer: NO];
 
-    window.setReleasedWhenClosed_(NO);
-    window.setOpaque_(NO);
-    window.setHasShadow_(YES);
-    window.setIgnoresMouseEvents_(if read_only { YES } else { NO });
-    window.setMovableByWindowBackground_(if read_only { NO } else { YES });
-    window.setLevel_((NSMainMenuWindowLevel + 1) as i64);
-    window.setCollectionBehavior_(
-        NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
-    );
-    window.setBackgroundColor_(NSColor::clearColor(nil));
+  window.setReleasedWhenClosed_(NO);
+  window.setOpaque_(NO);
+  window.setHasShadow_(YES);
+  window.setIgnoresMouseEvents_(if read_only { YES } else { NO });
+  window.setMovableByWindowBackground_(if read_only { NO } else { YES });
+  window.setLevel_((NSMainMenuWindowLevel + 1) as i64);
+  window.setCollectionBehavior_(
+    NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+      | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+  );
+  window.setBackgroundColor_(NSColor::clearColor(nil));
 
-    let card_view: id = msg_send![class!(NSView), alloc];
-    let card_view: id = msg_send![card_view, initWithFrame: NSRect::new(
+  let card_view: id = msg_send![class!(NSView), alloc];
+  let card_view: id = msg_send![card_view, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(overlay_width, overlay_height)
+  )];
+  let _: () = msg_send![card_view, setWantsLayer: YES];
+  let card_layer: id = msg_send![card_view, layer];
+  let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.9);
+  let cg_color: id = msg_send![card_color, CGColor];
+  let _: () = msg_send![card_layer, setBackgroundColor: cg_color];
+  let _: () = msg_send![card_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
+  let _: () = msg_send![card_layer, setMasksToBounds: YES];
+  let subtle_border =
+    NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.20);
+  let subtle_border_cg: id = msg_send![subtle_border, CGColor];
+  let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
+  let _: () = msg_send![card_layer, setBorderColor: subtle_border_cg];
+  window.setContentView_(card_view);
+
+  let label_frame = NSRect::new(
+    NSPoint::new(OVERLAY_PAD_X, OVERLAY_PAD_BOTTOM),
+    NSSize::new(overlay_width - OVERLAY_PAD_X * 2.0, 1.0),
+  );
+
+  let meter_view: id = msg_send![class!(NSView), alloc];
+  let meter_view: id = msg_send![meter_view, initWithFrame: label_frame];
+  let _: () = msg_send![meter_view, setWantsLayer: YES];
+  let _: () = msg_send![card_view, addSubview: meter_view];
+
+  let mut wave_bars = [nil; OVERLAY_WAVE_BAR_COUNT];
+  for bar in &mut wave_bars {
+    let v: id = msg_send![class!(NSView), alloc];
+    let v: id = msg_send![v, initWithFrame: NSRect::new(
         NSPoint::new(0.0, 0.0),
-        NSSize::new(overlay_width, overlay_height)
+        NSSize::new(1.0, 1.0)
     )];
-    let _: () = msg_send![card_view, setWantsLayer: YES];
-    let card_layer: id = msg_send![card_view, layer];
-    let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.9);
-    let cg_color: id = msg_send![card_color, CGColor];
-    let _: () = msg_send![card_layer, setBackgroundColor: cg_color];
-    let _: () = msg_send![card_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
-    let _: () = msg_send![card_layer, setMasksToBounds: YES];
-    let subtle_border =
-        NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.20);
-    let subtle_border_cg: id = msg_send![subtle_border, CGColor];
-    let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
-    let _: () = msg_send![card_layer, setBorderColor: subtle_border_cg];
-    window.setContentView_(card_view);
+    let _: () = msg_send![v, setWantsLayer: YES];
+    let _: () = msg_send![v, setHidden: YES];
+    let _: () = msg_send![meter_view, addSubview: v];
+    *bar = v;
+  }
 
-    let label_frame = NSRect::new(
-        NSPoint::new(OVERLAY_PAD_X, OVERLAY_PAD_BOTTOM),
-        NSSize::new(overlay_width - OVERLAY_PAD_X * 2.0, 1.0),
-    );
+  let label: id = msg_send![class!(NSTextField), alloc];
+  let label: id = msg_send![label, initWithFrame: label_frame];
+  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("")];
+  let _: () = msg_send![label, setBezeled: NO];
+  let _: () = msg_send![label, setDrawsBackground: NO];
+  let _: () = msg_send![label, setEditable: NO];
+  let _: () = msg_send![label, setSelectable: NO];
+  let _: () = msg_send![label, setAlignment: 1isize];
+  let _: () = msg_send![label, setLineBreakMode: 0isize];
+  let _: () = msg_send![label, setUsesSingleLineMode: NO];
+  let _: () = msg_send![label, setMaximumNumberOfLines: 0isize];
+  let font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_TEXT_FONT_SIZE];
+  let _: () = msg_send![label, setFont: font];
+  let text_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+  let _: () = msg_send![label, setTextColor: text_color];
+  let _: () = msg_send![card_view, addSubview: label];
 
-    let meter_view: id = msg_send![class!(NSView), alloc];
-    let meter_view: id = msg_send![meter_view, initWithFrame: label_frame];
-    let _: () = msg_send![meter_view, setWantsLayer: YES];
-    let _: () = msg_send![card_view, addSubview: meter_view];
+  let raw_badge: id = msg_send![class!(NSTextField), alloc];
+  let raw_badge: id = msg_send![raw_badge, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_RAW_BADGE_WIDTH, OVERLAY_RAW_BADGE_HEIGHT)
+  )];
+  let _: () = msg_send![raw_badge, setStringValue: NSString::alloc(nil).init_str("raw")];
+  let _: () = msg_send![raw_badge, setBezeled: NO];
+  let _: () = msg_send![raw_badge, setDrawsBackground: NO];
+  let _: () = msg_send![raw_badge, setEditable: NO];
+  let _: () = msg_send![raw_badge, setSelectable: NO];
+  let _: () = msg_send![raw_badge, setUsesSingleLineMode: YES];
+  let _: () = msg_send![raw_badge, setLineBreakMode: 2isize];
+  let _: () = msg_send![raw_badge, setAlignment: 2isize];
+  let raw_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_RAW_BADGE_FONT_SIZE];
+  let _: () = msg_send![raw_badge, setFont: raw_font];
+  let raw_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.48);
+  let _: () = msg_send![raw_badge, setTextColor: raw_color];
+  let _: () = msg_send![raw_badge, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: raw_badge];
 
-    let mut wave_bars = [nil; OVERLAY_WAVE_BAR_COUNT];
-    for bar in &mut wave_bars {
-        let v: id = msg_send![class!(NSView), alloc];
-        let v: id = msg_send![v, initWithFrame: NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(1.0, 1.0)
-        )];
-        let _: () = msg_send![v, setWantsLayer: YES];
-        let _: () = msg_send![v, setHidden: YES];
-        let _: () = msg_send![meter_view, addSubview: v];
-        *bar = v;
+  let hold_badge: id = msg_send![class!(NSTextField), alloc];
+  let hold_badge: id = msg_send![hold_badge, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_HOLD_BADGE_WIDTH, OVERLAY_HOLD_BADGE_HEIGHT)
+  )];
+  let _: () = msg_send![hold_badge, setStringValue: NSString::alloc(nil).init_str("hold")];
+  let _: () = msg_send![hold_badge, setBezeled: NO];
+  let _: () = msg_send![hold_badge, setDrawsBackground: NO];
+  let _: () = msg_send![hold_badge, setEditable: NO];
+  let _: () = msg_send![hold_badge, setSelectable: NO];
+  let _: () = msg_send![hold_badge, setUsesSingleLineMode: YES];
+  let _: () = msg_send![hold_badge, setLineBreakMode: 2isize];
+  let _: () = msg_send![hold_badge, setAlignment: 2isize];
+  let hold_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_RAW_BADGE_FONT_SIZE];
+  let _: () = msg_send![hold_badge, setFont: hold_font];
+  let hold_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 0.58, 0.22, 0.72);
+  let _: () = msg_send![hold_badge, setTextColor: hold_color];
+  let _: () = msg_send![hold_badge, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: hold_badge];
+
+  let notice_accessory_row: id = msg_send![class!(NSView), alloc];
+  let notice_accessory_row: id = msg_send![notice_accessory_row, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(1.0, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+  )];
+  let _: () = msg_send![notice_accessory_row, setWantsLayer: YES];
+  let _: () = msg_send![notice_accessory_row, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: notice_accessory_row];
+
+  let notice_option_key: id = msg_send![class!(NSView), alloc];
+  let notice_option_key: id = msg_send![notice_option_key, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+  )];
+  let _: () = msg_send![notice_option_key, setWantsLayer: YES];
+  let _: () = msg_send![notice_option_key, setHidden: YES];
+  let _: () = msg_send![notice_accessory_row, addSubview: notice_option_key];
+
+  let notice_option_label: id = msg_send![class!(NSTextField), alloc];
+  let notice_option_label: id = msg_send![notice_option_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+  )];
+  let _: () = msg_send![notice_option_label, setStringValue: NSString::alloc(nil).init_str("⌥")];
+  let _: () = msg_send![notice_option_label, setBezeled: NO];
+  let _: () = msg_send![notice_option_label, setDrawsBackground: NO];
+  let _: () = msg_send![notice_option_label, setEditable: NO];
+  let _: () = msg_send![notice_option_label, setSelectable: NO];
+  let _: () = msg_send![notice_option_label, setAlignment: 1isize];
+  let notice_key_font: id =
+    msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
+  let _: () = msg_send![notice_option_label, setFont: notice_key_font];
+  let _: () = msg_send![notice_option_label, setHidden: YES];
+  let _: () = msg_send![notice_option_key, addSubview: notice_option_label];
+
+  let notice_plus_label: id = msg_send![class!(NSTextField), alloc];
+  let notice_plus_label: id = msg_send![notice_plus_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+  )];
+  let _: () = msg_send![notice_plus_label, setStringValue: NSString::alloc(nil).init_str("+")];
+  let _: () = msg_send![notice_plus_label, setBezeled: NO];
+  let _: () = msg_send![notice_plus_label, setDrawsBackground: NO];
+  let _: () = msg_send![notice_plus_label, setEditable: NO];
+  let _: () = msg_send![notice_plus_label, setSelectable: NO];
+  let _: () = msg_send![notice_plus_label, setAlignment: 1isize];
+  let notice_plus_font: id =
+    msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
+  let _: () = msg_send![notice_plus_label, setFont: notice_plus_font];
+  let _: () = msg_send![notice_plus_label, setHidden: YES];
+  let _: () = msg_send![notice_accessory_row, addSubview: notice_plus_label];
+
+  let notice_space_key: id = msg_send![class!(NSView), alloc];
+  let notice_space_key: id = msg_send![notice_space_key, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+  )];
+  let _: () = msg_send![notice_space_key, setWantsLayer: YES];
+  let _: () = msg_send![notice_space_key, setHidden: YES];
+  let _: () = msg_send![notice_accessory_row, addSubview: notice_space_key];
+
+  let notice_space_label: id = msg_send![class!(NSTextField), alloc];
+  let notice_space_label: id = msg_send![notice_space_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
+  )];
+  let _: () = msg_send![notice_space_label, setStringValue: NSString::alloc(nil).init_str("Space")];
+  let _: () = msg_send![notice_space_label, setBezeled: NO];
+  let _: () = msg_send![notice_space_label, setDrawsBackground: NO];
+  let _: () = msg_send![notice_space_label, setEditable: NO];
+  let _: () = msg_send![notice_space_label, setSelectable: NO];
+  let _: () = msg_send![notice_space_label, setAlignment: 1isize];
+  let notice_space_font: id =
+    msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
+  let _: () = msg_send![notice_space_label, setFont: notice_space_font];
+  let _: () = msg_send![notice_space_label, setHidden: YES];
+  let _: () = msg_send![notice_space_key, addSubview: notice_space_label];
+
+  let notice_auto_on_chip: id = msg_send![class!(NSView), alloc];
+  let notice_auto_on_chip: id = msg_send![notice_auto_on_chip, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH, OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT)
+  )];
+  let _: () = msg_send![notice_auto_on_chip, setWantsLayer: YES];
+  let _: () = msg_send![notice_auto_on_chip, setHidden: YES];
+  let _: () = msg_send![notice_accessory_row, addSubview: notice_auto_on_chip];
+
+  let notice_auto_on_label: id = msg_send![class!(NSTextField), alloc];
+  let notice_auto_on_label: id = msg_send![notice_auto_on_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH, OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT)
+  )];
+  let _: () =
+    msg_send![notice_auto_on_label, setStringValue: NSString::alloc(nil).init_str("AUTO ON")];
+  let _: () = msg_send![notice_auto_on_label, setBezeled: NO];
+  let _: () = msg_send![notice_auto_on_label, setDrawsBackground: NO];
+  let _: () = msg_send![notice_auto_on_label, setEditable: NO];
+  let _: () = msg_send![notice_auto_on_label, setSelectable: NO];
+  let _: () = msg_send![notice_auto_on_label, setAlignment: 1isize];
+  let _: () = msg_send![notice_auto_on_label, setUsesSingleLineMode: YES];
+  let notice_on_font: id =
+    msg_send![class!(NSFont), boldSystemFontOfSize: OVERLAY_NOTICE_AUTO_ON_FONT_SIZE];
+  let _: () = msg_send![notice_auto_on_label, setFont: notice_on_font];
+  let _: () = msg_send![notice_auto_on_label, setHidden: YES];
+  let _: () = msg_send![notice_auto_on_chip, addSubview: notice_auto_on_label];
+
+  let busy_gradient_layer: id = msg_send![class!(CAGradientLayer), layer];
+  let busy_mask_layer: id = msg_send![class!(CALayer), layer];
+  if busy_gradient_layer != nil && busy_mask_layer != nil {
+    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(overlay_width, overlay_height));
+    let _: () = msg_send![busy_gradient_layer, setFrame: frame];
+    let _: () = msg_send![busy_gradient_layer, setHidden: YES];
+    let _: () = msg_send![busy_gradient_layer, setOpacity: 1.0f32];
+    let _: () = msg_send![busy_gradient_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
+    let _: () = msg_send![busy_gradient_layer, setMasksToBounds: YES];
+    let _: () = msg_send![busy_gradient_layer, setNeedsDisplayOnBoundsChange: YES];
+    let _: () = msg_send![busy_gradient_layer, setType: NSString::alloc(nil).init_str("conic")];
+    let _: () = msg_send![busy_gradient_layer, setStartPoint: NSPoint::new(0.5, 0.5)];
+    let _: () = msg_send![busy_gradient_layer, setEndPoint: NSPoint::new(1.0, 0.5)];
+    let _: () = msg_send![busy_gradient_layer, setZPosition: 32.0f64];
+
+    let locations: id = msg_send![class!(NSMutableArray), arrayWithCapacity: 5usize];
+    for point in [0.0f64, 0.04, 0.10, 0.18, 1.0] {
+      let number: id = msg_send![class!(NSNumber), numberWithDouble: point];
+      let _: () = msg_send![locations, addObject: number];
     }
+    let _: () = msg_send![busy_gradient_layer, setLocations: locations];
 
-    let label: id = msg_send![class!(NSTextField), alloc];
-    let label: id = msg_send![label, initWithFrame: label_frame];
-    let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("")];
-    let _: () = msg_send![label, setBezeled: NO];
-    let _: () = msg_send![label, setDrawsBackground: NO];
-    let _: () = msg_send![label, setEditable: NO];
-    let _: () = msg_send![label, setSelectable: NO];
-    let _: () = msg_send![label, setAlignment: 1isize];
-    let _: () = msg_send![label, setLineBreakMode: 0isize];
-    let _: () = msg_send![label, setUsesSingleLineMode: NO];
-    let _: () = msg_send![label, setMaximumNumberOfLines: 0isize];
-    let font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_TEXT_FONT_SIZE];
-    let _: () = msg_send![label, setFont: font];
-    let text_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
-    let _: () = msg_send![label, setTextColor: text_color];
-    let _: () = msg_send![card_view, addSubview: label];
-
-    let raw_badge: id = msg_send![class!(NSTextField), alloc];
-    let raw_badge: id = msg_send![raw_badge, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_RAW_BADGE_WIDTH, OVERLAY_RAW_BADGE_HEIGHT)
-    )];
-    let _: () = msg_send![raw_badge, setStringValue: NSString::alloc(nil).init_str("raw")];
-    let _: () = msg_send![raw_badge, setBezeled: NO];
-    let _: () = msg_send![raw_badge, setDrawsBackground: NO];
-    let _: () = msg_send![raw_badge, setEditable: NO];
-    let _: () = msg_send![raw_badge, setSelectable: NO];
-    let _: () = msg_send![raw_badge, setUsesSingleLineMode: YES];
-    let _: () = msg_send![raw_badge, setLineBreakMode: 2isize];
-    let _: () = msg_send![raw_badge, setAlignment: 2isize];
-    let raw_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_RAW_BADGE_FONT_SIZE];
-    let _: () = msg_send![raw_badge, setFont: raw_font];
-    let raw_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.48);
-    let _: () = msg_send![raw_badge, setTextColor: raw_color];
-    let _: () = msg_send![raw_badge, setHidden: YES];
-    let _: () = msg_send![card_view, addSubview: raw_badge];
-
-    let hold_badge: id = msg_send![class!(NSTextField), alloc];
-    let hold_badge: id = msg_send![hold_badge, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_HOLD_BADGE_WIDTH, OVERLAY_HOLD_BADGE_HEIGHT)
-    )];
-    let _: () = msg_send![hold_badge, setStringValue: NSString::alloc(nil).init_str("hold")];
-    let _: () = msg_send![hold_badge, setBezeled: NO];
-    let _: () = msg_send![hold_badge, setDrawsBackground: NO];
-    let _: () = msg_send![hold_badge, setEditable: NO];
-    let _: () = msg_send![hold_badge, setSelectable: NO];
-    let _: () = msg_send![hold_badge, setUsesSingleLineMode: YES];
-    let _: () = msg_send![hold_badge, setLineBreakMode: 2isize];
-    let _: () = msg_send![hold_badge, setAlignment: 2isize];
-    let hold_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_RAW_BADGE_FONT_SIZE];
-    let _: () = msg_send![hold_badge, setFont: hold_font];
-    let hold_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 0.58, 0.22, 0.72);
-    let _: () = msg_send![hold_badge, setTextColor: hold_color];
-    let _: () = msg_send![hold_badge, setHidden: YES];
-    let _: () = msg_send![card_view, addSubview: hold_badge];
-
-    let notice_accessory_row: id = msg_send![class!(NSView), alloc];
-    let notice_accessory_row: id = msg_send![notice_accessory_row, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(1.0, OVERLAY_NOTICE_KEYCAP_HEIGHT)
-    )];
-    let _: () = msg_send![notice_accessory_row, setWantsLayer: YES];
-    let _: () = msg_send![notice_accessory_row, setHidden: YES];
-    let _: () = msg_send![card_view, addSubview: notice_accessory_row];
-
-    let notice_option_key: id = msg_send![class!(NSView), alloc];
-    let notice_option_key: id = msg_send![notice_option_key, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
-    )];
-    let _: () = msg_send![notice_option_key, setWantsLayer: YES];
-    let _: () = msg_send![notice_option_key, setHidden: YES];
-    let _: () = msg_send![notice_accessory_row, addSubview: notice_option_key];
-
-    let notice_option_label: id = msg_send![class!(NSTextField), alloc];
-    let notice_option_label: id = msg_send![notice_option_label, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_NOTICE_KEYCAP_OPTION_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
-    )];
-    let _: () = msg_send![notice_option_label, setStringValue: NSString::alloc(nil).init_str("⌥")];
-    let _: () = msg_send![notice_option_label, setBezeled: NO];
-    let _: () = msg_send![notice_option_label, setDrawsBackground: NO];
-    let _: () = msg_send![notice_option_label, setEditable: NO];
-    let _: () = msg_send![notice_option_label, setSelectable: NO];
-    let _: () = msg_send![notice_option_label, setAlignment: 1isize];
-    let notice_key_font: id =
-        msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
-    let _: () = msg_send![notice_option_label, setFont: notice_key_font];
-    let _: () = msg_send![notice_option_label, setHidden: YES];
-    let _: () = msg_send![notice_option_key, addSubview: notice_option_label];
-
-    let notice_plus_label: id = msg_send![class!(NSTextField), alloc];
-    let notice_plus_label: id = msg_send![notice_plus_label, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_NOTICE_KEYCAP_PLUS_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
-    )];
-    let _: () = msg_send![notice_plus_label, setStringValue: NSString::alloc(nil).init_str("+")];
-    let _: () = msg_send![notice_plus_label, setBezeled: NO];
-    let _: () = msg_send![notice_plus_label, setDrawsBackground: NO];
-    let _: () = msg_send![notice_plus_label, setEditable: NO];
-    let _: () = msg_send![notice_plus_label, setSelectable: NO];
-    let _: () = msg_send![notice_plus_label, setAlignment: 1isize];
-    let notice_plus_font: id =
-        msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
-    let _: () = msg_send![notice_plus_label, setFont: notice_plus_font];
-    let _: () = msg_send![notice_plus_label, setHidden: YES];
-    let _: () = msg_send![notice_accessory_row, addSubview: notice_plus_label];
-
-    let notice_space_key: id = msg_send![class!(NSView), alloc];
-    let notice_space_key: id = msg_send![notice_space_key, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
-    )];
-    let _: () = msg_send![notice_space_key, setWantsLayer: YES];
-    let _: () = msg_send![notice_space_key, setHidden: YES];
-    let _: () = msg_send![notice_accessory_row, addSubview: notice_space_key];
-
-    let notice_space_label: id = msg_send![class!(NSTextField), alloc];
-    let notice_space_label: id = msg_send![notice_space_label, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_NOTICE_KEYCAP_SPACE_WIDTH, OVERLAY_NOTICE_KEYCAP_HEIGHT)
-    )];
-    let _: () =
-        msg_send![notice_space_label, setStringValue: NSString::alloc(nil).init_str("Space")];
-    let _: () = msg_send![notice_space_label, setBezeled: NO];
-    let _: () = msg_send![notice_space_label, setDrawsBackground: NO];
-    let _: () = msg_send![notice_space_label, setEditable: NO];
-    let _: () = msg_send![notice_space_label, setSelectable: NO];
-    let _: () = msg_send![notice_space_label, setAlignment: 1isize];
-    let notice_space_font: id =
-        msg_send![class!(NSFont), systemFontOfSize: OVERLAY_NOTICE_KEYCAP_FONT_SIZE];
-    let _: () = msg_send![notice_space_label, setFont: notice_space_font];
-    let _: () = msg_send![notice_space_label, setHidden: YES];
-    let _: () = msg_send![notice_space_key, addSubview: notice_space_label];
-
-    let notice_auto_on_chip: id = msg_send![class!(NSView), alloc];
-    let notice_auto_on_chip: id = msg_send![notice_auto_on_chip, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH, OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT)
-    )];
-    let _: () = msg_send![notice_auto_on_chip, setWantsLayer: YES];
-    let _: () = msg_send![notice_auto_on_chip, setHidden: YES];
-    let _: () = msg_send![notice_accessory_row, addSubview: notice_auto_on_chip];
-
-    let notice_auto_on_label: id = msg_send![class!(NSTextField), alloc];
-    let notice_auto_on_label: id = msg_send![notice_auto_on_label, initWithFrame: NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH, OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT)
-    )];
-    let _: () =
-        msg_send![notice_auto_on_label, setStringValue: NSString::alloc(nil).init_str("AUTO ON")];
-    let _: () = msg_send![notice_auto_on_label, setBezeled: NO];
-    let _: () = msg_send![notice_auto_on_label, setDrawsBackground: NO];
-    let _: () = msg_send![notice_auto_on_label, setEditable: NO];
-    let _: () = msg_send![notice_auto_on_label, setSelectable: NO];
-    let _: () = msg_send![notice_auto_on_label, setAlignment: 1isize];
-    let _: () = msg_send![notice_auto_on_label, setUsesSingleLineMode: YES];
-    let notice_on_font: id =
-        msg_send![class!(NSFont), boldSystemFontOfSize: OVERLAY_NOTICE_AUTO_ON_FONT_SIZE];
-    let _: () = msg_send![notice_auto_on_label, setFont: notice_on_font];
-    let _: () = msg_send![notice_auto_on_label, setHidden: YES];
-    let _: () = msg_send![notice_auto_on_chip, addSubview: notice_auto_on_label];
-
-    let busy_gradient_layer: id = msg_send![class!(CAGradientLayer), layer];
-    let busy_mask_layer: id = msg_send![class!(CALayer), layer];
-    if busy_gradient_layer != nil && busy_mask_layer != nil {
-        let frame = NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(overlay_width, overlay_height),
-        );
-        let _: () = msg_send![busy_gradient_layer, setFrame: frame];
-        let _: () = msg_send![busy_gradient_layer, setHidden: YES];
-        let _: () = msg_send![busy_gradient_layer, setOpacity: 1.0f32];
-        let _: () = msg_send![busy_gradient_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
-        let _: () = msg_send![busy_gradient_layer, setMasksToBounds: YES];
-        let _: () = msg_send![busy_gradient_layer, setNeedsDisplayOnBoundsChange: YES];
-        let _: () = msg_send![busy_gradient_layer, setType: NSString::alloc(nil).init_str("conic")];
-        let _: () = msg_send![busy_gradient_layer, setStartPoint: NSPoint::new(0.5, 0.5)];
-        let _: () = msg_send![busy_gradient_layer, setEndPoint: NSPoint::new(1.0, 0.5)];
-        let _: () = msg_send![busy_gradient_layer, setZPosition: 32.0f64];
-
-        let locations: id = msg_send![class!(NSMutableArray), arrayWithCapacity: 5usize];
-        for point in [0.0f64, 0.04, 0.10, 0.18, 1.0] {
-            let number: id = msg_send![class!(NSNumber), numberWithDouble: point];
-            let _: () = msg_send![locations, addObject: number];
-        }
-        let _: () = msg_send![busy_gradient_layer, setLocations: locations];
-
-        let colors: id = msg_send![class!(NSMutableArray), arrayWithCapacity: 5usize];
-        for (r, g, b, a) in [
-            (0.88, 0.97, 1.0, 1.0),
-            (0.62, 0.88, 1.0, 0.98),
-            (0.34, 0.74, 1.0, 0.62),
-            (0.14, 0.52, 0.98, 0.16),
-            (0.88, 0.97, 1.0, 1.0),
-        ] {
-            let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, a);
-            let cg_color: id = msg_send![color, CGColor];
-            let _: () = msg_send![colors, addObject: cg_color];
-        }
-        let _: () = msg_send![busy_gradient_layer, setColors: colors];
-
-        let _: () = msg_send![busy_mask_layer, setFrame: frame];
-        let _: () = msg_send![busy_mask_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
-        let _: () = msg_send![busy_mask_layer, setBorderWidth: OVERLAY_BUSY_RING_THICKNESS];
-        let white = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 1.0);
-        let white_cg: id = msg_send![white, CGColor];
-        let _: () = msg_send![busy_mask_layer, setBorderColor: white_cg];
-        let _: () = msg_send![busy_mask_layer, setNeedsDisplayOnBoundsChange: YES];
-
-        let _: () = msg_send![busy_gradient_layer, setMask: busy_mask_layer];
-        let _: () = msg_send![card_layer, addSublayer: busy_gradient_layer];
+    let colors: id = msg_send![class!(NSMutableArray), arrayWithCapacity: 5usize];
+    for (r, g, b, a) in [
+      (0.88, 0.97, 1.0, 1.0),
+      (0.62, 0.88, 1.0, 0.98),
+      (0.34, 0.74, 1.0, 0.62),
+      (0.14, 0.52, 0.98, 0.16),
+      (0.88, 0.97, 1.0, 1.0),
+    ] {
+      let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, a);
+      let cg_color: id = msg_send![color, CGColor];
+      let _: () = msg_send![colors, addObject: cg_color];
     }
+    let _: () = msg_send![busy_gradient_layer, setColors: colors];
 
-    let refs = OverlayRefs {
-        window,
-        card_view,
-        label,
-        hold_badge,
-        raw_badge,
-        meter_view,
-        wave_bars,
-        busy_gradient_layer,
-        busy_mask_layer,
-        notice_accessory_row,
-        notice_option_key,
-        notice_option_label,
-        notice_plus_label,
-        notice_space_key,
-        notice_space_label,
-        notice_auto_on_chip,
-        notice_auto_on_label,
-    };
-    render_overlay_text(refs, "", &[], None, false, false);
-    refs
+    let _: () = msg_send![busy_mask_layer, setFrame: frame];
+    let _: () = msg_send![busy_mask_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
+    let _: () = msg_send![busy_mask_layer, setBorderWidth: OVERLAY_BUSY_RING_THICKNESS];
+    let white = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 1.0);
+    let white_cg: id = msg_send![white, CGColor];
+    let _: () = msg_send![busy_mask_layer, setBorderColor: white_cg];
+    let _: () = msg_send![busy_mask_layer, setNeedsDisplayOnBoundsChange: YES];
+
+    let _: () = msg_send![busy_gradient_layer, setMask: busy_mask_layer];
+    let _: () = msg_send![card_layer, addSublayer: busy_gradient_layer];
+  }
+
+  let refs = OverlayRefs {
+    window,
+    card_view,
+    label,
+    hold_badge,
+    raw_badge,
+    meter_view,
+    wave_bars,
+    busy_gradient_layer,
+    busy_mask_layer,
+    notice_accessory_row,
+    notice_option_key,
+    notice_option_label,
+    notice_plus_label,
+    notice_space_key,
+    notice_space_label,
+    notice_auto_on_chip,
+    notice_auto_on_label,
+  };
+  render_overlay_text(refs, "", &[], None, false, false);
+  refs
 }
 
 fn install_global_hotkeys() {
-    let manager = match GlobalHotKeyManager::new() {
-        Ok(manager) => manager,
-        Err(err) => {
-            eprintln!("Azad: failed to initialize global hotkey manager: {}", err);
-            return;
-        }
-    };
-
-    let hotkey = HotKey::new(Some(HOLD_HOTKEY_MODIFIERS), HOLD_HOTKEY_KEY);
-    let hotkey_id = hotkey.id();
-
-    if let Err(err) = manager.register(hotkey) {
-        eprintln!(
-            "Azad: failed to register Option+Space hotkey (might be in use): {}",
-            err
-        );
-        return;
+  let manager = match GlobalHotKeyManager::new() {
+    Ok(manager) => manager,
+    Err(err) => {
+      eprintln!("Azad: failed to initialize global hotkey manager: {}", err);
+      return;
     }
+  };
 
-    let _ = HOTKEY_OPTION_SPACE_ID.set(hotkey_id);
+  let hotkey = HotKey::new(Some(HOLD_HOTKEY_MODIFIERS), HOLD_HOTKEY_KEY);
+  let hotkey_id = hotkey.id();
 
-    let escape_hotkey = HotKey::new(None, Code::Escape);
-    let _ = HOTKEY_ESCAPE_ID.set(escape_hotkey.id());
-    let enter_hotkey = HotKey::new(None, Code::Enter);
-    let _ = HOTKEY_ENTER_ID.set(enter_hotkey.id());
-    let enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::Enter);
-    let _ = HOTKEY_ENTER_OPTION_ID.set(enter_option_hotkey.id());
-    let numpad_enter_hotkey = HotKey::new(None, Code::NumpadEnter);
-    let _ = HOTKEY_NUMPAD_ENTER_ID.set(numpad_enter_hotkey.id());
-    let numpad_enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::NumpadEnter);
-    let _ = HOTKEY_NUMPAD_ENTER_OPTION_ID.set(numpad_enter_option_hotkey.id());
+  if let Err(err) = manager.register(hotkey) {
+    eprintln!("Azad: failed to register Option+Space hotkey (might be in use): {}", err);
+    return;
+  }
 
-    GlobalHotKeyEvent::set_event_handler(Some(|event| {
-        handle_global_hotkey_event(event);
-    }));
+  let _ = HOTKEY_OPTION_SPACE_ID.set(hotkey_id);
 
-    HOTKEY_MANAGER_REF.with(|slot| {
-        slot.borrow_mut().replace(manager);
-    });
+  let escape_hotkey = HotKey::new(None, Code::Escape);
+  let _ = HOTKEY_ESCAPE_ID.set(escape_hotkey.id());
+  let enter_hotkey = HotKey::new(None, Code::Enter);
+  let _ = HOTKEY_ENTER_ID.set(enter_hotkey.id());
+  let enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::Enter);
+  let _ = HOTKEY_ENTER_OPTION_ID.set(enter_option_hotkey.id());
+  let numpad_enter_hotkey = HotKey::new(None, Code::NumpadEnter);
+  let _ = HOTKEY_NUMPAD_ENTER_ID.set(numpad_enter_hotkey.id());
+  let numpad_enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::NumpadEnter);
+  let _ = HOTKEY_NUMPAD_ENTER_OPTION_ID.set(numpad_enter_option_hotkey.id());
+
+  GlobalHotKeyEvent::set_event_handler(Some(|event| {
+    handle_global_hotkey_event(event);
+  }));
+
+  HOTKEY_MANAGER_REF.with(|slot| {
+    slot.borrow_mut().replace(manager);
+  });
 }
 
 fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
-    if let Some(option_space_id) = HOTKEY_OPTION_SPACE_ID.get().copied() {
-        if event.id == option_space_id {
-            match event.state {
-                HotKeyState::Pressed => crate::app::send_event(AppEvent::HotkeyPressed),
-                HotKeyState::Released => crate::app::send_event(AppEvent::HotkeyReleased),
-            }
-            return;
-        }
+  if let Some(option_space_id) = HOTKEY_OPTION_SPACE_ID.get().copied() {
+    if event.id == option_space_id {
+      match event.state {
+        HotKeyState::Pressed => crate::app::send_event(AppEvent::HotkeyPressed),
+        HotKeyState::Released => crate::app::send_event(AppEvent::HotkeyReleased),
+      }
+      return;
     }
+  }
 
-    if let Some(escape_id) = HOTKEY_ESCAPE_ID.get().copied() {
-        if event.id == escape_id
-            && HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed)
-            && matches!(event.state, HotKeyState::Pressed)
-        {
-            crate::app::send_event(AppEvent::OverlayCancel);
-            return;
-        }
-    }
-
-    let is_enter_hotkey = HOTKEY_ENTER_ID.get().is_some_and(|id| event.id == *id)
-        || HOTKEY_ENTER_OPTION_ID
-            .get()
-            .is_some_and(|id| event.id == *id)
-        || HOTKEY_NUMPAD_ENTER_ID
-            .get()
-            .is_some_and(|id| event.id == *id)
-        || HOTKEY_NUMPAD_ENTER_OPTION_ID
-            .get()
-            .is_some_and(|id| event.id == *id);
-    let is_option_enter_hotkey = HOTKEY_ENTER_OPTION_ID
-        .get()
-        .is_some_and(|id| event.id == *id)
-        || HOTKEY_NUMPAD_ENTER_OPTION_ID
-            .get()
-            .is_some_and(|id| event.id == *id);
-    if is_enter_hotkey
-        && HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
-        && matches!(event.state, HotKeyState::Pressed)
+  if let Some(escape_id) = HOTKEY_ESCAPE_ID.get().copied() {
+    if event.id == escape_id
+      && HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed)
+      && matches!(event.state, HotKeyState::Pressed)
     {
-        crate::app::send_event(AppEvent::FinalizeHotkeyPressed {
-            raw_requested: is_option_enter_hotkey,
-        });
+      crate::app::send_event(AppEvent::OverlayCancel);
+      return;
     }
+  }
+
+  let is_enter_hotkey = HOTKEY_ENTER_ID.get().is_some_and(|id| event.id == *id)
+    || HOTKEY_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id)
+    || HOTKEY_NUMPAD_ENTER_ID.get().is_some_and(|id| event.id == *id)
+    || HOTKEY_NUMPAD_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id);
+  let is_option_enter_hotkey = HOTKEY_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id)
+    || HOTKEY_NUMPAD_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id);
+  if is_enter_hotkey
+    && HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
+    && matches!(event.state, HotKeyState::Pressed)
+  {
+    crate::app::send_event(AppEvent::FinalizeHotkeyPressed {
+      raw_requested: is_option_enter_hotkey,
+    });
+  }
 }
 
 fn set_escape_hotkey_enabled(enabled: bool) {
-    let currently_enabled = HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed);
-    if currently_enabled == enabled {
-        return;
+  let currently_enabled = HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed);
+  if currently_enabled == enabled {
+    return;
+  }
+
+  HOTKEY_MANAGER_REF.with(|slot| {
+    let mut manager_slot = slot.borrow_mut();
+    let Some(manager) = manager_slot.as_mut() else {
+      return;
+    };
+
+    let escape_hotkey = HotKey::new(None, Code::Escape);
+    let result =
+      if enabled { manager.register(escape_hotkey) } else { manager.unregister(escape_hotkey) };
+
+    match result {
+      Ok(()) => {
+        HOTKEY_ESCAPE_REGISTERED.store(enabled, Ordering::Relaxed);
+      }
+      Err(err) => {
+        eprintln!(
+          "Azad: failed to {} Escape hotkey: {}",
+          if enabled { "register" } else { "unregister" },
+          err
+        );
+      }
     }
-
-    HOTKEY_MANAGER_REF.with(|slot| {
-        let mut manager_slot = slot.borrow_mut();
-        let Some(manager) = manager_slot.as_mut() else {
-            return;
-        };
-
-        let escape_hotkey = HotKey::new(None, Code::Escape);
-        let result = if enabled {
-            manager.register(escape_hotkey)
-        } else {
-            manager.unregister(escape_hotkey)
-        };
-
-        match result {
-            Ok(()) => {
-                HOTKEY_ESCAPE_REGISTERED.store(enabled, Ordering::Relaxed);
-            }
-            Err(err) => {
-                eprintln!(
-                    "Azad: failed to {} Escape hotkey: {}",
-                    if enabled { "register" } else { "unregister" },
-                    err
-                );
-            }
-        }
-    });
+  });
 }
 
 fn set_enter_hotkey_enabled(enabled: bool) {
-    let currently_enabled = HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed);
-    if currently_enabled == enabled {
-        return;
+  let currently_enabled = HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed);
+  if currently_enabled == enabled {
+    return;
+  }
+
+  HOTKEY_MANAGER_REF.with(|slot| {
+    let mut manager_slot = slot.borrow_mut();
+    let Some(manager) = manager_slot.as_mut() else {
+      return;
+    };
+
+    let enter_hotkey = HotKey::new(None, Code::Enter);
+    let enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::Enter);
+    let numpad_enter_hotkey = HotKey::new(None, Code::NumpadEnter);
+    let numpad_enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::NumpadEnter);
+
+    if enabled {
+      match manager.register(enter_hotkey) {
+        Ok(()) => {
+          HOTKEY_ENTER_REGISTERED.store(true, Ordering::Relaxed);
+        }
+        Err(err) => {
+          eprintln!("Azad: failed to register Enter hotkey: {}", err);
+          return;
+        }
+      }
+
+      if let Err(err) = manager.register(enter_option_hotkey) {
+        eprintln!("Azad: failed to register Option+Enter hotkey: {}", err);
+      }
+      if let Err(err) = manager.register(numpad_enter_hotkey) {
+        eprintln!("Azad: failed to register NumpadEnter hotkey: {}", err);
+      }
+      if let Err(err) = manager.register(numpad_enter_option_hotkey) {
+        eprintln!("Azad: failed to register Option+NumpadEnter hotkey: {}", err);
+      }
+      return;
     }
 
-    HOTKEY_MANAGER_REF.with(|slot| {
-        let mut manager_slot = slot.borrow_mut();
-        let Some(manager) = manager_slot.as_mut() else {
-            return;
-        };
-
-        let enter_hotkey = HotKey::new(None, Code::Enter);
-        let enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::Enter);
-        let numpad_enter_hotkey = HotKey::new(None, Code::NumpadEnter);
-        let numpad_enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::NumpadEnter);
-
-        if enabled {
-            match manager.register(enter_hotkey) {
-                Ok(()) => {
-                    HOTKEY_ENTER_REGISTERED.store(true, Ordering::Relaxed);
-                }
-                Err(err) => {
-                    eprintln!("Azad: failed to register Enter hotkey: {}", err);
-                    return;
-                }
-            }
-
-            if let Err(err) = manager.register(enter_option_hotkey) {
-                eprintln!("Azad: failed to register Option+Enter hotkey: {}", err);
-            }
-            if let Err(err) = manager.register(numpad_enter_hotkey) {
-                eprintln!("Azad: failed to register NumpadEnter hotkey: {}", err);
-            }
-            if let Err(err) = manager.register(numpad_enter_option_hotkey) {
-                eprintln!(
-                    "Azad: failed to register Option+NumpadEnter hotkey: {}",
-                    err
-                );
-            }
-            return;
-        }
-
-        if let Err(err) = manager.unregister(enter_hotkey) {
-            eprintln!("Azad: failed to unregister Enter hotkey: {}", err);
-        }
-        if let Err(err) = manager.unregister(enter_option_hotkey) {
-            eprintln!("Azad: failed to unregister Option+Enter hotkey: {}", err);
-        }
-        if let Err(err) = manager.unregister(numpad_enter_hotkey) {
-            eprintln!("Azad: failed to unregister NumpadEnter hotkey: {}", err);
-        }
-        if let Err(err) = manager.unregister(numpad_enter_option_hotkey) {
-            eprintln!(
-                "Azad: failed to unregister Option+NumpadEnter hotkey: {}",
-                err
-            );
-        }
-        HOTKEY_ENTER_REGISTERED.store(false, Ordering::Relaxed);
-    });
+    if let Err(err) = manager.unregister(enter_hotkey) {
+      eprintln!("Azad: failed to unregister Enter hotkey: {}", err);
+    }
+    if let Err(err) = manager.unregister(enter_option_hotkey) {
+      eprintln!("Azad: failed to unregister Option+Enter hotkey: {}", err);
+    }
+    if let Err(err) = manager.unregister(numpad_enter_hotkey) {
+      eprintln!("Azad: failed to unregister NumpadEnter hotkey: {}", err);
+    }
+    if let Err(err) = manager.unregister(numpad_enter_option_hotkey) {
+      eprintln!("Azad: failed to unregister Option+NumpadEnter hotkey: {}", err);
+    }
+    HOTKEY_ENTER_REGISTERED.store(false, Ordering::Relaxed);
+  });
 }
 
 unsafe fn send_direct_text_input(text: &str) -> bool {
-    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        Ok(source) => source,
-        Err(_) => return false,
+  let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+    Ok(source) => source,
+    Err(_) => return false,
+  };
+  release_modifiers(&source);
+
+  // Dispatch per-character Unicode key events. Some targets appear to ignore or
+  // truncate multi-character Unicode payloads in a single CGEvent.
+  // Use a neutral printable keycode while attaching Unicode payload so we avoid
+  // posting modifier/function-key events into terminal protocols.
+  for ch in text.chars() {
+    let mut one = String::new();
+    one.push(ch);
+
+    let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, true)
+    else {
+      return false;
     };
-    release_modifiers(&source);
+    key_down.set_string(&one);
+    key_down.post(CGEventTapLocation::HID);
 
-    // Dispatch per-character Unicode key events. Some targets appear to ignore or
-    // truncate multi-character Unicode payloads in a single CGEvent.
-    // Use a neutral printable keycode while attaching Unicode payload so we avoid
-    // posting modifier/function-key events into terminal protocols.
-    for ch in text.chars() {
-        let mut one = String::new();
-        one.push(ch);
-
-        let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, true)
-        else {
-            return false;
-        };
-        key_down.set_string(&one);
-        key_down.post(CGEventTapLocation::HID);
-
-        let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, false)
-        else {
-            return false;
-        };
-        key_up.post(CGEventTapLocation::HID);
-    }
-    true
+    let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, false)
+    else {
+      return false;
+    };
+    key_up.post(CGEventTapLocation::HID);
+  }
+  true
 }
 
 unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
-    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        Ok(source) => source,
-        Err(_) => return false,
-    };
+  let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+    Ok(source) => source,
+    Err(_) => return false,
+  };
 
-    release_modifiers(&source);
+  release_modifiers(&source);
 
-    let modifier_key = if flags.contains(CGEventFlags::CGEventFlagControl) {
-        Some(KEYCODE_LEFT_CONTROL)
-    } else if flags.contains(CGEventFlags::CGEventFlagShift) {
-        Some(KEYCODE_LEFT_SHIFT)
-    } else {
-        None
-    };
+  let modifier_key = if flags.contains(CGEventFlags::CGEventFlagControl) {
+    Some(KEYCODE_LEFT_CONTROL)
+  } else if flags.contains(CGEventFlags::CGEventFlagShift) {
+    Some(KEYCODE_LEFT_SHIFT)
+  } else {
+    None
+  };
 
-    if let Some(modifier_key) = modifier_key {
-        let Ok(mod_down) = CGEvent::new_keyboard_event(source.clone(), modifier_key, true) else {
-            return false;
-        };
-        if !flags.is_empty() {
-            mod_down.set_flags(flags);
-        }
-        mod_down.post(CGEventTapLocation::HID);
-    }
-
-    let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), keycode, true) else {
-        return false;
+  if let Some(modifier_key) = modifier_key {
+    let Ok(mod_down) = CGEvent::new_keyboard_event(source.clone(), modifier_key, true) else {
+      return false;
     };
     if !flags.is_empty() {
-        key_down.set_flags(flags);
+      mod_down.set_flags(flags);
     }
-    key_down.post(CGEventTapLocation::HID);
+    mod_down.post(CGEventTapLocation::HID);
+  }
 
-    let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), keycode, false) else {
-        return false;
-    };
-    if !flags.is_empty() {
-        key_up.set_flags(flags);
+  let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), keycode, true) else {
+    return false;
+  };
+  if !flags.is_empty() {
+    key_down.set_flags(flags);
+  }
+  key_down.post(CGEventTapLocation::HID);
+
+  let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), keycode, false) else {
+    return false;
+  };
+  if !flags.is_empty() {
+    key_up.set_flags(flags);
+  }
+  key_up.post(CGEventTapLocation::HID);
+
+  if let Some(modifier_key) = modifier_key {
+    if let Ok(mod_up) = CGEvent::new_keyboard_event(source, modifier_key, false) {
+      mod_up.post(CGEventTapLocation::HID);
     }
-    key_up.post(CGEventTapLocation::HID);
+  }
 
-    if let Some(modifier_key) = modifier_key {
-        if let Ok(mod_up) = CGEvent::new_keyboard_event(source, modifier_key, false) {
-            mod_up.post(CGEventTapLocation::HID);
-        }
-    }
-
-    true
+  true
 }
 
 unsafe fn send_command_v_robust() {
-    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        Ok(source) => source,
-        Err(_) => return,
-    };
+  let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+    Ok(source) => source,
+    Err(_) => return,
+  };
 
-    release_modifiers(&source);
+  release_modifiers(&source);
 
-    if let Ok(command_down) =
-        CGEvent::new_keyboard_event(source.clone(), KEYCODE_LEFT_COMMAND, true)
-    {
-        command_down.set_flags(CGEventFlags::CGEventFlagCommand);
-        command_down.post(CGEventTapLocation::HID);
-    }
+  if let Ok(command_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_LEFT_COMMAND, true)
+  {
+    command_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    command_down.post(CGEventTapLocation::HID);
+  }
 
-    if let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_V, true) {
-        key_down.set_flags(CGEventFlags::CGEventFlagCommand);
-        key_down.post(CGEventTapLocation::HID);
-    }
+  if let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_V, true) {
+    key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_down.post(CGEventTapLocation::HID);
+  }
 
-    if let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_V, false) {
-        key_up.set_flags(CGEventFlags::CGEventFlagCommand);
-        key_up.post(CGEventTapLocation::HID);
-    }
-    // Hold the command chord briefly so targets consistently register the paste action.
-    std::thread::sleep(Duration::from_millis(PASTE_CHORD_HOLD_MS));
+  if let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_V, false) {
+    key_up.set_flags(CGEventFlags::CGEventFlagCommand);
+    key_up.post(CGEventTapLocation::HID);
+  }
+  // Hold the command chord briefly so targets consistently register the paste action.
+  std::thread::sleep(Duration::from_millis(PASTE_CHORD_HOLD_MS));
 
-    if let Ok(command_up) = CGEvent::new_keyboard_event(source, KEYCODE_LEFT_COMMAND, false) {
-        command_up.post(CGEventTapLocation::HID);
-    }
+  if let Ok(command_up) = CGEvent::new_keyboard_event(source, KEYCODE_LEFT_COMMAND, false) {
+    command_up.post(CGEventTapLocation::HID);
+  }
 }
 
 unsafe fn release_modifiers(source: &CGEventSource) {
-    for key in [
-        KEYCODE_LEFT_SHIFT,
-        KEYCODE_RIGHT_SHIFT,
-        KEYCODE_LEFT_OPTION,
-        KEYCODE_RIGHT_OPTION,
-        KEYCODE_LEFT_CONTROL,
-        KEYCODE_RIGHT_CONTROL,
-        KEYCODE_LEFT_COMMAND,
-        KEYCODE_RIGHT_COMMAND,
-    ] {
-        if let Ok(event) = CGEvent::new_keyboard_event(source.clone(), key, false) {
-            event.post(CGEventTapLocation::HID);
-        }
+  for key in [
+    KEYCODE_LEFT_SHIFT,
+    KEYCODE_RIGHT_SHIFT,
+    KEYCODE_LEFT_OPTION,
+    KEYCODE_RIGHT_OPTION,
+    KEYCODE_LEFT_CONTROL,
+    KEYCODE_RIGHT_CONTROL,
+    KEYCODE_LEFT_COMMAND,
+    KEYCODE_RIGHT_COMMAND,
+  ] {
+    if let Ok(event) = CGEvent::new_keyboard_event(source.clone(), key, false) {
+      event.post(CGEventTapLocation::HID);
     }
+  }
 }
 
 unsafe fn write_pasteboard_string(text: &str) -> bool {
-    let pasteboard = NSPasteboard::generalPasteboard(nil);
-    let _: usize = msg_send![pasteboard, clearContents];
-    let ns_text = NSString::alloc(nil).init_str(text);
-    let ok: i8 = msg_send![pasteboard, setString: ns_text forType: NSPasteboardTypeString];
-    ok != 0
+  let pasteboard = NSPasteboard::generalPasteboard(nil);
+  let _: usize = msg_send![pasteboard, clearContents];
+  let ns_text = NSString::alloc(nil).init_str(text);
+  let ok: i8 = msg_send![pasteboard, setString: ns_text forType: NSPasteboardTypeString];
+  ok != 0
 }
 
 fn is_accessibility_trusted() -> bool {
-    unsafe { AXIsProcessTrusted() }
+  unsafe { AXIsProcessTrusted() }
 }
 
 fn maybe_request_accessibility_permission_once() {
-    if OPENED_ACCESSIBILITY_SETTINGS
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        // Ask macOS to surface the Accessibility trust flow.
-        // If that does not trigger UI, fall back to opening the settings pane directly.
-        let prompted = unsafe { request_accessibility_prompt() };
-        if !prompted {
-            let _ = std::process::Command::new("/usr/bin/open")
-                .arg(
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-                )
-                .spawn();
-        }
+  if OPENED_ACCESSIBILITY_SETTINGS
+    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+    .is_ok()
+  {
+    // Ask macOS to surface the Accessibility trust flow.
+    // If that does not trigger UI, fall back to opening the settings pane directly.
+    let prompted = unsafe { request_accessibility_prompt() };
+    if !prompted {
+      let _ = std::process::Command::new("/usr/bin/open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .spawn();
     }
+  }
 }
 
 unsafe extern "C" {
-    fn AXIsProcessTrusted() -> bool;
-    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+  fn AXIsProcessTrusted() -> bool;
+  fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
 }
 
 unsafe fn request_accessibility_prompt() -> bool {
-    let key = NSString::alloc(nil).init_str("AXTrustedCheckOptionPrompt");
-    let value: id = msg_send![class!(NSNumber), numberWithBool: YES];
-    let options: id = msg_send![class!(NSDictionary), dictionaryWithObject: value forKey: key];
+  let key = NSString::alloc(nil).init_str("AXTrustedCheckOptionPrompt");
+  let value: id = msg_send![class!(NSNumber), numberWithBool: YES];
+  let options: id = msg_send![class!(NSDictionary), dictionaryWithObject: value forKey: key];
 
-    if options == nil {
-        return false;
-    }
+  if options == nil {
+    return false;
+  }
 
-    AXIsProcessTrustedWithOptions(options as *const c_void)
+  AXIsProcessTrustedWithOptions(options as *const c_void)
 }
 
 unsafe fn assign_status_icon(status_item: id) {
-    let button: id = msg_send![status_item, button];
-    if button == nil {
-        return;
-    }
+  let button: id = msg_send![status_item, button];
+  if button == nil {
+    return;
+  }
 
-    // Use a template status item icon so AppKit automatically handles
-    // light/dark mode and highlighted menu bar states.
-    let template_icon = load_icon("azad-black.png");
-    let fallback_icon = load_icon("azad-white.png");
-    let icon = if template_icon != nil {
-        template_icon
-    } else {
-        fallback_icon
-    };
+  // Use a template status item icon so AppKit automatically handles
+  // light/dark mode and highlighted menu bar states.
+  let template_icon = load_icon("azad-black.png");
+  let fallback_icon = load_icon("azad-white.png");
+  let icon = if template_icon != nil { template_icon } else { fallback_icon };
 
-    if icon != nil {
-        let _: () = msg_send![icon, setTemplate: YES];
-        let _: () = msg_send![button, setImage: icon];
-    } else {
-        let _: () = msg_send![button, setTitle: NSString::alloc(nil).init_str("Azad")];
-    }
+  if icon != nil {
+    let _: () = msg_send![icon, setTemplate: YES];
+    let _: () = msg_send![button, setImage: icon];
+  } else {
+    let _: () = msg_send![button, setTitle: NSString::alloc(nil).init_str("Azad")];
+  }
 }
 
 unsafe fn load_icon(name: &str) -> id {
-    for base_dir in icon_base_dirs() {
-        let path = base_dir.join(name);
-        if !path.exists() {
-            continue;
-        }
-
-        let ns_path = NSString::alloc(nil).init_str(&path.to_string_lossy());
-        let image = NSImage::alloc(nil).initByReferencingFile_(ns_path);
-        if image == nil {
-            continue;
-        }
-
-        let _: () = msg_send![image, setSize: NSSize::new(18.0, 18.0)];
-        return image;
+  for base_dir in icon_base_dirs() {
+    let path = base_dir.join(name);
+    if !path.exists() {
+      continue;
     }
 
-    nil
+    let ns_path = NSString::alloc(nil).init_str(&path.to_string_lossy());
+    let image = NSImage::alloc(nil).initByReferencingFile_(ns_path);
+    if image == nil {
+      continue;
+    }
+
+    let _: () = msg_send![image, setSize: NSSize::new(18.0, 18.0)];
+    return image;
+  }
+
+  nil
 }
 
 fn icon_base_dirs() -> Vec<PathBuf> {
-    let mut out = Vec::new();
+  let mut out = Vec::new();
 
-    if let Some(dir) = std::env::var_os("AZAD_ASSETS_DIR") {
-        out.push(PathBuf::from(dir));
-    }
+  if let Some(dir) = std::env::var_os("AZAD_ASSETS_DIR") {
+    out.push(PathBuf::from(dir));
+  }
 
-    if let Some(bundle_dir) = unsafe { bundle_resources_dir() } {
-        out.push(bundle_dir);
-    }
+  if let Some(bundle_dir) = unsafe { bundle_resources_dir() } {
+    out.push(bundle_dir);
+  }
 
-    out.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"));
-    out
+  out.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"));
+  out
 }
 
 unsafe fn bundle_resources_dir() -> Option<PathBuf> {
-    let bundle: id = msg_send![class!(NSBundle), mainBundle];
-    if bundle == nil {
-        return None;
-    }
+  let bundle: id = msg_send![class!(NSBundle), mainBundle];
+  if bundle == nil {
+    return None;
+  }
 
-    let resource_path: id = msg_send![bundle, resourcePath];
-    nsstring_to_path(resource_path)
+  let resource_path: id = msg_send![bundle, resourcePath];
+  nsstring_to_path(resource_path)
 }
 
 unsafe fn frontmost_bundle_id() -> Option<String> {
-    let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-    if workspace == nil {
-        return None;
-    }
-    let frontmost: id = msg_send![workspace, frontmostApplication];
-    if frontmost == nil {
-        return None;
-    }
-    let bundle_id: id = msg_send![frontmost, bundleIdentifier];
-    nsstring_to_string(bundle_id)
+  let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+  if workspace == nil {
+    return None;
+  }
+  let frontmost: id = msg_send![workspace, frontmostApplication];
+  if frontmost == nil {
+    return None;
+  }
+  let bundle_id: id = msg_send![frontmost, bundleIdentifier];
+  nsstring_to_string(bundle_id)
 }
 
 unsafe fn nsstring_to_path(value: id) -> Option<PathBuf> {
-    if value == nil {
-        return None;
-    }
+  if value == nil {
+    return None;
+  }
 
-    let ptr: *const c_char = msg_send![value, UTF8String];
-    if ptr.is_null() {
-        return None;
-    }
+  let ptr: *const c_char = msg_send![value, UTF8String];
+  if ptr.is_null() {
+    return None;
+  }
 
-    Some(PathBuf::from(
-        CStr::from_ptr(ptr).to_string_lossy().into_owned(),
-    ))
+  Some(PathBuf::from(CStr::from_ptr(ptr).to_string_lossy().into_owned()))
 }
 
 unsafe fn nsstring_to_string(value: id) -> Option<String> {
-    if value == nil {
-        return None;
-    }
+  if value == nil {
+    return None;
+  }
 
-    let ptr: *const c_char = msg_send![value, UTF8String];
-    if ptr.is_null() {
-        return None;
-    }
+  let ptr: *const c_char = msg_send![value, UTF8String];
+  if ptr.is_null() {
+    return None;
+  }
 
-    Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+  Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
 }

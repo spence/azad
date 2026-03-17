@@ -14,228 +14,251 @@ const RUN_ON_STARTUP_KEY: &str = "AzadRunOnStartup";
 const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
 const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
+const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 
 pub fn load_preferred_device_id() -> Option<String> {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return None;
-        }
-
-        let key = NSString::alloc(nil).init_str(PREFERRED_DEVICE_KEY);
-        let value: id = msg_send![defaults, stringForKey: key];
-        nsstring_to_string(value)
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return None;
     }
+
+    let key = NSString::alloc(nil).init_str(PREFERRED_DEVICE_KEY);
+    let value: id = msg_send![defaults, stringForKey: key];
+    nsstring_to_string(value)
+  }
 }
 
 pub fn save_preferred_device_id(device_id: &str) {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return;
-        }
-
-        let key = NSString::alloc(nil).init_str(PREFERRED_DEVICE_KEY);
-        let value = NSString::alloc(nil).init_str(device_id);
-        let _: () = msg_send![defaults, setObject: value forKey: key];
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
     }
+
+    let key = NSString::alloc(nil).init_str(PREFERRED_DEVICE_KEY);
+    let value = NSString::alloc(nil).init_str(device_id);
+    let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
 }
 
 pub fn load_always_listening_enabled() -> bool {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return true;
-        }
-
-        let key = NSString::alloc(nil).init_str(ALWAYS_LISTENING_KEY);
-        let existing: id = msg_send![defaults, objectForKey: key];
-        if existing == nil {
-            return true;
-        }
-
-        let value: i8 = msg_send![defaults, boolForKey: key];
-        value != 0
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return true;
     }
+
+    let key = NSString::alloc(nil).init_str(ALWAYS_LISTENING_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return true;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
 }
 
 pub fn save_always_listening_enabled(enabled: bool) {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return;
-        }
-
-        let key = NSString::alloc(nil).init_str(ALWAYS_LISTENING_KEY);
-        let value = if enabled { YES } else { NO };
-        let _: () = msg_send![defaults, setBool: value forKey: key];
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
     }
+
+    let key = NSString::alloc(nil).init_str(ALWAYS_LISTENING_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
 }
 
 pub fn load_debug_stats_enabled() -> bool {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return false;
-        }
-
-        let key = NSString::alloc(nil).init_str(DEBUG_STATS_ENABLED_KEY);
-        let existing: id = msg_send![defaults, objectForKey: key];
-        if existing == nil {
-            return false;
-        }
-
-        let value: i8 = msg_send![defaults, boolForKey: key];
-        value != 0
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return false;
     }
+
+    let key = NSString::alloc(nil).init_str(DEBUG_STATS_ENABLED_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return false;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
 }
 
 pub fn save_debug_stats_enabled(enabled: bool) {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return;
-        }
-
-        let key = NSString::alloc(nil).init_str(DEBUG_STATS_ENABLED_KEY);
-        let value = if enabled { YES } else { NO };
-        let _: () = msg_send![defaults, setBool: value forKey: key];
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
     }
+
+    let key = NSString::alloc(nil).init_str(DEBUG_STATS_ENABLED_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
 }
 
 pub fn load_run_on_startup_enabled() -> bool {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return true;
-        }
-
-        let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
-        let existing: id = msg_send![defaults, objectForKey: key];
-        if existing == nil {
-            return true;
-        }
-
-        let value: i8 = msg_send![defaults, boolForKey: key];
-        value != 0
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return true;
     }
+
+    let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return true;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
 }
 
 pub fn save_run_on_startup_enabled(enabled: bool) {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return;
-        }
-
-        let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
-        let value = if enabled { YES } else { NO };
-        let _: () = msg_send![defaults, setBool: value forKey: key];
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
     }
+
+    let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
 }
 
 pub fn load_paste_method() -> PasteMethod {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return PasteMethod::default();
-        }
-
-        let key = NSString::alloc(nil).init_str(PASTE_METHOD_KEY);
-        let value: id = msg_send![defaults, stringForKey: key];
-        let Some(value) = nsstring_to_string(value) else {
-            return PasteMethod::default();
-        };
-        PasteMethod::from_prefs_value(value.trim())
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return PasteMethod::default();
     }
+
+    let key = NSString::alloc(nil).init_str(PASTE_METHOD_KEY);
+    let value: id = msg_send![defaults, stringForKey: key];
+    let Some(value) = nsstring_to_string(value) else {
+      return PasteMethod::default();
+    };
+    PasteMethod::from_prefs_value(value.trim())
+  }
 }
 
 pub fn save_paste_method(method: PasteMethod) {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return;
-        }
-
-        let key = NSString::alloc(nil).init_str(PASTE_METHOD_KEY);
-        let value = NSString::alloc(nil).init_str(method.prefs_value());
-        let _: () = msg_send![defaults, setObject: value forKey: key];
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
     }
+
+    let key = NSString::alloc(nil).init_str(PASTE_METHOD_KEY);
+    let value = NSString::alloc(nil).init_str(method.prefs_value());
+    let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
 }
 
 pub fn load_auto_submit_mode() -> AutoSubmitMode {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return AutoSubmitMode::default();
-        }
-
-        let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
-        let value: id = msg_send![defaults, stringForKey: key];
-        let Some(value) = nsstring_to_string(value) else {
-            return AutoSubmitMode::default();
-        };
-        AutoSubmitMode::from_prefs_value(value.trim())
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return AutoSubmitMode::default();
     }
+
+    let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
+    let value: id = msg_send![defaults, stringForKey: key];
+    let Some(value) = nsstring_to_string(value) else {
+      return AutoSubmitMode::default();
+    };
+    AutoSubmitMode::from_prefs_value(value.trim())
+  }
 }
 
 pub fn save_auto_submit_mode(mode: AutoSubmitMode) {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return;
-        }
-
-        let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
-        let value = NSString::alloc(nil).init_str(mode.prefs_value());
-        let _: () = msg_send![defaults, setObject: value forKey: key];
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
     }
+
+    let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
+    let value = NSString::alloc(nil).init_str(mode.prefs_value());
+    let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
 }
 
 pub fn load_append_trailing_space_on_paste() -> bool {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return true;
-        }
-
-        let key = NSString::alloc(nil).init_str(APPEND_TRAILING_SPACE_KEY);
-        let existing: id = msg_send![defaults, objectForKey: key];
-        if existing == nil {
-            return true;
-        }
-
-        let value: i8 = msg_send![defaults, boolForKey: key];
-        value != 0
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return true;
     }
+
+    let key = NSString::alloc(nil).init_str(APPEND_TRAILING_SPACE_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return true;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
 }
 
 pub fn save_append_trailing_space_on_paste(enabled: bool) {
-    unsafe {
-        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
-        if defaults == nil {
-            return;
-        }
-
-        let key = NSString::alloc(nil).init_str(APPEND_TRAILING_SPACE_KEY);
-        let value = if enabled { YES } else { NO };
-        let _: () = msg_send![defaults, setBool: value forKey: key];
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
     }
+
+    let key = NSString::alloc(nil).init_str(APPEND_TRAILING_SPACE_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn load_active_model_pack() -> Option<String> {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return None;
+    }
+
+    let key = NSString::alloc(nil).init_str(ACTIVE_MODEL_PACK_KEY);
+    let value: id = msg_send![defaults, stringForKey: key];
+    nsstring_to_string(value)
+  }
+}
+
+pub fn save_active_model_pack(pack_id: &str) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(ACTIVE_MODEL_PACK_KEY);
+    let value = NSString::alloc(nil).init_str(pack_id);
+    let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
 }
 
 unsafe fn nsstring_to_string(value: id) -> Option<String> {
-    if value == nil {
-        return None;
-    }
+  if value == nil {
+    return None;
+  }
 
-    let ptr: *const c_char = unsafe { msg_send![value, UTF8String] };
-    if ptr.is_null() {
-        return None;
-    }
+  let ptr: *const c_char = unsafe { msg_send![value, UTF8String] };
+  if ptr.is_null() {
+    return None;
+  }
 
-    Some(
-        unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned(),
-    )
+  Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
 }
