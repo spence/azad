@@ -13,27 +13,27 @@ The project is focused on low-latency transcription, reliable hotkey/VAD interac
 
 When taking over a task, do this first:
 
-1. Confirm which repo you are changing (most app issues are in `azad/azad`).
+1. Confirm which repo you are changing (most app issues are in `crates/azad`).
 2. Read `PROJECT.md` at workspace root for current goals.
 3. For hotkey/session behavior, read:
-   - `azad/azad/docs/keyboard-shortcut-state-machine.md`
-   - `azad/azad/src/interaction_sm.rs`
-   - `azad/azad/src/app.rs`
+   - `crates/azad/docs/keyboard-shortcut-state-machine.md`
+   - `crates/azad/src/interaction_sm.rs`
+   - `crates/azad/src/app.rs`
 4. Check current local changes across repos before editing:
    - `git -C <repo> status --short`
 
 ## Repository Map
 
-- `azad/azad`: macOS app (overlay UI, hotkeys, settings, paste modes, lifecycle).
-- `asr-rs`: ASR/transcription engine crate used by app runtime.
-- `whisper-cpp-plus-rs`: whisper integration layer, examples, benches, tests.
-- `parakeet-rs`: additional model/audio components.
-- `whisper.cpp`: upstream dependency checkout.
+- `crates/azad`: macOS app (overlay UI, hotkeys, settings, paste modes, lifecycle).
+- `crates/asr-rs`: ASR/transcription engine crate used by app runtime.
+- `crates/whisper-cpp-plus-rs`: whisper integration layer, examples, benches, tests.
+- `crates/parakeet-rs`: additional model/audio components.
+- `crates/whisper.cpp`: upstream dependency checkout.
 
 ## Deep Specs
 
-- `asr-rs/SPECIFICATION.md`: ASR runtime architecture, turn pipeline, fallback/quality design, and change playbooks.
-- `azad/azad/SPECIFICATION.md`: app interaction architecture, state machine integration, overlay/paste/settings behavior, and change playbooks.
+- `crates/asr-rs/SPECIFICATION.md`: ASR runtime architecture, turn pipeline, fallback/quality design, and change playbooks.
+- `crates/azad/SPECIFICATION.md`: app interaction architecture, state machine integration, overlay/paste/settings behavior, and change playbooks.
 
 ## Primary Runtime Ownership (Non-Negotiable)
 
@@ -44,7 +44,7 @@ When taking over a task, do this first:
   - verify updated process is running.
 - Task is not complete until updated app instance is live.
 
-### Azad lifecycle commands (`azad/azad`)
+### Azad lifecycle commands (`crates/azad`)
 
 - `just install`
 - `just restart` (or `just start`)
@@ -68,7 +68,7 @@ Expected service/app identifiers:
 
 - Add or update unit tests for state-machine and transition changes.
 - Run repo-appropriate tests before finishing:
-  - `cargo test -q` (in touched Rust repos, especially `azad/azad`).
+  - `cargo test -q` (in touched Rust repos, especially `crates/azad`).
 - Validate live runtime for UI/hotkey changes after restart.
 
 ## Commit and Scope Hygiene

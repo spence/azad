@@ -300,7 +300,7 @@ When regressions occur:
 
 ## 17. Relationship to ASR-RS
 
-ASR spec: `../../asr-rs/SPECIFICATION.md`
+ASR spec: `../asr-rs/SPECIFICATION.md`
 
 Integration contract summary:
 

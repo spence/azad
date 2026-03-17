@@ -3,6 +3,7 @@ Runtime Agent Design delivers low-latency transcription with deterministic hotke
 
 Active milestones:
 - Idle VAD Silence Compute Reduction
+- Root Rust Workspace Cutover
 
 Completed milestones:
 - Debug Recent Quality Session Association
@@ -22,6 +23,11 @@ Completed milestones:
 ## Idle VAD Silence Compute Reduction
 - [o] Skip VAD model inference for hard-silence idle chunks while preserving start-gating behavior.
 - [o] Validate live always-listening idle CPU after redeploy to confirm the baseline drops.
+
+## Root Rust Workspace Cutover
+- [o] Build Azad from repository root via a top-level Cargo workspace and root `just` workflow.
+- [o] Fix crate pathing and model path defaults so the new `crates/*` layout works without old directory assumptions.
+- [o] Update setup docs/scripts to root-first commands and `crates/*` paths.
 
 ## Tail Finalization Timing Telemetry
 - [x] Emit debug-only timing logs for tail incremental enqueue, completion, timeout, and late dropped results.
