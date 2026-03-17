@@ -1,0 +1,12 @@
+[submodule "crates/parakeet-rs"]
+	path = crates/parakeet-rs
+	url = https://github.com/spence/parakeet-rs
+[submodule "crates/whisper-cpp-plus-rs"]
+	path = crates/whisper-cpp-plus-rs
+	url = https://github.com/spence/whisper-cpp-plus-rs
+[submodule "crates/whisper.cpp"]
+	path = crates/whisper.cpp
+	url = https://github.com/spence/whisper.cpp.git
+[submodule "crates/asr-rs"]
+	path = crates/asr-rs
+	url = https://github.com/spence/asr-rs.git
