@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/azad",
+    "crates/asr-rs",
+    "crates/parakeet-rs",
+]
+default-members = ["crates/azad"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.70.0"
+authors = ["Ross Morsali"]
+license = "MIT"
+repository = "https://github.com/getpinch/whisper-cpp-plus-rs"
+keywords = ["whisper", "speech", "transcription", "streaming", "speech-to-text"]
+categories = ["multimedia::audio", "api-bindings", "science::robotics"]
+
+[workspace.dependencies]
+thiserror = "1.0"
+num_cpus = "1.16"

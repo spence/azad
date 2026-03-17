@@ -46,10 +46,7 @@ impl Default for AzadConfig {
             paste_delay_ms: 120,
             native_engine_logs_enabled: env_flag_enabled("AZAD_NATIVE_ENGINE_LOGS"),
             pipeline: PipelineConfig {
-                vad_model_path: root
-                    .join("whisper.cpp")
-                    .join("models")
-                    .join("ggml-silero-v6.2.0.bin"),
+                vad_model_path: default_vad_model_path(&root),
                 vad_thold: 0.45,
                 vad_start_chunks: 1,
                 pre_roll_ms: 800,
@@ -79,10 +76,21 @@ fn env_flag_enabled(key: &str) -> bool {
 }
 
 fn workspace_root() -> PathBuf {
-    // <workspace>/azad/azad -> <workspace>
+    // <workspace>/crates/azad -> <workspace>
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf()
+}
+
+fn default_vad_model_path(root: &Path) -> PathBuf {
+    let model_dir = root.join("crates").join("whisper.cpp").join("models");
+    let primary = model_dir.join("ggml-silero-v6.2.0.bin");
+    if primary.exists() {
+        primary
+    } else {
+        // Fresh checkouts commonly have only test fixtures until the full VAD model is downloaded.
+        model_dir.join("for-tests-silero-v6.2.0-ggml.bin")
+    }
 }
