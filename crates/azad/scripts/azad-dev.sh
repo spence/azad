@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "${CRATE_DIR}/../.." && pwd)"
 LABEL="ai.azad"
 LEGACY_LABEL="com.spence.azad"
 DOMAIN="gui/$(id -u)"
@@ -21,7 +22,7 @@ LOG_DIR="$HOME/Library/Logs/Azad"
 STDOUT_LOG="${LOG_DIR}/stdout.log"
 STDERR_LOG="${LOG_DIR}/stderr.log"
 
-BUILD_PROFILE="${AZAD_BUILD_PROFILE:-debug}"
+BUILD_PROFILE="${AZAD_BUILD_PROFILE:-release}"
 if [[ "$BUILD_PROFILE" == "release" ]]; then
   BIN_SOURCE="${ROOT_DIR}/target/release/azad"
 else
@@ -58,7 +59,7 @@ USAGE
 }
 
 build_binary() {
-  pushd "$ROOT_DIR" >/dev/null
+  pushd "$CRATE_DIR" >/dev/null
   if [[ "$BUILD_PROFILE" == "release" ]]; then
     cargo build --release
   else
@@ -151,7 +152,7 @@ write_launch_agent_plist() {
     <string>Aqua</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${ROOT_DIR}</string>
+  <string>${CRATE_DIR}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>AZAD_ASSETS_DIR</key>
@@ -228,9 +229,9 @@ cmd_install() {
 
   mkdir -p "$APP_MACOS_DIR" "$APP_RESOURCES_DIR"
   install -m 755 "$BIN_SOURCE" "${APP_MACOS_DIR}/azad"
-  install -m 644 "${ROOT_DIR}/assets/azad-black.png" "${APP_RESOURCES_DIR}/azad-black.png"
-  install -m 644 "${ROOT_DIR}/assets/azad-white.png" "${APP_RESOURCES_DIR}/azad-white.png"
-  install -m 644 "${ROOT_DIR}/assets/azad.icns" "${APP_RESOURCES_DIR}/azad.icns"
+  install -m 644 "${CRATE_DIR}/assets/azad-black.png" "${APP_RESOURCES_DIR}/azad-black.png"
+  install -m 644 "${CRATE_DIR}/assets/azad-white.png" "${APP_RESOURCES_DIR}/azad-white.png"
+  install -m 644 "${CRATE_DIR}/assets/azad.icns" "${APP_RESOURCES_DIR}/azad.icns"
   write_info_plist
   write_launch_agent_plist
   codesign_app_if_configured
