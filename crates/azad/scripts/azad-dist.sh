@@ -42,7 +42,7 @@ fi
 
 echo "==> Building release binary"
 pushd "$CRATE_DIR" >/dev/null
-cargo build --release
+MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release
 popd >/dev/null
 
 BIN_SOURCE="${ROOT_DIR}/target/release/azad"
