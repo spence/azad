@@ -104,9 +104,12 @@ echo "==> Signing app bundle"
   "$APP_DIR"
 
 echo "==> Notarizing app bundle"
-xcrun notarytool submit "$APP_DIR" \
+APP_ZIP="${DIST_DIR}/Azad.zip"
+ditto -c -k --keepParent "$APP_DIR" "$APP_ZIP"
+xcrun notarytool submit "$APP_ZIP" \
   --keychain-profile "$NOTARIZATION_PROFILE" \
   --wait
+rm -f "$APP_ZIP"
 
 echo "==> Stapling notarization ticket to app"
 xcrun stapler staple "$APP_DIR"
