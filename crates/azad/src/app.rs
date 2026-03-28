@@ -31,6 +31,7 @@ const OVERLAY_ACTIVITY_DECAY_PER_TICK: f32 = 0.88;
 const OVERLAY_BUSY_PHASE_STEP: f32 = 0.24;
 const LISTEN_TOGGLE_NOTICE_DURATION_MS: u64 = 600;
 const LISTEN_RECOVERING_NOTICE_DURATION_MS: u64 = 1200;
+const CANCEL_VAD_SHOW_SUPPRESSION_MS: u64 = 500;
 const SESSION_FAULT_WINDOW_MS: u64 = 30_000;
 const SESSION_IMMEDIATE_RETRY_LIMIT: usize = 2;
 const SESSION_DEGRADED_THRESHOLD: usize = 3;
@@ -168,6 +169,7 @@ struct AppController {
   session_fault_window: Vec<Instant>,
   last_session_error_was_stream_fault: bool,
   pending_recovery_restart: bool,
+  cancel_vad_show_suppressed_until: Option<Instant>,
   active_pack_id: String,
   models_ready: bool,
   download_handle: Option<DownloadHandle>,
@@ -572,6 +574,7 @@ impl AppController {
       session_fault_window: Vec::new(),
       last_session_error_was_stream_fault: false,
       pending_recovery_restart: false,
+      cancel_vad_show_suppressed_until: None,
       active_pack_id,
       models_ready: false,
       download_handle: None,
@@ -825,6 +828,7 @@ impl AppController {
   }
 
   fn handle_hotkey_pressed(&mut self) {
+    self.cancel_vad_show_suppressed_until = None;
     self.dispatch_hotkey_input(HotkeyInput::HoldPressed {
       now_ms: self.hotkey_now_ms(),
       snapshot: self.hotkey_snapshot(),
@@ -1289,6 +1293,8 @@ impl AppController {
     }
     let split_active = self.split_overlay_visible();
     self.cancelled = true;
+    self.cancel_vad_show_suppressed_until =
+      Some(Instant::now() + Duration::from_millis(CANCEL_VAD_SHOW_SUPPRESSION_MS));
     self.manual_hold_active = false;
     self.hold_saw_speech = false;
     self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
@@ -1476,7 +1482,10 @@ impl AppController {
             self.clear_held_top_overlay();
           }
           self.latest_draft = merged;
-          if self.overlay_pending_vad_text && !self.overlay_visible {
+          let vad_show_suppressed = self
+            .cancel_vad_show_suppressed_until
+            .is_some_and(|deadline| Instant::now() < deadline);
+          if self.overlay_pending_vad_text && !self.overlay_visible && !vad_show_suppressed {
             self.show_overlay_listening();
           }
           self.overlay_pending_vad_text = false;
