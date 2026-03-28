@@ -42,9 +42,14 @@ pub fn start_pack_download(pack: &'static ModelPackDef) -> DownloadHandle {
 }
 
 fn download_pack(pack: &'static ModelPackDef, cancel: &AtomicBool) -> Result<(), String> {
-  let dir = pack_dir(pack.id);
+  let dir = pack_dir(pack.id).ok_or_else(|| "HOME not set".to_string())?;
   let mut bytes_done: u64 = 0;
   let bytes_total = pack.total_size_bytes;
+
+  let client = reqwest::blocking::Client::builder()
+    .use_native_tls()
+    .build()
+    .map_err(|e| format!("http client: {e}"))?;
 
   for file_def in pack.files {
     if cancel.load(Ordering::SeqCst) {
@@ -63,7 +68,15 @@ fn download_pack(pack: &'static ModelPackDef, cancel: &AtomicBool) -> Result<(),
     }
 
     let part_path = PathBuf::from(format!("{}.part", dest.display()));
-    download_file(file_def.url, &part_path, cancel, pack.id, &mut bytes_done, bytes_total)?;
+    download_file(
+      &client,
+      file_def.url,
+      &part_path,
+      cancel,
+      pack.id,
+      &mut bytes_done,
+      bytes_total,
+    )?;
 
     fs::rename(&part_path, &dest)
       .map_err(|e| format!("rename {} -> {}: {e}", part_path.display(), dest.display()))?;
@@ -73,6 +86,7 @@ fn download_pack(pack: &'static ModelPackDef, cancel: &AtomicBool) -> Result<(),
 }
 
 fn download_file(
+  client: &reqwest::blocking::Client,
   url: &str,
   dest: &PathBuf,
   cancel: &AtomicBool,
@@ -80,17 +94,17 @@ fn download_file(
   bytes_done: &mut u64,
   bytes_total: u64,
 ) -> Result<(), String> {
-  let response = ureq::get(url).call().map_err(|e| format!("GET {url}: {e}"))?;
+  let response = client.get(url).send().map_err(|e| format!("GET {url}: {e}"))?;
 
   let status = response.status();
-  if status != 200 {
+  if !status.is_success() {
     return Err(format!("GET {url}: HTTP {status}"));
   }
 
-  let mut reader = response.into_body().into_reader();
+  let mut reader = response;
   let mut file = fs::File::create(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
 
-  let mut buf = vec![0u8; 256 * 1024];
+  let mut buf = vec![0u8; 2 * 1024 * 1024];
   let mut last_progress_bytes = *bytes_done;
 
   loop {
@@ -111,7 +125,6 @@ fn download_file(
 
     *bytes_done += n as u64;
 
-    // Send progress roughly every 1 MB.
     if *bytes_done - last_progress_bytes >= 1_000_000 {
       send_progress(pack_id, *bytes_done, bytes_total);
       last_progress_bytes = *bytes_done;

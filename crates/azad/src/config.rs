@@ -47,10 +47,15 @@ impl AzadConfig {
 
 impl Default for AzadConfig {
   fn default() -> Self {
+    let fallback_dir = models::pack_dir(models::default_pack().id)
+      .unwrap_or_else(|| PathBuf::from("/nonexistent/azad/models"));
     let (vad_path, eou_dir, tdt_dir) = resolve_pipeline_paths(models::default_pack())
       .unwrap_or_else(|| {
-        let dir = models::pack_dir(models::default_pack().id);
-        (dir.join("vad").join("ggml-silero-v6.2.0.bin"), dir.join("eou"), dir.join("tdt"))
+        (
+          fallback_dir.join("vad").join("ggml-silero-v6.2.0.bin"),
+          fallback_dir.join("eou"),
+          fallback_dir.join("tdt"),
+        )
       });
 
     Self {

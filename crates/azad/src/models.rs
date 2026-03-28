@@ -27,47 +27,47 @@ pub static PARAKEET_V1: ModelPackDef = ModelPackDef {
   id: "parakeet-v1",
   display_name: "Parakeet v1",
   description: "Silero VAD + Parakeet streaming/finalization ASR",
-  total_size_bytes: 3_117_007_360,
+  total_size_bytes: 3_031_399_977,
   files: &[
     ModelFileDef {
       rel_path: "vad/ggml-silero-v6.2.0.bin",
       url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
-      size_bytes: 906_240,
+      size_bytes: 885_098,
     },
     ModelFileDef {
       rel_path: "eou/encoder.onnx",
       url: "https://huggingface.co/altunenes/parakeet-rs/resolve/main/realtime_eou_120m-v1-onnx/encoder.onnx",
-      size_bytes: 326_265_132,
+      size_bytes: 459_341_289,
     },
     ModelFileDef {
       rel_path: "eou/decoder_joint.onnx",
       url: "https://huggingface.co/altunenes/parakeet-rs/resolve/main/realtime_eou_120m-v1-onnx/decoder_joint.onnx",
-      size_bytes: 176_803_572,
+      size_bytes: 21_347_639,
     },
     ModelFileDef {
       rel_path: "eou/tokenizer.json",
       url: "https://huggingface.co/altunenes/parakeet-rs/resolve/main/realtime_eou_120m-v1-onnx/tokenizer.json",
-      size_bytes: 2_966_086,
+      size_bytes: 20_053,
     },
     ModelFileDef {
       rel_path: "tdt/encoder-model.onnx",
       url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx",
-      size_bytes: 464_540,
+      size_bytes: 41_770_866,
     },
     ModelFileDef {
       rel_path: "tdt/encoder-model.onnx.data",
       url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx.data",
-      size_bytes: 2_449_474_560,
+      size_bytes: 2_435_420_160,
     },
     ModelFileDef {
       rel_path: "tdt/decoder_joint-model.onnx",
       url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.onnx",
-      size_bytes: 160_105_852,
+      size_bytes: 72_520_893,
     },
     ModelFileDef {
       rel_path: "tdt/vocab.txt",
       url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt",
-      size_bytes: 21_378,
+      size_bytes: 93_939,
     },
   ],
 };
@@ -82,29 +82,34 @@ pub fn pack_by_id(id: &str) -> Option<&'static ModelPackDef> {
   ALL_PACKS.iter().find(|p| p.id == id).copied()
 }
 
-pub fn models_base_dir() -> PathBuf {
-  let home = std::env::var_os("HOME").unwrap_or_else(|| "/tmp".into());
+pub fn models_base_dir() -> Option<PathBuf> {
+  let home = std::env::var_os("HOME")?;
   let mut path = PathBuf::from(home);
   path.push("Library");
   path.push("Application Support");
   path.push("Azad");
   path.push("models");
-  path
+  Some(path)
 }
 
-pub fn pack_dir(pack_id: &str) -> PathBuf {
-  models_base_dir().join(pack_id)
+pub fn pack_dir(pack_id: &str) -> Option<PathBuf> {
+  Some(models_base_dir()?.join(pack_id))
 }
 
 pub fn check_pack_status(pack: &ModelPackDef) -> PackStatus {
-  let dir = pack_dir(pack.id);
+  let dir = match pack_dir(pack.id) {
+    Some(d) => d,
+    None => return PackStatus::NotDownloaded,
+  };
   if !dir.exists() {
     return PackStatus::NotDownloaded;
   }
 
   let mut found = 0;
   for file in pack.files {
-    if dir.join(file.rel_path).exists() {
+    let path = dir.join(file.rel_path);
+    let ok = path.metadata().map(|m| m.len() == file.size_bytes).unwrap_or(false);
+    if ok {
       found += 1;
     }
   }
@@ -120,7 +125,7 @@ pub fn check_pack_status(pack: &ModelPackDef) -> PackStatus {
 
 /// Returns (vad_model_path, eou_dir, tdt_dir) if the pack is ready.
 pub fn pipeline_paths(pack: &ModelPackDef) -> Option<(PathBuf, PathBuf, PathBuf)> {
-  let dir = pack_dir(pack.id);
+  let dir = pack_dir(pack.id)?;
   let vad = dir.join("vad").join("ggml-silero-v6.2.0.bin");
   let eou = dir.join("eou");
   let tdt = dir.join("tdt");
