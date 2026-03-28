@@ -154,6 +154,10 @@ write_launch_agent_plist() {
   <array>
     <string>Aqua</string>
   </array>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>Nice</key>
+  <integer>-10</integer>
   <key>EnvironmentVariables</key>
   <dict>
     <key>AZAD_ASSETS_DIR</key>
