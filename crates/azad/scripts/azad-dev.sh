@@ -88,6 +88,7 @@ codesign_app_if_configured() {
     --force \
     --deep \
     --sign "$CODESIGN_IDENTITY" \
+    --entitlements "$CRATE_DIR/Azad.entitlements" \
     "$APP_DIR"
 
   echo "Signed Azad.app with identity: $CODESIGN_IDENTITY"
@@ -121,6 +122,8 @@ write_info_plist() {
   <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>Azad uses microphone audio to transcribe your speech.</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
 </dict>
 </plist>
 EOF
@@ -151,8 +154,6 @@ write_launch_agent_plist() {
   <array>
     <string>Aqua</string>
   </array>
-  <key>WorkingDirectory</key>
-  <string>${CRATE_DIR}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>AZAD_ASSETS_DIR</key>
