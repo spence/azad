@@ -312,10 +312,16 @@ pub fn set_device_menu(model: DeviceMenuModel) {
 pub fn show_settings_window(model: SettingsViewModel) {
   unsafe {
     let refs = ensure_settings_window();
+    let tab = model.selected_tab;
     apply_settings_view_model(refs, &model);
+    apply_settings_selected_tab(refs, tab);
     let app = NSApp();
+    // Temporarily become a regular app so macOS grants activation rights
+    // (LSUIElement/Accessory apps cannot reliably activate from a timer).
+    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
     let _: () = msg_send![app, activateIgnoringOtherApps: YES];
     let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
+    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
   }
 }
 
@@ -415,6 +421,83 @@ fn launch_agent_plist_path() -> Option<PathBuf> {
   path.push("LaunchAgents");
   path.push("ai.azad.plist");
   Some(path)
+}
+
+pub fn create_launch_agent_plist_if_missing() {
+  let plist_path = match launch_agent_plist_path() {
+    Some(p) => p,
+    None => return,
+  };
+  if plist_path.exists() {
+    return;
+  }
+
+  let exe = match std::env::current_exe() {
+    Ok(p) => p,
+    Err(e) => {
+      eprintln!("Azad: cannot resolve current_exe for LaunchAgent: {e}");
+      return;
+    }
+  };
+
+  let home = match std::env::var_os("HOME") {
+    Some(h) => h,
+    None => return,
+  };
+  let log_dir = PathBuf::from(&home).join("Library/Logs/Azad");
+  let _ = std::fs::create_dir_all(&log_dir);
+
+  let resources_dir = exe
+    .parent()
+    .and_then(|p| p.parent())
+    .map(|p| p.join("Resources"))
+    .unwrap_or_default();
+
+  let plist = format!(
+    r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.azad</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{exe}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AZAD_ASSETS_DIR</key>
+    <string>{resources}</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{stdout}</string>
+  <key>StandardErrorPath</key>
+  <string>{stderr}</string>
+</dict>
+</plist>"#,
+    exe = exe.display(),
+    resources = resources_dir.display(),
+    stdout = log_dir.join("stdout.log").display(),
+    stderr = log_dir.join("stderr.log").display(),
+  );
+
+  if let Some(parent) = plist_path.parent() {
+    let _ = std::fs::create_dir_all(parent);
+  }
+  if let Err(e) = std::fs::write(&plist_path, plist) {
+    eprintln!("Azad: failed to write LaunchAgent plist: {e}");
+  }
 }
 
 pub fn show_overlay() {

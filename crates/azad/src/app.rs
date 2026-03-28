@@ -172,8 +172,10 @@ struct AppController {
   cancel_vad_show_suppressed_until: Option<Instant>,
   active_pack_id: String,
   models_ready: bool,
+  pending_first_launch_settings: bool,
   download_handle: Option<DownloadHandle>,
   download_progress: (u64, u64),
+  download_progress_dirty: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -577,14 +579,19 @@ impl AppController {
       cancel_vad_show_suppressed_until: None,
       active_pack_id,
       models_ready: false,
+      pending_first_launch_settings: false,
       download_handle: None,
       download_progress: (0, 0),
+      download_progress_dirty: false,
     }
   }
 
   fn bootstrap(&mut self) {
     self.apply_run_on_startup_preference();
     self.refresh_models_ready();
+    if !self.models_ready {
+      self.pending_first_launch_settings = true;
+    }
     self.start_device_controller();
     self.render_device_menu();
     self.ensure_session();
@@ -730,6 +737,9 @@ impl AppController {
   }
 
   fn start_session(&mut self) {
+    if !self.models_ready {
+      return;
+    }
     let Some(snapshot) = self.device_snapshot.as_ref() else {
       self.session = None;
       self.session_device_id = None;
@@ -828,6 +838,14 @@ impl AppController {
   }
 
   fn handle_hotkey_pressed(&mut self) {
+    if !self.models_ready {
+      self.show_overlay_notice(
+        "Models required",
+        "Open Settings to download",
+        Duration::from_secs(3),
+      );
+      return;
+    }
     self.cancel_vad_show_suppressed_until = None;
     self.dispatch_hotkey_input(HotkeyInput::HoldPressed {
       now_ms: self.hotkey_now_ms(),
@@ -836,10 +854,16 @@ impl AppController {
   }
 
   fn handle_hotkey_released(&mut self) {
+    if !self.models_ready {
+      return;
+    }
     self.dispatch_hotkey_input(HotkeyInput::HoldReleased { snapshot: self.hotkey_snapshot() });
   }
 
   fn handle_finalize_hotkey_pressed(&mut self, raw_requested: bool) {
+    if !self.models_ready {
+      return;
+    }
     if raw_requested {
       self.raw_finalize_requested = true;
     }
@@ -1144,6 +1168,7 @@ impl AppController {
   }
 
   fn apply_run_on_startup_preference(&mut self) {
+    platform::create_launch_agent_plist_if_missing();
     if platform::set_launch_agent_startup_enabled(self.run_on_startup_enabled) {
       return;
     }
@@ -1218,7 +1243,7 @@ impl AppController {
 
   fn handle_model_download_progress(&mut self, _pack_id: &str, bytes_done: u64, bytes_total: u64) {
     self.download_progress = (bytes_done, bytes_total);
-    platform::update_settings_window(self.settings_view_model());
+    self.download_progress_dirty = true;
   }
 
   fn handle_model_download_completed(&mut self, pack_id: &str) {
@@ -1775,6 +1800,13 @@ impl AppController {
   }
 
   fn on_tick(&mut self) {
+    if self.pending_first_launch_settings {
+      self.pending_first_launch_settings = false;
+      let mut vm = self.settings_view_model();
+      vm.selected_tab = SettingsTab::Models;
+      platform::show_settings_window(vm);
+    }
+
     self.advance_activity_timeline();
     self.maybe_apply_pending_always_listening_toggle();
 
@@ -1834,6 +1866,11 @@ impl AppController {
           self.hide_overlay();
         }
       }
+    }
+
+    if self.download_progress_dirty {
+      self.download_progress_dirty = false;
+      platform::update_settings_window(self.settings_view_model());
     }
   }
 
