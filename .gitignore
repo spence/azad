@@ -1,3 +1,4 @@
 target/
 models/
+dist/
 .DS_Store
