@@ -15,6 +15,7 @@ mod preferred_store;
 mod settings;
 mod single_instance;
 mod speech;
+mod transcript_history;
 
 fn main() {
   let _single_instance_guard = match single_instance::acquire_primary_instance_lock() {
