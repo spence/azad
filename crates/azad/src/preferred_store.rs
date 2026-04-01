@@ -15,6 +15,8 @@ const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
 const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
+const SPEECH_AUTOCOMPLETE_KEY: &str = "AzadSpeechAutocompleteEnabled";
+const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
 
 pub fn load_preferred_device_id() -> Option<String> {
   unsafe {
@@ -246,6 +248,78 @@ pub fn save_active_model_pack(pack_id: &str) {
 
     let key = NSString::alloc(nil).init_str(ACTIVE_MODEL_PACK_KEY);
     let value = NSString::alloc(nil).init_str(pack_id);
+    let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
+}
+
+pub fn load_speech_autocomplete_enabled() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return false;
+    }
+
+    let key = NSString::alloc(nil).init_str(SPEECH_AUTOCOMPLETE_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return false;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
+}
+
+pub fn save_speech_autocomplete_enabled(enabled: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(SPEECH_AUTOCOMPLETE_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+const DEFAULT_REMOVED_WORDS: &[&str] = &["um", "ah"];
+
+pub fn load_removed_words() -> Vec<String> {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return DEFAULT_REMOVED_WORDS.iter().map(|s| s.to_string()).collect();
+    }
+
+    let key = NSString::alloc(nil).init_str(REMOVED_WORDS_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return DEFAULT_REMOVED_WORDS.iter().map(|s| s.to_string()).collect();
+    }
+
+    let value: id = msg_send![defaults, stringForKey: key];
+    let Some(value) = nsstring_to_string(value) else {
+      return Vec::new();
+    };
+    value
+      .split(',')
+      .map(|s| s.trim().to_string())
+      .filter(|s| !s.is_empty())
+      .collect()
+  }
+}
+
+pub fn save_removed_words(words: &[String]) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(REMOVED_WORDS_KEY);
+    let joined = words.join(",");
+    let value = NSString::alloc(nil).init_str(&joined);
     let _: () = msg_send![defaults, setObject: value forKey: key];
   }
 }
