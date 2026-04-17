@@ -508,8 +508,8 @@ fn strip_removed_words(text: &str, removed_words: &[String]) -> String {
   let kept: Vec<&str> = words
     .into_iter()
     .filter(|w| {
-      let lower = w.to_ascii_lowercase();
-      !removed_words.iter().any(|rw| rw.eq_ignore_ascii_case(&lower))
+      let bare = w.trim_matches(|c: char| c.is_ascii_punctuation());
+      !removed_words.iter().any(|rw| rw.eq_ignore_ascii_case(bare))
     })
     .collect();
   kept.join(" ")
