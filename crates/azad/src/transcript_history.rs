@@ -17,17 +17,9 @@ struct TranscriptRecord {
   final_text: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct AutocompleteMatch {
-  pub final_text: String,
-  #[allow(dead_code)]
-  pub ts_ms: i64,
-}
-
 struct TranscriptEntry {
   ts_ms: i64,
   final_text: String,
-  words_lower: Vec<String>,
 }
 
 pub struct TranscriptIndex {
@@ -59,25 +51,33 @@ impl TranscriptIndex {
               entries.push(TranscriptEntry {
                 ts_ms: record.ts_ms,
                 final_text: record.final_text.clone(),
-                words_lower: split_words_lower(&record.final_text),
               });
             }
           }
         }
 
-        // Keep only the most recent MAX_ENTRIES
         if entries.len() > MAX_ENTRIES {
           entries.drain(..entries.len() - MAX_ENTRIES);
         }
 
-        // Compact file if it grew too large
         if line_count > COMPACT_THRESHOLD {
           compact_file(&path, &entries);
         }
       }
     }
 
-    // Reverse so newest is first
+    if entries.is_empty() {
+      let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+      entries.push(TranscriptEntry {
+        ts_ms,
+        final_text: "Speech history will appear here.".to_string(),
+      });
+    }
+
+    // Newest first
     entries.reverse();
 
     Some(TranscriptIndex { entries, file_path: path })
@@ -108,75 +108,28 @@ impl TranscriptIndex {
       }
     }
 
-    self.entries.insert(0, TranscriptEntry {
-      ts_ms,
-      final_text: final_text.to_string(),
-      words_lower: split_words_lower(final_text),
-    });
+    self
+      .entries
+      .insert(0, TranscriptEntry { ts_ms, final_text: final_text.to_string() });
 
     if self.entries.len() > MAX_ENTRIES {
       self.entries.truncate(MAX_ENTRIES);
     }
   }
 
-  pub fn search_prefix(&self, draft: &str, limit: usize) -> Vec<AutocompleteMatch> {
-    let draft = draft.trim();
-    if draft.is_empty() {
-      return Vec::new();
-    }
-    let query_words = split_words_lower(draft);
-    if query_words.is_empty() {
-      return Vec::new();
-    }
+  pub fn entry_count(&self) -> usize {
+    self.entries.len()
+  }
 
-    let mut matches = Vec::new();
-    let mut seen_texts = Vec::new();
+  pub fn entry_text(&self, index: usize) -> Option<&str> {
+    self.entries.get(index).map(|e| e.final_text.as_str())
+  }
 
-    for entry in &self.entries {
-      if entry.words_lower.len() < query_words.len() {
-        continue;
-      }
-      // Check if query words form a prefix of entry words
-      let is_prefix = query_words.iter().enumerate().all(|(i, qw)| {
-        if i < query_words.len() - 1 {
-          // All words except the last must match exactly
-          entry.words_lower[i] == *qw
-        } else {
-          // Last query word can be a prefix
-          entry.words_lower[i].starts_with(qw.as_str())
-        }
-      });
-
-      if !is_prefix {
-        continue;
-      }
-
-      // Skip exact matches (user is saying exactly this, no need to autocomplete)
-      if entry.words_lower.len() == query_words.len()
-        && entry.words_lower.last() == query_words.last()
-      {
-        continue;
-      }
-
-      // Deduplicate by text (keep most recent, which comes first)
-      let lower = entry.final_text.to_ascii_lowercase();
-      if seen_texts.contains(&lower) {
-        continue;
-      }
-      seen_texts.push(lower);
-
-      matches.push(AutocompleteMatch { final_text: entry.final_text.clone(), ts_ms: entry.ts_ms });
-
-      if matches.len() >= limit {
-        break;
-      }
-    }
-
-    matches
+  pub fn entry_ts_ms(&self, index: usize) -> Option<i64> {
+    self.entries.get(index).map(|e| e.ts_ms)
   }
 }
 
-#[allow(dead_code)]
 pub fn format_timestamp_relative(ts_ms: i64) -> String {
   let now_ms = SystemTime::now()
     .duration_since(UNIX_EPOCH)
@@ -203,13 +156,8 @@ pub fn format_timestamp_relative(ts_ms: i64) -> String {
     return format!("{delta_hours}h ago");
   }
 
-  // Format as "Mon DD" using rough calculation
   let days_ago = delta_hours / 24;
   format!("{days_ago}d ago")
-}
-
-fn split_words_lower(text: &str) -> Vec<String> {
-  text.split_whitespace().map(|w| w.to_ascii_lowercase()).collect()
 }
 
 fn transcript_file_path() -> Option<PathBuf> {
@@ -227,7 +175,6 @@ fn compact_file(path: &PathBuf, entries: &[TranscriptEntry]) {
   let tmp_path = path.with_extension("jsonl.tmp");
   let Ok(mut file) = File::create(&tmp_path) else { return };
 
-  // Write entries oldest-first (entries are stored newest-first in memory)
   for entry in entries.iter().rev() {
     let record = TranscriptRecord {
       schema_version: 1,
@@ -247,79 +194,6 @@ fn compact_file(path: &PathBuf, entries: &[TranscriptEntry]) {
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn prefix_search_basic() {
-    let entries = vec![
-      TranscriptEntry {
-        ts_ms: 1000,
-        final_text: "hello world".to_string(),
-        words_lower: split_words_lower("hello world"),
-      },
-      TranscriptEntry {
-        ts_ms: 2000,
-        final_text: "hello there friend".to_string(),
-        words_lower: split_words_lower("hello there friend"),
-      },
-      TranscriptEntry {
-        ts_ms: 3000,
-        final_text: "goodbye world".to_string(),
-        words_lower: split_words_lower("goodbye world"),
-      },
-    ];
-
-    let index = TranscriptIndex { entries, file_path: PathBuf::from("/tmp/test.jsonl") };
-
-    let matches = index.search_prefix("hello", 5);
-    assert_eq!(matches.len(), 2);
-
-    let matches = index.search_prefix("hello wor", 5);
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].final_text, "hello world");
-
-    let matches = index.search_prefix("good", 5);
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].final_text, "goodbye world");
-
-    let matches = index.search_prefix("xyz", 5);
-    assert_eq!(matches.len(), 0);
-  }
-
-  #[test]
-  fn prefix_search_deduplicates() {
-    let entries = vec![
-      TranscriptEntry {
-        ts_ms: 3000,
-        final_text: "hello world".to_string(),
-        words_lower: split_words_lower("hello world"),
-      },
-      TranscriptEntry {
-        ts_ms: 1000,
-        final_text: "Hello World".to_string(),
-        words_lower: split_words_lower("Hello World"),
-      },
-    ];
-
-    let index = TranscriptIndex { entries, file_path: PathBuf::from("/tmp/test.jsonl") };
-
-    let matches = index.search_prefix("hel", 5);
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].ts_ms, 3000);
-  }
-
-  #[test]
-  fn prefix_search_skips_exact_match() {
-    let entries = vec![TranscriptEntry {
-      ts_ms: 1000,
-      final_text: "hello".to_string(),
-      words_lower: split_words_lower("hello"),
-    }];
-
-    let index = TranscriptIndex { entries, file_path: PathBuf::from("/tmp/test.jsonl") };
-
-    let matches = index.search_prefix("hello", 5);
-    assert_eq!(matches.len(), 0);
-  }
 
   #[test]
   fn timestamp_formatting() {

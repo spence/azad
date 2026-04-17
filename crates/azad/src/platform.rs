@@ -200,14 +200,9 @@ struct OverlayRefs {
 }
 
 const AUTOCOMPLETE_ROW_HEIGHT: f64 = 22.0;
-const AUTOCOMPLETE_ROW_GAP: f64 = 2.0;
-const AUTOCOMPLETE_FONT_SIZE: f64 = 14.0;
 const AUTOCOMPLETE_SEPARATOR_HEIGHT: f64 = 1.0;
-const AUTOCOMPLETE_SEPARATOR_INSET: f64 = 16.0;
-const AUTOCOMPLETE_SEPARATOR_GAP: f64 = 6.0;
 const AUTOCOMPLETE_MAX_ITEMS: usize = 5;
 const AUTOCOMPLETE_TEXT_ALPHA: f64 = 0.45;
-const AUTOCOMPLETE_FOCUSED_TEXT_ALPHA: f64 = 0.85;
 const AUTOCOMPLETE_FOCUSED_BG_ALPHA: f64 = 0.08;
 
 #[derive(Clone, Copy)]
@@ -222,7 +217,6 @@ struct SettingsWindowRefs {
   paste_method_popup: id,
   auto_submit_popup: id,
   append_trailing_space_checkbox: id,
-  speech_autocomplete_checkbox: id,
   removed_words_tags_view: id,
   removed_words_input: id,
   removed_words_add_button: id,
@@ -256,7 +250,6 @@ pub struct SettingsViewModel {
   pub paste_method: PasteMethod,
   pub auto_submit_mode: AutoSubmitMode,
   pub append_trailing_space_on_paste: bool,
-  pub speech_autocomplete_enabled: bool,
   pub debug_stats_enabled: bool,
   pub metrics_text: String,
   pub model_pack_size_label: String,
@@ -264,11 +257,6 @@ pub struct SettingsViewModel {
   pub model_download_bytes_done: u64,
   pub model_download_bytes_total: u64,
   pub removed_words: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AutocompleteDisplayItem {
-  pub text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -589,24 +577,15 @@ pub fn set_overlay_stream_content(
   busy_phase: Option<f32>,
   show_raw_badge: bool,
   show_hold_badge: bool,
-  autocomplete_items: &[AutocompleteDisplayItem],
-  autocomplete_focus: Option<usize>,
+  history_position: &str,
 ) {
   let Some(refs) = current_overlay() else {
     return;
   };
   unsafe {
     move_overlay_to_cursor_screen(refs, false);
-    render_overlay_text(
-      refs,
-      draft,
-      activity,
-      busy_phase,
-      show_raw_badge,
-      show_hold_badge,
-      autocomplete_items,
-      autocomplete_focus,
-    );
+    render_overlay_text(refs, draft, activity, busy_phase, show_raw_badge, show_hold_badge);
+    render_overlay_history_position(refs, history_position);
   }
 }
 
@@ -618,7 +597,7 @@ pub fn set_overlay_top_stream_content(draft: &str, activity: &[f32], busy_phase:
     if let Some(bottom) = current_overlay() {
       position_overlay_top_relative_to_bottom(refs, bottom);
     }
-    render_overlay_text(refs, draft, activity, busy_phase, false, false, &[], None);
+    render_overlay_text(refs, draft, activity, busy_phase, false, false);
     if let Some(bottom) = current_overlay() {
       position_overlay_top_relative_to_bottom(refs, bottom);
     }
@@ -681,7 +660,7 @@ fn set_overlay_notice_content_styled(
         listen_toggle_notice_activity(enabled, progress)
       }
     };
-    render_overlay_text(refs, &rendered, &notice_activity, None, false, false, &[], None);
+    render_overlay_text(refs, &rendered, &notice_activity, None, false, false);
     apply_overlay_notice_style(refs, style);
     hide_overlay_notice_accessory(refs);
   }
@@ -841,10 +820,6 @@ fn register_delegate_class() -> &'static Class {
     decl.add_method(
       sel!(settingsToggleAppendTrailingSpace:),
       settings_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsToggleSpeechAutocomplete:),
-      settings_toggle_speech_autocomplete as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
       sel!(settingsAddRemovedWord:),
@@ -1090,17 +1065,6 @@ extern "C" fn settings_toggle_append_trailing_space(_: &Object, _: Sel, sender: 
     }
     let state: i64 = msg_send![sender, state];
     crate::app::send_event(AppEvent::SettingsToggleAppendTrailingSpace(state != 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_toggle_speech_autocomplete(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::SettingsToggleSpeechAutocomplete(state != 0));
     crate::app::drain_events();
   }
 }
@@ -2318,12 +2282,6 @@ unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsVi
       setState: append_trailing_space_state
   ];
 
-  let speech_autocomplete_state: i64 = if model.speech_autocomplete_enabled { 1 } else { 0 };
-  let _: () = msg_send![
-      refs.speech_autocomplete_checkbox,
-      setState: speech_autocomplete_state
-  ];
-
   let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
 
@@ -2434,27 +2392,13 @@ unsafe fn render_overlay_text(
   busy_phase: Option<f32>,
   show_raw_badge: bool,
   show_hold_badge: bool,
-  autocomplete_items: &[AutocompleteDisplayItem],
-  autocomplete_focus: Option<usize>,
 ) {
   let current_frame: NSRect = msg_send![refs.window, frame];
   let screen = overlay_screen_frame_for_window(current_frame);
   let width = overlay_width_for_screen(screen);
   let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
 
-  let ac_count = autocomplete_items.len().min(AUTOCOMPLETE_MAX_ITEMS);
-  let ac_area_height = if ac_count > 0 {
-    AUTOCOMPLETE_SEPARATOR_GAP
-      + AUTOCOMPLETE_SEPARATOR_HEIGHT
-      + AUTOCOMPLETE_SEPARATOR_GAP
-      + (ac_count as f64 * AUTOCOMPLETE_ROW_HEIGHT)
-      + (ac_count.saturating_sub(1) as f64 * AUTOCOMPLETE_ROW_GAP)
-  } else {
-    0.0
-  };
-
-  let max_body_height =
-    (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - ac_area_height - OVERLAY_PAD_BOTTOM).max(1.0);
+  let max_body_height = (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
 
   let (rendered_body, mut measured_body_height) =
     fit_rendered_body_for_height(refs.label, body_text, content_width, max_body_height);
@@ -2466,7 +2410,7 @@ unsafe fn render_overlay_text(
     .min(max_body_height);
   let is_single_line = rendered_body.is_empty()
     || (!rendered_body.contains('\n') && body_height <= OVERLAY_TEXT_LINE_HEIGHT * 1.35);
-  let content_height = OVERLAY_PAD_TOP + body_height + ac_area_height + OVERLAY_PAD_BOTTOM;
+  let content_height = OVERLAY_PAD_TOP + body_height + OVERLAY_PAD_BOTTOM;
   let height = content_height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
 
   let default_x = screen.origin.x + (screen.size.width - width) * 0.5;
@@ -2497,21 +2441,13 @@ unsafe fn render_overlay_text(
 
   let available_height = (height - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
   let body_text_height = body_height.min(available_height).max(1.0);
-  let body_y = if ac_count > 0 {
-    let base = OVERLAY_PAD_BOTTOM + ac_area_height;
-    if is_single_line {
-      let text_area = (available_height - ac_area_height).max(1.0);
-      base + ((text_area - body_text_height) * 0.5).max(0.0)
-    } else {
-      base
-    }
-  } else if is_single_line {
+  let body_y = if is_single_line {
     OVERLAY_PAD_BOTTOM + ((available_height - body_text_height) * 0.5).max(0.0)
   } else {
     OVERLAY_PAD_BOTTOM
   };
   let meter_height = body_text_height.max(OVERLAY_WAVE_BG_HEIGHT).min(available_height).max(1.0);
-  let meter_y = if ac_count > 0 { OVERLAY_PAD_BOTTOM + ac_area_height } else { OVERLAY_PAD_BOTTOM };
+  let meter_y = OVERLAY_PAD_BOTTOM;
   let body_frame =
     NSRect::new(NSPoint::new(OVERLAY_PAD_X, body_y), NSSize::new(content_width, body_text_height));
   let meter_frame =
@@ -2543,73 +2479,16 @@ unsafe fn render_overlay_text(
     let _: () = msg_send![refs.hold_badge, setHidden: YES];
   }
 
-  // Inline autocomplete rows
-  if ac_count > 0 {
-    let sep_y = OVERLAY_PAD_BOTTOM
-      + ac_count as f64 * AUTOCOMPLETE_ROW_HEIGHT
-      + ac_count.saturating_sub(1) as f64 * AUTOCOMPLETE_ROW_GAP
-      + AUTOCOMPLETE_SEPARATOR_GAP;
-    if refs.autocomplete_separator != nil {
-      let sep_frame = NSRect::new(
-        NSPoint::new(AUTOCOMPLETE_SEPARATOR_INSET, sep_y),
-        NSSize::new(
-          (content_width - AUTOCOMPLETE_SEPARATOR_INSET * 2.0 + OVERLAY_PAD_X * 2.0).max(1.0),
-          AUTOCOMPLETE_SEPARATOR_HEIGHT,
-        ),
-      );
-      let _: () = msg_send![refs.autocomplete_separator, setFrame: sep_frame];
-      let _: () = msg_send![refs.autocomplete_separator, setHidden: NO];
-    }
-
-    let ac_font: id = msg_send![class!(NSFont), systemFontOfSize: AUTOCOMPLETE_FONT_SIZE];
-    for i in 0..ac_count {
-      let rows_from_bottom = ac_count - 1 - i;
-      let row_y = OVERLAY_PAD_BOTTOM
-        + rows_from_bottom as f64 * (AUTOCOMPLETE_ROW_HEIGHT + AUTOCOMPLETE_ROW_GAP);
-      let focused = autocomplete_focus == Some(i);
-
-      let label_id = refs.autocomplete_labels[i];
-      let bg_id = refs.autocomplete_bgs[i];
-
-      if label_id != nil {
-        let label_frame = NSRect::new(
-          NSPoint::new(OVERLAY_PAD_X + 6.0, row_y),
-          NSSize::new(content_width - 12.0, AUTOCOMPLETE_ROW_HEIGHT),
-        );
-        let _: () = msg_send![label_id, setFrame: label_frame];
-        let text_ns = NSString::alloc(nil).init_str(&autocomplete_items[i].text);
-        let _: () = msg_send![label_id, setStringValue: text_ns];
-        if ac_font != nil {
-          let _: () = msg_send![label_id, setFont: ac_font];
-        }
-        let alpha = if focused { AUTOCOMPLETE_FOCUSED_TEXT_ALPHA } else { AUTOCOMPLETE_TEXT_ALPHA };
-        let text_color =
-          NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, alpha);
-        let _: () = msg_send![label_id, setTextColor: text_color];
-        let _: () = msg_send![label_id, setHidden: NO];
-      }
-
-      if bg_id != nil {
-        let bg_frame = NSRect::new(
-          NSPoint::new(OVERLAY_PAD_X, row_y),
-          NSSize::new(content_width, AUTOCOMPLETE_ROW_HEIGHT),
-        );
-        let _: () = msg_send![bg_id, setFrame: bg_frame];
-        let _: () = msg_send![bg_id, setHidden: if focused { NO } else { YES }];
-      }
-    }
-  } else if refs.autocomplete_separator != nil {
+  // Hide autocomplete views (no longer used)
+  if refs.autocomplete_separator != nil {
     let _: () = msg_send![refs.autocomplete_separator, setHidden: YES];
   }
-
-  for i in ac_count..AUTOCOMPLETE_MAX_ITEMS {
-    let label_id = refs.autocomplete_labels[i];
-    let bg_id = refs.autocomplete_bgs[i];
-    if label_id != nil {
-      let _: () = msg_send![label_id, setHidden: YES];
+  for i in 0..AUTOCOMPLETE_MAX_ITEMS {
+    if refs.autocomplete_labels[i] != nil {
+      let _: () = msg_send![refs.autocomplete_labels[i], setHidden: YES];
     }
-    if bg_id != nil {
-      let _: () = msg_send![bg_id, setHidden: YES];
+    if refs.autocomplete_bgs[i] != nil {
+      let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
     }
   }
 
@@ -2638,6 +2517,43 @@ unsafe fn hide_overlay_notice_accessory(refs: OverlayRefs) {
       let _: () = msg_send![label, setHidden: YES];
     }
   }
+}
+
+unsafe fn render_overlay_history_position(refs: OverlayRefs, position: &str) {
+  let label = refs.autocomplete_labels[0];
+  let separator = refs.autocomplete_separator;
+  if label == nil {
+    return;
+  }
+  if position.is_empty() {
+    if label != nil {
+      let _: () = msg_send![label, setHidden: YES];
+    }
+    if separator != nil {
+      let _: () = msg_send![separator, setHidden: YES];
+    }
+    return;
+  }
+
+  let current_frame: NSRect = msg_send![refs.window, frame];
+  let width = current_frame.size.width;
+  let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
+
+  let label_frame = NSRect::new(
+    NSPoint::new(OVERLAY_PAD_X + 4.0, OVERLAY_PAD_BOTTOM - 4.0),
+    NSSize::new(content_width - 8.0, AUTOCOMPLETE_ROW_HEIGHT),
+  );
+  let text_ns = NSString::alloc(nil).init_str(position);
+  let _: () = msg_send![label, setFrame: label_frame];
+  let _: () = msg_send![label, setStringValue: text_ns];
+  let font: id = msg_send![class!(NSFont), systemFontOfSize: 11.0f64];
+  if font != nil {
+    let _: () = msg_send![label, setFont: font];
+  }
+  let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.35);
+  let _: () = msg_send![label, setTextColor: color];
+  let _: () = msg_send![label, setAlignment: 2isize]; // NSTextAlignmentRight
+  let _: () = msg_send![label, setHidden: NO];
 }
 
 fn main_screen_frame() -> NSRect {
@@ -3270,31 +3186,9 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   ];
   let _: () = msg_send![general_container, addSubview: append_trailing_space_checkbox];
 
-  let speech_autocomplete_y =
-    append_trailing_space_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let speech_autocomplete_frame = NSRect::new(
-    NSPoint::new(0.0, speech_autocomplete_y),
-    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let speech_autocomplete_checkbox: id = msg_send![class!(NSButton), alloc];
-  let speech_autocomplete_checkbox: id = msg_send![
-      speech_autocomplete_checkbox,
-      initWithFrame: speech_autocomplete_frame
-  ];
-  let _: () = msg_send![speech_autocomplete_checkbox, setButtonType: 3usize];
-  let _: () = msg_send![
-      speech_autocomplete_checkbox,
-      setTitle: NSString::alloc(nil).init_str("Speech autocomplete")
-  ];
-  let _: () = msg_send![
-      speech_autocomplete_checkbox,
-      setAction: sel!(settingsToggleSpeechAutocomplete:)
-  ];
-  let _: () = msg_send![general_container, addSubview: speech_autocomplete_checkbox];
-
   // -- Removed words --
   let removed_words_y =
-    speech_autocomplete_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+    append_trailing_space_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
   let removed_words_label_frame = NSRect::new(
     NSPoint::new(0.0, removed_words_y),
     NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
@@ -3509,7 +3403,6 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     let _: () = msg_send![paste_method_popup, setTarget: delegate];
     let _: () = msg_send![auto_submit_popup, setTarget: delegate];
     let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
-    let _: () = msg_send![speech_autocomplete_checkbox, setTarget: delegate];
     let _: () = msg_send![removed_words_add_button, setTarget: delegate];
     let _: () = msg_send![models_download_button, setTarget: delegate];
     let _: () = msg_send![models_cancel_button, setTarget: delegate];
@@ -3536,7 +3429,6 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     paste_method_popup,
     auto_submit_popup,
     append_trailing_space_checkbox,
-    speech_autocomplete_checkbox,
     removed_words_tags_view,
     removed_words_input,
     removed_words_add_button,
@@ -3697,7 +3589,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
 
   let mut autocomplete_labels = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let mut autocomplete_bgs = [nil; AUTOCOMPLETE_MAX_ITEMS];
-  let ac_font: id = msg_send![class!(NSFont), systemFontOfSize: AUTOCOMPLETE_FONT_SIZE];
+  let ac_font: id = msg_send![class!(NSFont), systemFontOfSize: 14.0f64];
   for i in 0..AUTOCOMPLETE_MAX_ITEMS {
     let bg_view: id = msg_send![class!(NSView), alloc];
     let bg_view: id = msg_send![bg_view, initWithFrame: NSRect::new(
@@ -3927,7 +3819,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     autocomplete_labels,
     autocomplete_bgs,
   };
-  render_overlay_text(refs, "", &[], None, false, false, &[], None);
+  render_overlay_text(refs, "", &[], None, false, false);
   refs
 }
 
@@ -4014,11 +3906,11 @@ fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
   if HOTKEY_ARROWS_REGISTERED.load(Ordering::Relaxed) && matches!(event.state, HotKeyState::Pressed)
   {
     if HOTKEY_ARROW_UP_ID.get().is_some_and(|id| event.id == *id) {
-      crate::app::send_event(AppEvent::AutocompleteNavigate(-1));
+      crate::app::send_event(AppEvent::ArrowNavigate(-1));
       return;
     }
     if HOTKEY_ARROW_DOWN_ID.get().is_some_and(|id| event.id == *id) {
-      crate::app::send_event(AppEvent::AutocompleteNavigate(1));
+      crate::app::send_event(AppEvent::ArrowNavigate(1));
     }
   }
 }

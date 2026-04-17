@@ -23,7 +23,7 @@ use crate::platform::{
 use crate::preferred_store;
 use crate::settings::{AutoSubmitMode, PasteMethod};
 use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
-use crate::transcript_history::{AutocompleteMatch, TranscriptIndex};
+use crate::transcript_history::TranscriptIndex;
 
 const DEVICE_SWITCH_RESTART_DEBOUNCE_MS: u64 = 250;
 const OVERLAY_ACTIVITY_HISTORY_LEN: usize = 96;
@@ -53,7 +53,6 @@ pub enum AppEvent {
   SettingsSelectPasteMethod(PasteMethod),
   SettingsSelectAutoSubmit(AutoSubmitMode),
   SettingsToggleAppendTrailingSpace(bool),
-  SettingsToggleSpeechAutocomplete(bool),
   SettingsAddRemovedWord(String),
   SettingsRemoveRemovedWord(String),
   SettingsRefresh,
@@ -63,7 +62,7 @@ pub enum AppEvent {
   ModelDownloadCompleted(String),
   ModelDownloadError { pack_id: String, message: String },
   OverlayCancel,
-  AutocompleteNavigate(i32),
+  ArrowNavigate(i32),
   Speech(SpeechEvent),
   Device(DeviceEvent),
 }
@@ -181,11 +180,9 @@ struct AppController {
   download_handle: Option<DownloadHandle>,
   download_progress: (u64, u64),
   download_progress_dirty: bool,
-  speech_autocomplete_enabled: bool,
   transcript_index: Option<TranscriptIndex>,
-  autocomplete_matches: Vec<AutocompleteMatch>,
-  autocomplete_focus_index: Option<usize>,
-  autocomplete_locked_word_count: usize,
+  history_browsing: bool,
+  history_browse_index: usize,
   removed_words: Vec<String>,
 }
 
@@ -551,8 +548,7 @@ impl AppController {
     let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
     let active_pack_id = preferred_store::load_active_model_pack()
       .unwrap_or_else(|| models::default_pack().id.to_string());
-    let speech_autocomplete_enabled = preferred_store::load_speech_autocomplete_enabled();
-    let transcript_index = if speech_autocomplete_enabled { TranscriptIndex::load() } else { None };
+    let transcript_index = TranscriptIndex::load();
     let removed_words = preferred_store::load_removed_words();
     Self {
       cfg,
@@ -613,11 +609,9 @@ impl AppController {
       download_handle: None,
       download_progress: (0, 0),
       download_progress_dirty: false,
-      speech_autocomplete_enabled,
       transcript_index,
-      autocomplete_matches: Vec::new(),
-      autocomplete_focus_index: None,
-      autocomplete_locked_word_count: 0,
+      history_browsing: false,
+      history_browse_index: 0,
       removed_words,
     }
   }
@@ -757,9 +751,6 @@ impl AppController {
       AppEvent::SettingsToggleAppendTrailingSpace(enabled) => {
         self.handle_settings_toggle_append_trailing_space(enabled)
       }
-      AppEvent::SettingsToggleSpeechAutocomplete(enabled) => {
-        self.handle_settings_toggle_speech_autocomplete(enabled)
-      }
       AppEvent::SettingsAddRemovedWord(word) => self.handle_settings_add_removed_word(word),
       AppEvent::SettingsRemoveRemovedWord(word) => self.handle_settings_remove_removed_word(word),
       AppEvent::SettingsRefresh => self.handle_settings_refresh(),
@@ -773,7 +764,7 @@ impl AppController {
         self.handle_model_download_error(&pack_id, &message)
       }
       AppEvent::OverlayCancel => self.handle_overlay_cancel(),
-      AppEvent::AutocompleteNavigate(direction) => self.handle_autocomplete_navigate(direction),
+      AppEvent::ArrowNavigate(direction) => self.handle_arrow_navigate(direction),
       AppEvent::Speech(ev) => self.handle_speech_event(ev),
       AppEvent::Device(ev) => self.handle_device_event(ev),
     }
@@ -897,23 +888,19 @@ impl AppController {
   }
 
   fn handle_hotkey_released(&mut self) {
-    if !self.models_ready {
+    if self.history_browsing || !self.models_ready {
       return;
     }
     self.dispatch_hotkey_input(HotkeyInput::HoldReleased { snapshot: self.hotkey_snapshot() });
   }
 
   fn handle_finalize_hotkey_pressed(&mut self, raw_requested: bool) {
-    if !self.models_ready {
+    if self.history_browsing {
+      self.paste_from_history();
       return;
     }
-    // If an autocomplete bubble is focused, paste it instead of normal finalize.
-    if let Some(idx) = self.autocomplete_focus_index {
-      if idx < self.autocomplete_matches.len() {
-        let text = self.autocomplete_matches[idx].final_text.clone();
-        self.paste_from_autocomplete(&text);
-        return;
-      }
+    if !self.models_ready {
+      return;
     }
     if raw_requested {
       self.raw_finalize_requested = true;
@@ -1266,20 +1253,6 @@ impl AppController {
     platform::update_settings_window(self.settings_view_model());
   }
 
-  fn handle_settings_toggle_speech_autocomplete(&mut self, enabled: bool) {
-    self.speech_autocomplete_enabled = enabled;
-    preferred_store::save_speech_autocomplete_enabled(enabled);
-    if enabled {
-      if self.transcript_index.is_none() {
-        self.transcript_index = TranscriptIndex::load();
-      }
-    } else {
-      self.transcript_index = None;
-      self.clear_autocomplete_state();
-    }
-    platform::update_settings_window(self.settings_view_model());
-  }
-
   fn handle_settings_add_removed_word(&mut self, word: String) {
     let word = word.trim().to_ascii_lowercase();
     if word.is_empty() || self.removed_words.iter().any(|w| w == &word) {
@@ -1370,7 +1343,6 @@ impl AppController {
       paste_method: self.paste_method,
       auto_submit_mode: self.auto_submit_mode,
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
-      speech_autocomplete_enabled: self.speech_autocomplete_enabled,
       debug_stats_enabled: self.debug_stats_enabled,
       metrics_text,
       model_pack_size_label: models::format_size(pack.total_size_bytes),
@@ -1396,6 +1368,10 @@ impl AppController {
   }
 
   fn handle_overlay_cancel(&mut self) {
+    if self.history_browsing {
+      self.exit_history_mode();
+      return;
+    }
     if !self.overlay_visible {
       return;
     }
@@ -1603,7 +1579,6 @@ impl AppController {
             self.render_finalizing_overlay_state();
           } else {
             self.render_listening_overlay();
-            self.query_autocomplete();
           }
         }
       }
@@ -1672,7 +1647,6 @@ impl AppController {
         }
 
         self.overlay_pending_vad_text = false;
-        self.clear_autocomplete_state();
         self.finalizing_deadline =
           Some(Instant::now() + Duration::from_millis(self.cfg.final_pass_timeout_ms));
         self.render_finalizing_overlay_state();
@@ -1996,8 +1970,7 @@ impl AppController {
         None,
         self.raw_badge_visible(),
         self.hold_badge_visible(),
-        &[],
-        None,
+        "",
       );
       return;
     }
@@ -2009,8 +1982,7 @@ impl AppController {
       Some(self.busy_border_phase),
       self.raw_badge_visible(),
       self.hold_badge_visible(),
-      &[],
-      None,
+      "",
     );
   }
 
@@ -2035,19 +2007,13 @@ impl AppController {
     } else {
       self.latest_draft.as_str()
     };
-    let ac_items: Vec<platform::AutocompleteDisplayItem> = self
-      .autocomplete_matches
-      .iter()
-      .map(|m| platform::AutocompleteDisplayItem { text: m.final_text.clone() })
-      .collect();
     platform::set_overlay_stream_content(
       body_text,
       &self.activity_history,
       None,
       self.raw_badge_visible(),
       self.hold_badge_visible(),
-      &ac_items,
-      self.autocomplete_focus_index,
+      "",
     );
   }
 
@@ -2249,90 +2215,96 @@ impl AppController {
     self.overlay_pending_vad_text = false;
     self.clear_held_top_overlay();
     self.listen_toggle_notice = None;
-    self.clear_autocomplete_state();
     if self.overlay_visible {
       platform::hide_overlay();
       self.overlay_visible = false;
     }
   }
 
-  fn clear_autocomplete_state(&mut self) {
-    self.autocomplete_matches.clear();
-    self.autocomplete_focus_index = None;
-    self.autocomplete_locked_word_count = 0;
-  }
-
-  fn query_autocomplete(&mut self) {
-    if !self.speech_autocomplete_enabled || self.latest_draft.trim().is_empty() {
-      self.clear_autocomplete_state();
+  fn handle_arrow_navigate(&mut self, direction: i32) {
+    // Up arrow during a fresh hold (no speech yet) pivots into history browsing
+    if !self.history_browsing
+      && direction == -1
+      && self.overlay_visible
+      && self.latest_draft.trim().is_empty()
+      && !self.hold_saw_speech
+    {
+      self.enter_history_mode();
       return;
     }
-    let Some(index) = &self.transcript_index else {
-      return;
-    };
-
-    let current_word_count = self.latest_draft.split_whitespace().count();
-    let new_matches = index.search_prefix(&self.latest_draft, 5);
-
-    if !new_matches.is_empty() {
-      if self.autocomplete_matches.is_empty() {
-        self.autocomplete_locked_word_count = current_word_count;
-      }
-      self.autocomplete_matches = new_matches;
-      self.autocomplete_focus_index = None;
-    } else if !self.autocomplete_matches.is_empty() {
-      if current_word_count >= self.autocomplete_locked_word_count + 2 {
-        self.clear_autocomplete_state();
-      }
-    }
-  }
-
-  fn handle_autocomplete_navigate(&mut self, direction: i32) {
-    if self.autocomplete_matches.is_empty() || !self.overlay_visible {
+    if !self.history_browsing {
       return;
     }
-    let count = self.autocomplete_matches.len();
-    let new_index = match (self.autocomplete_focus_index, direction) {
-      // Arrow Down from main text → focus match 0 (closest to text)
-      (None, 1) => Some(0),
-      // Arrow Up from main text → no-op
-      (None, _) => None,
-      // Arrow Up from match 0 → back to main text
-      (Some(0), -1) => {
-        self.autocomplete_focus_index = None;
-        self.render_listening_overlay();
-        return;
-      }
-      // Arrow Up from match i → match i-1 (toward text)
-      (Some(i), -1) => Some(i - 1),
-      // Arrow Down from match i → match i+1 (deeper into list)
-      (Some(i), _) => {
-        if i + 1 < count {
-          Some(i + 1)
-        } else {
-          return;
+    let Some(index) = &self.transcript_index else { return };
+    let count = index.entry_count();
+    if count == 0 {
+      return;
+    }
+    match direction {
+      -1 => {
+        if self.history_browse_index + 1 < count {
+          self.history_browse_index += 1;
         }
       }
-    };
-    self.autocomplete_focus_index = new_index;
-    self.render_listening_overlay();
+      1 => {
+        if self.history_browse_index > 0 {
+          self.history_browse_index -= 1;
+        }
+      }
+      _ => {}
+    }
+    self.render_history_overlay();
   }
 
-  fn paste_from_autocomplete(&mut self, text: &str) {
-    if let Some(session) = &self.session {
-      session.cancel_current_turn();
-    }
-    self.clear_autocomplete_state();
+  fn render_history_overlay(&self) {
+    let Some(index) = &self.transcript_index else { return };
+    let Some(text) = index.entry_text(self.history_browse_index) else { return };
+    let ts_ms = index.entry_ts_ms(self.history_browse_index).unwrap_or(0);
+    let position = format!(
+      "{} of {} \u{00b7} {}",
+      self.history_browse_index + 1,
+      index.entry_count(),
+      crate::transcript_history::format_timestamp_relative(ts_ms),
+    );
+    platform::set_overlay_stream_content(text, &[], None, false, false, &position);
+  }
+
+  fn paste_from_history(&mut self) {
+    let Some(index) = &self.transcript_index else { return };
+    let Some(text) = index.entry_text(self.history_browse_index) else { return };
+    let text = text.to_string();
     let paste_text =
-      build_paste_text(text, self.append_trailing_space_on_paste, &self.removed_words);
+      build_paste_text(&text, self.append_trailing_space_on_paste, &self.removed_words);
     let _ = platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
     let _ = platform::send_auto_submit(self.auto_submit_mode);
-    self.hide_overlay();
-    if !self.always_listening_enabled && !self.manual_hold_active {
-      if let Some(session) = &self.session {
+    self.exit_history_mode();
+  }
+
+  fn enter_history_mode(&mut self) {
+    let Some(index) = &self.transcript_index else { return };
+    if index.entry_count() == 0 {
+      return;
+    }
+    // Cancel the active hold and stop capture
+    self.manual_hold_active = false;
+    self.hold_saw_speech = false;
+    if let Some(session) = &self.session {
+      session.release_manual_hold();
+      session.cancel_current_turn();
+      if !self.always_listening_enabled {
         session.set_capture_enabled(false);
       }
     }
+    self.history_browsing = true;
+    self.history_browse_index = 0;
+    self.render_history_overlay();
+  }
+
+  fn exit_history_mode(&mut self) {
+    self.history_browsing = false;
+    self.history_browse_index = 0;
+    self.overlay_visible = false;
+    platform::hide_overlay();
   }
 
   fn reset_turn_state(&mut self) {
@@ -2922,12 +2894,24 @@ mod tests {
   }
 
   #[test]
+  #[test]
   fn build_paste_text_strips_removed_word_at_boundaries() {
     let words = vec!["um".to_string()];
     assert_eq!(build_paste_text("um", false, &words), "");
     assert_eq!(build_paste_text("um hello", false, &words), "hello");
     assert_eq!(build_paste_text("hello um", false, &words), "hello");
     assert_eq!(build_paste_text("yummy", false, &words), "yummy");
+  }
+
+  #[test]
+  fn build_paste_text_strips_removed_words_with_punctuation() {
+    let words = vec!["um".to_string(), "ah".to_string()];
+    assert_eq!(
+      build_paste_text("Um, I think this is right.", false, &words),
+      "I think this is right."
+    );
+    assert_eq!(build_paste_text("Ah. Hello world.", false, &words), "Hello world.");
+    assert_eq!(build_paste_text("um, ah, hello", false, &words), "hello");
   }
 
   #[test]
