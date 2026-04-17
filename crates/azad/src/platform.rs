@@ -18,7 +18,6 @@ use cocoa::appkit::{
   NSMenu,
   NSMenuItem,
   NSPasteboard,
-  NSPasteboardTypeString,
   NSScreen,
   NSStatusBar,
   NSStatusItem,
@@ -40,7 +39,6 @@ use objc::{class, msg_send, sel, sel_impl};
 use crate::app::AppEvent;
 use crate::settings::{AutoSubmitMode, PasteMethod};
 
-const KEYCODE_V: u16 = 0x09;
 const KEYCODE_RETURN: u16 = 0x24;
 const KEYCODE_DIRECT_INPUT: u16 = 0x00;
 const KEYCODE_LEFT_COMMAND: u16 = 0x37;
@@ -52,6 +50,13 @@ const KEYCODE_RIGHT_OPTION: u16 = 0x3D;
 const KEYCODE_LEFT_CONTROL: u16 = 0x3B;
 const KEYCODE_RIGHT_CONTROL: u16 = 0x3E;
 const PASTE_CHORD_HOLD_MS: u64 = 100;
+
+// Device-specific modifier bits from IOKit's NX_DEVICE*KEYMASK. Real hardware modifier presses
+// set both the high-level MaskX bit AND the device-specific bit. macOS Screen Sharing forwards
+// events only when the device bit is present — without it, the modifier gets stripped and the
+// remote side sees only the bare key.
+const NX_DEVICELCTLKEYMASK: u64 = 0x0000_0001;
+const NX_DEVICELSHIFTKEYMASK: u64 = 0x0000_0002;
 const POST_PASTE_SETTLE_MS: u64 = 50;
 const OVERLAY_WIDTH_MIN: f64 = 300.0;
 const OVERLAY_WIDTH_MAX: f64 = 620.0;
@@ -721,9 +726,10 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
           eprintln!("Azad: failed to write transcript to pasteboard");
           return PasteResult::ClipboardWriteFailed;
         }
+        nudge_screen_sharing_clipboard_sync();
         // Clipboard propagation delay so focused target app sees the new value.
         std::thread::sleep(Duration::from_millis(paste_delay_ms));
-        send_command_v_robust();
+        send_command_v();
       }
       PasteMethod::DirectTyping => {
         if let Some(bundle) = force_clipboard_bundle.as_deref() {
@@ -734,8 +740,9 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
             eprintln!("Azad: failed to write transcript to pasteboard");
             return PasteResult::ClipboardWriteFailed;
           }
+          nudge_screen_sharing_clipboard_sync();
           std::thread::sleep(Duration::from_millis(paste_delay_ms));
-          send_command_v_robust();
+          send_command_v();
         } else if !send_direct_text_input(text) {
           eprintln!("Azad: failed to send direct text input");
           return PasteResult::InputEventFailed;
@@ -750,8 +757,9 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
             eprintln!("Azad: failed to write transcript to pasteboard");
             return PasteResult::ClipboardWriteFailed;
           }
+          nudge_screen_sharing_clipboard_sync();
           std::thread::sleep(Duration::from_millis(paste_delay_ms));
-          send_command_v_robust();
+          send_command_v();
         } else {
           if !send_direct_text_input(text) {
             eprintln!("Azad: failed to send direct text input");
@@ -4138,7 +4146,7 @@ fn set_arrow_hotkeys_enabled(enabled: bool) {
 }
 
 unsafe fn send_direct_text_input(text: &str) -> bool {
-  let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+  let source = match CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
     Ok(source) => source,
     Err(_) => return false,
   };
@@ -4169,44 +4177,48 @@ unsafe fn send_direct_text_input(text: &str) -> bool {
 }
 
 unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
-  let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+  let source = match CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
     Ok(source) => source,
     Err(_) => return false,
   };
 
   release_modifiers(&source);
 
-  let modifier_key = if flags.contains(CGEventFlags::CGEventFlagControl) {
-    Some(KEYCODE_LEFT_CONTROL)
+  let (modifier_key, device_bit) = if flags.contains(CGEventFlags::CGEventFlagControl) {
+    (Some(KEYCODE_LEFT_CONTROL), NX_DEVICELCTLKEYMASK)
   } else if flags.contains(CGEventFlags::CGEventFlagShift) {
-    Some(KEYCODE_LEFT_SHIFT)
+    (Some(KEYCODE_LEFT_SHIFT), NX_DEVICELSHIFTKEYMASK)
   } else {
-    None
+    (None, 0)
+  };
+
+  let chord_flags = if flags.is_empty() {
+    flags
+  } else {
+    CGEventFlags::from_bits_truncate(flags.bits() | device_bit)
   };
 
   if let Some(modifier_key) = modifier_key {
     let Ok(mod_down) = CGEvent::new_keyboard_event(source.clone(), modifier_key, true) else {
       return false;
     };
-    if !flags.is_empty() {
-      mod_down.set_flags(flags);
-    }
+    mod_down.set_flags(chord_flags);
     mod_down.post(CGEventTapLocation::HID);
   }
 
   let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), keycode, true) else {
     return false;
   };
-  if !flags.is_empty() {
-    key_down.set_flags(flags);
+  if !chord_flags.is_empty() {
+    key_down.set_flags(chord_flags);
   }
   key_down.post(CGEventTapLocation::HID);
 
   let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), keycode, false) else {
     return false;
   };
-  if !flags.is_empty() {
-    key_up.set_flags(flags);
+  if !chord_flags.is_empty() {
+    key_up.set_flags(chord_flags);
   }
   key_up.post(CGEventTapLocation::HID);
 
@@ -4219,34 +4231,33 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   true
 }
 
-unsafe fn send_command_v_robust() {
-  let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-    Ok(source) => source,
-    Err(_) => return,
+// Synthesize Cmd+V via `enigo`. Hand-rolled CGEvent posting (even carefully matched to what
+// `enigo` emits byte-for-byte) doesn't survive forwarding through macOS Screen Sharing — the
+// Cmd modifier gets stripped and only a bare `V` arrives on the remote. `enigo` works, so
+// we delegate this single chord to it and leave the rest of the input path on CGEvent.
+unsafe fn send_command_v() {
+  use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+
+  let mut enigo = match Enigo::new(&Settings::default()) {
+    Ok(e) => e,
+    Err(err) => {
+      eprintln!("Azad: enigo init failed for Cmd+V paste: {err}");
+      return;
+    }
   };
 
-  release_modifiers(&source);
-
-  if let Ok(command_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_LEFT_COMMAND, true)
-  {
-    command_down.set_flags(CGEventFlags::CGEventFlagCommand);
-    command_down.post(CGEventTapLocation::HID);
+  if let Err(err) = enigo.key(Key::Meta, Direction::Press) {
+    eprintln!("Azad: enigo Cmd down failed: {err}");
+    return;
   }
-
-  if let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_V, true) {
-    key_down.set_flags(CGEventFlags::CGEventFlagCommand);
-    key_down.post(CGEventTapLocation::HID);
+  // `Key::Other(9)` is the physical `V` keycode on macOS. Using it instead of `Key::Unicode('v')`
+  // keeps the paste working on non-US layouts (where `v` might be at a different position).
+  if let Err(err) = enigo.key(Key::Other(9), Direction::Click) {
+    eprintln!("Azad: enigo V click failed: {err}");
   }
-
-  if let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_V, false) {
-    key_up.set_flags(CGEventFlags::CGEventFlagCommand);
-    key_up.post(CGEventTapLocation::HID);
-  }
-  // Hold the command chord briefly so targets consistently register the paste action.
   std::thread::sleep(Duration::from_millis(PASTE_CHORD_HOLD_MS));
-
-  if let Ok(command_up) = CGEvent::new_keyboard_event(source, KEYCODE_LEFT_COMMAND, false) {
-    command_up.post(CGEventTapLocation::HID);
+  if let Err(err) = enigo.key(Key::Meta, Direction::Release) {
+    eprintln!("Azad: enigo Cmd up failed: {err}");
   }
 }
 
@@ -4267,11 +4278,17 @@ unsafe fn release_modifiers(source: &CGEventSource) {
   }
 }
 
+// Write through `writeObjects:` rather than `setString:forType:`. NSString conforms to
+// NSPasteboardWriting, so this single call populates every compatible representation
+// (UTF-8, UTF-16, plain-text, …) in one shot. Matches what arboard, Handy, and any
+// first-party Cocoa app does; avoids leaving the pasteboard in a partially-populated
+// state that some observers don't latch onto.
 unsafe fn write_pasteboard_string(text: &str) -> bool {
   let pasteboard = NSPasteboard::generalPasteboard(nil);
   let _: usize = msg_send![pasteboard, clearContents];
   let ns_text = NSString::alloc(nil).init_str(text);
-  let ok: i8 = msg_send![pasteboard, setString: ns_text forType: NSPasteboardTypeString];
+  let array: id = msg_send![class!(NSArray), arrayWithObject: ns_text];
+  let ok: i8 = msg_send![pasteboard, writeObjects: array];
   ok != 0
 }
 
@@ -4375,6 +4392,47 @@ unsafe fn bundle_resources_dir() -> Option<PathBuf> {
 
   let resource_path: id = msg_send![bundle, resourcePath];
   nsstring_to_path(resource_path)
+}
+
+// Screen Sharing only syncs the local pasteboard to the remote Mac when its window receives a
+// fresh NSApplicationDidBecomeActive event (classic VNC ClientCutText-on-focus pattern). While
+// Screen Sharing stays frontmost, subsequent local clipboard writes don't propagate — the
+// remote keeps pasting whatever value last synced. This helper briefly activates the current
+// app (us, a menu-bar accessory) and then reactivates Screen Sharing. That round-trip fires
+// DidResignActive → DidBecomeActive on Screen Sharing, which re-reads the local pasteboard
+// and pushes ClientCutText to the remote. Cost: ~160 ms of added paste latency and a brief
+// menu-bar flicker. Only runs when Screen Sharing is actually frontmost.
+unsafe fn nudge_screen_sharing_clipboard_sync() {
+  let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+  if workspace == nil {
+    return;
+  }
+  let frontmost: id = msg_send![workspace, frontmostApplication];
+  if frontmost == nil {
+    return;
+  }
+
+  let bundle_id: id = msg_send![frontmost, bundleIdentifier];
+  let Some(bundle) = nsstring_to_string(bundle_id) else {
+    return;
+  };
+  if bundle != "com.apple.ScreenSharing" {
+    return;
+  }
+
+  // NSApplicationActivateIgnoringOtherApps = 1 << 1. Using the raw value because the
+  // objc2_app_kit enum isn't in scope in this file.
+  const ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
+
+  let current: id = msg_send![class!(NSRunningApplication), currentApplication];
+  if current == nil {
+    return;
+  }
+
+  let _: bool = msg_send![current, activateWithOptions: ACTIVATE_IGNORING_OTHER_APPS];
+  std::thread::sleep(Duration::from_millis(60));
+  let _: bool = msg_send![frontmost, activateWithOptions: ACTIVATE_IGNORING_OTHER_APPS];
+  std::thread::sleep(Duration::from_millis(100));
 }
 
 unsafe fn frontmost_bundle_id() -> Option<String> {

@@ -8,6 +8,7 @@ anyhow = "1.0"
 cocoa = "0.26.1"
 objc = "0.2.7"
 core-graphics = "0.24.0"
+enigo = "0.6.1"
 global-hotkey = "0.7.0"
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
