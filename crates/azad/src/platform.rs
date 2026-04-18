@@ -4,7 +4,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::time::Duration;
 
 use cocoa::appkit::{
@@ -49,6 +49,12 @@ const KEYCODE_LEFT_OPTION: u16 = 0x3A;
 const KEYCODE_RIGHT_OPTION: u16 = 0x3D;
 const KEYCODE_LEFT_CONTROL: u16 = 0x3B;
 const KEYCODE_RIGHT_CONTROL: u16 = 0x3E;
+// Virtual keycodes consumed by the HID event tap (Claim-on-press hotkeys).
+const KEYCODE_SPACE: u16 = 0x31;
+const KEYCODE_ESCAPE: u16 = 0x35;
+const KEYCODE_NUMPAD_ENTER: u16 = 0x4C;
+const KEYCODE_ARROW_UP: u16 = 0x7E;
+const KEYCODE_ARROW_DOWN: u16 = 0x7D;
 const PASTE_CHORD_HOLD_MS: u64 = 100;
 
 // Device-specific modifier bits from IOKit's NX_DEVICE*KEYMASK. Real hardware modifier presses
@@ -153,6 +159,29 @@ static HOTKEY_ESCAPE_REGISTERED: AtomicBool = AtomicBool::new(false);
 static HOTKEY_ENTER_REGISTERED: AtomicBool = AtomicBool::new(false);
 static HOTKEY_ARROWS_REGISTERED: AtomicBool = AtomicBool::new(false);
 static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
+
+// Event-tap state. `EVENT_TAP_PORT` holds the CFMachPortRef so the callback can re-enable the
+// tap after macOS times it out. `SPACE_HOLD_CLAIMED` tracks whether we consumed a keydown for
+// Option+Space so we know to also consume (and dispatch Released for) the matching keyup —
+// macOS can deliver the Space keyup with Option already released, so we can't re-check flags.
+static EVENT_TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static SPACE_HOLD_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+// Tag value stamped onto every synthetic CGEvent Azad posts (via `send_key_chord`). The tap
+// callback checks this field and passes through any event that matches, so our own Cmd+V,
+// Enter, Ctrl+Enter, etc. don't recursively retrigger hotkey dispatch.
+const AZAD_SYNTHETIC_MARKER: i64 = 0x1A2A_D1A2;
+
+// IOKit / CoreGraphics tap constants — values straight from <CoreGraphics/CGEventTypes.h>.
+const KCG_HID_EVENT_TAP: u32 = 0;
+const KCG_HEAD_INSERT_EVENT_TAP: u32 = 0;
+const KCG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
+const KCG_EVENT_KEY_DOWN: u32 = 10;
+const KCG_EVENT_KEY_UP: u32 = 11;
+const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+const KCG_KEYBOARD_EVENT_KEYCODE_FIELD: u32 = 9;
+const KCG_EVENT_SOURCE_USER_DATA_FIELD: u32 = 42;
 
 thread_local! {
     static OVERLAY_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
@@ -304,6 +333,7 @@ pub fn run_app() {
 
     setup_status_bar(delegate);
     install_global_hotkeys();
+    install_hotkey_event_tap();
 
     let _: () = msg_send![app, setDelegate: delegate];
     app.run();
@@ -3866,6 +3896,145 @@ fn install_global_hotkeys() {
   });
 }
 
+/// Install a low-level HID-tap that claims the hotkeys Azad cares about before any foreground
+/// app (VNC viewers, remote-desktop clients, etc.) can intercept them. Runs on a dedicated
+/// thread so slow work on the main thread never causes macOS to disable the tap for timeout.
+///
+/// Requires the **Input Monitoring** privacy permission. If the tap fails to create we fall
+/// back silently to the Carbon `RegisterEventHotKey` path — which works in most apps but gets
+/// swallowed by screen-sharing / VNC clients that install their own HID tap.
+fn install_hotkey_event_tap() {
+  std::thread::Builder::new()
+    .name("azad-hotkey-tap".to_string())
+    .spawn(|| unsafe {
+      let events_of_interest = (1u64 << KCG_EVENT_KEY_DOWN) | (1u64 << KCG_EVENT_KEY_UP);
+
+      let tap = CGEventTapCreate(
+        KCG_HID_EVENT_TAP,
+        KCG_HEAD_INSERT_EVENT_TAP,
+        KCG_EVENT_TAP_OPTION_DEFAULT,
+        events_of_interest,
+        event_tap_callback,
+        std::ptr::null_mut(),
+      );
+      if tap.is_null() {
+        eprintln!(
+          "Azad: couldn't install HID event tap — grant Input Monitoring in System Settings to \
+           claim hotkeys over VNC / screen-sharing clients. Falling back to Carbon hotkeys."
+        );
+        return;
+      }
+      EVENT_TAP_PORT.store(tap, Ordering::Release);
+
+      let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
+      if source.is_null() {
+        eprintln!("Azad: failed to create run-loop source for HID event tap");
+        CFRelease(tap.cast());
+        EVENT_TAP_PORT.store(std::ptr::null_mut(), Ordering::Release);
+        return;
+      }
+
+      CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+      CGEventTapEnable(tap, true);
+      CFRelease(source.cast());
+
+      // CFRunLoopRun blocks forever, driving the tap callback on this thread.
+      CFRunLoopRun();
+    })
+    .expect("spawn hotkey-tap thread");
+}
+
+extern "C" fn event_tap_callback(
+  _proxy: *mut c_void,
+  event_type: u32,
+  event: *mut c_void,
+  _user_info: *mut c_void,
+) -> *mut c_void {
+  // macOS disables the tap if the callback is too slow or if the user triggers certain input
+  // sequences. Re-enable and pass the event through.
+  if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT
+    || event_type == KCG_EVENT_TAP_DISABLED_BY_USER_INPUT
+  {
+    let tap = EVENT_TAP_PORT.load(Ordering::Acquire);
+    if !tap.is_null() {
+      unsafe { CGEventTapEnable(tap, true) };
+    }
+    return event;
+  }
+
+  if event_type != KCG_EVENT_KEY_DOWN && event_type != KCG_EVENT_KEY_UP {
+    return event;
+  }
+
+  // Skip events Azad itself synthesized (Cmd+V, auto-submit Enter, etc.). Without this check
+  // the tap would swallow our own Enter and auto-submit would never reach the focused app.
+  let user_data = unsafe { CGEventGetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA_FIELD) };
+  if user_data == AZAD_SYNTHETIC_MARKER {
+    return event;
+  }
+
+  let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE_FIELD) };
+  let flags = unsafe { CGEventGetFlags(event) };
+  let is_option = (flags & CGEventFlags::CGEventFlagAlternate.bits()) != 0;
+  let is_keydown = event_type == KCG_EVENT_KEY_DOWN;
+
+  if claim_tap_hotkey(keycode as u16, is_option, is_keydown) { std::ptr::null_mut() } else { event }
+}
+
+fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool) -> bool {
+  // Option+Space: hold-to-talk. Track claimed-state so we still swallow+dispatch the matching
+  // keyup even if Option was released before Space. Also guards against auto-repeat.
+  if keycode == KEYCODE_SPACE {
+    if is_keydown && is_option {
+      let was_held = SPACE_HOLD_CLAIMED.swap(true, Ordering::AcqRel);
+      if !was_held {
+        crate::app::send_event(AppEvent::HotkeyPressed);
+      }
+      return true;
+    }
+    if !is_keydown && SPACE_HOLD_CLAIMED.swap(false, Ordering::AcqRel) {
+      crate::app::send_event(AppEvent::HotkeyReleased);
+      return true;
+    }
+    return false;
+  }
+
+  // Overlay-only hotkeys. Claim both keydown and keyup so the underlying app never sees either
+  // half of the chord. Event dispatch only fires on keydown.
+  if HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed) && keycode == KEYCODE_ESCAPE {
+    if is_keydown {
+      crate::app::send_event(AppEvent::OverlayCancel);
+    }
+    return true;
+  }
+
+  if HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
+    && (keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER)
+  {
+    if is_keydown {
+      crate::app::send_event(AppEvent::FinalizeHotkeyPressed { raw_requested: is_option });
+    }
+    return true;
+  }
+
+  if HOTKEY_ARROWS_REGISTERED.load(Ordering::Relaxed) {
+    if keycode == KEYCODE_ARROW_UP {
+      if is_keydown {
+        crate::app::send_event(AppEvent::ArrowNavigate(-1));
+      }
+      return true;
+    }
+    if keycode == KEYCODE_ARROW_DOWN {
+      if is_keydown {
+        crate::app::send_event(AppEvent::ArrowNavigate(1));
+      }
+      return true;
+    }
+  }
+
+  false
+}
+
 fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
   if let Some(option_space_id) = HOTKEY_OPTION_SPACE_ID.get().copied() {
     if event.id == option_space_id {
@@ -4090,11 +4259,18 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
     CGEventFlags::from_bits_truncate(flags.bits() | device_bit)
   };
 
+  // Stamp every event with our synthetic marker so our HID tap (if installed) passes them
+  // through instead of re-dispatching them as a user hotkey press.
+  let stamp = |event: &CGEvent| {
+    event.set_integer_value_field(KCG_EVENT_SOURCE_USER_DATA_FIELD, AZAD_SYNTHETIC_MARKER);
+  };
+
   if let Some(modifier_key) = modifier_key {
     let Ok(mod_down) = CGEvent::new_keyboard_event(source.clone(), modifier_key, true) else {
       return false;
     };
     mod_down.set_flags(chord_flags);
+    stamp(&mod_down);
     mod_down.post(CGEventTapLocation::HID);
   }
 
@@ -4104,6 +4280,7 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   if !chord_flags.is_empty() {
     key_down.set_flags(chord_flags);
   }
+  stamp(&key_down);
   key_down.post(CGEventTapLocation::HID);
 
   let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), keycode, false) else {
@@ -4112,10 +4289,12 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   if !chord_flags.is_empty() {
     key_up.set_flags(chord_flags);
   }
+  stamp(&key_up);
   key_up.post(CGEventTapLocation::HID);
 
   if let Some(modifier_key) = modifier_key {
     if let Ok(mod_up) = CGEvent::new_keyboard_event(source, modifier_key, false) {
+      stamp(&mod_up);
       mod_up.post(CGEventTapLocation::HID);
     }
   }
@@ -4207,6 +4386,46 @@ fn maybe_request_accessibility_permission_once() {
 unsafe extern "C" {
   fn AXIsProcessTrusted() -> bool;
   fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+}
+
+type CGEventTapCallBack = extern "C" fn(
+  proxy: *mut c_void,
+  event_type: u32,
+  event: *mut c_void,
+  user_info: *mut c_void,
+) -> *mut c_void;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+  fn CGEventTapCreate(
+    tap: u32,
+    place: u32,
+    options: u32,
+    events_of_interest: u64,
+    callback: CGEventTapCallBack,
+    user_info: *mut c_void,
+  ) -> *mut c_void;
+
+  fn CGEventTapEnable(tap: *mut c_void, enable: bool);
+
+  fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
+  fn CGEventGetFlags(event: *mut c_void) -> u64;
+
+  fn CFMachPortCreateRunLoopSource(
+    allocator: *const c_void,
+    port: *mut c_void,
+    order: isize,
+  ) -> *mut c_void;
+
+  fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+
+  fn CFRunLoopGetCurrent() -> *mut c_void;
+  fn CFRunLoopRun();
+
+  fn CFRelease(cf: *const c_void);
+
+  static kCFRunLoopCommonModes: *const c_void;
 }
 
 unsafe fn request_accessibility_prompt() -> bool {
