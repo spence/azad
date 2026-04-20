@@ -1841,9 +1841,12 @@ impl AppController {
         self.raw_handled_turn_id = None;
         self.latest_final = Some(cleaned.clone());
         if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-          if !self.manual_hold_active && !hold_top_for_next_turn {
-            self.hide_overlay();
-          }
+          // Keep the finalizing spinner on screen through the paste window so the visual
+          // transition coincides with the paste appearing in the target app. Hiding first and
+          // then doing a ~100 ms blocking paste creates a perceptible "overlay gone / nothing
+          // happening / paste appears" gap; hiding after leaves the overlay responsible for
+          // "still working" state right up until the moment the text lands.
+          let should_hide_overlay = !self.manual_hold_active && !hold_top_for_next_turn;
           if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
             self.last_pasted_turn_id = Some(turn_id);
             if let Some(index) = &mut self.transcript_index {
@@ -1851,6 +1854,9 @@ impl AppController {
             }
           } else {
             eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
+          }
+          if should_hide_overlay {
+            self.hide_overlay();
           }
         }
         self.maybe_start_deferred_vad_turn();

@@ -63,7 +63,6 @@ const PASTE_CHORD_HOLD_MS: u64 = 100;
 // remote side sees only the bare key.
 const NX_DEVICELCTLKEYMASK: u64 = 0x0000_0001;
 const NX_DEVICELSHIFTKEYMASK: u64 = 0x0000_0002;
-const POST_PASTE_SETTLE_MS: u64 = 50;
 const OVERLAY_WIDTH_MIN: f64 = 300.0;
 const OVERLAY_WIDTH_MAX: f64 = 620.0;
 const OVERLAY_HEIGHT_MIN: f64 = 60.0;
@@ -782,9 +781,6 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
       }
     }
   }
-
-  // Give the target app a short settle window after synthetic paste.
-  std::thread::sleep(Duration::from_millis(POST_PASTE_SETTLE_MS));
 
   PasteResult::Pasted
 }

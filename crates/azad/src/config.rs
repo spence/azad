@@ -63,7 +63,11 @@ impl Default for AzadConfig {
       final_pass_timeout_ms: 3_000,
       chunk_ms: 20,
       buffer_ms: 120_000,
-      paste_delay_ms: 120,
+      // Was 120 ms — originally a "let the focused app see the new pasteboard" buffer, but
+      // NSPasteboard::writeObjects: is synchronous (the write is visible before the call
+      // returns) and Screen Sharing clients are handled separately by
+      // `nudge_screen_sharing_clipboard_sync`, so on local paste ~20 ms is plenty.
+      paste_delay_ms: 20,
       native_engine_logs_enabled: env_flag_enabled("AZAD_NATIVE_ENGINE_LOGS"),
       pipeline: PipelineConfig {
         vad_model_path: vad_path,
