@@ -230,6 +230,39 @@ fn raw_finalize_ui_plan(
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftOverlayAction {
+  /// Show the overlay now and clear the pending flag.
+  Show,
+  /// Cancel-suppression is still active. Leave the pending flag as-is so a later
+  /// DraftUpdate past the window can still bring the overlay up.
+  KeepPendingForLater,
+  /// Nothing to show (overlay already visible, or never pending). Clear the flag.
+  Clear,
+}
+
+/// Decide what to do with `overlay_pending_vad_text` when a `DraftUpdated` arrives.
+///
+/// The previous implementation unconditionally cleared the pending flag after checking
+/// whether to show. That had a bug: if the user hit Escape and started talking again within
+/// `CANCEL_VAD_SHOW_SUPPRESSION_MS`, the new turn's first DraftUpdate hit the suppression
+/// branch, the show was correctly skipped — but the pending flag was then cleared, so no
+/// subsequent DraftUpdate past the suppression window could ever bring the overlay up.
+/// Transcription continued in the background with no visible overlay.
+fn draft_update_overlay_action(
+  pending: bool,
+  overlay_visible: bool,
+  cancel_suppression_active: bool,
+) -> DraftOverlayAction {
+  if cancel_suppression_active {
+    DraftOverlayAction::KeepPendingForLater
+  } else if pending && !overlay_visible {
+    DraftOverlayAction::Show
+  } else {
+    DraftOverlayAction::Clear
+  }
+}
+
 fn manual_hold_release_plan(
   always_listening_enabled: bool,
   should_finalize: bool,
@@ -1566,13 +1599,26 @@ impl AppController {
             self.clear_held_top_overlay();
           }
           self.latest_draft = merged;
-          let vad_show_suppressed = self
+          let cancel_suppression_active = self
             .cancel_vad_show_suppressed_until
             .is_some_and(|deadline| Instant::now() < deadline);
-          if self.overlay_pending_vad_text && !self.overlay_visible && !vad_show_suppressed {
-            self.show_overlay_listening();
+          match draft_update_overlay_action(
+            self.overlay_pending_vad_text,
+            self.overlay_visible,
+            cancel_suppression_active,
+          ) {
+            DraftOverlayAction::Show => {
+              self.show_overlay_listening();
+              self.overlay_pending_vad_text = false;
+            }
+            DraftOverlayAction::Clear => {
+              self.overlay_pending_vad_text = false;
+            }
+            DraftOverlayAction::KeepPendingForLater => {
+              // Leave `overlay_pending_vad_text` alone; the next DraftUpdate after the
+              // cancel-suppression window expires will re-evaluate and show the overlay.
+            }
           }
-          self.overlay_pending_vad_text = false;
         }
         if self.overlay_visible {
           if self.finalizing_deadline.is_some() {
@@ -2520,6 +2566,7 @@ mod tests {
   use super::{
     AppController,
     AzadConfig,
+    DraftOverlayAction,
     EngineState,
     HotkeyEffect,
     ManualHoldReleaseAction,
@@ -2529,6 +2576,7 @@ mod tests {
     allow_immediate_restart_for_fault_count,
     build_paste_text,
     draft_matches_finalized_text,
+    draft_update_overlay_action,
     has_actionable_turn_context_for_snapshot,
     has_started_turn_for_snapshot,
     has_turn_context_for_snapshot,
@@ -2894,7 +2942,6 @@ mod tests {
   }
 
   #[test]
-  #[test]
   fn build_paste_text_strips_removed_word_at_boundaries() {
     let words = vec!["um".to_string()];
     assert_eq!(build_paste_text("um", false, &words), "");
@@ -3043,5 +3090,71 @@ mod tests {
     assert_eq!(controller.current_turn_id, None);
     assert_eq!(controller.finalizing_turn_id, None);
     assert!(controller.turn_accept_floor >= 1);
+  }
+
+  #[test]
+  fn draft_overlay_shows_when_pending_and_hidden_and_unsuppressed() {
+    let action = draft_update_overlay_action(
+      /* pending */ true, /* overlay_visible */ false,
+      /* cancel_suppression_active */ false,
+    );
+    assert_eq!(action, DraftOverlayAction::Show);
+  }
+
+  #[test]
+  fn draft_overlay_keeps_pending_during_cancel_suppression_window() {
+    // Regression: the buggy implementation cleared `overlay_pending_vad_text` unconditionally
+    // after the show-check, so a turn that began within CANCEL_VAD_SHOW_SUPPRESSION_MS of the
+    // user pressing Escape saw its first DraftUpdate get suppressed, lost the pending flag,
+    // and then transcribed the rest of the turn with no overlay. The fix is to leave the
+    // pending flag intact while suppression is active so a later DraftUpdate past the window
+    // can still bring the overlay up.
+    let action = draft_update_overlay_action(
+      /* pending */ true, /* overlay_visible */ false,
+      /* cancel_suppression_active */ true,
+    );
+    assert_eq!(action, DraftOverlayAction::KeepPendingForLater);
+  }
+
+  #[test]
+  fn draft_overlay_clears_when_already_visible_and_unsuppressed() {
+    // Overlay is up; nothing to show. The pending flag should not linger.
+    let action = draft_update_overlay_action(
+      /* pending */ true, /* overlay_visible */ true,
+      /* cancel_suppression_active */ false,
+    );
+    assert_eq!(action, DraftOverlayAction::Clear);
+  }
+
+  #[test]
+  fn draft_overlay_keeps_pending_during_suppression_even_if_visible() {
+    // Degenerate state (shouldn't typically occur — cancel hides the overlay as it starts the
+    // suppression window). Locking in the rule: while suppression is active, nothing touches
+    // the pending flag regardless of visibility.
+    let action = draft_update_overlay_action(
+      /* pending */ true, /* overlay_visible */ true,
+      /* cancel_suppression_active */ true,
+    );
+    assert_eq!(action, DraftOverlayAction::KeepPendingForLater);
+  }
+
+  #[test]
+  fn draft_overlay_clears_when_not_pending_and_unsuppressed() {
+    for visible in [false, true] {
+      let action = draft_update_overlay_action(
+        /* pending */ false, visible, /* cancel_suppression_active */ false,
+      );
+      assert_eq!(action, DraftOverlayAction::Clear, "visible={visible}");
+    }
+  }
+
+  #[test]
+  fn draft_overlay_holds_state_during_suppression_when_not_pending() {
+    for visible in [false, true] {
+      let action = draft_update_overlay_action(
+        /* pending */ false, visible, /* cancel_suppression_active */ true,
+      );
+      assert_eq!(action, DraftOverlayAction::KeepPendingForLater, "visible={visible}");
+    }
   }
 }
