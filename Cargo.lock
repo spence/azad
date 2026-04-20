@@ -142,6 +142,7 @@ dependencies = [
  "parakeet-rs",
  "ratatui",
  "ringbuf",
+ "serde_json",
  "symphonia",
  "whisper-cpp-plus",
 ]
