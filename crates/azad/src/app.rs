@@ -72,6 +72,13 @@ static EVENT_RX: OnceLock<Mutex<Receiver<AppEvent>>> = OnceLock::new();
 static CONTROLLER: OnceLock<Mutex<AppController>> = OnceLock::new();
 static HOTKEY_CLOCK_START: OnceLock<Instant> = OnceLock::new();
 
+/// Heartbeat log cadence. Only emits while `AzadDebugStatsEnabled` is set, so it's quiet for
+/// normal users. The point is to have a timestamped breadcrumb trail of steady-state flags
+/// right up to the moment the app goes silent — so when we get another "it stopped responding
+/// and a restart fixed it" report, the tail of the log tells us the last observed values of
+/// `capture_enabled`, `always_listening`, `manual_hold_active`, etc.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
 pub fn run() {
   platform::check_required_permissions_on_startup();
 
@@ -83,7 +90,49 @@ pub fn run() {
   controller.bootstrap();
   let _ = CONTROLLER.set(Mutex::new(controller));
 
+  spawn_heartbeat_thread();
+
   platform::run_app();
+}
+
+fn spawn_heartbeat_thread() {
+  std::thread::Builder::new()
+    .name("azad-heartbeat".to_string())
+    .spawn(|| {
+      loop {
+        std::thread::sleep(HEARTBEAT_INTERVAL);
+        let Some(ctrl_lock) = CONTROLLER.get() else { continue };
+        // try_lock so a stuck main thread doesn't stall the heartbeat — we can still emit a
+        // line saying we couldn't observe state, which is itself a signal.
+        match ctrl_lock.try_lock() {
+          Ok(ctrl) => {
+            if !ctrl.debug_stats_enabled {
+              continue;
+            }
+            eprintln!(
+              "AZAD_HEARTBEAT session_present={} always_listening={} manual_hold_active={} \
+             engine_state={:?} overlay_visible={} current_turn={:?} latest_seen_turn={} \
+             last_pasted_turn={:?} cancelled={} hold_saw_speech={} pending_recovery={}",
+              ctrl.session.is_some(),
+              ctrl.always_listening_enabled,
+              ctrl.manual_hold_active,
+              ctrl.engine_state,
+              ctrl.overlay_visible,
+              ctrl.current_turn_id,
+              ctrl.latest_seen_turn_id,
+              ctrl.last_pasted_turn_id,
+              ctrl.cancelled,
+              ctrl.hold_saw_speech,
+              ctrl.pending_recovery_restart,
+            );
+          }
+          Err(_) => {
+            eprintln!("AZAD_HEARTBEAT controller mutex busy — main thread may be stalled");
+          }
+        }
+      }
+    })
+    .expect("spawn heartbeat thread");
 }
 
 pub fn send_event(event: AppEvent) {
@@ -1811,8 +1860,17 @@ impl AppController {
           }
         }
       }
-      SpeechEvent::SessionEnded { .. } => {
+      SpeechEvent::SessionEnded { session_id } => {
         let should_restart = self.should_restart_after_session_end() || self.manual_hold_active;
+        if self.debug_stats_enabled {
+          eprintln!(
+            "AZAD_SESSION_ENDED session_id={session_id} should_restart={should_restart} \
+             always_listening={} manual_hold_active={} last_was_stream_fault={}",
+            self.always_listening_enabled,
+            self.manual_hold_active,
+            self.last_session_error_was_stream_fault,
+          );
+        }
         self.engine_state = EngineState::Idle;
         if !self.cancelled
           && self.latest_seen_turn_id > 0
