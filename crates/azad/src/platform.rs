@@ -181,6 +181,7 @@ const KCG_EVENT_KEY_UP: u32 = 11;
 const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
 const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 const KCG_KEYBOARD_EVENT_KEYCODE_FIELD: u32 = 9;
+const KCG_KEYBOARD_EVENT_AUTOREPEAT_FIELD: u32 = 8;
 const KCG_EVENT_SOURCE_USER_DATA_FIELD: u32 = 42;
 
 thread_local! {
@@ -3974,22 +3975,43 @@ extern "C" fn event_tap_callback(
   }
 
   let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE_FIELD) };
+  let autorepeat =
+    unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_AUTOREPEAT_FIELD) };
   let flags = unsafe { CGEventGetFlags(event) };
   let is_option = (flags & CGEventFlags::CGEventFlagAlternate.bits()) != 0;
   let is_keydown = event_type == KCG_EVENT_KEY_DOWN;
+  let is_autorepeat = autorepeat != 0;
 
-  if claim_tap_hotkey(keycode as u16, is_option, is_keydown) { std::ptr::null_mut() } else { event }
+  if claim_tap_hotkey(keycode as u16, is_option, is_keydown, is_autorepeat) {
+    std::ptr::null_mut()
+  } else {
+    event
+  }
 }
 
-fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool) -> bool {
-  // Option+Space: hold-to-talk. Track claimed-state so we still swallow+dispatch the matching
-  // keyup even if Option was released before Space. Also guards against auto-repeat.
+fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool, is_autorepeat: bool) -> bool {
+  // Option+Space: hold-to-talk.
+  //
+  // Dispatch `HotkeyPressed` on **every** non-autorepeat Opt+Space keydown (no edge-debounce),
+  // because if the prior keyup was ever dropped (tap disabled mid-hold, screen lock, another
+  // app briefly taking exclusive keyboard focus, etc.), the previous approach of gating on
+  // `SPACE_HOLD_CLAIMED.swap(true)` would return `was_held=true` forever and silently swallow
+  // every subsequent press — appearing to the user as "Azad is stuck; restart fixes it". OS
+  // auto-repeat keydowns are filtered via `kCGKeyboardEventAutorepeat` so this doesn't flood
+  // the state machine with repeated presses while you're just holding the key.
+  //
+  // `SPACE_HOLD_CLAIMED` is still used to decide whether to *claim* (swallow) the subsequent
+  // keyup — a bare Space keyup not preceded by Opt+Space should pass through normally — but it
+  // no longer gates dispatch.
   if keycode == KEYCODE_SPACE {
     if is_keydown && is_option {
-      let was_held = SPACE_HOLD_CLAIMED.swap(true, Ordering::AcqRel);
-      if !was_held {
-        crate::app::send_event(AppEvent::HotkeyPressed);
+      if is_autorepeat {
+        // Claim the event so the remote VNC never gets a flood of spaces, but don't dispatch
+        // — the state machine already knows we're holding.
+        return true;
       }
+      SPACE_HOLD_CLAIMED.store(true, Ordering::Release);
+      crate::app::send_event(AppEvent::HotkeyPressed);
       return true;
     }
     if !is_keydown && SPACE_HOLD_CLAIMED.swap(false, Ordering::AcqRel) {
