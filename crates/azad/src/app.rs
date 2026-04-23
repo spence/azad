@@ -1882,7 +1882,8 @@ impl AppController {
           && self.latest_seen_turn_id > 0
           && self.last_pasted_turn_id != Some(self.latest_seen_turn_id)
         {
-          self.hide_overlay();
+          // Paste-then-hide: the overlay's "still working" state stays on screen until the
+          // paste actually lands, so dismissal and paste appear on the same frame.
           if let Some(final_text) = self.latest_final.as_ref() {
             let cleaned = final_text.trim().to_string();
             if !cleaned.is_empty() {
@@ -1891,6 +1892,7 @@ impl AppController {
               }
             }
           }
+          self.hide_overlay();
         }
 
         self.hide_overlay();
@@ -2476,15 +2478,18 @@ impl AppController {
     self.latest_final = Some(raw_text.clone());
 
     if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
+      // Keep the overlay up through the paste window so the dismissal coincides with the
+      // text landing in the target. Hiding first, then blocking in try_paste, opens a
+      // visible gap between "overlay gone" and "paste appears".
       let should_hide_overlay =
         ui_plan.hide_overlay && (raw_targets_finalizing_lane || self.finalizing_turn_id.is_none());
-      if should_hide_overlay {
-        self.hide_overlay();
-      }
       if self.try_paste(turn_id, TranscriptMode::Raw, &raw_text) {
         self.last_pasted_turn_id = Some(turn_id);
       } else {
         eprintln!("Azad: failed to auto-paste raw transcript (clipboard still contains text)");
+      }
+      if should_hide_overlay {
+        self.hide_overlay();
       }
     }
 
