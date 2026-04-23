@@ -74,7 +74,13 @@ impl Default for AzadConfig {
         vad_thold: 0.45,
         vad_start_chunks: 1,
         pre_roll_ms: 800,
-        eou_min_silence_ms: 240,
+        // Was 240 ms. 240 ms of VAD-classified silence is easily reached during natural
+        // connected speech — micro-pauses at word boundaries, consonant-heavy segments, or
+        // brief Silero probability dips. Combined with EOU latching on an intermediate
+        // clause boundary, users hit "cut off mid-word" false finalizations. 350 ms adds
+        // ~110 ms of finalize latency when you actually stop talking (invisible under the
+        // paste spinner) but meaningfully widens the window against false VAD-silence cuts.
+        eou_min_silence_ms: 350,
         eou_max_silence_ms: 1_000,
         stable_k: 3,
         stable_h: 5,
