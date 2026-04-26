@@ -2482,6 +2482,20 @@ unsafe fn render_overlay_text(
   }
   let default_text = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
   let _: () = msg_send![refs.label, setTextColor: default_text];
+  // Restore speech-mode label/meter visibility and styling. The history-list
+  // renderer hides and re-styles `refs.label` (smaller font, left-aligned,
+  // truncating line break) and `refs.meter_view`; without this restore, a turn
+  // back to speech mode after using history would render an invisible draft and
+  // an invisible meter — the text is captured but the user sees nothing.
+  let _: () = msg_send![refs.label, setHidden: NO];
+  let _: () = msg_send![refs.meter_view, setHidden: NO];
+  let label_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_TEXT_FONT_SIZE];
+  if label_font != nil {
+    let _: () = msg_send![refs.label, setFont: label_font];
+  }
+  let _: () = msg_send![refs.label, setUsesSingleLineMode: NO];
+  let _: () = msg_send![refs.label, setLineBreakMode: 0isize];
+  let _: () = msg_send![refs.label, setMaximumNumberOfLines: 0isize];
 
   apply_busy_border_style(refs, busy_phase, width, height);
 
