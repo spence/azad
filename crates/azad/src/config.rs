@@ -88,7 +88,13 @@ impl Default for AzadConfig {
         // and the turn continues. Targets the "Silero-misclassified-soft-attack
         // cuts the user off mid-word" failure mode — see turn-000100 in the
         // debug-recording buffer for the canonical example.
-        recovery_window_ms: 500,
+        //
+        // Was 500 ms. In live use the recovery branch effectively never fires
+        // (Silero is reliable enough on continuation speech that the strong-
+        // recovery path almost always handles it). Pulling the window to 250 ms
+        // halves the paste-latency cost on every turn while still catching
+        // soft-attack resumes that land within ~half the window.
+        recovery_window_ms: 250,
         // Lower than the turn-start `vad_thold` (0.45). False-positive recovery
         // only costs latency; false-negative cuts the user off. Keep generous.
         recovery_vad_thold: 0.30,
