@@ -82,6 +82,16 @@ impl Default for AzadConfig {
         // paste spinner) but meaningfully widens the window against false VAD-silence cuts.
         eou_min_silence_ms: 350,
         eou_max_silence_ms: 1_000,
+        // Tentative-finalize: after EOU latches and `eou_min_silence_ms` is met,
+        // wait this long before actually committing. If VAD picks up speech AND
+        // EOU produces meaningful text inside the window, the latch is undone
+        // and the turn continues. Targets the "Silero-misclassified-soft-attack
+        // cuts the user off mid-word" failure mode — see turn-000100 in the
+        // debug-recording buffer for the canonical example.
+        recovery_window_ms: 500,
+        // Lower than the turn-start `vad_thold` (0.45). False-positive recovery
+        // only costs latency; false-negative cuts the user off. Keep generous.
+        recovery_vad_thold: 0.30,
         stable_k: 3,
         stable_h: 5,
         enable_tdt_final_pass: true,
