@@ -13,17 +13,60 @@ use asr::pipeline::{DebugStatsEvent, EngineState};
 
 #[derive(Debug, Clone)]
 pub enum SpeechEvent {
-  SessionStarted { session_id: u64 },
-  Listening { session_id: u64 },
-  SpeechStartedByVad { session_id: u64 },
-  DraftUpdated { session_id: u64, turn_id: u64, committed: String, live: String },
-  Finalizing { session_id: u64, turn_id: u64, current_draft: String },
-  FinalText { session_id: u64, turn_id: u64, text: String },
-  SessionEnded { session_id: u64 },
-  Error { session_id: u64, message: String },
-  Status { session_id: u64, state: EngineState, detail: String },
-  Meter { session_id: u64, peak_db: f32, vad_speech: bool, vad_prob: f32 },
-  DebugStats { session_id: u64, event: DebugStatsEvent },
+  SessionStarted {
+    session_id: u64,
+  },
+  Listening {
+    session_id: u64,
+  },
+  SpeechStartedByVad {
+    session_id: u64,
+  },
+  DraftUpdated {
+    session_id: u64,
+    turn_id: u64,
+    committed: String,
+    live: String,
+  },
+  Finalizing {
+    session_id: u64,
+    turn_id: u64,
+    current_draft: String,
+  },
+  /// The tentative-finalize was undone by recovery. The handler should clear
+  /// any "finalizing" UI state for `turn_id` and return the overlay to live
+  /// listening — the user kept talking.
+  FinalizingCancelled {
+    session_id: u64,
+    turn_id: u64,
+  },
+  FinalText {
+    session_id: u64,
+    turn_id: u64,
+    text: String,
+  },
+  SessionEnded {
+    session_id: u64,
+  },
+  Error {
+    session_id: u64,
+    message: String,
+  },
+  Status {
+    session_id: u64,
+    state: EngineState,
+    detail: String,
+  },
+  Meter {
+    session_id: u64,
+    peak_db: f32,
+    vad_speech: bool,
+    vad_prob: f32,
+  },
+  DebugStats {
+    session_id: u64,
+    event: DebugStatsEvent,
+  },
 }
 
 pub struct SpeechSession {
@@ -96,6 +139,9 @@ impl ToonSessionSink for ForwardingSink {
       }
       ToonSessionEvent::Finalizing { turn_id, current_draft } => {
         SpeechEvent::Finalizing { session_id: self.session_id, turn_id, current_draft }
+      }
+      ToonSessionEvent::FinalizingCancelled { turn_id } => {
+        SpeechEvent::FinalizingCancelled { session_id: self.session_id, turn_id }
       }
       ToonSessionEvent::FinalText { turn_id, text } => {
         SpeechEvent::FinalText { session_id: self.session_id, turn_id, text }

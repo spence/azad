@@ -1598,6 +1598,7 @@ impl AppController {
       | SpeechEvent::SpeechStartedByVad { session_id }
       | SpeechEvent::DraftUpdated { session_id, .. }
       | SpeechEvent::Finalizing { session_id, .. }
+      | SpeechEvent::FinalizingCancelled { session_id, .. }
       | SpeechEvent::FinalText { session_id, .. }
       | SpeechEvent::SessionEnded { session_id }
       | SpeechEvent::Error { session_id, .. }
@@ -1765,6 +1766,25 @@ impl AppController {
         self.finalizing_deadline =
           Some(Instant::now() + Duration::from_millis(self.cfg.final_pass_timeout_ms));
         self.render_finalizing_overlay_state();
+      }
+      SpeechEvent::FinalizingCancelled { turn_id, .. } => {
+        if !self.accept_turn(turn_id) {
+          return;
+        }
+        // Tentative finalize for this turn was undone — clear the finalize state
+        // so the pulsing border stops and the overlay returns to live listening.
+        // Mirrors the inverse of the `Finalizing` arm above.
+        if self.finalizing_turn_id == Some(turn_id) {
+          self.finalizing_turn_id = None;
+        }
+        self.finalizing_deadline = None;
+        self.finalizing_draft.clear();
+        self.saw_vad_start_during_finalizing = false;
+        self.raw_handled_turn_id = None;
+        self.raw_finalize_requested = false;
+        if self.overlay_visible {
+          self.render_listening_overlay();
+        }
       }
       SpeechEvent::FinalText { turn_id, text, .. } => {
         if !self.accept_turn(turn_id) {
@@ -2354,11 +2374,14 @@ impl AppController {
   }
 
   fn handle_arrow_navigate(&mut self, direction: i32) {
-    // Up arrow at any moment during opt+space hold pivots into history mode.
-    // `enter_history_mode` cancels any in-flight transcription cleanly via
-    // `session.cancel_current_turn`, so we can drop the previous gates that
-    // required no draft text and no speech yet.
-    if !self.history_browsing && direction == -1 && self.overlay_visible {
+    // Up only pivots into history while opt+space is *actively held*. VAD-only
+    // sessions (where the overlay shows because auto-detect picked up speech)
+    // must let Up flow through to the focused app underneath — the user uses
+    // Up/Down to navigate that app and can't have us hijacking those keys.
+    // `enter_history_mode` cleanly cancels the in-flight transcription, so the
+    // previous draft-empty / no-speech-yet gates aren't needed.
+    if !self.history_browsing && direction == -1 && self.overlay_visible && self.manual_hold_active
+    {
       self.enter_history_mode();
       return;
     }
