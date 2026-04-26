@@ -14,3 +14,17 @@ When asked to add a feature or make a change, go end to end:
 - If something breaks downstream of your change, that's your problem — fix it
 
 Don't stop at "it compiles." Stop at "it works."
+
+## Commit by workstream as you go
+
+When work we agreed to is finished AND verified (build green, tests green, behaviour
+confirmed), commit it. Don't accumulate finished workstreams into one giant uncommitted
+pile, and don't wait to be told. Each commit should represent one coherent change you
+can describe in a conventional-commits subject line.
+
+- The asr-rs submodule and the azad parent repo are separate workstreams: commit each
+  in its own repo, then commit the submodule-pointer bump in the parent.
+- Verification is on you. "Verified" means the build passes, relevant tests pass, and
+  you've checked the behaviour end-to-end (per the Ownership rules above) — not just
+  that the compiler is happy.
+- Don't commit work the user hasn't agreed to. Don't push without being asked.
