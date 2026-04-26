@@ -970,7 +970,14 @@ impl AppController {
   }
 
   fn handle_hotkey_released(&mut self) {
-    if self.history_browsing || !self.models_ready {
+    if self.history_browsing {
+      // Release-to-paste mirrors the speech-mode finalize gesture: hold opt+space,
+      // navigate, let go to commit. `paste_from_history` exits history mode after
+      // pasting, so the overlay also closes.
+      self.paste_from_history();
+      return;
+    }
+    if !self.models_ready {
       return;
     }
     self.dispatch_hotkey_input(HotkeyInput::HoldReleased { snapshot: self.hotkey_snapshot() });
@@ -2334,21 +2341,18 @@ impl AppController {
   }
 
   fn handle_arrow_navigate(&mut self, direction: i32) {
-    // Up arrow during a fresh hold (no speech yet) pivots into history browsing
-    if !self.history_browsing
-      && direction == -1
-      && self.overlay_visible
-      && self.latest_draft.trim().is_empty()
-      && !self.hold_saw_speech
-    {
+    // Up arrow at any moment during opt+space hold pivots into history mode.
+    // `enter_history_mode` cancels any in-flight transcription cleanly via
+    // `session.cancel_current_turn`, so we can drop the previous gates that
+    // required no draft text and no speech yet.
+    if !self.history_browsing && direction == -1 && self.overlay_visible {
       self.enter_history_mode();
       return;
     }
     if !self.history_browsing {
       return;
     }
-    let Some(index) = &self.transcript_index else { return };
-    let count = index.entry_count();
+    let count = self.transcript_index.as_ref().map(|i| i.entry_count()).unwrap_or(0);
     if count == 0 {
       return;
     }
@@ -2369,35 +2373,39 @@ impl AppController {
   }
 
   fn render_history_overlay(&self) {
-    let Some(index) = &self.transcript_index else { return };
-    let Some(text) = index.entry_text(self.history_browse_index) else { return };
-    let ts_ms = index.entry_ts_ms(self.history_browse_index).unwrap_or(0);
-    let position = format!(
-      "{} of {} \u{00b7} {}",
-      self.history_browse_index + 1,
-      index.entry_count(),
-      crate::transcript_history::format_timestamp_relative(ts_ms),
-    );
-    platform::set_overlay_stream_content(text, &[], None, false, false, &position);
+    let Some(index) = &self.transcript_index else {
+      platform::set_overlay_history_content(&[], 0);
+      return;
+    };
+    let count = index.entry_count();
+    let entries: Vec<platform::HistoryEntryView<'_>> = (0..count)
+      .filter_map(|i| index.entry_text(i).map(|text| platform::HistoryEntryView { text }))
+      .collect();
+    let selected = self.history_browse_index.min(count.saturating_sub(1));
+    platform::set_overlay_history_content(&entries, selected);
   }
 
   fn paste_from_history(&mut self) {
-    let Some(index) = &self.transcript_index else { return };
-    let Some(text) = index.entry_text(self.history_browse_index) else { return };
-    let text = text.to_string();
-    let paste_text =
-      build_paste_text(&text, self.append_trailing_space_on_paste, &self.removed_words);
-    let _ = platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
-    let _ = platform::send_auto_submit(self.auto_submit_mode);
+    let text = self
+      .transcript_index
+      .as_ref()
+      .and_then(|index| index.entry_text(self.history_browse_index))
+      .map(|s| s.to_string());
+    if let Some(text) = text {
+      let paste_text =
+        build_paste_text(&text, self.append_trailing_space_on_paste, &self.removed_words);
+      let _ = platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
+      let _ = platform::send_auto_submit(self.auto_submit_mode);
+    }
+    // Exit even on an empty-state release so the overlay closes — otherwise
+    // the "No transcripts" overlay would linger after opt+space release.
     self.exit_history_mode();
   }
 
   fn enter_history_mode(&mut self) {
-    let Some(index) = &self.transcript_index else { return };
-    if index.entry_count() == 0 {
-      return;
-    }
-    // Cancel the active hold and stop capture
+    // Cancel the active hold and stop capture. We enter even when the index is
+    // empty so the user gets a "No transcripts" overlay rather than a silent
+    // no-op.
     self.manual_hold_active = false;
     self.hold_saw_speech = false;
     if let Some(session) = &self.session {
@@ -2409,6 +2417,7 @@ impl AppController {
     }
     self.history_browsing = true;
     self.history_browse_index = 0;
+    platform::set_arrow_left_hotkey_enabled(true);
     self.render_history_overlay();
   }
 
@@ -2416,6 +2425,7 @@ impl AppController {
     self.history_browsing = false;
     self.history_browse_index = 0;
     self.overlay_visible = false;
+    platform::set_arrow_left_hotkey_enabled(false);
     platform::hide_overlay();
   }
 

@@ -66,17 +66,6 @@ impl TranscriptIndex {
       }
     }
 
-    if entries.is_empty() {
-      let ts_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-      entries.push(TranscriptEntry {
-        ts_ms,
-        final_text: "Speech history will appear here.".to_string(),
-      });
-    }
-
     // Newest first
     entries.reverse();
 
@@ -125,11 +114,15 @@ impl TranscriptIndex {
     self.entries.get(index).map(|e| e.final_text.as_str())
   }
 
+  #[allow(dead_code)] // Public API; current list overlay omits per-entry timestamps but a
+  // future footer / inline label can pick this back up without churn.
   pub fn entry_ts_ms(&self, index: usize) -> Option<i64> {
     self.entries.get(index).map(|e| e.ts_ms)
   }
 }
 
+#[allow(dead_code)] // Reserved for the timestamp footer; kept public so adding it back is a
+// one-line UI change rather than a re-wire.
 pub fn format_timestamp_relative(ts_ms: i64) -> String {
   let now_ms = SystemTime::now()
     .duration_since(UNIX_EPOCH)
