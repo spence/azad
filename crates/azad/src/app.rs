@@ -1610,6 +1610,19 @@ impl AppController {
       return;
     }
 
+    // History-browse mode owns the overlay. Speech events that would render
+    // into the overlay (DraftUpdated, Meter, Finalizing, FinalText), hide it
+    // (SessionEnded), or otherwise compete for it must be dropped here.
+    // Without this guard, an in-flight turn cancelled by `enter_history_mode`
+    // continues firing events as the worker thread drains, stomping the
+    // history list with old draft text — the user-reported "overlay freezes"
+    // / "transcription disappears" symptoms. We accept the consequence that
+    // any speech captured while history is open won't surface; the user
+    // pivoted away from speaking on purpose.
+    if self.history_browsing {
+      return;
+    }
+
     match event {
       SpeechEvent::SessionStarted { .. } => {}
       SpeechEvent::Listening { .. } => {
@@ -2403,21 +2416,32 @@ impl AppController {
   }
 
   fn enter_history_mode(&mut self) {
-    // Cancel the active hold and stop capture. We enter even when the index is
-    // empty so the user gets a "No transcripts" overlay rather than a silent
-    // no-op.
+    // Cancel any in-flight turn and let go of the manual-hold flag. We do NOT
+    // call `set_capture_enabled(false)`: that fires a `SessionEnded` event,
+    // whose handler calls `self.hide_overlay()` — which would tear down the
+    // overlay we're about to rebuild as the history list. `release_manual_hold`
+    // is enough to drop manual-hold capture; always-listening users keep
+    // capture rolling and any incoming speech events are dropped by the
+    // `history_browsing` guard at the top of `handle_speech_event`.
     self.manual_hold_active = false;
     self.hold_saw_speech = false;
     if let Some(session) = &self.session {
       session.release_manual_hold();
       session.cancel_current_turn();
-      if !self.always_listening_enabled {
-        session.set_capture_enabled(false);
-      }
     }
+    self.latest_draft.clear();
+    self.finalizing_draft.clear();
+    self.finalizing_turn_id = None;
+    self.finalizing_deadline = None;
     self.history_browsing = true;
     self.history_browse_index = 0;
     platform::set_arrow_left_hotkey_enabled(true);
+    // Make sure the overlay window itself is shown (e.g. during VAD-only
+    // sessions where opt+space wasn't held to bring it up).
+    if !self.overlay_visible {
+      platform::show_overlay();
+      self.overlay_visible = true;
+    }
     self.render_history_overlay();
   }
 
