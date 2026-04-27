@@ -88,6 +88,10 @@ pub enum AppEvent {
   HistorySearchAppend(String),
   /// HID-tap captured a backspace — drop the last character of the query.
   HistorySearchBackspace,
+  /// HID-tap captured Option+Backspace — drop the trailing word.
+  HistorySearchDeleteWord,
+  /// HID-tap captured Cmd+Backspace — clear the entire query.
+  HistorySearchClear,
   Speech(SpeechEvent),
   Device(DeviceEvent),
 }
@@ -899,6 +903,8 @@ impl AppController {
       AppEvent::HistorySearchChanged(query) => self.handle_history_search_changed(query),
       AppEvent::HistorySearchAppend(s) => self.handle_history_search_append(&s),
       AppEvent::HistorySearchBackspace => self.handle_history_search_backspace(),
+      AppEvent::HistorySearchDeleteWord => self.handle_history_search_delete_word(),
+      AppEvent::HistorySearchClear => self.handle_history_search_clear(),
       AppEvent::Speech(ev) => self.handle_speech_event(ev),
       AppEvent::Device(ev) => self.handle_device_event(ev),
     }
@@ -2586,7 +2592,8 @@ impl AppController {
           None => continue,
         }
       };
-      entries.push(platform::HistoryEntryView { text, match_range });
+      let ts_ms = index.entry_ts_ms(i).unwrap_or(0);
+      entries.push(platform::HistoryEntryView { text, match_range, ts_ms });
     }
     let visible = entries.len();
     let selected = self.history_browse_index.min(visible.saturating_sub(1));
@@ -2671,6 +2678,32 @@ impl AppController {
     if self.history_search_query.pop().is_none() {
       return;
     }
+    self.after_history_search_change();
+  }
+
+  fn handle_history_search_delete_word(&mut self) {
+    if !self.history_browsing || self.history_search_query.is_empty() {
+      return;
+    }
+    // Trim trailing whitespace, then truncate at the next whitespace
+    // boundary (or to empty). Matches macOS native Option+Backspace.
+    let trimmed = self.history_search_query.trim_end().to_string();
+    if let Some(idx) = trimmed.rfind(char::is_whitespace) {
+      // Keep up to and including the whitespace char so subsequent
+      // Option+Backspace still has a separator to walk past.
+      let cut = trimmed[..idx].trim_end().len();
+      self.history_search_query.truncate(cut);
+    } else {
+      self.history_search_query.clear();
+    }
+    self.after_history_search_change();
+  }
+
+  fn handle_history_search_clear(&mut self) {
+    if !self.history_browsing || self.history_search_query.is_empty() {
+      return;
+    }
+    self.history_search_query.clear();
     self.after_history_search_change();
   }
 

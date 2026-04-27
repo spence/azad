@@ -259,6 +259,11 @@ struct OverlayRefs {
   /// whose body text was truncated; tells the user that row is expandable
   /// via right-arrow.
   autocomplete_expand_markers: [id; AUTOCOMPLETE_MAX_ITEMS],
+  /// Time-ago labels ("5s", "12m", "1h", "2d") parallel to
+  /// `autocomplete_labels`. Drawn outside the highlight bg, on the left
+  /// side of every row, so the user can quickly date each entry without
+  /// the label competing visually with the body text.
+  autocomplete_ts_labels: [id; AUTOCOMPLETE_MAX_ITEMS],
   search_field: id,
   search_icon: id,
 }
@@ -667,6 +672,10 @@ pub struct HistoryEntryView<'a> {
   /// this range with a translucent yellow background. `None` for
   /// unfiltered/empty-query renders.
   pub match_range: Option<(usize, usize)>,
+  /// Wall-clock timestamp (ms since UNIX epoch) when the entry was
+  /// recorded. Renderer turns this into a compact "5s / 12m / 1h / 2d"
+  /// label drawn outside the highlight bg on the left of the row.
+  pub ts_ms: i64,
 }
 
 pub fn set_overlay_history_content(
@@ -2676,6 +2685,9 @@ unsafe fn render_overlay_text(
     if refs.autocomplete_expand_markers[i] != nil {
       let _: () = msg_send![refs.autocomplete_expand_markers[i], setHidden: YES];
     }
+    if refs.autocomplete_ts_labels[i] != nil {
+      let _: () = msg_send![refs.autocomplete_ts_labels[i], setHidden: YES];
+    }
   }
   // History-mode search bar widgets — hidden whenever we're not in history mode.
   if refs.search_field != nil {
@@ -2757,7 +2769,8 @@ const HISTORY_LIST_HEIGHT: f64 = OVERLAY_PAD_TOP
 // host both the list area (HISTORY_LIST_HEIGHT) and the search bar.
 const SEARCH_BAR_HEIGHT: f64 = 30.0;
 const SEARCH_BAR_GAP: f64 = 6.0;
-const SEARCH_BAR_FONT_SIZE: f64 = 13.0;
+// Search-field font intentionally matches `HISTORY_BODY_FONT_SIZE` so the
+// typed query feels visually continuous with the row text above it.
 // Card-local y of the search bar's bottom edge.
 const SEARCH_BAR_Y: f64 = OVERLAY_PAD_BOTTOM;
 // Card-local y where the row stack starts (just above the search bar + gap).
@@ -2769,6 +2782,16 @@ const SEARCH_MATCH_BG_R: f64 = 1.0;
 const SEARCH_MATCH_BG_G: f64 = 0.85;
 const SEARCH_MATCH_BG_B: f64 = 0.20;
 const SEARCH_MATCH_BG_ALPHA: f64 = 0.45;
+
+// Per-row time-ago label, drawn on the LEFT of each row OUTSIDE the
+// highlight bg. Format from `transcript_history::format_timestamp_compact`
+// is always ≤ 4 chars (e.g. "5s", "12m", "1h", "999d"). The fixed-width
+// column reserved for it is the same on every row so they align vertically.
+const HISTORY_TS_FONT_SIZE: f64 = 10.0;
+const HISTORY_TS_TEXT_ALPHA: f64 = 0.45;
+const HISTORY_TS_WIDTH: f64 = 26.0;
+const HISTORY_TS_X_PAD: f64 = 4.0;
+const HISTORY_TS_GAP: f64 = 6.0;
 
 // Per-row "▶" expand marker, drawn on the right edge of any row whose body
 // is truncated (with an ellipsis). Tells the user this entry has more text
@@ -2848,6 +2871,9 @@ unsafe fn render_overlay_history_list(
       if refs.autocomplete_expand_markers[i] != nil {
         let _: () = msg_send![refs.autocomplete_expand_markers[i], setHidden: YES];
       }
+      if refs.autocomplete_ts_labels[i] != nil {
+        let _: () = msg_send![refs.autocomplete_ts_labels[i], setHidden: YES];
+      }
     }
     let label = refs.autocomplete_labels[0];
     if label != nil {
@@ -2898,10 +2924,12 @@ unsafe fn render_overlay_history_list(
     return;
   }
 
-  // Bg geometry: insets exactly `bg_x` from each side so the highlight extends
-  // nearly full width while staying concentric with the card's rounded corners.
-  let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
-  let bg_w_full = (width - 2.0 * bg_x).max(1.0);
+  // Bg geometry: the highlight starts just right of the per-row time-ago
+  // column (so timestamps live OUTSIDE the highlight). Right edge mirrors
+  // the original concentric inset so rounded corners match the card.
+  let bg_right_pad = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
+  let bg_x = HISTORY_TS_X_PAD + HISTORY_TS_WIDTH + HISTORY_TS_GAP;
+  let bg_w_full = (width - bg_x - bg_right_pad).max(1.0);
   // Text width: symmetric inner padding inside the bg.
   let label_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
   let label_w_full = (bg_w_full - 2.0 * HISTORY_TEXT_INNER_PAD_X).max(1.0);
@@ -3208,6 +3236,30 @@ unsafe fn render_overlay_history_list(
       }
     }
 
+    // Time-ago label on the LEFT, OUTSIDE the highlight bg. Hidden when
+    // the selected row is expanded (the body fills the row visually).
+    let ts_label = refs.autocomplete_ts_labels[vis_idx];
+    if ts_label != nil {
+      if is_selected_expanded {
+        let _: () = msg_send![ts_label, setHidden: YES];
+      } else {
+        let label_h = HISTORY_TS_FONT_SIZE + 4.0;
+        let label_y = if body_h > &(HISTORY_BODY_LINE_HEIGHT * 1.5) {
+          row_bottom_y + HISTORY_ROW_PAD_Y + (HISTORY_BODY_LINE_HEIGHT - label_h) / 2.0
+        } else {
+          row_bottom_y + HISTORY_ROW_PAD_Y + (body_h - label_h) / 2.0
+        };
+        let frame = NSRect::new(
+          NSPoint::new(HISTORY_TS_X_PAD, label_y),
+          NSSize::new(HISTORY_TS_WIDTH, label_h),
+        );
+        let _: () = msg_send![ts_label, setFrame: frame];
+        let s = crate::transcript_history::format_timestamp_compact(entries[entry_idx].ts_ms);
+        let _: () = msg_send![ts_label, setStringValue: NSString::alloc(nil).init_str(&s)];
+        let _: () = msg_send![ts_label, setHidden: NO];
+      }
+    }
+
     // Advance by NATURAL height + the (possibly stretched) layout gap. In
     // top-anchor mode, layout_gap stretches so total_used == budget; in
     // bottom-anchor mode it equals HISTORY_ROW_GAP and slack falls at top.
@@ -3223,6 +3275,9 @@ unsafe fn render_overlay_history_list(
     let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
     if refs.autocomplete_expand_markers[i] != nil {
       let _: () = msg_send![refs.autocomplete_expand_markers[i], setHidden: YES];
+    }
+    if refs.autocomplete_ts_labels[i] != nil {
+      let _: () = msg_send![refs.autocomplete_ts_labels[i], setHidden: YES];
     }
   }
 
@@ -3292,13 +3347,14 @@ unsafe fn layout_history_hints(refs: OverlayRefs, _width: f64, _show_view: bool,
 }
 
 /// Position and show the editable search field at the bottom of the
-/// history overlay. The field spans the full inner width with centered
-/// alignment so the typed text (and its blinking caret) sits dead-center
-/// in the bar.
+/// history overlay. Text is left-aligned at the same x as the row body
+/// labels so the typed query is visually continuous with the rows; AppKit
+/// vertically centers single-line text within the frame automatically.
 unsafe fn layout_history_search_bar(refs: OverlayRefs, width: f64) {
   if refs.search_field != nil {
-    let field_x = OVERLAY_PAD_X;
-    let field_w = (width - 2.0 * OVERLAY_PAD_X).max(1.0);
+    let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
+    let field_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
+    let field_w = (width - field_x - OVERLAY_PAD_X).max(1.0);
     let frame =
       NSRect::new(NSPoint::new(field_x, SEARCH_BAR_Y), NSSize::new(field_w, SEARCH_BAR_HEIGHT));
     let _: () = msg_send![refs.search_field, setFrame: frame];
@@ -4493,6 +4549,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let mut autocomplete_labels = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let mut autocomplete_bgs = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let mut autocomplete_expand_markers = [nil; AUTOCOMPLETE_MAX_ITEMS];
+  let mut autocomplete_ts_labels = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let ac_font: id = msg_send![class!(NSFont), systemFontOfSize: 14.0f64];
   let expand_marker_font: id =
     msg_send![class!(NSFont), systemFontOfSize: HISTORY_EXPAND_MARKER_FONT_SIZE];
@@ -4503,6 +4560,9 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     1.0,
     HISTORY_EXPAND_MARKER_ALPHA,
   );
+  let ts_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_TS_FONT_SIZE];
+  let ts_color =
+    NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_TS_TEXT_ALPHA);
   for i in 0..AUTOCOMPLETE_MAX_ITEMS {
     let bg_view: id = msg_send![class!(NSView), alloc];
     let bg_view: id = msg_send![bg_view, initWithFrame: NSRect::new(
@@ -4574,6 +4634,26 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let _: () = msg_send![marker, setHidden: YES];
     let _: () = msg_send![card_view, addSubview: marker];
     autocomplete_expand_markers[i] = marker;
+
+    let ts_label: id = msg_send![class!(NSTextField), alloc];
+    let ts_label: id = msg_send![ts_label, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(HISTORY_TS_WIDTH, HISTORY_TS_FONT_SIZE + 4.0)
+    )];
+    let _: () = msg_send![ts_label, setBezeled: NO];
+    let _: () = msg_send![ts_label, setDrawsBackground: NO];
+    let _: () = msg_send![ts_label, setEditable: NO];
+    let _: () = msg_send![ts_label, setSelectable: NO];
+    let _: () = msg_send![ts_label, setUsesSingleLineMode: YES];
+    let _: () = msg_send![ts_label, setAlignment: 2isize]; // right
+    let _: () = msg_send![ts_label, setLineBreakMode: 4isize]; // truncate tail
+    if ts_font != nil {
+      let _: () = msg_send![ts_label, setFont: ts_font];
+    }
+    let _: () = msg_send![ts_label, setTextColor: ts_color];
+    let _: () = msg_send![ts_label, setHidden: YES];
+    let _: () = msg_send![card_view, addSubview: ts_label];
+    autocomplete_ts_labels[i] = ts_label;
   }
 
   let notice_accessory_row: id = msg_send![class!(NSView), alloc];
@@ -4745,8 +4825,8 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![search_field, setUsesSingleLineMode: YES];
   let _: () = msg_send![search_field, setLineBreakMode: 4isize]; // truncating tail
   let _: () = msg_send![search_field, setFocusRingType: 1isize]; // None
-  let _: () = msg_send![search_field, setAlignment: 1isize]; // center
-  let search_font: id = msg_send![class!(NSFont), systemFontOfSize: SEARCH_BAR_FONT_SIZE];
+  let _: () = msg_send![search_field, setAlignment: 0isize]; // left
+  let search_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_BODY_FONT_SIZE];
   if search_font != nil {
     let _: () = msg_send![search_field, setFont: search_font];
   }
@@ -4788,6 +4868,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     autocomplete_labels,
     autocomplete_bgs,
     autocomplete_expand_markers,
+    autocomplete_ts_labels,
     search_field,
     search_icon,
   };
@@ -4936,7 +5017,7 @@ extern "C" fn event_tap_callback(
   // overlay is a borderless NSWindow that won't take key without
   // activating Azad — so we capture at the HID layer like every other
   // overlay-mode hotkey.
-  if claim_tap_search_input(event, keycode as u16, is_keydown, is_autorepeat) {
+  if claim_tap_search_input(event, keycode as u16, is_keydown, is_autorepeat, flags) {
     return std::ptr::null_mut();
   }
   event
@@ -5027,15 +5108,18 @@ fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool, is_autorepe
 const KEYCODE_DELETE: u16 = 51; // backspace
 
 /// When history-mode key capture is active, claim printable-character
-/// keydowns and backspace and feed them into the search field via app
-/// events. Returns true when the event was consumed (so the focused app
-/// never sees the keydown). Keyups are allowed to pass through — focused
-/// apps tolerate orphan keyups for keys whose keydowns we consumed.
+/// keydowns, backspace (with Cmd/Option modifiers), and Enter — feeding
+/// them into the search-field flow or directly into the paste-from-history
+/// flow via app events. Returns true when the event was consumed (so the
+/// focused app never sees the keydown). Keyups are allowed to pass
+/// through — focused apps tolerate orphan keyups for keys whose keydowns
+/// we consumed.
 fn claim_tap_search_input(
   event: *mut c_void,
   keycode: u16,
   is_keydown: bool,
   _is_autorepeat: bool,
+  flags: u64,
 ) -> bool {
   if !OVERLAY_ACCEPTS_KEY_INPUT.load(Ordering::Relaxed) {
     return false;
@@ -5043,8 +5127,29 @@ fn claim_tap_search_input(
   if !is_keydown {
     return false;
   }
+  let is_option = (flags & CGEventFlags::CGEventFlagAlternate.bits()) != 0;
+  let is_command = (flags & CGEventFlags::CGEventFlagCommand.bits()) != 0;
+
+  // Enter short-circuit: paste the selected history entry. Done here as a
+  // belt-and-suspenders fix — `claim_tap_hotkey` should already handle
+  // Enter, but its dispatch is gated on `HOTKEY_ENTER_REGISTERED`, and
+  // when the panel is key + the search field is first responder there
+  // were occurrences of Enter not pasting. This direct claim is
+  // independent of that gate.
+  if keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER {
+    crate::app::send_event(AppEvent::FinalizeHotkeyPressed { raw_requested: is_option });
+    return true;
+  }
+
   if keycode == KEYCODE_DELETE {
-    crate::app::send_event(AppEvent::HistorySearchBackspace);
+    let event = if is_command {
+      AppEvent::HistorySearchClear
+    } else if is_option {
+      AppEvent::HistorySearchDeleteWord
+    } else {
+      AppEvent::HistorySearchBackspace
+    };
+    crate::app::send_event(event);
     return true;
   }
   // Read the actual unicode the keystroke produces (respects layout, shift/

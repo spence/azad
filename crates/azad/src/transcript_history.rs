@@ -121,6 +121,32 @@ impl TranscriptIndex {
   }
 }
 
+/// Compact "time-ago" label rendered to the left of each history row.
+/// Always 1-3 chars: e.g. "5s", "12m", "1h", "2d". Picks the largest unit
+/// whose count is ≥ 1 so the label stays terse — there's a fixed-width
+/// column reserved for it in the overlay so neighbouring rows align.
+pub fn format_timestamp_compact(ts_ms: i64) -> String {
+  let now_ms = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_millis() as i64)
+    .unwrap_or(0);
+  let delta = (now_ms - ts_ms).max(0);
+  let secs = delta / 1000;
+  if secs < 60 {
+    return format!("{secs}s");
+  }
+  let mins = secs / 60;
+  if mins < 60 {
+    return format!("{mins}m");
+  }
+  let hours = mins / 60;
+  if hours < 24 {
+    return format!("{hours}h");
+  }
+  let days = hours / 24;
+  format!("{days}d")
+}
+
 #[allow(dead_code)] // Reserved for the timestamp footer; kept public so adding it back is a
 // one-line UI change rather than a re-wire.
 pub fn format_timestamp_relative(ts_ms: i64) -> String {
