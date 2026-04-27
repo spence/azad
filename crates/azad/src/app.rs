@@ -41,7 +41,9 @@ const SESSION_DEGRADED_THRESHOLD: usize = 3;
 pub enum AppEvent {
   HotkeyPressed,
   HotkeyReleased,
-  FinalizeHotkeyPressed { raw_requested: bool },
+  FinalizeHotkeyPressed {
+    raw_requested: bool,
+  },
   MenuToggleAlwaysListening,
   MenuToggleDevices,
   MenuSelectDevice(String),
@@ -58,11 +60,21 @@ pub enum AppEvent {
   SettingsRefresh,
   SettingsDownloadModel(String),
   SettingsCancelDownload,
-  ModelDownloadProgress { pack_id: String, bytes_done: u64, bytes_total: u64 },
+  ModelDownloadProgress {
+    pack_id: String,
+    bytes_done: u64,
+    bytes_total: u64,
+  },
   ModelDownloadCompleted(String),
-  ModelDownloadError { pack_id: String, message: String },
+  ModelDownloadError {
+    pack_id: String,
+    message: String,
+  },
   OverlayCancel,
   ArrowNavigate(i32),
+  /// Right-arrow while history-browse mode is active. Expands the selected
+  /// entry into a top-anchored "view full text" mode.
+  HistoryExpand,
   Speech(SpeechEvent),
   Device(DeviceEvent),
 }
@@ -232,6 +244,9 @@ struct AppController {
   transcript_index: Option<TranscriptIndex>,
   history_browsing: bool,
   history_browse_index: usize,
+  // True when the user has pressed Right while history-browsing to view the
+  // selected entry's full text. Reset on enter/exit and on Up/Down navigation.
+  history_expanded: bool,
   removed_words: Vec<String>,
 }
 
@@ -695,6 +710,7 @@ impl AppController {
       transcript_index,
       history_browsing: false,
       history_browse_index: 0,
+      history_expanded: false,
       removed_words,
     }
   }
@@ -848,6 +864,7 @@ impl AppController {
       }
       AppEvent::OverlayCancel => self.handle_overlay_cancel(),
       AppEvent::ArrowNavigate(direction) => self.handle_arrow_navigate(direction),
+      AppEvent::HistoryExpand => self.handle_history_expand(),
       AppEvent::Speech(ev) => self.handle_speech_event(ev),
       AppEvent::Device(ev) => self.handle_device_event(ev),
     }
@@ -1465,6 +1482,14 @@ impl AppController {
 
   fn handle_overlay_cancel(&mut self) {
     if self.history_browsing {
+      // From the expanded view, Esc/Left collapses back to the list rather
+      // than dismissing history entirely. Only dismiss when already in list
+      // mode.
+      if self.history_expanded {
+        self.history_expanded = false;
+        self.render_history_overlay();
+        return;
+      }
       self.exit_history_mode();
       return;
     }
@@ -2422,6 +2447,11 @@ impl AppController {
     if !self.history_browsing {
       return;
     }
+    // Up/Down inside the expanded view are no-ops — the user must Left back to
+    // the list before navigating to a different entry.
+    if self.history_expanded {
+      return;
+    }
     let count = self.transcript_index.as_ref().map(|i| i.entry_count()).unwrap_or(0);
     if count == 0 {
       return;
@@ -2442,6 +2472,18 @@ impl AppController {
     self.render_history_overlay();
   }
 
+  fn handle_history_expand(&mut self) {
+    if !self.history_browsing || self.history_expanded {
+      return;
+    }
+    let count = self.transcript_index.as_ref().map(|i| i.entry_count()).unwrap_or(0);
+    if count == 0 {
+      return;
+    }
+    self.history_expanded = true;
+    self.render_history_overlay();
+  }
+
   fn render_history_overlay(&self) {
     let Some(index) = &self.transcript_index else {
       if self.debug_stats_enabled {
@@ -2451,17 +2493,29 @@ impl AppController {
       return;
     };
     let count = index.entry_count();
+    let selected = self.history_browse_index.min(count.saturating_sub(1));
+    if self.history_expanded {
+      let text = index.entry_text(selected).unwrap_or("").to_string();
+      if self.debug_stats_enabled {
+        eprintln!(
+          "AZAD_HISTORY_RENDER mode=expanded selected={} text_chars={}",
+          selected,
+          text.chars().count(),
+        );
+      }
+      platform::set_overlay_history_expanded(&text);
+      return;
+    }
     let entries: Vec<platform::HistoryEntryView<'_>> = (0..count)
       .filter_map(|i| index.entry_text(i).map(|text| platform::HistoryEntryView { text }))
       .collect();
-    let selected = self.history_browse_index.min(count.saturating_sub(1));
     if self.debug_stats_enabled {
       let preview = entries
         .first()
         .map(|e| &e.text[..e.text.len().min(40)])
         .unwrap_or("(no entries)");
       eprintln!(
-        "AZAD_HISTORY_RENDER count={} entries_built={} selected={} first_preview={:?}",
+        "AZAD_HISTORY_RENDER mode=list count={} entries_built={} selected={} first_preview={:?}",
         count,
         entries.len(),
         selected,
@@ -2513,7 +2567,9 @@ impl AppController {
     self.finalizing_deadline = None;
     self.history_browsing = true;
     self.history_browse_index = 0;
+    self.history_expanded = false;
     platform::set_arrow_left_hotkey_enabled(true);
+    platform::set_arrow_right_hotkey_enabled(true);
     // Make sure the overlay window itself is shown (e.g. during VAD-only
     // sessions where opt+space wasn't held to bring it up).
     if !self.overlay_visible {
@@ -2526,8 +2582,10 @@ impl AppController {
   fn exit_history_mode(&mut self) {
     self.history_browsing = false;
     self.history_browse_index = 0;
+    self.history_expanded = false;
     self.overlay_visible = false;
     platform::set_arrow_left_hotkey_enabled(false);
+    platform::set_arrow_right_hotkey_enabled(false);
     platform::hide_overlay();
     // Restore capture so always-listening continues and the next opt+space hold
     // works. Capture in non-always-listening mode will be turned back off by
