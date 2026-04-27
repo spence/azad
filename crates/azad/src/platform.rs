@@ -2857,7 +2857,7 @@ unsafe fn render_overlay_history_list(
     }
     let _: () = msg_send![refs.label, setTextColor: hint_color];
     let _: () =
-      msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str("\u{2190} esc")];
+      msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str("\u{25C0} esc")];
     let frame = NSRect::new(NSPoint::new(hint_x, bottom_line_y), NSSize::new(hint_w, line_h));
     let _: () = msg_send![refs.label, setFrame: frame];
     let _: () = msg_send![refs.label, setHidden: NO];
@@ -3007,7 +3007,7 @@ unsafe fn render_overlay_history_expanded(refs: OverlayRefs, text: &str) {
       HISTORY_HINT_TEXT_ALPHA,
     );
     let _: () = msg_send![refs.label, setTextColor: hint_color];
-    let hint_text = "\u{2190} back";
+    let hint_text = "\u{25C0} back";
     let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(hint_text)];
     let hint_w = 90.0_f64;
     let hint_h = HISTORY_HINT_FONT_SIZE + 4.0;
