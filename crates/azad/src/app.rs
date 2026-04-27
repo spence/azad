@@ -83,6 +83,11 @@ pub enum AppEvent {
   /// containing the term (case-insensitive substring) and highlights the
   /// match. Empty string clears the filter.
   HistorySearchChanged(String),
+  /// HID-tap captured a printable keystroke while history mode is active —
+  /// append it to the search query.
+  HistorySearchAppend(String),
+  /// HID-tap captured a backspace — drop the last character of the query.
+  HistorySearchBackspace,
   Speech(SpeechEvent),
   Device(DeviceEvent),
 }
@@ -887,6 +892,8 @@ impl AppController {
       AppEvent::HistoryExpand => self.handle_history_expand(),
       AppEvent::HistoryCollapse => self.handle_history_collapse(),
       AppEvent::HistorySearchChanged(query) => self.handle_history_search_changed(query),
+      AppEvent::HistorySearchAppend(s) => self.handle_history_search_append(&s),
+      AppEvent::HistorySearchBackspace => self.handle_history_search_backspace(),
       AppEvent::Speech(ev) => self.handle_speech_event(ev),
       AppEvent::Device(ev) => self.handle_device_event(ev),
     }
@@ -2640,11 +2647,37 @@ impl AppController {
       return;
     }
     self.history_search_query = query;
+    self.after_history_search_change();
+  }
+
+  fn handle_history_search_append(&mut self, s: &str) {
+    if !self.history_browsing {
+      return;
+    }
+    self.history_search_query.push_str(s);
+    self.after_history_search_change();
+  }
+
+  fn handle_history_search_backspace(&mut self) {
+    if !self.history_browsing {
+      return;
+    }
+    if self.history_search_query.pop().is_none() {
+      return;
+    }
+    self.after_history_search_change();
+  }
+
+  fn after_history_search_change(&mut self) {
     // Reset selection to the top of the (newly) filtered list so the
     // selection is always valid as long as ≥ 1 result exists.
     self.history_browse_index = 0;
     self.history_visible_start = 0;
     self.history_expanded = false;
+    // Mirror the buffer into the visible NSTextField so the user sees what
+    // they're typing (the HID tap funnels keystrokes around AppKit, so the
+    // field doesn't auto-update).
+    platform::set_overlay_search_query(&self.history_search_query);
     self.render_history_overlay();
   }
 

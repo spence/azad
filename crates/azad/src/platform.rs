@@ -1420,27 +1420,15 @@ extern "C" fn overlay_can_become_key_window(_: &Object, _: Sel) -> bool {
   OVERLAY_ACCEPTS_KEY_INPUT.load(Ordering::Relaxed)
 }
 
-/// Toggle whether the overlay panel may become the key window. Off by
-/// default so the panel never steals focus from the user's app. Flipped on
-/// when entering history mode (so the search field can receive typed
-/// characters) and back off when exiting.
+/// Toggle whether the overlay should intercept keystrokes via the HID event
+/// tap. Off by default so the user's foreground app receives normal input.
+/// Flipped on when entering history mode (so typed characters fill the
+/// search field instead of leaking through) and back off when exiting.
+/// AppKit's responder chain is bypassed entirely — we capture at the HID
+/// layer because a borderless NSWindow under the accessory activation
+/// policy can't take key without activating Azad.
 pub fn set_overlay_key_input_enabled(enabled: bool) {
   OVERLAY_ACCEPTS_KEY_INPUT.store(enabled, Ordering::Relaxed);
-  let Some(refs) = current_overlay() else { return };
-  unsafe {
-    if enabled {
-      // Become key without activating Azad. NSPanel-style; stays
-      // non-disruptive.
-      let _: () = msg_send![refs.window, makeKeyWindow];
-      // Park first responder on the search field so typing flows in
-      // immediately.
-      if refs.search_field != nil {
-        let _: () = msg_send![refs.window, makeFirstResponder: refs.search_field];
-      }
-    } else {
-      let _: () = msg_send![refs.window, resignKeyWindow];
-    }
-  }
 }
 
 /// Programmatically set the search field's text without firing the
@@ -4914,10 +4902,18 @@ extern "C" fn event_tap_callback(
   let is_autorepeat = autorepeat != 0;
 
   if claim_tap_hotkey(keycode as u16, is_option, is_keydown, is_autorepeat) {
-    std::ptr::null_mut()
-  } else {
-    event
+    return std::ptr::null_mut();
   }
+  // History search bar: when active, intercept printable characters and
+  // backspace so they fill the search field instead of leaking through to
+  // the focused app. AppKit's responder chain doesn't help here — the
+  // overlay is a borderless NSWindow that won't take key without
+  // activating Azad — so we capture at the HID layer like every other
+  // overlay-mode hotkey.
+  if claim_tap_search_input(event, keycode as u16, is_keydown, is_autorepeat) {
+    return std::ptr::null_mut();
+  }
+  event
 }
 
 fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool, is_autorepeat: bool) -> bool {
@@ -5000,6 +4996,50 @@ fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool, is_autorepe
   }
 
   false
+}
+
+const KEYCODE_DELETE: u16 = 51; // backspace
+
+/// When history-mode key capture is active, claim printable-character
+/// keydowns and backspace and feed them into the search field via app
+/// events. Returns true when the event was consumed (so the focused app
+/// never sees the keydown). Keyups are allowed to pass through — focused
+/// apps tolerate orphan keyups for keys whose keydowns we consumed.
+fn claim_tap_search_input(
+  event: *mut c_void,
+  keycode: u16,
+  is_keydown: bool,
+  _is_autorepeat: bool,
+) -> bool {
+  if !OVERLAY_ACCEPTS_KEY_INPUT.load(Ordering::Relaxed) {
+    return false;
+  }
+  if !is_keydown {
+    return false;
+  }
+  if keycode == KEYCODE_DELETE {
+    crate::app::send_event(AppEvent::HistorySearchBackspace);
+    return true;
+  }
+  // Read the actual unicode the keystroke produces (respects layout, shift/
+  // option, dead keys, etc.).
+  let mut buf = [0u16; 8];
+  let mut actual_len: u64 = 0;
+  unsafe {
+    CGEventKeyboardGetUnicodeString(event, buf.len() as u64, &mut actual_len, buf.as_mut_ptr());
+  }
+  if actual_len == 0 {
+    return false;
+  }
+  let chars: String = match String::from_utf16(&buf[..actual_len as usize]) {
+    Ok(s) => s,
+    Err(_) => return false,
+  };
+  if chars.is_empty() || chars.chars().any(|c| c.is_control()) {
+    return false;
+  }
+  crate::app::send_event(AppEvent::HistorySearchAppend(chars));
+  true
 }
 
 fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
@@ -5493,6 +5533,12 @@ unsafe extern "C" {
 
   fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
   fn CGEventGetFlags(event: *mut c_void) -> u64;
+  fn CGEventKeyboardGetUnicodeString(
+    event: *mut c_void,
+    max_string_length: u64,
+    actual_string_length: *mut u64,
+    unicode_string: *mut u16,
+  );
 
   fn CFMachPortCreateRunLoopSource(
     allocator: *const c_void,
