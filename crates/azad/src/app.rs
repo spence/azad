@@ -2091,6 +2091,15 @@ impl AppController {
       }
     }
 
+    // Click outside the overlay dismisses history. `on_tick` runs every 50 ms,
+    // so polling `pressedMouseButtons` here gives us a global "did the user
+    // just click somewhere else" signal without needing AppKit's NSEvent
+    // monitor (which would require the `block` crate).
+    if self.history_browsing && platform::poll_click_outside_overlay() {
+      self.exit_history_mode();
+      return;
+    }
+
     // History-browse mode owns the overlay outright — neither the finalize-
     // animation tick nor the listening tick should re-render speech-mode
     // widgets over it. Without this guard, on_tick fires every 50 ms and the
@@ -2489,23 +2498,11 @@ impl AppController {
       if self.debug_stats_enabled {
         eprintln!("AZAD_HISTORY_RENDER action=no_index browse_index={}", self.history_browse_index);
       }
-      platform::set_overlay_history_content(&[], 0);
+      platform::set_overlay_history_content(&[], 0, false);
       return;
     };
     let count = index.entry_count();
     let selected = self.history_browse_index.min(count.saturating_sub(1));
-    if self.history_expanded {
-      let text = index.entry_text(selected).unwrap_or("").to_string();
-      if self.debug_stats_enabled {
-        eprintln!(
-          "AZAD_HISTORY_RENDER mode=expanded selected={} text_chars={}",
-          selected,
-          text.chars().count(),
-        );
-      }
-      platform::set_overlay_history_expanded(&text);
-      return;
-    }
     let entries: Vec<platform::HistoryEntryView<'_>> = (0..count)
       .filter_map(|i| index.entry_text(i).map(|text| platform::HistoryEntryView { text }))
       .collect();
@@ -2515,14 +2512,15 @@ impl AppController {
         .map(|e| &e.text[..e.text.len().min(40)])
         .unwrap_or("(no entries)");
       eprintln!(
-        "AZAD_HISTORY_RENDER mode=list count={} entries_built={} selected={} first_preview={:?}",
+        "AZAD_HISTORY_RENDER mode={} count={} entries_built={} selected={} first_preview={:?}",
+        if self.history_expanded { "expanded" } else { "list" },
         count,
         entries.len(),
         selected,
         preview,
       );
     }
-    platform::set_overlay_history_content(&entries, selected);
+    platform::set_overlay_history_content(&entries, selected, self.history_expanded);
   }
 
   fn paste_from_history(&mut self) {
@@ -2570,6 +2568,7 @@ impl AppController {
     self.history_expanded = false;
     platform::set_arrow_left_hotkey_enabled(true);
     platform::set_arrow_right_hotkey_enabled(true);
+    platform::reset_click_outside_tracker();
     // Make sure the overlay window itself is shown (e.g. during VAD-only
     // sessions where opt+space wasn't held to bring it up).
     if !self.overlay_visible {

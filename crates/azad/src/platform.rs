@@ -173,6 +173,12 @@ static HOTKEY_ARROW_RIGHT_REGISTERED: AtomicBool = AtomicBool::new(false);
 // debug-stats setting toggles.
 static OVERLAY_DEBUG_LOGS_ENABLED: AtomicBool = AtomicBool::new(false);
 static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
+// Tracks the last sampled `pressedMouseButtons` bitmask between `on_tick`
+// polls. We dispatch a click-outside-overlay signal when a button transitions
+// from up→down (i.e., a bit goes 0→1) and the cursor is outside the overlay
+// frame. Reset on history-mode entry so the very first tick doesn't false-fire
+// from a pre-existing held button.
+static MOUSE_BUTTON_PREV_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // Event-tap state. `EVENT_TAP_PORT` holds the CFMachPortRef so the callback can re-enable the
 // tap after macOS times it out. `SPACE_HOLD_CLAIMED` tracks whether we consumed a keydown for
@@ -638,23 +644,17 @@ pub struct HistoryEntryView<'a> {
   pub text: &'a str,
 }
 
-pub fn set_overlay_history_content(entries: &[HistoryEntryView<'_>], selected_index: usize) {
+pub fn set_overlay_history_content(
+  entries: &[HistoryEntryView<'_>],
+  selected_index: usize,
+  expanded: bool,
+) {
   let Some(refs) = current_overlay() else {
     return;
   };
   unsafe {
     move_overlay_to_cursor_screen(refs, false);
-    render_overlay_history_list(refs, entries, selected_index);
-  }
-}
-
-pub fn set_overlay_history_expanded(text: &str) {
-  let Some(refs) = current_overlay() else {
-    return;
-  };
-  unsafe {
-    move_overlay_to_cursor_screen(refs, false);
-    render_overlay_history_expanded(refs, text);
+    render_overlay_history_list(refs, entries, selected_index, expanded);
   }
 }
 
@@ -2641,6 +2641,7 @@ unsafe fn render_overlay_history_list(
   refs: OverlayRefs,
   entries: &[HistoryEntryView<'_>],
   selected_index: usize,
+  expanded: bool,
 ) {
   // Hide every speech-mode widget. The history list is the entire body.
   // Note: `refs.label` stays visible — it gets repurposed at the bottom of
@@ -2722,33 +2723,86 @@ unsafe fn render_overlay_history_list(
   // Bg geometry: insets exactly `bg_x` from each side so the highlight extends
   // nearly full width while staying concentric with the card's rounded corners.
   let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
-  let bg_w = (width - 2.0 * bg_x).max(1.0);
+  let bg_w_full = (width - 2.0 * bg_x).max(1.0);
   // Text width: symmetric inner padding inside the bg.
   let label_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
-  let label_w = (bg_w - 2.0 * HISTORY_TEXT_INNER_PAD_X).max(1.0);
+  let label_w_full = (bg_w_full - 2.0 * HISTORY_TEXT_INNER_PAD_X).max(1.0);
 
-  // Measure each visible entry's wrapped height inside the actual label width.
-  // The slot drawn below is fixed; this measurement only drives vertical
-  // centering inside the slot.
+  // Reservation for the bottom-right "view ▶ / ◀ esc" hint. The bottom row
+  // (vis_idx == 0) MUST always leave space for the hint inside its highlight
+  // bg, regardless of whether it's the selected row — otherwise the hint
+  // overlaps the row's text or gets covered by the selection bg. Width is
+  // hint_w + a small visual gap.
+  let hint_w_const: f64 = 90.0;
+  let hint_zone_width = hint_w_const + HISTORY_HINT_RIGHT_PAD;
+  let bg_w_bottom = (bg_w_full - hint_zone_width).max(1.0);
+  let label_w_bottom = (label_w_full - hint_zone_width).max(1.0);
+
+  // Measure each visible entry's wrapped height inside its actual label width
+  // (the bottom row gets the narrower width). The slot drawn below is fixed;
+  // this measurement only drives vertical centering inside the slot for non-
+  // expanded rows.
   let body_max_height = HISTORY_BODY_LINE_HEIGHT * HISTORY_BODY_MAX_LINES as f64;
   let mut measured: Vec<(String, f64)> = Vec::with_capacity(visible_count);
   for vis_idx in 0..(end - start) {
     let entry_idx = start + vis_idx;
     let label = refs.autocomplete_labels[vis_idx];
+    let row_label_w = if vis_idx == 0 { label_w_bottom } else { label_w_full };
     if label == nil {
       measured.push((String::new(), HISTORY_BODY_LINE_HEIGHT));
       continue;
     }
     configure_history_body_label(label);
     let (rendered, h) =
-      fit_rendered_body_for_height(label, entries[entry_idx].text, label_w, body_max_height);
+      fit_rendered_body_for_height(label, entries[entry_idx].text, row_label_w, body_max_height);
     let body_h = h.max(HISTORY_BODY_LINE_HEIGHT).min(body_max_height);
     measured.push((rendered, body_h));
+    let _ = entry_idx;
   }
 
   // Fixed total height regardless of which mix of 1-line / 2-line entries is
-  // visible — the user-facing top edge of the card stays put as you scroll.
+  // visible AND regardless of whether a row is expanded — the overlay never
+  // changes size. The expanded row pushes content below it down off the card
+  // (clipped by setMasksToBounds=YES); the card itself doesn't grow.
   let height = HISTORY_LIST_HEIGHT;
+
+  // Pre-compute the expanded body for the selected row, if expand mode is on.
+  // The expanded row's top stays at its list-mode top edge; its body extends
+  // downward (smaller y) to fit the entry's full text. Cap so the row's
+  // bottom doesn't drop below the card's bottom edge.
+  let mut expanded_body: Option<(String, f64)> = None;
+  if expanded {
+    if let Some(sel_in_window) = selected_index.checked_sub(start) {
+      if sel_in_window < measured.len() {
+        // The expanded label width matches the row's normal label width so
+        // wrap behaviour is consistent.
+        let row_label_w = if sel_in_window == 0 { label_w_bottom } else { label_w_full };
+        // Original top edge of the selected row, in card-local coords.
+        let row_top_y = OVERLAY_PAD_BOTTOM
+          + (sel_in_window as f64 + 1.0) * HISTORY_ROW_SLOT_HEIGHT
+          + sel_in_window as f64 * HISTORY_ROW_GAP;
+        // Cap expansion: row bottom must stay at or above the card bottom
+        // (we can extend down to y = OVERLAY_PAD_BOTTOM at most).
+        let max_expanded_height = (row_top_y - OVERLAY_PAD_BOTTOM).max(HISTORY_ROW_SLOT_HEIGHT);
+        let max_body_for_expand = (max_expanded_height - 2.0 * HISTORY_ROW_PAD_Y).max(1.0);
+        let label = refs.autocomplete_labels[sel_in_window];
+        if label != nil {
+          configure_history_body_label(label);
+          // Allow unlimited lines for the expanded measurement; truncation at
+          // the bottom of the visible region is via `max_body_for_expand`.
+          let _: () = msg_send![label, setMaximumNumberOfLines: 0isize];
+          let (rendered, h) = fit_rendered_body_for_height(
+            label,
+            entries[selected_index].text,
+            row_label_w,
+            max_body_for_expand,
+          );
+          let body_h = h.max(HISTORY_BODY_LINE_HEIGHT).min(max_body_for_expand);
+          expanded_body = Some((rendered, body_h));
+        }
+      }
+    }
+  }
 
   if overlay_debug_logs_enabled() {
     let row_body_heights: Vec<u32> = measured.iter().map(|(_, h)| h.round() as u32).collect();
@@ -2778,12 +2832,35 @@ unsafe fn render_overlay_history_list(
   for vis_idx in 0..measured.len() {
     let entry_idx = start + vis_idx;
     let (rendered, body_h) = &measured[vis_idx];
+    let is_bottom_row = vis_idx == 0;
+    let row_bg_w = if is_bottom_row { bg_w_bottom } else { bg_w_full };
+    let row_label_w = if is_bottom_row { label_w_bottom } else { label_w_full };
+    let is_selected = entry_idx == selected_index;
+    let is_selected_expanded = is_selected && expanded_body.is_some();
+
+    // Slot height: fixed for non-expanded rows; for the expanded selected row
+    // the bg + label extend DOWNWARD from the original top edge.
+    let row_slot_h = if is_selected_expanded {
+      // Top of the row stays at row_y + HISTORY_ROW_SLOT_HEIGHT (original top
+      // edge); bottom extends down. The new height equals body height + pad.
+      let body_h_exp = expanded_body.as_ref().map(|(_, h)| *h).unwrap_or(*body_h);
+      body_h_exp + 2.0 * HISTORY_ROW_PAD_Y
+    } else {
+      HISTORY_ROW_SLOT_HEIGHT
+    };
+    let row_bottom_y = if is_selected_expanded {
+      // Original top minus expanded height.
+      let row_top_y = row_y + HISTORY_ROW_SLOT_HEIGHT;
+      (row_top_y - row_slot_h).max(0.0)
+    } else {
+      row_y
+    };
 
     let bg = refs.autocomplete_bgs[vis_idx];
     if bg != nil {
-      if entry_idx == selected_index {
+      if is_selected {
         let bg_frame =
-          NSRect::new(NSPoint::new(bg_x, row_y), NSSize::new(bg_w, HISTORY_ROW_SLOT_HEIGHT));
+          NSRect::new(NSPoint::new(bg_x, row_bottom_y), NSSize::new(row_bg_w, row_slot_h));
         let _: () = msg_send![bg, setFrame: bg_frame];
         let bg_layer: id = msg_send![bg, layer];
         if bg_layer != nil {
@@ -2799,6 +2876,11 @@ unsafe fn render_overlay_history_list(
           let _: () = msg_send![bg_layer, setCornerRadius: HISTORY_BG_RADIUS];
         }
         let _: () = msg_send![bg, setHidden: NO];
+        if is_selected_expanded {
+          // Promote the expanded selected row above siblings so it visually
+          // covers any rows below that get pushed out of the visible area.
+          let _: () = msg_send![refs.card_view, addSubview: bg];
+        }
       } else {
         let _: () = msg_send![bg, setHidden: YES];
       }
@@ -2807,20 +2889,38 @@ unsafe fn render_overlay_history_list(
     let label = refs.autocomplete_labels[vis_idx];
     if label != nil {
       configure_history_body_label(label);
-      // All entries share the same bright off-white color; the selected entry
-      // is distinguished by its deep-blue background tint, not by text alpha.
       let color =
         NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_TEXT_ALPHA);
       let _: () = msg_send![label, setTextColor: color];
-      // Vertically center the measured body inside the fixed slot.
-      let label_y = row_y + HISTORY_ROW_PAD_Y + ((body_max_height - body_h) / 2.0).max(0.0);
-      let label_frame = NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(label_w, *body_h));
-      let _: () = msg_send![label, setFrame: label_frame];
-      let text = NSString::alloc(nil).init_str(rendered);
-      let _: () = msg_send![label, setStringValue: text];
-      let _: () = msg_send![label, setHidden: NO];
+      if is_selected_expanded {
+        let (exp_rendered, exp_body_h) = expanded_body.as_ref().unwrap();
+        // Allow unlimited lines for the expanded label.
+        let _: () = msg_send![label, setMaximumNumberOfLines: 0isize];
+        // Body sits at the top of the expanded row (largest y inside the row).
+        let label_y = row_bottom_y + row_slot_h - HISTORY_ROW_PAD_Y - exp_body_h;
+        let label_frame =
+          NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(row_label_w, *exp_body_h));
+        let _: () = msg_send![label, setFrame: label_frame];
+        let text = NSString::alloc(nil).init_str(exp_rendered);
+        let _: () = msg_send![label, setStringValue: text];
+        let _: () = msg_send![label, setHidden: NO];
+        let _: () = msg_send![refs.card_view, addSubview: label];
+      } else {
+        // Vertically center the measured body inside the fixed slot.
+        let label_y = row_y + HISTORY_ROW_PAD_Y + ((body_max_height - body_h) / 2.0).max(0.0);
+        let label_frame =
+          NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(row_label_w, *body_h));
+        let _: () = msg_send![label, setFrame: label_frame];
+        let text = NSString::alloc(nil).init_str(rendered);
+        let _: () = msg_send![label, setStringValue: text];
+        let _: () = msg_send![label, setHidden: NO];
+      }
     }
 
+    // Advance by the FIXED slot height (not the expanded one) — the visible
+    // window of 5 slots is what's pre-allocated. The expanded row occupies
+    // its slot AND the slots below visually, but the row_y cursor still
+    // tracks slot positions for non-expanded rows above.
     row_y += HISTORY_ROW_SLOT_HEIGHT + HISTORY_ROW_GAP;
   }
 
@@ -2847,17 +2947,20 @@ unsafe fn render_overlay_history_list(
     NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_HINT_TEXT_ALPHA);
   let hint_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_HINT_FONT_SIZE];
 
+  // In list mode the hint is two stacked lines: "view ▶" / "◀ esc".
+  // In expanded mode it collapses to "◀ back" on the bottom line; the top
+  // line is hidden.
   if refs.label != nil {
     let _: () = msg_send![refs.label, setUsesSingleLineMode: YES];
     let _: () = msg_send![refs.label, setMaximumNumberOfLines: 1isize];
-    let _: () = msg_send![refs.label, setAlignment: 2isize]; // right
+    let _: () = msg_send![refs.label, setAlignment: 1isize]; // center
     let _: () = msg_send![refs.label, setLineBreakMode: 4isize]; // truncating tail
     if hint_font != nil {
       let _: () = msg_send![refs.label, setFont: hint_font];
     }
     let _: () = msg_send![refs.label, setTextColor: hint_color];
-    let _: () =
-      msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str("\u{25C0} esc")];
+    let bottom_text = if expanded { "\u{25C0} back" } else { "\u{25C0} esc" };
+    let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(bottom_text)];
     let frame = NSRect::new(NSPoint::new(hint_x, bottom_line_y), NSSize::new(hint_w, line_h));
     let _: () = msg_send![refs.label, setFrame: frame];
     let _: () = msg_send![refs.label, setHidden: NO];
@@ -2865,161 +2968,34 @@ unsafe fn render_overlay_history_list(
   }
   if refs.hold_badge != nil {
     let hb = refs.hold_badge;
-    let _: () = msg_send![hb, setBezeled: NO];
-    let _: () = msg_send![hb, setDrawsBackground: NO];
-    let _: () = msg_send![hb, setEditable: NO];
-    let _: () = msg_send![hb, setSelectable: NO];
-    let _: () = msg_send![hb, setUsesSingleLineMode: YES];
-    let _: () = msg_send![hb, setMaximumNumberOfLines: 1isize];
-    let _: () = msg_send![hb, setAlignment: 2isize]; // right
-    let _: () = msg_send![hb, setLineBreakMode: 4isize]; // truncating tail
-    if hint_font != nil {
-      let _: () = msg_send![hb, setFont: hint_font];
+    if expanded {
+      // No "view ▶" line in expanded mode.
+      let _: () = msg_send![hb, setHidden: YES];
+    } else {
+      let _: () = msg_send![hb, setBezeled: NO];
+      let _: () = msg_send![hb, setDrawsBackground: NO];
+      let _: () = msg_send![hb, setEditable: NO];
+      let _: () = msg_send![hb, setSelectable: NO];
+      let _: () = msg_send![hb, setUsesSingleLineMode: YES];
+      let _: () = msg_send![hb, setMaximumNumberOfLines: 1isize];
+      let _: () = msg_send![hb, setAlignment: 1isize]; // center
+      let _: () = msg_send![hb, setLineBreakMode: 4isize]; // truncating tail
+      if hint_font != nil {
+        let _: () = msg_send![hb, setFont: hint_font];
+      }
+      let _: () = msg_send![hb, setTextColor: hint_color];
+      let _: () = msg_send![hb, setStringValue: NSString::alloc(nil).init_str("view \u{25B6}")];
+      let frame = NSRect::new(NSPoint::new(hint_x, top_line_y), NSSize::new(hint_w, line_h));
+      let _: () = msg_send![hb, setFrame: frame];
+      let _: () = msg_send![hb, setHidden: NO];
+      let _: () = msg_send![refs.card_view, addSubview: hb];
     }
-    let _: () = msg_send![hb, setTextColor: hint_color];
-    let _: () = msg_send![hb, setStringValue: NSString::alloc(nil).init_str("view \u{25B6}")];
-    let frame = NSRect::new(NSPoint::new(hint_x, top_line_y), NSSize::new(hint_w, line_h));
-    let _: () = msg_send![hb, setFrame: frame];
-    let _: () = msg_send![hb, setHidden: NO];
-    let _: () = msg_send![refs.card_view, addSubview: hb];
   }
 
   // Hide unused row slots.
   for i in measured.len()..AUTOCOMPLETE_MAX_ITEMS {
     let _: () = msg_send![refs.autocomplete_labels[i], setHidden: YES];
     let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
-  }
-}
-
-/// Top-anchored single-entry view. Pressing Right while a list entry is
-/// selected enters this state: the card's *top* edge stays at the list-mode
-/// top (so the content to the user's eye doesn't shift up), and the bottom
-/// extends down to fit the entry's full text. Left arrow / Esc collapses
-/// back to the list (handled in app.rs::handle_overlay_cancel).
-unsafe fn render_overlay_history_expanded(refs: OverlayRefs, text: &str) {
-  // Hide every speech-mode widget AND every list-row widget.
-  let _: () = msg_send![refs.meter_view, setHidden: YES];
-  let _: () = msg_send![refs.raw_badge, setHidden: YES];
-  let _: () = msg_send![refs.hold_badge, setHidden: YES];
-  if refs.busy_gradient_layer != nil {
-    let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];
-  }
-  if refs.autocomplete_separator != nil {
-    let _: () = msg_send![refs.autocomplete_separator, setHidden: YES];
-  }
-  hide_overlay_notice_accessory(refs);
-  // Hide unused list-row labels/bgs except the body label we'll reuse below.
-  for i in 1..AUTOCOMPLETE_MAX_ITEMS {
-    let _: () = msg_send![refs.autocomplete_labels[i], setHidden: YES];
-  }
-  for i in 0..AUTOCOMPLETE_MAX_ITEMS {
-    let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
-  }
-
-  let current_frame: NSRect = msg_send![refs.window, frame];
-  let screen = overlay_screen_frame_for_window(current_frame);
-  let width = overlay_width_for_screen(screen);
-
-  // Body content area (matches list-mode label_w so wrapping is consistent).
-  let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
-  let bg_w = (width - 2.0 * bg_x).max(1.0);
-  let label_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
-  let label_w = (bg_w - 2.0 * HISTORY_TEXT_INNER_PAD_X).max(1.0);
-
-  // Reserve room at the bottom for the "← back" hint, sized like the
-  // list-mode hint slot.
-  let hint_band_height = HISTORY_ROW_SLOT_HEIGHT;
-
-  // Measure the entry text height with no per-line cap. Cap visually at
-  // OVERLAY_HEIGHT_MAX so a pathological 20+ line transcript doesn't blow
-  // off the screen.
-  let body_label = refs.autocomplete_labels[0];
-  let max_body_height =
-    (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM - hint_band_height)
-      .max(HISTORY_BODY_LINE_HEIGHT);
-  let measured_body = if body_label != nil {
-    configure_history_body_label(body_label);
-    // Allow unbounded line count for the expanded view so the full entry is
-    // shown (capped only by `max_body_height` via fit_rendered_body_for_height).
-    let _: () = msg_send![body_label, setMaximumNumberOfLines: 0isize];
-    let (_rendered, h) = fit_rendered_body_for_height(body_label, text, label_w, max_body_height);
-    h.max(HISTORY_BODY_LINE_HEIGHT).min(max_body_height)
-  } else {
-    HISTORY_BODY_LINE_HEIGHT
-  };
-
-  let height = (OVERLAY_PAD_TOP + measured_body + hint_band_height + OVERLAY_PAD_BOTTOM)
-    .clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
-
-  if overlay_debug_logs_enabled() {
-    eprintln!(
-      "OVERLAY_HISTORY_EXPANDED width={:.0} measured_body={:.0} window_height={:.0}",
-      width, measured_body, height,
-    );
-  }
-
-  // Top-anchored frame: keep the visible top edge of the card where it was
-  // in list mode. With list and expanded both sharing the same window, the
-  // current frame's top edge equals `current_frame.origin.y + size.height`.
-  let prior_top_y = current_frame.origin.y + current_frame.size.height;
-  let new_origin_y = (prior_top_y - height).max(screen.origin.y);
-  let target =
-    NSRect::new(NSPoint::new(current_frame.origin.x, new_origin_y), NSSize::new(width, height));
-  if (current_frame.origin.x - target.origin.x).abs() > 0.05
-    || (current_frame.origin.y - target.origin.y).abs() > 0.05
-    || (current_frame.size.width - target.size.width).abs() > 0.05
-    || (current_frame.size.height - target.size.height).abs() > 0.05
-  {
-    let _: () = msg_send![refs.window, setFrame: target display: YES];
-  }
-  apply_history_card_frame(refs, width, height);
-
-  // Body label sits at the top of the card. AppKit's bottom-up coords →
-  // y = total - PAD_TOP - body_height.
-  if body_label != nil {
-    let body_y = height - OVERLAY_PAD_TOP - measured_body;
-    let body_frame =
-      NSRect::new(NSPoint::new(label_x, body_y), NSSize::new(label_w, measured_body));
-    let body_color =
-      NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_TEXT_ALPHA);
-    let _: () = msg_send![body_label, setTextColor: body_color];
-    let _: () = msg_send![body_label, setFrame: body_frame];
-    let body_text = NSString::alloc(nil).init_str(text);
-    let _: () = msg_send![body_label, setStringValue: body_text];
-    let _: () = msg_send![body_label, setHidden: NO];
-  }
-
-  // Hint: single line "← back" right-aligned in the bottom band.
-  if refs.label != nil {
-    let _: () = msg_send![refs.label, setUsesSingleLineMode: YES];
-    let _: () = msg_send![refs.label, setMaximumNumberOfLines: 1isize];
-    let _: () = msg_send![refs.label, setAlignment: 2isize]; // right
-    let _: () = msg_send![refs.label, setLineBreakMode: 4isize]; // truncating tail
-    let hint_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_HINT_FONT_SIZE];
-    if hint_font != nil {
-      let _: () = msg_send![refs.label, setFont: hint_font];
-    }
-    let hint_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
-      nil,
-      1.0,
-      1.0,
-      1.0,
-      HISTORY_HINT_TEXT_ALPHA,
-    );
-    let _: () = msg_send![refs.label, setTextColor: hint_color];
-    let hint_text = "\u{25C0} back";
-    let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(hint_text)];
-    let hint_w = 90.0_f64;
-    let hint_h = HISTORY_HINT_FONT_SIZE + 4.0;
-    let hint_y = OVERLAY_PAD_BOTTOM + ((hint_band_height - hint_h) / 2.0).max(0.0);
-    let hint_frame = NSRect::new(
-      NSPoint::new(width - HISTORY_HINT_RIGHT_PAD - hint_w, hint_y),
-      NSSize::new(hint_w, hint_h),
-    );
-    let _: () = msg_send![refs.label, setFrame: hint_frame];
-    let _: () = msg_send![refs.label, setHidden: NO];
-    // Z-order: keep the hint above any leftover sublayers.
-    let _: () = msg_send![refs.card_view, addSubview: refs.label];
   }
 }
 
@@ -4802,6 +4778,43 @@ fn set_arrow_hotkeys_enabled(enabled: bool) {
 
 pub fn set_overlay_debug_logs_enabled(enabled: bool) {
   OVERLAY_DEBUG_LOGS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Snapshot the current mouse-button state so the next call to
+/// `poll_click_outside_overlay` doesn't fire on a pre-existing held button.
+/// Called from `enter_history_mode`.
+pub fn reset_click_outside_tracker() {
+  let buttons: u64 = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
+  MOUSE_BUTTON_PREV_STATE.store(buttons, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Returns true on the tick where a fresh mouse-button press lands OUTSIDE
+/// the overlay's frame. Caller should dismiss whatever overlay-driven mode
+/// is active. Designed to be called from the app's `on_tick` while history
+/// mode is active.
+pub fn poll_click_outside_overlay() -> bool {
+  unsafe {
+    let buttons: u64 = msg_send![class!(NSEvent), pressedMouseButtons];
+    let prev = MOUSE_BUTTON_PREV_STATE.swap(buttons, std::sync::atomic::Ordering::Relaxed);
+    let new_press = buttons & !prev;
+    if new_press == 0 {
+      return false;
+    }
+    let Some(refs) = current_overlay() else {
+      return false;
+    };
+    let visible: bool = msg_send![refs.window, isVisible];
+    if !visible {
+      return false;
+    }
+    let frame: NSRect = msg_send![refs.window, frame];
+    let mouse: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+    let inside = mouse.x >= frame.origin.x
+      && mouse.x <= frame.origin.x + frame.size.width
+      && mouse.y >= frame.origin.y
+      && mouse.y <= frame.origin.y + frame.size.height;
+    !inside
+  }
 }
 
 fn overlay_debug_logs_enabled() -> bool {
