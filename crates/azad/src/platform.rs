@@ -2590,11 +2590,29 @@ const HISTORY_BODY_MAX_LINES: usize = 2;
 const HISTORY_ROW_PAD_Y: f64 = 6.0;
 const HISTORY_ROW_GAP: f64 = 2.0;
 const HISTORY_BG_X_INSET: f64 = 4.0;
-const HISTORY_BG_RADIUS: f64 = 6.0;
-const HISTORY_SELECTED_BG_ALPHA: f64 = 0.18;
-const HISTORY_SELECTED_TEXT_ALPHA: f64 = 0.95;
-const HISTORY_UNSELECTED_TEXT_ALPHA: f64 = 0.55;
+// `OVERLAY_CARD_RADIUS - 8` so the inner highlight follows the outer card's
+// rounded curve concentrically (the bg is inset 8 pt from the card edge:
+// `OVERLAY_PAD_X (12) - HISTORY_BG_X_INSET (4) = 8`). Smaller values leave a
+// visible gap between the highlight corner and the card corner; larger values
+// clip past the curve.
+const HISTORY_BG_RADIUS: f64 = 14.0;
+// Deep blue (#002EA2) at high alpha so the selected entry pops without washing
+// out against the dark card.
+const HISTORY_SELECTED_BG_R: f64 = 0.0;
+const HISTORY_SELECTED_BG_G: f64 = 0.180;
+const HISTORY_SELECTED_BG_B: f64 = 0.635;
+const HISTORY_SELECTED_BG_ALPHA: f64 = 0.85;
+// All entries (selected and unselected) render in the same bright off-white.
+const HISTORY_TEXT_ALPHA: f64 = 0.95;
 const HISTORY_EMPTY_TEXT_ALPHA: f64 = 0.40;
+// Bottom-right hint label — "← esc" so users know how to dismiss without paste.
+const HISTORY_HINT_FONT_SIZE: f64 = 10.0;
+const HISTORY_HINT_TEXT_ALPHA: f64 = 0.45;
+const HISTORY_HINT_RIGHT_PAD: f64 = 12.0;
+const HISTORY_HINT_BOTTOM_PAD: f64 = 6.0;
+// Right-side padding for entry labels: extra room so the bottom-right hint
+// doesn't overlap the bottom row's text.
+const HISTORY_RIGHT_PAD_EXTRA: f64 = 8.0;
 
 unsafe fn render_overlay_history_list(
   refs: OverlayRefs,
@@ -2602,7 +2620,8 @@ unsafe fn render_overlay_history_list(
   selected_index: usize,
 ) {
   // Hide every speech-mode widget. The history list is the entire body.
-  let _: () = msg_send![refs.label, setHidden: YES];
+  // Note: `refs.label` stays visible — it gets repurposed at the bottom of
+  // this function as the "← esc" hint in the bottom-right corner.
   let _: () = msg_send![refs.meter_view, setHidden: YES];
   let _: () = msg_send![refs.raw_badge, setHidden: YES];
   let _: () = msg_send![refs.hold_badge, setHidden: YES];
@@ -2622,7 +2641,9 @@ unsafe fn render_overlay_history_list(
   let current_frame: NSRect = msg_send![refs.window, frame];
   let screen = overlay_screen_frame_for_window(current_frame);
   let width = overlay_width_for_screen(screen);
-  let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
+  // Reserve extra padding on the right so the bottom-right "← esc" hint
+  // doesn't overlap the bottom-row entry text.
+  let content_width = (width - OVERLAY_PAD_X * 2.0 - HISTORY_RIGHT_PAD_EXTRA).max(1.0);
 
   // Empty-state: one centered, dimmed "No transcripts" line, non-selectable.
   if entries.is_empty() {
@@ -2659,6 +2680,9 @@ unsafe fn render_overlay_history_list(
       let _: () = msg_send![label, setFrame: label_frame];
       let _: () = msg_send![label, setHidden: NO];
     }
+    // Empty state has no entries to label, so hide the speech-mode label —
+    // the hint setup at the bottom of the non-empty path doesn't run here.
+    let _: () = msg_send![refs.label, setHidden: YES];
     apply_history_window_frame(refs, current_frame, screen, width, OVERLAY_HEIGHT_MIN);
     apply_history_card_frame(refs, width, OVERLAY_HEIGHT_MIN);
     return;
@@ -2735,9 +2759,9 @@ unsafe fn render_overlay_history_list(
         if bg_layer != nil {
           let bg_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
             nil,
-            0.30,
-            0.65,
-            1.0,
+            HISTORY_SELECTED_BG_R,
+            HISTORY_SELECTED_BG_G,
+            HISTORY_SELECTED_BG_B,
             HISTORY_SELECTED_BG_ALPHA,
           );
           let bg_cg: id = msg_send![bg_color, CGColor];
@@ -2753,12 +2777,11 @@ unsafe fn render_overlay_history_list(
     let label = refs.autocomplete_labels[vis_idx];
     if label != nil {
       configure_history_body_label(label);
-      let alpha = if entry_idx == selected_index {
-        HISTORY_SELECTED_TEXT_ALPHA
-      } else {
-        HISTORY_UNSELECTED_TEXT_ALPHA
-      };
-      let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, alpha);
+      // All entries share the same bright off-white color; the selected entry
+      // is distinguished by its deep-blue background tint, not by text alpha.
+      let _ = entry_idx; // (kept for the bg branch above; not needed here)
+      let color =
+        NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_TEXT_ALPHA);
       let _: () = msg_send![label, setTextColor: color];
       let label_frame = NSRect::new(
         NSPoint::new(OVERLAY_PAD_X, row_y + HISTORY_ROW_PAD_Y),
@@ -2771,6 +2794,40 @@ unsafe fn render_overlay_history_list(
     }
 
     row_y += row_h + HISTORY_ROW_GAP;
+  }
+
+  // Bottom-right "← esc" hint. Reuses `refs.label` (the speech-mode draft
+  // label, which is hidden in history mode) so we don't have to thread a
+  // dedicated label through `OverlayRefs` for this small affordance. The
+  // speech-mode renderer reconfigures `refs.label` from scratch on every
+  // call, so no cleanup needed when leaving history.
+  if refs.label != nil {
+    let _: () = msg_send![refs.label, setUsesSingleLineMode: YES];
+    let _: () = msg_send![refs.label, setMaximumNumberOfLines: 1isize];
+    let _: () = msg_send![refs.label, setAlignment: 2isize]; // NSTextAlignmentRight
+    let _: () = msg_send![refs.label, setLineBreakMode: 4isize]; // TruncatingTail (4)
+    let hint_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_HINT_FONT_SIZE];
+    if hint_font != nil {
+      let _: () = msg_send![refs.label, setFont: hint_font];
+    }
+    let hint_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+      nil,
+      1.0,
+      1.0,
+      1.0,
+      HISTORY_HINT_TEXT_ALPHA,
+    );
+    let _: () = msg_send![refs.label, setTextColor: hint_color];
+    let hint_text = "\u{2190} esc"; // left-arrow + esc
+    let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(hint_text)];
+    let hint_w = 80.0_f64;
+    let hint_h = HISTORY_HINT_FONT_SIZE + 4.0;
+    let hint_frame = NSRect::new(
+      NSPoint::new(width - HISTORY_HINT_RIGHT_PAD - hint_w, HISTORY_HINT_BOTTOM_PAD),
+      NSSize::new(hint_w, hint_h),
+    );
+    let _: () = msg_send![refs.label, setFrame: hint_frame];
+    let _: () = msg_send![refs.label, setHidden: NO];
   }
 
   // Hide unused row slots.
@@ -2830,8 +2887,13 @@ unsafe fn apply_history_card_frame(refs: OverlayRefs, width: f64, height: f64) {
     let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
     let card_cg: id = msg_send![card_color, CGColor];
     let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
-    // Clear any busy-border tint from a prior speech-mode render.
-    let _: () = msg_send![card_layer, setBorderWidth: 0.0f64];
+    // Carry the subtle outer border forward from speech mode so the history
+    // overlay doesn't visually drop a pixel of definition when the user
+    // pivots into it.
+    let border = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.22);
+    let border_cg: id = msg_send![border, CGColor];
+    let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
+    let _: () = msg_send![card_layer, setBorderColor: border_cg];
   }
 }
 

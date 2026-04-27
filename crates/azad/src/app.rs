@@ -955,6 +955,12 @@ impl AppController {
   }
 
   fn handle_hotkey_pressed(&mut self) {
+    // Pressing opt+space while in history mode dismisses history (without
+    // pasting) and starts a fresh dictation turn. The user is signalling
+    // "I want to talk now" — don't trap them in the list.
+    if self.history_browsing {
+      self.exit_history_mode();
+    }
     if !self.models_ready {
       self.show_overlay_notice(
         "Models required",
@@ -972,10 +978,9 @@ impl AppController {
 
   fn handle_hotkey_released(&mut self) {
     if self.history_browsing {
-      // Release-to-paste mirrors the speech-mode finalize gesture: hold opt+space,
-      // navigate, let go to commit. `paste_from_history` exits history mode after
-      // pasting, so the overlay also closes.
-      self.paste_from_history();
+      // Once in history mode the user is no longer required to hold opt+space —
+      // they navigate with Up/Down and dismiss with Esc/Left or paste with Enter.
+      // The release is a no-op so they can let go and keep browsing freely.
       return;
     }
     if !self.models_ready {
@@ -2484,18 +2489,23 @@ impl AppController {
   }
 
   fn enter_history_mode(&mut self) {
-    // Cancel any in-flight turn and let go of the manual-hold flag. We do NOT
-    // call `set_capture_enabled(false)`: that fires a `SessionEnded` event,
-    // whose handler calls `self.hide_overlay()` — which would tear down the
-    // overlay we're about to rebuild as the history list. `release_manual_hold`
-    // is enough to drop manual-hold capture; always-listening users keep
-    // capture rolling and any incoming speech events are dropped by the
-    // `history_browsing` guard at the top of `handle_speech_event`.
+    // Cancel any in-flight turn AND stop capture. Without `set_capture_enabled(false)`
+    // the audio thread keeps producing chunks while the user is browsing — even
+    // though `handle_speech_event`'s `history_browsing` guard drops incoming
+    // events from the user's perspective, the engine still produces a draft and
+    // appends a new entry to `transcript_index` if a turn finalizes. Worse: if a
+    // turn finishes RIGHT AS the user dismisses history mode, that turn's
+    // FinalText fires after `history_browsing` is cleared and gets pasted in
+    // addition to the user's chosen history entry. Setting capture off prevents
+    // the engine from doing any of that. Re-enable on exit. The
+    // `SessionEnded` event that `set_capture_enabled(false)` may trigger is
+    // harmless because the same `history_browsing` guard drops it.
     self.manual_hold_active = false;
     self.hold_saw_speech = false;
     if let Some(session) = &self.session {
       session.release_manual_hold();
       session.cancel_current_turn();
+      session.set_capture_enabled(false);
     }
     self.latest_draft.clear();
     self.finalizing_draft.clear();
@@ -2519,6 +2529,12 @@ impl AppController {
     self.overlay_visible = false;
     platform::set_arrow_left_hotkey_enabled(false);
     platform::hide_overlay();
+    // Restore capture so always-listening continues and the next opt+space hold
+    // works. Capture in non-always-listening mode will be turned back off by
+    // the engine when the next manual hold ends.
+    if let Some(session) = &self.session {
+      session.set_capture_enabled(true);
+    }
   }
 
   fn reset_turn_state(&mut self) {
