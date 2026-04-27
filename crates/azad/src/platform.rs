@@ -3119,6 +3119,13 @@ unsafe fn fit_history_body_with_ellipsis(
   if trimmed.is_empty() {
     return (String::new(), HISTORY_BODY_LINE_HEIGHT);
   }
+  // Lift the line cap before measuring. `configure_history_body_label` sets
+  // `setMaximumNumberOfLines: 2`, which causes `cellSizeForBounds` to clamp
+  // the reported height at 2 × line_height — so the "exceeds max_height"
+  // branch below would never fire and the helper would never append the
+  // ellipsis. Restore the cap when the caller next calls
+  // `configure_history_body_label` (the layout loop does this every render).
+  let _: () = msg_send![label, setMaximumNumberOfLines: 0isize];
   let measured_full = measure_label_height(label, trimmed, width);
   if measured_full <= max_height + 0.5 {
     return (trimmed.to_string(), measured_full);
