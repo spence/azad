@@ -2649,7 +2649,6 @@ const HISTORY_LIST_HEIGHT: f64 = OVERLAY_PAD_TOP
   + HISTORY_HEIGHT_TARGET_ROWS * HISTORY_ROW_SLOT_HEIGHT_MAX
   + (HISTORY_HEIGHT_TARGET_ROWS - 1.0) * HISTORY_ROW_GAP
   + OVERLAY_PAD_BOTTOM;
-const HISTORY_LIST_BUDGET: f64 = HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM;
 
 // Atomics that the renderer writes after every history-list draw so the app
 // side (which initiates the next render via Up/Down/Right) can make decisions
@@ -2765,13 +2764,14 @@ unsafe fn render_overlay_history_list(
 
   // Greedy fit: starting from `visible_start` (or selected_index, whichever is
   // smaller — the selected entry must always be inside the window), pack rows
-  // upward until the next row wouldn't fit in `HISTORY_LIST_BUDGET`. The
-  // visible_count is dynamic — 5 rows when every entry fills 2 lines, ~7 when
-  // they're all 1 line — so the card budget is filled regardless of mix.
+  // upward and add another whenever there's still at least one body line of
+  // visible card height remaining. Rows are allowed to extend into the top
+  // pad zone (clipped by the card's masksToBounds at the rounded edge), so
+  // the card always fills bottom-to-top regardless of whether the visible mix
+  // is 5 two-line rows or 8 single-line rows.
   //
-  // If the fitted window doesn't include the selected entry (e.g. the user
-  // scrolled up past the top of the previous window), slide `start` upward by
-  // 1 and refit until it does.
+  // If the fitted window doesn't include the selected entry, slide `start`
+  // upward by 1 and refit until it does.
   let body_max_height = HISTORY_BODY_LINE_HEIGHT * HISTORY_BODY_MAX_LINES as f64;
   let mut start = visible_start.min(entries.len().saturating_sub(1));
   if selected_index < start {
@@ -2794,17 +2794,20 @@ unsafe fn render_overlay_history_list(
       };
       let body_h = body_h_raw.max(HISTORY_BODY_LINE_HEIGHT).min(body_max_height);
       let row_h = body_h + 2.0 * HISTORY_ROW_PAD_Y;
-      let projected = used_h + row_h + (if idx > 0 { HISTORY_ROW_GAP } else { 0.0 });
-      if projected > HISTORY_LIST_BUDGET + 0.5 && idx > 0 {
+      // Where this row's bottom edge would land in card-local coords. Stop
+      // adding rows once the body's first line wouldn't fit inside the card.
+      let row_bottom = OVERLAY_PAD_BOTTOM + used_h + (if idx == 0 { 0.0 } else { HISTORY_ROW_GAP });
+      if idx > 0
+        && row_bottom + HISTORY_ROW_PAD_Y + HISTORY_BODY_LINE_HEIGHT > HISTORY_LIST_HEIGHT + 0.5
+      {
         break;
       }
-      used_h = projected;
+      used_h += row_h + (if idx == 0 { 0.0 } else { HISTORY_ROW_GAP });
       measured.push((rendered, body_h));
       idx += 1;
     }
     let visible_count = measured.len();
     let end = start + visible_count;
-    // Selected fits OR we've already pushed `start` to the very last entry.
     if selected_index < end || start + 1 >= entries.len() {
       break;
     }
