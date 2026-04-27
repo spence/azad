@@ -2601,11 +2601,13 @@ unsafe fn render_overlay_history_list(
   let _: () = msg_send![refs.meter_view, setHidden: YES];
   let _: () = msg_send![refs.raw_badge, setHidden: YES];
   let _: () = msg_send![refs.hold_badge, setHidden: YES];
+  // Hide the busy gradient (the rotating border-pulse) but leave the mask layer
+  // alone — `apply_busy_border_style` doesn't always re-show the mask, and a
+  // hidden mask clips the gradient to fully-transparent alpha (the missing-
+  // border-pulse bug). Hiding only the gradient is enough; the mask staying
+  // visible doesn't render anything on its own.
   if refs.busy_gradient_layer != nil {
     let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];
-  }
-  if refs.busy_mask_layer != nil {
-    let _: () = msg_send![refs.busy_mask_layer, setHidden: YES];
   }
   if refs.autocomplete_separator != nil {
     let _: () = msg_send![refs.autocomplete_separator, setHidden: YES];
@@ -3248,6 +3250,11 @@ unsafe fn apply_busy_border_style(
   let _: () = msg_send![refs.busy_mask_layer, setFrame: frame];
   let _: () = msg_send![refs.busy_mask_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
   let _: () = msg_send![refs.busy_mask_layer, setBorderWidth: OVERLAY_BUSY_RING_THICKNESS];
+  // Always un-hide the mask. If something (e.g. the history-list renderer) hid it,
+  // CALayer.mask still gets sampled — a hidden mask renders as fully transparent
+  // alpha, which clips the gradient to invisibility. This is the missing-border-
+  // pulse symptom.
+  let _: () = msg_send![refs.busy_mask_layer, setHidden: NO];
 
   let Some(phase) = busy_phase else {
     let _: () = msg_send![refs.busy_gradient_layer, setHidden: YES];

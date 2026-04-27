@@ -1712,6 +1712,16 @@ impl AppController {
         self.handle_debug_stats_event(event);
       }
       SpeechEvent::Finalizing { turn_id, current_draft, .. } => {
+        if self.debug_stats_enabled {
+          eprintln!(
+            "AZAD_FINALIZING_RECV turn_id={} draft_chars={} overlay_visible={} \
+             prior_finalizing_turn_id={:?}",
+            turn_id,
+            current_draft.chars().count(),
+            self.overlay_visible,
+            self.finalizing_turn_id,
+          );
+        }
         if !self.accept_turn(turn_id) {
           return;
         }
@@ -1768,6 +1778,13 @@ impl AppController {
         self.render_finalizing_overlay_state();
       }
       SpeechEvent::FinalizingCancelled { turn_id, .. } => {
+        if self.debug_stats_enabled {
+          eprintln!(
+            "AZAD_FINALIZING_CANCELLED_RECV turn_id={} finalizing_turn_id={:?} \
+             overlay_visible={}",
+            turn_id, self.finalizing_turn_id, self.overlay_visible
+          );
+        }
         if !self.accept_turn(turn_id) {
           return;
         }
