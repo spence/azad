@@ -2462,10 +2462,11 @@ impl AppController {
     if !self.history_browsing {
       return;
     }
-    // Up/Down inside the expanded view are no-ops — the user must Left back to
-    // the list before navigating to a different entry.
+    // Up/Down inside the expanded view collapses back to the list view AND
+    // performs the navigation step — the user gets a single keystroke that
+    // returns to browsing while moving the selection.
     if self.history_expanded {
-      return;
+      self.history_expanded = false;
     }
     let count = self.transcript_index.as_ref().map(|i| i.entry_count()).unwrap_or(0);
     if count == 0 {
