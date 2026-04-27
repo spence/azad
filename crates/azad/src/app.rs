@@ -134,10 +134,13 @@ fn spawn_heartbeat_thread() {
             if !ctrl.debug_stats_enabled {
               continue;
             }
+            let capture_enabled =
+              ctrl.session.as_ref().map(|s| s.capture_enabled()).unwrap_or(false);
             eprintln!(
               "AZAD_HEARTBEAT session_present={} always_listening={} manual_hold_active={} \
              engine_state={:?} overlay_visible={} current_turn={:?} latest_seen_turn={} \
-             last_pasted_turn={:?} cancelled={} hold_saw_speech={} pending_recovery={}",
+             last_pasted_turn={:?} cancelled={} hold_saw_speech={} pending_recovery={} \
+             history_browsing={} capture_enabled={}",
               ctrl.session.is_some(),
               ctrl.always_listening_enabled,
               ctrl.manual_hold_active,
@@ -149,6 +152,8 @@ fn spawn_heartbeat_thread() {
               ctrl.cancelled,
               ctrl.hold_saw_speech,
               ctrl.pending_recovery_restart,
+              ctrl.history_browsing,
+              capture_enabled,
             );
           }
           Err(_) => {

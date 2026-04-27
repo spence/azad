@@ -106,6 +106,10 @@ impl SpeechSession {
   pub fn cancel(&self) {
     let _ = self.handle.control(SessionControl::CancelSession);
   }
+
+  pub fn capture_enabled(&self) -> bool {
+    self.handle.capture_enabled()
+  }
 }
 
 pub fn spawn_speech_session(
