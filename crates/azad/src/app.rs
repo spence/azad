@@ -73,8 +73,12 @@ pub enum AppEvent {
   OverlayCancel,
   ArrowNavigate(i32),
   /// Right-arrow while history-browse mode is active. Expands the selected
-  /// entry into a top-anchored "view full text" mode.
+  /// entry inline in the list to show its full text.
   HistoryExpand,
+  /// Left-arrow while history-browse mode is active. In expanded mode it
+  /// collapses back to the list; in list mode it dismisses the overlay.
+  /// Distinct from `OverlayCancel` (Esc) so Esc can always exit fully.
+  HistoryCollapse,
   Speech(SpeechEvent),
   Device(DeviceEvent),
 }
@@ -244,6 +248,11 @@ struct AppController {
   transcript_index: Option<TranscriptIndex>,
   history_browsing: bool,
   history_browse_index: usize,
+  // Top-of-window entry index for the visible 5-row slice. Stateful so
+  // scrolling DOWN out of a top-pinned position lets the selection drop a
+  // couple of slots inside the visible list before the window itself starts
+  // sliding — rather than pinning the selection at the visual top.
+  history_visible_start: usize,
   // True when the user has pressed Right while history-browsing to view the
   // selected entry's full text. Reset on enter/exit and on Up/Down navigation.
   history_expanded: bool,
@@ -710,6 +719,7 @@ impl AppController {
       transcript_index,
       history_browsing: false,
       history_browse_index: 0,
+      history_visible_start: 0,
       history_expanded: false,
       removed_words,
     }
@@ -865,6 +875,7 @@ impl AppController {
       AppEvent::OverlayCancel => self.handle_overlay_cancel(),
       AppEvent::ArrowNavigate(direction) => self.handle_arrow_navigate(direction),
       AppEvent::HistoryExpand => self.handle_history_expand(),
+      AppEvent::HistoryCollapse => self.handle_history_collapse(),
       AppEvent::Speech(ev) => self.handle_speech_event(ev),
       AppEvent::Device(ev) => self.handle_device_event(ev),
     }
@@ -1482,14 +1493,9 @@ impl AppController {
 
   fn handle_overlay_cancel(&mut self) {
     if self.history_browsing {
-      // From the expanded view, Esc/Left collapses back to the list rather
-      // than dismissing history entirely. Only dismiss when already in list
-      // mode.
-      if self.history_expanded {
-        self.history_expanded = false;
-        self.render_history_overlay();
-        return;
-      }
+      // Esc always fully dismisses history regardless of expand state. The
+      // list-mode "back" gesture is the Left arrow (HistoryCollapse), which
+      // takes a different code path.
       self.exit_history_mode();
       return;
     }
@@ -2465,20 +2471,49 @@ impl AppController {
     if count == 0 {
       return;
     }
+    // Visible window is AUTOCOMPLETE_MAX_ITEMS wide. Navigation rules:
+    // - Up (older, browse_index += 1): once selection reaches the visual TOP
+    //   of the window (vis_idx == MAX-1), the window slides up so the
+    //   selection stays pinned to the top.
+    // - Down (newer, browse_index -= 1): once selection drops within
+    //   `descent_lag` of visible_start, the window slides DOWN so the
+    //   selection settles `descent_lag` slots above the bottom — the user
+    //   gets a couple of slots of "in-window descent" before the window
+    //   slides on every subsequent Down.
+    const DESCENT_LAG: usize = 2;
     match direction {
       -1 => {
         if self.history_browse_index + 1 < count {
           self.history_browse_index += 1;
+          let max = platform::AUTOCOMPLETE_MAX_ITEMS;
+          if self.history_browse_index >= self.history_visible_start + max {
+            self.history_visible_start = self.history_browse_index + 1 - max;
+          }
         }
       }
       1 => {
         if self.history_browse_index > 0 {
           self.history_browse_index -= 1;
+          if self.history_browse_index < self.history_visible_start + DESCENT_LAG {
+            self.history_visible_start = self.history_browse_index.saturating_sub(DESCENT_LAG);
+          }
         }
       }
       _ => {}
     }
     self.render_history_overlay();
+  }
+
+  fn handle_history_collapse(&mut self) {
+    if !self.history_browsing {
+      return;
+    }
+    if self.history_expanded {
+      self.history_expanded = false;
+      self.render_history_overlay();
+      return;
+    }
+    self.exit_history_mode();
   }
 
   fn handle_history_expand(&mut self) {
@@ -2498,11 +2533,13 @@ impl AppController {
       if self.debug_stats_enabled {
         eprintln!("AZAD_HISTORY_RENDER action=no_index browse_index={}", self.history_browse_index);
       }
-      platform::set_overlay_history_content(&[], 0, false);
+      platform::set_overlay_history_content(&[], 0, 0, false);
       return;
     };
     let count = index.entry_count();
     let selected = self.history_browse_index.min(count.saturating_sub(1));
+    let max_start = count.saturating_sub(platform::AUTOCOMPLETE_MAX_ITEMS);
+    let visible_start = self.history_visible_start.min(max_start);
     let entries: Vec<platform::HistoryEntryView<'_>> = (0..count)
       .filter_map(|i| index.entry_text(i).map(|text| platform::HistoryEntryView { text }))
       .collect();
@@ -2512,15 +2549,17 @@ impl AppController {
         .map(|e| &e.text[..e.text.len().min(40)])
         .unwrap_or("(no entries)");
       eprintln!(
-        "AZAD_HISTORY_RENDER mode={} count={} entries_built={} selected={} first_preview={:?}",
+        "AZAD_HISTORY_RENDER mode={} count={} entries_built={} selected={} \
+         visible_start={} first_preview={:?}",
         if self.history_expanded { "expanded" } else { "list" },
         count,
         entries.len(),
         selected,
+        visible_start,
         preview,
       );
     }
-    platform::set_overlay_history_content(&entries, selected, self.history_expanded);
+    platform::set_overlay_history_content(&entries, selected, visible_start, self.history_expanded);
   }
 
   fn paste_from_history(&mut self) {
@@ -2565,6 +2604,7 @@ impl AppController {
     self.finalizing_deadline = None;
     self.history_browsing = true;
     self.history_browse_index = 0;
+    self.history_visible_start = 0;
     self.history_expanded = false;
     platform::set_arrow_left_hotkey_enabled(true);
     platform::set_arrow_right_hotkey_enabled(true);
@@ -2581,6 +2621,7 @@ impl AppController {
   fn exit_history_mode(&mut self) {
     self.history_browsing = false;
     self.history_browse_index = 0;
+    self.history_visible_start = 0;
     self.history_expanded = false;
     self.overlay_visible = false;
     platform::set_arrow_left_hotkey_enabled(false);
