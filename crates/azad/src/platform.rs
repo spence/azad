@@ -2798,13 +2798,17 @@ unsafe fn render_overlay_history_list(
       };
       let body_h = body_h_raw.max(HISTORY_BODY_LINE_HEIGHT).min(body_max_height);
       let row_h = body_h + 2.0 * HISTORY_ROW_PAD_Y;
-      // Strict fit: the *entire* row must fit inside the inner content area
-      // (card height minus both the top and bottom pads). The previous rule
-      // checked only the row's first body line, so a 2-line row could land
-      // partially in the top pad zone — and once cumulative height exceeded
-      // HISTORY_LIST_HEIGHT, top-anchor layout pushed the topmost row past
-      // the card edge where masksToBounds clipped it.
-      let row_budget = HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM;
+      // Fit budget: the cumulative row stack may reach UP TO the inner top
+      // border (HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP), measured from y=0.
+      // - Bottom-anchored layout starts at OVERLAY_PAD_BOTTOM and packs up;
+      //   with this budget the topmost row can extend at most into the top
+      //   pad zone (no clipping past the card edge).
+      // - Top-anchored layout puts the topmost row's TOP at the inner top
+      //   border and packs down; with this budget the bottommost row's
+      //   bottom can drop at most to y=0 (the card edge, slight bottom-pad
+      //   consumption — never clipped past the edge).
+      // 8 single-line rows (254 pt) fit; 5 two-line rows (248 pt) fit.
+      let row_budget = HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP;
       let projected = used_h + row_h + (if idx == 0 { 0.0 } else { HISTORY_ROW_GAP });
       if idx > 0 && projected > row_budget + 0.5 {
         break;
