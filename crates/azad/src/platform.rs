@@ -2907,19 +2907,22 @@ unsafe fn render_overlay_history_list(
 
   // Layout anchor: bottom-anchor when at the newest (newest visible row sits
   // flush above the bottom pad, slack lands at top); top-anchor once scrolled
-  // (oldest visible row sits flush at the card top, slack lands at bottom).
-  // Going Up off the previous top thus delivers a top-flush new entry — the
-  // selected row is the topmost in the new fitted window.
-  let total_used: f64 = measured.iter().map(|(_, h)| h + 2.0 * HISTORY_ROW_PAD_Y).sum::<f64>()
-    + (measured.len().saturating_sub(1) as f64) * HISTORY_ROW_GAP;
-  let layout_bottom_y = if is_bottom_anchored {
-    OVERLAY_PAD_BOTTOM
+  // (oldest visible row sits flush at the inner top border AND bottom row
+  // stays flush at the inner bottom border — slack distributes across the
+  // gaps so neither end has a visible gap).
+  let sum_rows_h: f64 = measured.iter().map(|(_, h)| h + 2.0 * HISTORY_ROW_PAD_Y).sum();
+  let target_top_anchor_total = HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM;
+  let layout_gap = if !is_bottom_anchored && measured.len() > 1 {
+    // Stretch the gap so total_used (rows + gaps) reaches the inner-content
+    // height — both ends flush. Floor at 0 so rows never overlap; for
+    // densely-packed cases (8 single-line rows in 248 pt budget) the gap
+    // shrinks below the default 2 pt so the bottom row stays flush.
+    ((target_top_anchor_total - sum_rows_h) / (measured.len() - 1) as f64).max(0.0)
   } else {
-    // Top-anchor: topmost row's top edge lands at the inner border
-    // (HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP), not the card edge. Strict fit
-    // guarantees total_used ≤ row_budget, so this stays ≥ OVERLAY_PAD_BOTTOM.
-    HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP - total_used
+    HISTORY_ROW_GAP
   };
+  let _ = sum_rows_h;
+  let layout_bottom_y = OVERLAY_PAD_BOTTOM;
 
   // Walk rows bottom-up. `entries[start]` (newest in the visible window) sits
   // at the bottom; `entries[end-1]` (oldest in the visible window) sits at the
@@ -3007,8 +3010,10 @@ unsafe fn render_overlay_history_list(
       }
     }
 
-    // Advance by NATURAL height so rows above the expanded one stay anchored.
-    nat_row_bottom += body_h + 2.0 * HISTORY_ROW_PAD_Y + HISTORY_ROW_GAP;
+    // Advance by NATURAL height + the (possibly stretched) layout gap. In
+    // top-anchor mode, layout_gap stretches so total_used == budget; in
+    // bottom-anchor mode it equals HISTORY_ROW_GAP and slack falls at top.
+    nat_row_bottom += body_h + 2.0 * HISTORY_ROW_PAD_Y + layout_gap;
   }
 
   // Bottom-right hint: aligned with the bottom row's text band. The bottom
