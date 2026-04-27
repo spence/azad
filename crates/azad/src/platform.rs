@@ -2757,16 +2757,10 @@ unsafe fn render_overlay_history_list(
       continue;
     }
     configure_history_body_label(label);
-    let raw_text = entries[entry_idx].text.trim().to_string();
-    let h = if raw_text.is_empty() {
-      HISTORY_BODY_LINE_HEIGHT
-    } else {
-      measure_label_height(label, &raw_text, row_label_w)
-    };
-    // Cap at the 2-line max — beyond that, AppKit truncates with "…" via the
-    // tail-truncation line break mode set in `configure_history_body_label`.
+    let (rendered, h) =
+      fit_history_body_with_ellipsis(label, entries[entry_idx].text, row_label_w, body_max_height);
     let body_h = h.max(HISTORY_BODY_LINE_HEIGHT).min(body_max_height);
-    measured.push((raw_text, body_h));
+    measured.push((rendered, body_h));
   }
 
   // Pre-compute the expanded body for the selected row, if expand mode is on.
@@ -2794,14 +2788,14 @@ unsafe fn render_overlay_history_list(
       if label != nil {
         configure_history_body_label(label);
         let _: () = msg_send![label, setMaximumNumberOfLines: 0isize];
-        let raw_text = entries[selected_index].text.trim().to_string();
-        let h = if raw_text.is_empty() {
-          HISTORY_BODY_LINE_HEIGHT
-        } else {
-          measure_label_height(label, &raw_text, row_label_w)
-        };
+        let (rendered, h) = fit_history_body_with_ellipsis(
+          label,
+          entries[selected_index].text,
+          row_label_w,
+          max_body_for_expand,
+        );
         let body_h = h.max(HISTORY_BODY_LINE_HEIGHT).min(max_body_for_expand);
-        expanded_body = Some((raw_text, body_h));
+        expanded_body = Some((rendered, body_h));
       }
     }
   }
@@ -3002,12 +2996,55 @@ unsafe fn configure_history_body_label(label: id) {
   }
   let _: () = msg_send![label, setUsesSingleLineMode: NO];
   let _: () = msg_send![label, setAlignment: 0isize]; // NSTextAlignmentLeft
-  // 4 = NSLineBreakByTruncatingTail. Combined with `setMaximumNumberOfLines: 2`
-  // and multi-line mode, AppKit wraps up to 2 lines and truncates the END of
-  // the last line with "…" when the entry overflows — what we want for a
-  // multi-row history list previewing the start of each entry.
-  let _: () = msg_send![label, setLineBreakMode: 4isize];
+  // 0 = NSLineBreakByWordWrapping. AppKit's tail-truncation mode treats the
+  // text as a single line and won't wrap to two; we use word wrapping here
+  // and manually splice "…" onto a head-anchored prefix when the entry
+  // exceeds the two-line budget (see `fit_history_body_with_ellipsis`).
+  let _: () = msg_send![label, setLineBreakMode: 0isize];
   let _: () = msg_send![label, setMaximumNumberOfLines: HISTORY_BODY_MAX_LINES as isize];
+}
+
+/// Word-wrap-fits the start of `body_text` into `max_height` at width
+/// `width`. If the natural height exceeds `max_height`, head-anchors the
+/// prefix and appends "…". Returns `(rendered_text, measured_height)`.
+unsafe fn fit_history_body_with_ellipsis(
+  label: id,
+  body_text: &str,
+  width: f64,
+  max_height: f64,
+) -> (String, f64) {
+  let trimmed = body_text.trim();
+  if trimmed.is_empty() {
+    return (String::new(), HISTORY_BODY_LINE_HEIGHT);
+  }
+  let measured_full = measure_label_height(label, trimmed, width);
+  if measured_full <= max_height + 0.5 {
+    return (trimmed.to_string(), measured_full);
+  }
+  // Binary-search the longest char-boundary prefix whose `prefix + "…"` fits.
+  let ellipsis = "\u{2026}";
+  let boundaries: Vec<usize> = trimmed
+    .char_indices()
+    .map(|(i, _)| i)
+    .chain(std::iter::once(trimmed.len()))
+    .collect();
+  let mut lo = 1usize;
+  let mut hi = boundaries.len() - 1;
+  while lo < hi {
+    let mid = lo + (hi - lo + 1) / 2;
+    let end = boundaries[mid];
+    let candidate = format!("{}{}", trimmed[..end].trim_end(), ellipsis);
+    let h = measure_label_height(label, &candidate, width);
+    if h <= max_height + 0.5 {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  let end = boundaries[lo];
+  let rendered = format!("{}{}", trimmed[..end].trim_end(), ellipsis);
+  let h = measure_label_height(label, &rendered, width).min(max_height);
+  (rendered, h)
 }
 
 unsafe fn apply_history_window_frame(
