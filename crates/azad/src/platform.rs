@@ -2829,39 +2829,59 @@ unsafe fn render_overlay_history_list(
   // mode). Vertically aligned with the bottom row's text band so it visually
   // sits "in line with the bottom line of text". `bringSubviewToFront:` after
   // positioning ensures it draws above the selected highlight bg.
+  // Two-line hint, stacked as TWO separate single-line labels. NSTextField
+  // multi-line + a literal "\n" was rendering only the first line on macOS;
+  // splitting into two single-line labels removes the ambiguity. `refs.label`
+  // carries the bottom "← esc" line; `refs.hold_badge` (an NSTextField that's
+  // a direct child of `card_view` and otherwise hidden in history mode) is
+  // repurposed as the top "view ▶" line. Speech mode reconfigures
+  // `refs.hold_badge` from scratch on every render so no permanent state
+  // damage.
+  let line_h = HISTORY_HINT_FONT_SIZE + 4.0; // ~14
+  let hint_w = 90.0_f64;
+  let hint_x = width - HISTORY_HINT_RIGHT_PAD - hint_w;
+  let hint_band = line_h * 2.0 + 2.0; // two lines + 2pt gap
+  let bottom_line_y = OVERLAY_PAD_BOTTOM + ((HISTORY_ROW_SLOT_HEIGHT - hint_band) / 2.0).max(0.0);
+  let top_line_y = bottom_line_y + line_h + 2.0;
+  let hint_color =
+    NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_HINT_TEXT_ALPHA);
+  let hint_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_HINT_FONT_SIZE];
+
   if refs.label != nil {
-    let _: () = msg_send![refs.label, setUsesSingleLineMode: NO];
-    let _: () = msg_send![refs.label, setMaximumNumberOfLines: 2isize];
-    let _: () = msg_send![refs.label, setAlignment: 2isize]; // NSTextAlignmentRight
-    let _: () = msg_send![refs.label, setLineBreakMode: 0isize]; // WordWrapping
-    let hint_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_HINT_FONT_SIZE];
+    let _: () = msg_send![refs.label, setUsesSingleLineMode: YES];
+    let _: () = msg_send![refs.label, setMaximumNumberOfLines: 1isize];
+    let _: () = msg_send![refs.label, setAlignment: 2isize]; // right
+    let _: () = msg_send![refs.label, setLineBreakMode: 4isize]; // truncating tail
     if hint_font != nil {
       let _: () = msg_send![refs.label, setFont: hint_font];
     }
-    let hint_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
-      nil,
-      1.0,
-      1.0,
-      1.0,
-      HISTORY_HINT_TEXT_ALPHA,
-    );
     let _: () = msg_send![refs.label, setTextColor: hint_color];
-    let hint_text = "view \u{25B6}\n\u{2190} esc";
-    let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(hint_text)];
-    let hint_w = 90.0_f64;
-    let hint_h = (HISTORY_HINT_FONT_SIZE + 2.0) * 2.0;
-    // Bottom-row text band sits at `OVERLAY_PAD_BOTTOM..OVERLAY_PAD_BOTTOM + slot`.
-    // Place the hint inside that band, vertically centered.
-    let hint_y = OVERLAY_PAD_BOTTOM + ((HISTORY_ROW_SLOT_HEIGHT - hint_h) / 2.0).max(0.0);
-    let hint_frame = NSRect::new(
-      NSPoint::new(width - HISTORY_HINT_RIGHT_PAD - hint_w, hint_y),
-      NSSize::new(hint_w, hint_h),
-    );
-    let _: () = msg_send![refs.label, setFrame: hint_frame];
+    let _: () =
+      msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str("\u{2190} esc")];
+    let frame = NSRect::new(NSPoint::new(hint_x, bottom_line_y), NSSize::new(hint_w, line_h));
+    let _: () = msg_send![refs.label, setFrame: frame];
     let _: () = msg_send![refs.label, setHidden: NO];
-    // Promote above row labels and bgs so the hint is always readable, even
-    // when the selected highlight is in the bottom row.
     let _: () = msg_send![refs.card_view, addSubview: refs.label];
+  }
+  if refs.hold_badge != nil {
+    let hb = refs.hold_badge;
+    let _: () = msg_send![hb, setBezeled: NO];
+    let _: () = msg_send![hb, setDrawsBackground: NO];
+    let _: () = msg_send![hb, setEditable: NO];
+    let _: () = msg_send![hb, setSelectable: NO];
+    let _: () = msg_send![hb, setUsesSingleLineMode: YES];
+    let _: () = msg_send![hb, setMaximumNumberOfLines: 1isize];
+    let _: () = msg_send![hb, setAlignment: 2isize]; // right
+    let _: () = msg_send![hb, setLineBreakMode: 4isize]; // truncating tail
+    if hint_font != nil {
+      let _: () = msg_send![hb, setFont: hint_font];
+    }
+    let _: () = msg_send![hb, setTextColor: hint_color];
+    let _: () = msg_send![hb, setStringValue: NSString::alloc(nil).init_str("view \u{25B6}")];
+    let frame = NSRect::new(NSPoint::new(hint_x, top_line_y), NSSize::new(hint_w, line_h));
+    let _: () = msg_send![hb, setFrame: frame];
+    let _: () = msg_send![hb, setHidden: NO];
+    let _: () = msg_send![refs.card_view, addSubview: hb];
   }
 
   // Hide unused row slots.
