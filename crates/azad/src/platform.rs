@@ -162,6 +162,11 @@ static HOTKEY_ARROWS_REGISTERED: AtomicBool = AtomicBool::new(false);
 // Toggled separately from `HOTKEY_ARROWS_REGISTERED` because Left only dismisses
 // while history-browse mode is active, not whenever the overlay is visible.
 static HOTKEY_ARROW_LEFT_REGISTERED: AtomicBool = AtomicBool::new(false);
+// Mirrors the app's `debug_stats_enabled` so platform-side renderers can
+// emit `OVERLAY_*` log lines under the same gate as the engine's `TOON_*`
+// logs. Set via `set_overlay_debug_logs_enabled` from app.rs whenever the
+// debug-stats setting toggles.
+static OVERLAY_DEBUG_LOGS_ENABLED: AtomicBool = AtomicBool::new(false);
 static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
 
 // Event-tap state. `EVENT_TAP_PORT` holds the CFMachPortRef so the callback can re-enable the
@@ -2621,6 +2626,9 @@ unsafe fn render_overlay_history_list(
 
   // Empty-state: one centered, dimmed "No transcripts" line, non-selectable.
   if entries.is_empty() {
+    if overlay_debug_logs_enabled() {
+      eprintln!("OVERLAY_HISTORY_LIST entries=0 action=empty_state");
+    }
     for i in 1..AUTOCOMPLETE_MAX_ITEMS {
       let _: () = msg_send![refs.autocomplete_labels[i], setHidden: YES];
     }
@@ -2687,6 +2695,22 @@ unsafe fn render_overlay_history_list(
   let gaps = HISTORY_ROW_GAP * (measured.len().saturating_sub(1) as f64);
   let content_height = OVERLAY_PAD_TOP + total_rows + gaps + OVERLAY_PAD_BOTTOM;
   let height = content_height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
+
+  if overlay_debug_logs_enabled() {
+    let row_heights: Vec<u32> = measured.iter().map(|(_, h)| h.round() as u32).collect();
+    eprintln!(
+      "OVERLAY_HISTORY_LIST entries={} selected={} visible_window=[{}..{}] \
+       width={:.0} content_height={:.0} window_height={:.0} row_heights={:?}",
+      entries.len(),
+      selected_index,
+      start,
+      end,
+      width,
+      content_height,
+      height,
+      row_heights,
+    );
+  }
 
   apply_history_window_frame(refs, current_frame, screen, width, height);
   apply_history_card_frame(refs, width, height);
@@ -2763,8 +2787,15 @@ unsafe fn configure_history_body_label(label: id) {
   }
   let _: () = msg_send![label, setUsesSingleLineMode: NO];
   let _: () = msg_send![label, setAlignment: 0isize]; // NSTextAlignmentLeft
-  // 5 = NSLineBreakByTruncatingTail; matches the existing autocomplete-row style.
-  let _: () = msg_send![label, setLineBreakMode: 5isize];
+  // 0 = NSLineBreakByWordWrapping. Combined with `setMaximumNumberOfLines: 2`,
+  // AppKit wraps the body up to two lines and adds an ellipsis if it overflows
+  // — the right config for the multi-row history list. (The previous value of
+  // 5 was actually `NSLineBreakByTruncatingMiddle`, not TruncatingTail as the
+  // comment claimed; combined with multi-line mode and an unset
+  // `maximumNumberOfLines` it collapsed the labels to render nothing — the
+  // "blank overlay" symptom.)
+  let _: () = msg_send![label, setLineBreakMode: 0isize];
+  let _: () = msg_send![label, setMaximumNumberOfLines: HISTORY_BODY_MAX_LINES as isize];
 }
 
 unsafe fn apply_history_window_frame(
@@ -4502,6 +4533,14 @@ fn set_arrow_hotkeys_enabled(enabled: bool) {
       HOTKEY_ARROWS_REGISTERED.store(false, Ordering::Relaxed);
     }
   });
+}
+
+pub fn set_overlay_debug_logs_enabled(enabled: bool) {
+  OVERLAY_DEBUG_LOGS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+fn overlay_debug_logs_enabled() -> bool {
+  OVERLAY_DEBUG_LOGS_ENABLED.load(Ordering::Relaxed)
 }
 
 pub fn set_arrow_left_hotkey_enabled(enabled: bool) {

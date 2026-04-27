@@ -628,6 +628,7 @@ impl AppController {
     let auto_submit_mode = preferred_store::load_auto_submit_mode();
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
     let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
+    platform::set_overlay_debug_logs_enabled(debug_stats_enabled);
     let active_pack_id = preferred_store::load_active_model_pack()
       .unwrap_or_else(|| models::default_pack().id.to_string());
     let transcript_index = TranscriptIndex::load();
@@ -1318,6 +1319,7 @@ impl AppController {
   fn handle_settings_toggle_debug_stats(&mut self, enabled: bool) {
     self.debug_stats_enabled = enabled;
     preferred_store::save_debug_stats_enabled(enabled);
+    platform::set_overlay_debug_logs_enabled(enabled);
     if let Some(session) = &self.session {
       session.set_debug_stats_enabled(enabled);
     }
@@ -2427,6 +2429,9 @@ impl AppController {
 
   fn render_history_overlay(&self) {
     let Some(index) = &self.transcript_index else {
+      if self.debug_stats_enabled {
+        eprintln!("AZAD_HISTORY_RENDER action=no_index browse_index={}", self.history_browse_index);
+      }
       platform::set_overlay_history_content(&[], 0);
       return;
     };
@@ -2435,6 +2440,19 @@ impl AppController {
       .filter_map(|i| index.entry_text(i).map(|text| platform::HistoryEntryView { text }))
       .collect();
     let selected = self.history_browse_index.min(count.saturating_sub(1));
+    if self.debug_stats_enabled {
+      let preview = entries
+        .first()
+        .map(|e| &e.text[..e.text.len().min(40)])
+        .unwrap_or("(no entries)");
+      eprintln!(
+        "AZAD_HISTORY_RENDER count={} entries_built={} selected={} first_preview={:?}",
+        count,
+        entries.len(),
+        selected,
+        preview,
+      );
+    }
     platform::set_overlay_history_content(&entries, selected);
   }
 
