@@ -4,7 +4,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use cocoa::appkit::{
@@ -251,7 +251,13 @@ struct OverlayRefs {
 
 const AUTOCOMPLETE_ROW_HEIGHT: f64 = 22.0;
 const AUTOCOMPLETE_SEPARATOR_HEIGHT: f64 = 1.0;
-pub const AUTOCOMPLETE_MAX_ITEMS: usize = 5;
+// Max preallocated row slots in the history overlay. Sized for the worst case
+// where every visible entry is single-line (~30 pt tall + 2 pt gap), so a
+// 248 pt content budget can accommodate up to ~7 rows. We pre-allocate 9 to
+// have headroom if the body line height ever shrinks. The actual visible
+// count is determined dynamically by greedy-fitting rows into the card's
+// vertical budget — see `render_overlay_history_list`.
+pub const AUTOCOMPLETE_MAX_ITEMS: usize = 9;
 const AUTOCOMPLETE_TEXT_ALPHA: f64 = 0.45;
 const AUTOCOMPLETE_FOCUSED_BG_ALPHA: f64 = 0.08;
 
@@ -2635,10 +2641,36 @@ const HISTORY_HINT_WIDTH: f64 = 45.0;
 // line entries don't claim 2-line space.
 const HISTORY_ROW_SLOT_HEIGHT_MAX: f64 =
   HISTORY_BODY_LINE_HEIGHT * HISTORY_BODY_MAX_LINES as f64 + 2.0 * HISTORY_ROW_PAD_Y;
+// Card vertical budget targets 5 max-height (two-line) rows. When entries are
+// shorter, the renderer greedy-fits more rows into the same fixed budget so
+// the card never has unused space at the top.
+const HISTORY_HEIGHT_TARGET_ROWS: f64 = 5.0;
 const HISTORY_LIST_HEIGHT: f64 = OVERLAY_PAD_TOP
-  + AUTOCOMPLETE_MAX_ITEMS as f64 * HISTORY_ROW_SLOT_HEIGHT_MAX
-  + (AUTOCOMPLETE_MAX_ITEMS as f64 - 1.0) * HISTORY_ROW_GAP
+  + HISTORY_HEIGHT_TARGET_ROWS * HISTORY_ROW_SLOT_HEIGHT_MAX
+  + (HISTORY_HEIGHT_TARGET_ROWS - 1.0) * HISTORY_ROW_GAP
   + OVERLAY_PAD_BOTTOM;
+const HISTORY_LIST_BUDGET: f64 = HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM;
+
+// Atomics that the renderer writes after every history-list draw so the app
+// side (which initiates the next render via Up/Down/Right) can make decisions
+// based on the actual fitted state — number of visible rows, the (clamped)
+// top-of-window entry index, and whether the selected entry was truncated.
+// Reads must happen between renders; writes happen during render.
+static LAST_HISTORY_VISIBLE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static LAST_HISTORY_VISIBLE_START: AtomicUsize = AtomicUsize::new(0);
+static LAST_HISTORY_SELECTED_TRUNCATED: AtomicBool = AtomicBool::new(false);
+
+pub fn last_history_visible_count() -> usize {
+  LAST_HISTORY_VISIBLE_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn last_history_visible_start() -> usize {
+  LAST_HISTORY_VISIBLE_START.load(Ordering::Relaxed)
+}
+
+pub fn last_history_selected_truncated() -> bool {
+  LAST_HISTORY_SELECTED_TRUNCATED.load(Ordering::Relaxed)
+}
 
 unsafe fn render_overlay_history_list(
   refs: OverlayRefs,
@@ -2716,15 +2748,6 @@ unsafe fn render_overlay_history_list(
     return;
   }
 
-  // Visible window: caller passes `visible_start` (the entry index of the
-  // OLDEST visible entry — i.e. the top of the visible list). The renderer
-  // clamps it so the window stays within bounds and shows up to
-  // AUTOCOMPLETE_MAX_ITEMS entries.
-  let visible_count = entries.len().min(AUTOCOMPLETE_MAX_ITEMS);
-  let max_start = entries.len().saturating_sub(visible_count);
-  let start = visible_start.min(max_start);
-  let end = (start + visible_count).min(entries.len());
-
   // Bg geometry: insets exactly `bg_x` from each side so the highlight extends
   // nearly full width while staying concentric with the card's rounded corners.
   let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
@@ -2740,28 +2763,63 @@ unsafe fn render_overlay_history_list(
   let hint_zone_width = HISTORY_HINT_WIDTH + HISTORY_HINT_RIGHT_PAD;
   let label_w_bottom = (label_w_full - hint_zone_width).max(1.0);
 
-  // Measure each visible entry's natural body height (1-line short, 2-line
-  // tall, ellipsis if it overflows). The card's TOTAL height stays fixed at
-  // `HISTORY_LIST_HEIGHT`; rows pack from the bottom upward at their natural
-  // heights and the slack falls at the top of the card. So the card top edge
-  // doesn't twitch as the user scrolls, but a 1-line entry doesn't claim
-  // 2-line space either.
+  // Greedy fit: starting from `visible_start` (or selected_index, whichever is
+  // smaller — the selected entry must always be inside the window), pack rows
+  // upward until the next row wouldn't fit in `HISTORY_LIST_BUDGET`. The
+  // visible_count is dynamic — 5 rows when every entry fills 2 lines, ~7 when
+  // they're all 1 line — so the card budget is filled regardless of mix.
+  //
+  // If the fitted window doesn't include the selected entry (e.g. the user
+  // scrolled up past the top of the previous window), slide `start` upward by
+  // 1 and refit until it does.
   let body_max_height = HISTORY_BODY_LINE_HEIGHT * HISTORY_BODY_MAX_LINES as f64;
-  let mut measured: Vec<(String, f64)> = Vec::with_capacity(visible_count);
-  for vis_idx in 0..(end - start) {
-    let entry_idx = start + vis_idx;
-    let label = refs.autocomplete_labels[vis_idx];
-    let row_label_w = if vis_idx == 0 { label_w_bottom } else { label_w_full };
-    if label == nil {
-      measured.push((String::new(), HISTORY_BODY_LINE_HEIGHT));
-      continue;
-    }
-    configure_history_body_label(label);
-    let (rendered, h) =
-      fit_history_body_with_ellipsis(label, entries[entry_idx].text, row_label_w, body_max_height);
-    let body_h = h.max(HISTORY_BODY_LINE_HEIGHT).min(body_max_height);
-    measured.push((rendered, body_h));
+  let mut start = visible_start.min(entries.len().saturating_sub(1));
+  if selected_index < start {
+    start = selected_index;
   }
+  let mut measured: Vec<(String, f64)>;
+  loop {
+    measured = Vec::with_capacity(AUTOCOMPLETE_MAX_ITEMS);
+    let mut used_h = 0.0;
+    let mut idx = 0;
+    while start + idx < entries.len() && idx < AUTOCOMPLETE_MAX_ITEMS {
+      let entry_idx = start + idx;
+      let label = refs.autocomplete_labels[idx];
+      let row_label_w = if idx == 0 { label_w_bottom } else { label_w_full };
+      let (rendered, body_h_raw) = if label == nil {
+        (String::new(), HISTORY_BODY_LINE_HEIGHT)
+      } else {
+        configure_history_body_label(label);
+        fit_history_body_with_ellipsis(label, entries[entry_idx].text, row_label_w, body_max_height)
+      };
+      let body_h = body_h_raw.max(HISTORY_BODY_LINE_HEIGHT).min(body_max_height);
+      let row_h = body_h + 2.0 * HISTORY_ROW_PAD_Y;
+      let projected = used_h + row_h + (if idx > 0 { HISTORY_ROW_GAP } else { 0.0 });
+      if projected > HISTORY_LIST_BUDGET + 0.5 && idx > 0 {
+        break;
+      }
+      used_h = projected;
+      measured.push((rendered, body_h));
+      idx += 1;
+    }
+    let visible_count = measured.len();
+    let end = start + visible_count;
+    // Selected fits OR we've already pushed `start` to the very last entry.
+    if selected_index < end || start + 1 >= entries.len() {
+      break;
+    }
+    start += 1;
+  }
+  let end = start + measured.len();
+
+  // Truncation status of the selected entry (used to gate the "view ▶" hint
+  // and the right-arrow expand). Only meaningful when selected is in the
+  // window — which the loop above guarantees if any entries exist.
+  let selected_truncated = selected_index
+    .checked_sub(start)
+    .and_then(|i| measured.get(i))
+    .map(|(text, _)| text.ends_with('\u{2026}'))
+    .unwrap_or(false);
 
   // Pre-compute the expanded body for the selected row, if expand mode is on.
   // The expanded row's top stays at its list-mode top edge; its body extends
@@ -2956,10 +3014,13 @@ unsafe fn render_overlay_history_list(
     let _: () = msg_send![refs.label, setHidden: NO];
     let _: () = msg_send![refs.card_view, addSubview: refs.label];
   }
+  // "view ▶" only shows in list mode AND when the selected entry was
+  // truncated to fit two lines. If the entry is fully visible already,
+  // expanding wouldn't reveal anything new — so we hide the hint and the
+  // app-side handler treats the right-arrow as a no-op.
   if refs.hold_badge != nil {
     let hb = refs.hold_badge;
-    if expanded {
-      // No "view ▶" line in expanded mode.
+    if expanded || !selected_truncated {
       let _: () = msg_send![hb, setHidden: YES];
     } else {
       let _: () = msg_send![hb, setBezeled: NO];
@@ -2987,6 +3048,12 @@ unsafe fn render_overlay_history_list(
     let _: () = msg_send![refs.autocomplete_labels[i], setHidden: YES];
     let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
   }
+
+  // Publish the fitted state so the app can make navigation decisions on the
+  // next Up/Down/Right.
+  LAST_HISTORY_VISIBLE_START.store(start, Ordering::Relaxed);
+  LAST_HISTORY_VISIBLE_COUNT.store(measured.len(), Ordering::Relaxed);
+  LAST_HISTORY_SELECTED_TRUNCATED.store(selected_truncated, Ordering::Relaxed);
 }
 
 unsafe fn configure_history_body_label(label: id) {

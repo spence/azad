@@ -2471,30 +2471,35 @@ impl AppController {
     if count == 0 {
       return;
     }
-    // Visible window is AUTOCOMPLETE_MAX_ITEMS wide. Navigation rules:
-    // - Up (older, browse_index += 1): once selection reaches the visual TOP
-    //   of the window (vis_idx == MAX-1), the window slides up so the
-    //   selection stays pinned to the top.
-    // - Down (newer, browse_index -= 1): once selection drops within
-    //   `descent_lag` of visible_start, the window slides DOWN so the
-    //   selection settles `descent_lag` slots above the bottom — the user
-    //   gets a couple of slots of "in-window descent" before the window
-    //   slides on every subsequent Down.
+    // Visible window count is dynamic — the renderer greedy-fits as many
+    // rows as the card budget allows (5 when entries are 2-line, ~7 when
+    // they're all 1-line). The last fitted (start, count) lives on the
+    // platform side; we read them here to know whether to slide the window.
+    //
+    // Up (older, browse_index += 1): when selection would fall off the top
+    //   (entry_idx >= start + count), bump `visible_start` so selection
+    //   stays in the window — the renderer pins it to the top via greedy
+    //   fit from the new start.
+    // Down (newer, browse_index -= 1): when selection drops within
+    //   `DESCENT_LAG` of the bottom of the window, slide so selection
+    //   settles `DESCENT_LAG` slots above the bottom — the user gets a
+    //   couple of slots of in-window descent before the window slides.
     const DESCENT_LAG: usize = 2;
+    let last_start = platform::last_history_visible_start();
+    let last_count = platform::last_history_visible_count().max(1);
     match direction {
       -1 => {
         if self.history_browse_index + 1 < count {
           self.history_browse_index += 1;
-          let max = platform::AUTOCOMPLETE_MAX_ITEMS;
-          if self.history_browse_index >= self.history_visible_start + max {
-            self.history_visible_start = self.history_browse_index + 1 - max;
+          if self.history_browse_index >= last_start + last_count {
+            self.history_visible_start = last_start + 1;
           }
         }
       }
       1 => {
         if self.history_browse_index > 0 {
           self.history_browse_index -= 1;
-          if self.history_browse_index < self.history_visible_start + DESCENT_LAG {
+          if self.history_browse_index < last_start + DESCENT_LAG {
             self.history_visible_start = self.history_browse_index.saturating_sub(DESCENT_LAG);
           }
         }
@@ -2524,6 +2529,12 @@ impl AppController {
     if count == 0 {
       return;
     }
+    // If the selected entry is fully visible already (rendered without an
+    // ellipsis), expanding wouldn't reveal anything — make right-arrow a
+    // no-op rather than flipping into a state with no visual difference.
+    if !platform::last_history_selected_truncated() {
+      return;
+    }
     self.history_expanded = true;
     self.render_history_overlay();
   }
@@ -2538,8 +2549,9 @@ impl AppController {
     };
     let count = index.entry_count();
     let selected = self.history_browse_index.min(count.saturating_sub(1));
-    let max_start = count.saturating_sub(platform::AUTOCOMPLETE_MAX_ITEMS);
-    let visible_start = self.history_visible_start.min(max_start);
+    // Keep visible_start within bounds; the renderer also auto-clamps and
+    // slides as needed to keep `selected` inside the fitted window.
+    let visible_start = self.history_visible_start.min(count.saturating_sub(1));
     let entries: Vec<platform::HistoryEntryView<'_>> = (0..count)
       .filter_map(|i| index.entry_text(i).map(|text| platform::HistoryEntryView { text }))
       .collect();
