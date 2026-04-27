@@ -2755,12 +2755,16 @@ unsafe fn render_overlay_history_list(
   let label_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
   let label_w_full = (bg_w_full - 2.0 * HISTORY_TEXT_INNER_PAD_X).max(1.0);
 
-  // The bottom row reserves space *inside* its highlight for the
-  // "view ▶ / ◀ esc" hint by narrowing only the LABEL width. The bg keeps the
-  // full width (matches the other rows) — only the text gets pushed away from
-  // the right edge so it doesn't run under the hint.
+  // The card is bottom-anchored when the user is at the newest (visible_start
+  // == 0) and top-anchored once they've scrolled past it: the most recently
+  // scrolled-to entry sits flush with the card top so each subsequent Up
+  // delivers a new top-flush entry. The narrowed-label-width hint reservation
+  // only applies in bottom-anchor mode — that's the only case where the hint
+  // sits over the bottom row's text.
+  let is_bottom_anchored = visible_start == 0;
   let hint_zone_width = HISTORY_HINT_WIDTH + HISTORY_HINT_RIGHT_PAD;
-  let label_w_bottom = (label_w_full - hint_zone_width).max(1.0);
+  let label_w_bottom =
+    if is_bottom_anchored { (label_w_full - hint_zone_width).max(1.0) } else { label_w_full };
 
   // Greedy fit: starting from `visible_start` (or selected_index, whichever is
   // smaller — the selected entry must always be inside the window), pack rows
@@ -2894,11 +2898,24 @@ unsafe fn render_overlay_history_list(
   apply_history_window_frame(refs, current_frame, screen, width, height);
   apply_history_card_frame(refs, width, height);
 
+  // Layout anchor: bottom-anchor when at the newest (newest visible row sits
+  // flush above the bottom pad, slack lands at top); top-anchor once scrolled
+  // (oldest visible row sits flush at the card top, slack lands at bottom).
+  // Going Up off the previous top thus delivers a top-flush new entry — the
+  // selected row is the topmost in the new fitted window.
+  let total_used: f64 = measured.iter().map(|(_, h)| h + 2.0 * HISTORY_ROW_PAD_Y).sum::<f64>()
+    + (measured.len().saturating_sub(1) as f64) * HISTORY_ROW_GAP;
+  let layout_bottom_y = if is_bottom_anchored {
+    OVERLAY_PAD_BOTTOM
+  } else {
+    (HISTORY_LIST_HEIGHT - total_used).max(OVERLAY_PAD_BOTTOM)
+  };
+
   // Walk rows bottom-up. `entries[start]` (newest in the visible window) sits
   // at the bottom; `entries[end-1]` (oldest in the visible window) sits at the
   // top. The cursor advances by each row's NATURAL height so rows above the
   // expanded one stay anchored to their natural positions.
-  let mut nat_row_bottom = OVERLAY_PAD_BOTTOM;
+  let mut nat_row_bottom = layout_bottom_y;
   for vis_idx in 0..measured.len() {
     let entry_idx = start + vis_idx;
     let (rendered, body_h) = &measured[vis_idx];
