@@ -255,6 +255,10 @@ struct OverlayRefs {
   autocomplete_separator: id,
   autocomplete_labels: [id; AUTOCOMPLETE_MAX_ITEMS],
   autocomplete_bgs: [id; AUTOCOMPLETE_MAX_ITEMS],
+  /// Tiny "▶" labels parallel to `autocomplete_labels`. Shown only on rows
+  /// whose body text was truncated; tells the user that row is expandable
+  /// via right-arrow.
+  autocomplete_expand_markers: [id; AUTOCOMPLETE_MAX_ITEMS],
   search_field: id,
   search_icon: id,
 }
@@ -958,7 +962,13 @@ fn register_delegate_class() -> &'static Class {
 
 fn register_overlay_window_class() -> &'static Class {
   OVERLAY_WINDOW_CLASS.get_or_init(|| unsafe {
-    let superclass = class!(NSWindow);
+    // Subclass NSPanel (not NSWindow) so we can pair canBecomeKeyWindow=YES
+    // with the NSWindowStyleMaskNonactivatingPanel style mask: the panel
+    // takes key without bringing Azad to the foreground, the same trick
+    // Spotlight uses. That gives the search field a real first-responder
+    // status — and therefore a real blinking caret — while the user's
+    // foreground app keeps its menu bar and dock badge.
+    let superclass = class!(NSPanel);
     let mut decl = ClassDecl::new("AzadOverlayWindow", superclass)
       .expect("failed to declare overlay window class");
 
@@ -1420,15 +1430,25 @@ extern "C" fn overlay_can_become_key_window(_: &Object, _: Sel) -> bool {
   OVERLAY_ACCEPTS_KEY_INPUT.load(Ordering::Relaxed)
 }
 
-/// Toggle whether the overlay should intercept keystrokes via the HID event
-/// tap. Off by default so the user's foreground app receives normal input.
-/// Flipped on when entering history mode (so typed characters fill the
-/// search field instead of leaking through) and back off when exiting.
-/// AppKit's responder chain is bypassed entirely — we capture at the HID
-/// layer because a borderless NSWindow under the accessory activation
-/// policy can't take key without activating Azad.
+/// Toggle whether the overlay intercepts keystrokes (via the HID event tap)
+/// AND whether the panel takes key window status. The HID tap is what
+/// actually feeds the search field; promoting the panel to key + the field
+/// to first responder gives AppKit enough state to draw the caret. Because
+/// the overlay panel uses the non-activating style mask, becoming key does
+/// NOT bring Azad to the foreground — the user's app keeps its menu bar.
 pub fn set_overlay_key_input_enabled(enabled: bool) {
   OVERLAY_ACCEPTS_KEY_INPUT.store(enabled, Ordering::Relaxed);
+  let Some(refs) = current_overlay() else { return };
+  unsafe {
+    if enabled {
+      let _: () = msg_send![refs.window, makeKeyWindow];
+      if refs.search_field != nil {
+        let _: () = msg_send![refs.window, makeFirstResponder: refs.search_field];
+      }
+    } else {
+      let _: () = msg_send![refs.window, resignKeyWindow];
+    }
+  }
 }
 
 /// Programmatically set the search field's text without firing the
@@ -2653,6 +2673,9 @@ unsafe fn render_overlay_text(
     if refs.autocomplete_bgs[i] != nil {
       let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
     }
+    if refs.autocomplete_expand_markers[i] != nil {
+      let _: () = msg_send![refs.autocomplete_expand_markers[i], setHidden: YES];
+    }
   }
   // History-mode search bar widgets — hidden whenever we're not in history mode.
   if refs.search_field != nil {
@@ -2713,12 +2736,8 @@ const HISTORY_SELECTED_BG_ALPHA: f64 = 0.85;
 // All entries (selected and unselected) render in the same bright off-white.
 const HISTORY_TEXT_ALPHA: f64 = 0.95;
 const HISTORY_EMPTY_TEXT_ALPHA: f64 = 0.40;
-// Bottom-right hint label. Halved from a wider previous reservation so the
-// bottom row has only enough text inset to clear the hint, not a large gap.
-const HISTORY_HINT_FONT_SIZE: f64 = 10.0;
-const HISTORY_HINT_TEXT_ALPHA: f64 = 0.45;
-const HISTORY_HINT_RIGHT_PAD: f64 = 7.0;
-const HISTORY_HINT_WIDTH: f64 = 45.0;
+// Bottom-right hint labels were dropped in favour of in-row "▶" expand
+// markers and a fixed search bar. Constants removed.
 // Maximum slot height (used to size the fixed total card height). Real rows
 // pack at their measured natural height (1-line short, 2-line tall) so single-
 // line entries don't claim 2-line space.
@@ -2738,9 +2757,6 @@ const HISTORY_LIST_HEIGHT: f64 = OVERLAY_PAD_TOP
 // host both the list area (HISTORY_LIST_HEIGHT) and the search bar.
 const SEARCH_BAR_HEIGHT: f64 = 30.0;
 const SEARCH_BAR_GAP: f64 = 6.0;
-const SEARCH_ICON_SIZE: f64 = 14.0;
-const SEARCH_ICON_X_PAD: f64 = 14.0;
-const SEARCH_FIELD_X: f64 = SEARCH_ICON_X_PAD + SEARCH_ICON_SIZE + 8.0;
 const SEARCH_BAR_FONT_SIZE: f64 = 13.0;
 // Card-local y of the search bar's bottom edge.
 const SEARCH_BAR_Y: f64 = OVERLAY_PAD_BOTTOM;
@@ -2753,6 +2769,18 @@ const SEARCH_MATCH_BG_R: f64 = 1.0;
 const SEARCH_MATCH_BG_G: f64 = 0.85;
 const SEARCH_MATCH_BG_B: f64 = 0.20;
 const SEARCH_MATCH_BG_ALPHA: f64 = 0.45;
+
+// Per-row "▶" expand marker, drawn on the right edge of any row whose body
+// is truncated (with an ellipsis). Tells the user this entry has more text
+// available via right-arrow.
+const HISTORY_EXPAND_MARKER_FONT_SIZE: f64 = 11.0;
+const HISTORY_EXPAND_MARKER_ALPHA: f64 = 0.55;
+const HISTORY_EXPAND_MARKER_RIGHT_PAD: f64 = 6.0;
+const HISTORY_EXPAND_MARKER_WIDTH: f64 = 14.0;
+// Reserved on every row so widths don't jump as the user scrolls between
+// truncated and non-truncated entries.
+const HISTORY_EXPAND_MARKER_ZONE: f64 =
+  HISTORY_EXPAND_MARKER_WIDTH + HISTORY_EXPAND_MARKER_RIGHT_PAD;
 
 // Atomics that the renderer writes after every history-list draw so the app
 // side (which initiates the next render via Up/Down/Right) can make decisions
@@ -2817,6 +2845,9 @@ unsafe fn render_overlay_history_list(
     }
     for i in 0..AUTOCOMPLETE_MAX_ITEMS {
       let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
+      if refs.autocomplete_expand_markers[i] != nil {
+        let _: () = msg_send![refs.autocomplete_expand_markers[i], setHidden: YES];
+      }
     }
     let label = refs.autocomplete_labels[0];
     if label != nil {
@@ -2878,13 +2909,16 @@ unsafe fn render_overlay_history_list(
   // The card is bottom-anchored when the user is at the newest (visible_start
   // == 0) and top-anchored once they've scrolled past it: the most recently
   // scrolled-to entry sits flush with the card top so each subsequent Up
-  // delivers a new top-flush entry. The narrowed-label-width hint reservation
-  // only applies in bottom-anchor mode — that's the only case where the hint
-  // sits over the bottom row's text.
+  // delivers a new top-flush entry.
+  //
+  // Every row reserves a thin strip on the right for the "▶" expand
+  // marker so widths stay consistent whether or not the marker draws on
+  // a given row. We keep `label_w_bottom` as a name for any future
+  // bottom-row-specific tweak; today it equals `label_w_full` minus the
+  // marker reservation, same as every other row.
   let is_bottom_anchored = visible_start == 0;
-  let hint_zone_width = HISTORY_HINT_WIDTH + HISTORY_HINT_RIGHT_PAD;
-  let label_w_bottom =
-    if is_bottom_anchored { (label_w_full - hint_zone_width).max(1.0) } else { label_w_full };
+  let label_w_full = (label_w_full - HISTORY_EXPAND_MARKER_ZONE).max(1.0);
+  let label_w_bottom = label_w_full;
 
   // Greedy fit: starting from `visible_start` (or selected_index, whichever is
   // smaller — the selected entry must always be inside the window), pack rows
@@ -3142,6 +3176,38 @@ unsafe fn render_overlay_history_list(
       }
     }
 
+    // "▶" expand marker on the right edge — only when this row's body was
+    // truncated (rendered text ended with "…"). Hidden in expanded mode
+    // for the selected row (the entry is already fully visible).
+    let marker = refs.autocomplete_expand_markers[vis_idx];
+    if marker != nil {
+      let row_truncated = rendered.ends_with('\u{2026}');
+      let show_marker = row_truncated && !is_selected_expanded;
+      if show_marker {
+        let marker_h = HISTORY_EXPAND_MARKER_FONT_SIZE + 4.0;
+        // Vertically center on the (last visible) body line.
+        let marker_y = if body_h > &(HISTORY_BODY_LINE_HEIGHT * 1.5) {
+          // 2-line row — center the marker on the bottom line.
+          row_bottom_y + HISTORY_ROW_PAD_Y + (HISTORY_BODY_LINE_HEIGHT - marker_h) / 2.0
+        } else {
+          // 1-line row — center the marker on the body.
+          row_bottom_y + HISTORY_ROW_PAD_Y + (body_h - marker_h) / 2.0
+        };
+        let marker_x =
+          bg_x + bg_w_full - HISTORY_EXPAND_MARKER_RIGHT_PAD - HISTORY_EXPAND_MARKER_WIDTH;
+        let frame = NSRect::new(
+          NSPoint::new(marker_x, marker_y),
+          NSSize::new(HISTORY_EXPAND_MARKER_WIDTH, marker_h),
+        );
+        let _: () = msg_send![marker, setFrame: frame];
+        let _: () = msg_send![marker, setHidden: NO];
+        // Bring above the highlight bg so it's always visible.
+        let _: () = msg_send![refs.card_view, addSubview: marker];
+      } else {
+        let _: () = msg_send![marker, setHidden: YES];
+      }
+    }
+
     // Advance by NATURAL height + the (possibly stretched) layout gap. In
     // top-anchor mode, layout_gap stretches so total_used == budget; in
     // bottom-anchor mode it equals HISTORY_ROW_GAP and slack falls at top.
@@ -3155,6 +3221,9 @@ unsafe fn render_overlay_history_list(
   for i in measured.len()..AUTOCOMPLETE_MAX_ITEMS {
     let _: () = msg_send![refs.autocomplete_labels[i], setHidden: YES];
     let _: () = msg_send![refs.autocomplete_bgs[i], setHidden: YES];
+    if refs.autocomplete_expand_markers[i] != nil {
+      let _: () = msg_send![refs.autocomplete_expand_markers[i], setHidden: YES];
+    }
   }
 
   // Publish the fitted state so the app can make navigation decisions on the
@@ -3208,83 +3277,30 @@ fn byte_offset_to_utf16_count(text: &str, byte_offset: usize) -> usize {
   count
 }
 
-/// Layout & populate the `view ▶` / `◀ esc` hint labels in the bottom-right
-/// corner. Pulled out of `render_overlay_history_list` so the empty-state
-/// path can share the same anchoring.
-unsafe fn layout_history_hints(refs: OverlayRefs, width: f64, show_view: bool, expanded: bool) {
-  let line_h = HISTORY_HINT_FONT_SIZE + 4.0;
-  let hint_w = HISTORY_HINT_WIDTH;
-  let hint_x = width - HISTORY_HINT_RIGHT_PAD - hint_w;
-  let bottom_line_y = LIST_BASE_Y + HISTORY_ROW_PAD_Y;
-  let top_line_y = bottom_line_y + line_h + 2.0;
-  let hint_color =
-    NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_HINT_TEXT_ALPHA);
-  let hint_font: id = msg_send![class!(NSFont), systemFontOfSize: HISTORY_HINT_FONT_SIZE];
-
+/// Hide the bottom-right hint labels (the old "view ▶ / ◀ esc" pair).
+/// They were dropped in favour of in-row "▶" expand markers and a quieter
+/// overall layout. Kept as a function rather than inlining the hides
+/// because both empty-state and non-empty-state render paths used to share
+/// the layout helper.
+unsafe fn layout_history_hints(refs: OverlayRefs, _width: f64, _show_view: bool, _expanded: bool) {
   if refs.label != nil {
-    let _: () = msg_send![refs.label, setUsesSingleLineMode: YES];
-    let _: () = msg_send![refs.label, setMaximumNumberOfLines: 1isize];
-    let _: () = msg_send![refs.label, setAlignment: 1isize];
-    let _: () = msg_send![refs.label, setLineBreakMode: 4isize];
-    if hint_font != nil {
-      let _: () = msg_send![refs.label, setFont: hint_font];
-    }
-    let _: () = msg_send![refs.label, setTextColor: hint_color];
-    let bottom_text = if expanded { "\u{25C0} back" } else { "\u{25C0} esc" };
-    let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(bottom_text)];
-    let frame = NSRect::new(NSPoint::new(hint_x, bottom_line_y), NSSize::new(hint_w, line_h));
-    let _: () = msg_send![refs.label, setFrame: frame];
-    let _: () = msg_send![refs.label, setHidden: NO];
-    let _: () = msg_send![refs.card_view, addSubview: refs.label];
+    let _: () = msg_send![refs.label, setHidden: YES];
   }
   if refs.hold_badge != nil {
-    let hb = refs.hold_badge;
-    if expanded || !show_view {
-      let _: () = msg_send![hb, setHidden: YES];
-    } else {
-      let _: () = msg_send![hb, setBezeled: NO];
-      let _: () = msg_send![hb, setDrawsBackground: NO];
-      let _: () = msg_send![hb, setEditable: NO];
-      let _: () = msg_send![hb, setSelectable: NO];
-      let _: () = msg_send![hb, setUsesSingleLineMode: YES];
-      let _: () = msg_send![hb, setMaximumNumberOfLines: 1isize];
-      let _: () = msg_send![hb, setAlignment: 1isize];
-      let _: () = msg_send![hb, setLineBreakMode: 4isize];
-      if hint_font != nil {
-        let _: () = msg_send![hb, setFont: hint_font];
-      }
-      let _: () = msg_send![hb, setTextColor: hint_color];
-      let _: () = msg_send![hb, setStringValue: NSString::alloc(nil).init_str("view \u{25B6}")];
-      let frame = NSRect::new(NSPoint::new(hint_x, top_line_y), NSSize::new(hint_w, line_h));
-      let _: () = msg_send![hb, setFrame: frame];
-      let _: () = msg_send![hb, setHidden: NO];
-      let _: () = msg_send![refs.card_view, addSubview: hb];
-    }
+    let _: () = msg_send![refs.hold_badge, setHidden: YES];
   }
 }
 
-/// Position and show the search bar (magnifier icon + editable text field)
-/// at the bottom of the history overlay.
+/// Position and show the editable search field at the bottom of the
+/// history overlay. The field spans the full inner width with centered
+/// alignment so the typed text (and its blinking caret) sits dead-center
+/// in the bar.
 unsafe fn layout_history_search_bar(refs: OverlayRefs, width: f64) {
-  // Magnifier icon, vertically centered in the bar.
-  if refs.search_icon != nil {
-    let icon_y = SEARCH_BAR_Y + (SEARCH_BAR_HEIGHT - SEARCH_ICON_SIZE) / 2.0;
-    let frame = NSRect::new(
-      NSPoint::new(SEARCH_ICON_X_PAD, icon_y),
-      NSSize::new(SEARCH_ICON_SIZE, SEARCH_ICON_SIZE),
-    );
-    let _: () = msg_send![refs.search_icon, setFrame: frame];
-    let _: () = msg_send![refs.search_icon, setHidden: NO];
-    let _: () = msg_send![refs.card_view, addSubview: refs.search_icon];
-  }
   if refs.search_field != nil {
-    let field_w = (width - SEARCH_FIELD_X - HISTORY_HINT_RIGHT_PAD).max(1.0);
-    // Text field occupies the bar height; AppKit centers single-line text
-    // vertically within the frame so the type sits in the middle of the bar.
-    let frame = NSRect::new(
-      NSPoint::new(SEARCH_FIELD_X, SEARCH_BAR_Y),
-      NSSize::new(field_w, SEARCH_BAR_HEIGHT),
-    );
+    let field_x = OVERLAY_PAD_X;
+    let field_w = (width - 2.0 * OVERLAY_PAD_X).max(1.0);
+    let frame =
+      NSRect::new(NSPoint::new(field_x, SEARCH_BAR_Y), NSSize::new(field_w, SEARCH_BAR_HEIGHT));
     let _: () = msg_send![refs.search_field, setFrame: frame];
     let _: () = msg_send![refs.search_field, setHidden: NO];
     let _: () = msg_send![refs.card_view, addSubview: refs.search_field];
@@ -4339,8 +4355,11 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
 
   let overlay_class = register_overlay_window_class();
   let window: id = msg_send![overlay_class, alloc];
+  // NSWindowStyleMaskNonactivatingPanel = 1 << 7. Combined with borderless,
+  // lets the panel become key without activating Azad.
+  let style_mask: u64 = NSWindowStyleMask::NSBorderlessWindowMask.bits() | (1u64 << 7);
   let window: id = msg_send![window, initWithContentRect: overlay_frame
-                                                styleMask: NSWindowStyleMask::NSBorderlessWindowMask
+                                                styleMask: style_mask
                                                   backing: NSBackingStoreType::NSBackingStoreBuffered
                                                     defer: NO];
 
@@ -4473,7 +4492,17 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
 
   let mut autocomplete_labels = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let mut autocomplete_bgs = [nil; AUTOCOMPLETE_MAX_ITEMS];
+  let mut autocomplete_expand_markers = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let ac_font: id = msg_send![class!(NSFont), systemFontOfSize: 14.0f64];
+  let expand_marker_font: id =
+    msg_send![class!(NSFont), systemFontOfSize: HISTORY_EXPAND_MARKER_FONT_SIZE];
+  let expand_marker_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+    nil,
+    1.0,
+    1.0,
+    1.0,
+    HISTORY_EXPAND_MARKER_ALPHA,
+  );
   for i in 0..AUTOCOMPLETE_MAX_ITEMS {
     let bg_view: id = msg_send![class!(NSView), alloc];
     let bg_view: id = msg_send![bg_view, initWithFrame: NSRect::new(
@@ -4525,6 +4554,26 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let _: () = msg_send![ac_label, setHidden: YES];
     let _: () = msg_send![card_view, addSubview: ac_label];
     autocomplete_labels[i] = ac_label;
+
+    let marker: id = msg_send![class!(NSTextField), alloc];
+    let marker: id = msg_send![marker, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(HISTORY_EXPAND_MARKER_WIDTH, HISTORY_EXPAND_MARKER_FONT_SIZE + 4.0)
+    )];
+    let _: () = msg_send![marker, setBezeled: NO];
+    let _: () = msg_send![marker, setDrawsBackground: NO];
+    let _: () = msg_send![marker, setEditable: NO];
+    let _: () = msg_send![marker, setSelectable: NO];
+    let _: () = msg_send![marker, setUsesSingleLineMode: YES];
+    let _: () = msg_send![marker, setAlignment: 1isize]; // center
+    if expand_marker_font != nil {
+      let _: () = msg_send![marker, setFont: expand_marker_font];
+    }
+    let _: () = msg_send![marker, setTextColor: expand_marker_color];
+    let _: () = msg_send![marker, setStringValue: NSString::alloc(nil).init_str("\u{25B6}")];
+    let _: () = msg_send![marker, setHidden: YES];
+    let _: () = msg_send![card_view, addSubview: marker];
+    autocomplete_expand_markers[i] = marker;
   }
 
   let notice_accessory_row: id = msg_send![class!(NSView), alloc];
@@ -4696,24 +4745,13 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![search_field, setUsesSingleLineMode: YES];
   let _: () = msg_send![search_field, setLineBreakMode: 4isize]; // truncating tail
   let _: () = msg_send![search_field, setFocusRingType: 1isize]; // None
+  let _: () = msg_send![search_field, setAlignment: 1isize]; // center
   let search_font: id = msg_send![class!(NSFont), systemFontOfSize: SEARCH_BAR_FONT_SIZE];
   if search_font != nil {
     let _: () = msg_send![search_field, setFont: search_font];
   }
   let search_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.9);
   let _: () = msg_send![search_field, setTextColor: search_color];
-  // Placeholder string with subtle alpha so it's visible but doesn't compete.
-  let placeholder_text = NSString::alloc(nil).init_str("Search history\u{2026}");
-  let placeholder_color =
-    NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.35);
-  let placeholder_attrs: id =
-    msg_send![class!(NSMutableDictionary), dictionaryWithCapacity: 2usize];
-  let fg_attr = NSString::alloc(nil).init_str("NSColor");
-  let _: () = msg_send![placeholder_attrs, setObject: placeholder_color forKey: fg_attr];
-  let placeholder_str: id = msg_send![class!(NSAttributedString), alloc];
-  let placeholder_str: id = msg_send![placeholder_str, initWithString: placeholder_text
-                                                          attributes: placeholder_attrs];
-  let _: () = msg_send![search_field, setPlaceholderAttributedString: placeholder_str];
   let _: () = msg_send![search_field, setHidden: YES];
   let _: () = msg_send![card_view, addSubview: search_field];
 
@@ -4724,22 +4762,9 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     r.borrow_mut().replace(search_delegate);
   });
 
-  let search_icon: id = msg_send![class!(NSImageView), alloc];
-  let search_icon: id = msg_send![search_icon, initWithFrame: NSRect::new(
-      NSPoint::new(0.0, 0.0),
-      NSSize::new(SEARCH_ICON_SIZE, SEARCH_ICON_SIZE)
-  )];
-  let symbol_name = NSString::alloc(nil).init_str("magnifyingglass");
-  let symbol_image: id = msg_send![class!(NSImage),
-                                   imageWithSystemSymbolName: symbol_name
-                                              accessibilityDescription: nil];
-  if symbol_image != nil {
-    let _: () = msg_send![search_icon, setImage: symbol_image];
-  }
-  let icon_tint = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.55);
-  let _: () = msg_send![search_icon, setContentTintColor: icon_tint];
-  let _: () = msg_send![search_icon, setHidden: YES];
-  let _: () = msg_send![card_view, addSubview: search_icon];
+  // No magnifier icon. Field stays in `OverlayRefs` for binary
+  // compatibility but is left as nil; layout helpers skip when nil.
+  let search_icon: id = nil;
 
   let refs = OverlayRefs {
     window,
@@ -4762,6 +4787,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     autocomplete_separator,
     autocomplete_labels,
     autocomplete_bgs,
+    autocomplete_expand_markers,
     search_field,
     search_icon,
   };

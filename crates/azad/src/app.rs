@@ -2532,12 +2532,13 @@ impl AppController {
     if !self.history_browsing {
       return;
     }
+    // Left arrow now collapses an expanded view back to the list, but is a
+    // no-op in list mode (was: dismiss the overlay). Esc remains the single
+    // way to exit history mode entirely.
     if self.history_expanded {
       self.history_expanded = false;
       self.render_history_overlay();
-      return;
     }
-    self.exit_history_mode();
   }
 
   fn handle_history_expand(&mut self) {
