@@ -2061,22 +2061,32 @@ impl AppController {
       }
     }
 
-    if let Some(deadline) = self.finalizing_deadline {
-      let now = Instant::now();
-      if now >= deadline {
-        // Keep waiting for the real final-pass completion signal instead of hiding
-        // the overlay on a fixed timeout.
-        self.finalizing_deadline =
-          Some(now + Duration::from_millis(self.cfg.final_pass_timeout_ms));
-      }
+    // History-browse mode owns the overlay outright — neither the finalize-
+    // animation tick nor the listening tick should re-render speech-mode
+    // widgets over it. Without this guard, on_tick fires every 50 ms and the
+    // listening branch below calls `render_overlay_text`, which hides every
+    // `autocomplete_label` (the history list's row labels) and resizes the
+    // window back to the speech footprint. That's what produces the user-
+    // reported "blank box that doesn't grow" symptom: the history render
+    // runs once on entry, then gets clobbered ~50 ms later by the next tick.
+    if !self.history_browsing {
+      if let Some(deadline) = self.finalizing_deadline {
+        let now = Instant::now();
+        if now >= deadline {
+          // Keep waiting for the real final-pass completion signal instead of hiding
+          // the overlay on a fixed timeout.
+          self.finalizing_deadline =
+            Some(now + Duration::from_millis(self.cfg.final_pass_timeout_ms));
+        }
 
-      self.busy_border_phase =
-        (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP).rem_euclid(std::f32::consts::TAU);
-      if self.accessibility_notice_deadline.is_none() {
-        self.render_finalizing_overlay_state();
+        self.busy_border_phase =
+          (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP).rem_euclid(std::f32::consts::TAU);
+        if self.accessibility_notice_deadline.is_none() {
+          self.render_finalizing_overlay_state();
+        }
+      } else if self.overlay_visible && self.accessibility_notice_deadline.is_none() {
+        self.render_listening_overlay();
       }
-    } else if self.overlay_visible && self.accessibility_notice_deadline.is_none() {
-      self.render_listening_overlay();
     }
 
     if let Some(deadline) = self.accessibility_notice_deadline {
