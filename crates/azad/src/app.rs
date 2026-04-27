@@ -79,6 +79,10 @@ pub enum AppEvent {
   /// collapses back to the list; in list mode it dismisses the overlay.
   /// Distinct from `OverlayCancel` (Esc) so Esc can always exit fully.
   HistoryCollapse,
+  /// User typed into the history search field. Filters the list to entries
+  /// containing the term (case-insensitive substring) and highlights the
+  /// match. Empty string clears the filter.
+  HistorySearchChanged(String),
   Speech(SpeechEvent),
   Device(DeviceEvent),
 }
@@ -256,6 +260,11 @@ struct AppController {
   // True when the user has pressed Right while history-browsing to view the
   // selected entry's full text. Reset on enter/exit and on Up/Down navigation.
   history_expanded: bool,
+  // Live filter for the history list, driven by the search field at the
+  // bottom of the overlay. Empty string == no filter. Cleared on enter and
+  // exit. The underlying transcript_index never changes — filtering happens
+  // at render time and on paste.
+  history_search_query: String,
   removed_words: Vec<String>,
 }
 
@@ -721,6 +730,7 @@ impl AppController {
       history_browse_index: 0,
       history_visible_start: 0,
       history_expanded: false,
+      history_search_query: String::new(),
       removed_words,
     }
   }
@@ -876,6 +886,7 @@ impl AppController {
       AppEvent::ArrowNavigate(direction) => self.handle_arrow_navigate(direction),
       AppEvent::HistoryExpand => self.handle_history_expand(),
       AppEvent::HistoryCollapse => self.handle_history_collapse(),
+      AppEvent::HistorySearchChanged(query) => self.handle_history_search_changed(query),
       AppEvent::Speech(ev) => self.handle_speech_event(ev),
       AppEvent::Device(ev) => self.handle_device_event(ev),
     }
@@ -2548,40 +2559,69 @@ impl AppController {
       platform::set_overlay_history_content(&[], 0, 0, false);
       return;
     };
+    let needle_lc = self.history_search_query.to_lowercase();
     let count = index.entry_count();
-    let selected = self.history_browse_index.min(count.saturating_sub(1));
-    // Keep visible_start within bounds; the renderer also auto-clamps and
-    // slides as needed to keep `selected` inside the fitted window.
-    let visible_start = self.history_visible_start.min(count.saturating_sub(1));
-    let entries: Vec<platform::HistoryEntryView<'_>> = (0..count)
-      .filter_map(|i| index.entry_text(i).map(|text| platform::HistoryEntryView { text }))
-      .collect();
+    let mut entries: Vec<platform::HistoryEntryView<'_>> = Vec::with_capacity(count);
+    for i in 0..count {
+      let Some(text) = index.entry_text(i) else { continue };
+      let match_range = if needle_lc.is_empty() {
+        None
+      } else {
+        let hay_lc = text.to_lowercase();
+        match hay_lc.find(&needle_lc) {
+          Some(pos) => Some((pos, pos + needle_lc.len())),
+          None => continue,
+        }
+      };
+      entries.push(platform::HistoryEntryView { text, match_range });
+    }
+    let visible = entries.len();
+    let selected = self.history_browse_index.min(visible.saturating_sub(1));
+    let visible_start = self.history_visible_start.min(visible.saturating_sub(1));
     if self.debug_stats_enabled {
       let preview = entries
         .first()
         .map(|e| &e.text[..e.text.len().min(40)])
         .unwrap_or("(no entries)");
       eprintln!(
-        "AZAD_HISTORY_RENDER mode={} count={} entries_built={} selected={} \
-         visible_start={} first_preview={:?}",
+        "AZAD_HISTORY_RENDER mode={} count={} filtered={} selected={} \
+         visible_start={} query={:?} first_preview={:?}",
         if self.history_expanded { "expanded" } else { "list" },
         count,
         entries.len(),
         selected,
         visible_start,
+        self.history_search_query,
         preview,
       );
     }
     platform::set_overlay_history_content(&entries, selected, visible_start, self.history_expanded);
   }
 
+  /// Returns the underlying transcript index (`entry_text` arg) of the entry
+  /// currently selected in the (filtered) list. None when there are no
+  /// entries that match the active filter.
+  fn selected_history_entry_text(&self) -> Option<String> {
+    let index = self.transcript_index.as_ref()?;
+    let needle_lc = self.history_search_query.to_lowercase();
+    let count = index.entry_count();
+    let mut filtered_pos = 0usize;
+    for i in 0..count {
+      let Some(text) = index.entry_text(i) else { continue };
+      let matches = needle_lc.is_empty() || text.to_lowercase().contains(&needle_lc);
+      if !matches {
+        continue;
+      }
+      if filtered_pos == self.history_browse_index {
+        return Some(text.to_string());
+      }
+      filtered_pos += 1;
+    }
+    None
+  }
+
   fn paste_from_history(&mut self) {
-    let text = self
-      .transcript_index
-      .as_ref()
-      .and_then(|index| index.entry_text(self.history_browse_index))
-      .map(|s| s.to_string());
-    if let Some(text) = text {
+    if let Some(text) = self.selected_history_entry_text() {
       let paste_text =
         build_paste_text(&text, self.append_trailing_space_on_paste, &self.removed_words);
       let _ = platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
@@ -2590,6 +2630,22 @@ impl AppController {
     // Exit even on an empty-state release so the overlay closes — otherwise
     // the "No transcripts" overlay would linger after opt+space release.
     self.exit_history_mode();
+  }
+
+  fn handle_history_search_changed(&mut self, query: String) {
+    if !self.history_browsing {
+      return;
+    }
+    if self.history_search_query == query {
+      return;
+    }
+    self.history_search_query = query;
+    // Reset selection to the top of the (newly) filtered list so the
+    // selection is always valid as long as ≥ 1 result exists.
+    self.history_browse_index = 0;
+    self.history_visible_start = 0;
+    self.history_expanded = false;
+    self.render_history_overlay();
   }
 
   fn enter_history_mode(&mut self) {
@@ -2619,9 +2675,12 @@ impl AppController {
     self.history_browse_index = 0;
     self.history_visible_start = 0;
     self.history_expanded = false;
+    self.history_search_query.clear();
     platform::set_arrow_left_hotkey_enabled(true);
     platform::set_arrow_right_hotkey_enabled(true);
     platform::reset_click_outside_tracker();
+    platform::set_overlay_search_query("");
+    platform::set_overlay_key_input_enabled(true);
     // Make sure the overlay window itself is shown (e.g. during VAD-only
     // sessions where opt+space wasn't held to bring it up).
     if !self.overlay_visible {
@@ -2636,7 +2695,10 @@ impl AppController {
     self.history_browse_index = 0;
     self.history_visible_start = 0;
     self.history_expanded = false;
+    self.history_search_query.clear();
     self.overlay_visible = false;
+    platform::set_overlay_key_input_enabled(false);
+    platform::set_overlay_search_query("");
     platform::set_arrow_left_hotkey_enabled(false);
     platform::set_arrow_right_hotkey_enabled(false);
     platform::hide_overlay();
