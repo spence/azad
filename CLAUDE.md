@@ -22,9 +22,20 @@ confirmed), commit it. Don't accumulate finished workstreams into one giant unco
 pile, and don't wait to be told. Each commit should represent one coherent change you
 can describe in a conventional-commits subject line.
 
+- **Commit at the natural boundary, not when prompted.** As soon as a workstream's
+  `cargo build` / `cargo test` / `just install && just restart` chain comes back clean,
+  commit it. Don't wait for the user to ask "did you commit?" — that prompt means you
+  forgot. If the user is about to test behaviour, commit FIRST so the diff is captured;
+  they can revert if their test fails.
+- **Default to committing before reporting back.** If you end a turn with "the fix is
+  shipped, try it now," the commit should already exist before that message — checking
+  in with `git status` afterwards should show a clean tree (other than pre-existing
+  dirty submodules you didn't touch).
 - The asr-rs submodule and the azad parent repo are separate workstreams: commit each
   in its own repo, then commit the submodule-pointer bump in the parent.
 - Verification is on you. "Verified" means the build passes, relevant tests pass, and
   you've checked the behaviour end-to-end (per the Ownership rules above) — not just
-  that the compiler is happy.
+  that the compiler is happy. For UI/UX fixes that the user has to try by hand, "build
+  green + install + restart" is enough to commit; the user's behaviour confirmation
+  comes after and a follow-up commit (or a revert) lands on top if needed.
 - Don't commit work the user hasn't agreed to. Don't push without being asked.
