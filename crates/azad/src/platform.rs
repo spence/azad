@@ -3060,9 +3060,17 @@ unsafe fn render_overlay_history_list(
         nat_bottom += body_h + 2.0 * HISTORY_ROW_PAD_Y + HISTORY_ROW_GAP;
       }
       let nat_top = nat_bottom + measured[sel_idx].1 + 2.0 * HISTORY_ROW_PAD_Y;
-      // The row's TOP stays put; its bottom extends down to the list base
-      // at most.
-      let max_expanded_height = (nat_top - LIST_BASE_Y).max(HISTORY_BODY_LINE_HEIGHT);
+      // Two expand directions:
+      // - Selected row is the bottom-most visible (sel_idx == 0): there's
+      //   no room below to grow into, so the card grows UPWARD instead.
+      //   Cap the body at OVERLAY_HEIGHT_MAX minus card chrome.
+      // - Otherwise: row's TOP stays put; bottom extends down toward the
+      //   list base. Cap by the available downward room.
+      let max_expanded_height = if sel_idx == 0 {
+        (OVERLAY_HEIGHT_MAX - LIST_BASE_Y - OVERLAY_PAD_TOP).max(HISTORY_BODY_LINE_HEIGHT)
+      } else {
+        (nat_top - LIST_BASE_Y).max(HISTORY_BODY_LINE_HEIGHT)
+      };
       let max_body_for_expand = (max_expanded_height - 2.0 * HISTORY_ROW_PAD_Y).max(1.0);
       let label = refs.autocomplete_labels[sel_idx];
       if label != nil {
@@ -3080,6 +3088,16 @@ unsafe fn render_overlay_history_list(
     }
   }
 
+  // Vertical shift applied to the expanded row plus the rows on the
+  // shift side (above for expand-up; at-or-below for expand-down).
+  let expand_delta = match (sel_in_window, &expanded_body) {
+    (Some(idx), Some((_, exp_h))) if idx < measured.len() => {
+      let natural = measured[idx].1;
+      (exp_h - natural).max(0.0)
+    }
+    _ => 0.0,
+  };
+
   // Dynamic card height: when the fitted rows + their natural gaps don't
   // fill the full HISTORY_CARD_HEIGHT budget, shrink the card from the
   // top so there's no empty space above. The bottom stays anchored
@@ -3090,17 +3108,14 @@ unsafe fn render_overlay_history_list(
   let row_natural_total = measured.iter().map(|(_, h)| h + 2.0 * HISTORY_ROW_PAD_Y).sum::<f64>()
     + (measured.len().saturating_sub(1) as f64) * HISTORY_ROW_GAP;
   let natural_card_height = LIST_BASE_Y + row_natural_total + OVERLAY_PAD_TOP;
-  let height = natural_card_height.min(HISTORY_CARD_HEIGHT);
-
-  // Vertical shift applied to the expanded row's bottom edge AND to all rows
-  // below it (rows with smaller vis_idx). Items above the expanded row stay
-  // put. This is what gives the "expand pushes items below it down" feel.
-  let expand_delta = match (sel_in_window, &expanded_body) {
-    (Some(idx), Some((_, exp_h))) if idx < measured.len() => {
-      let natural = measured[idx].1;
-      (exp_h - natural).max(0.0)
-    }
-    _ => 0.0,
+  // Expand-up: when the selected row is the bottom-most visible (no room
+  // below), the row grows UPWARD by `expand_delta` and the card's top
+  // edge moves up by the same amount to make room.
+  let expand_up = sel_in_window == Some(0) && expand_delta > 0.0;
+  let height = if expand_up {
+    (natural_card_height + expand_delta).min(OVERLAY_HEIGHT_MAX)
+  } else {
+    natural_card_height.min(HISTORY_CARD_HEIGHT)
   };
 
   if overlay_debug_logs_enabled() {
@@ -3161,11 +3176,16 @@ unsafe fn render_overlay_history_list(
       body_h + 2.0 * HISTORY_ROW_PAD_Y
     };
 
-    // Bottom y: rows at-or-below the expanded row shift down by `expand_delta`
-    // (off-card content gets clipped by setMasksToBounds). Rows above stay
-    // anchored to their natural bottom.
+    // Bottom y depends on the expand direction:
+    // - Expand-up (selected row is the bottom-most): rows ABOVE the
+    //   expanded one shift UP by `expand_delta` (the card grew upward to
+    //   make room). Selected row stays at its natural bottom.
+    // - Expand-down (default): rows AT-or-BELOW the expanded one shift
+    //   down by `expand_delta` (off-card content gets clipped). Rows
+    //   above stay anchored.
     let row_bottom_y = match sel_in_window {
-      Some(sel) if vis_idx <= sel => nat_row_bottom - expand_delta,
+      Some(sel) if expand_up && vis_idx > sel => nat_row_bottom + expand_delta,
+      Some(sel) if !expand_up && vis_idx <= sel => nat_row_bottom - expand_delta,
       _ => nat_row_bottom,
     };
 
@@ -3271,19 +3291,20 @@ unsafe fn render_overlay_history_list(
       }
     }
 
-    // Time-ago label on the LEFT, OUTSIDE the highlight bg. Hidden when
-    // the selected row is expanded (the body fills the row visually).
+    // Time-ago label on the LEFT, OUTSIDE the highlight bg. Pinned to
+    // the TOP of the row so all timestamps line up across rows
+    // regardless of whether each row is 1 or 2 lines. Hidden when the
+    // selected row is expanded (the body fills the row visually).
     let ts_label = refs.autocomplete_ts_labels[vis_idx];
     if ts_label != nil {
       if is_selected_expanded {
         let _: () = msg_send![ts_label, setHidden: YES];
       } else {
         let label_h = HISTORY_TS_FONT_SIZE + 4.0;
-        let label_y = if body_h > &(HISTORY_BODY_LINE_HEIGHT * 1.5) {
-          row_bottom_y + HISTORY_ROW_PAD_Y + (HISTORY_BODY_LINE_HEIGHT - label_h) / 2.0
-        } else {
-          row_bottom_y + HISTORY_ROW_PAD_Y + (body_h - label_h) / 2.0
-        };
+        // Body's top edge in card-local coords. Place the timestamp's
+        // top edge at the same y so they align.
+        let body_top = row_bottom_y + HISTORY_ROW_PAD_Y + body_h;
+        let label_y = body_top - label_h;
         let frame = NSRect::new(
           NSPoint::new(HISTORY_TS_X_PAD, label_y),
           NSSize::new(HISTORY_TS_WIDTH, label_h),
