@@ -2578,23 +2578,19 @@ impl AppController {
       platform::set_overlay_history_content(&[], 0, 0, false);
       return;
     };
-    let needle_lc = self.history_search_query.to_lowercase();
-    let count = index.entry_count();
-    let mut entries: Vec<platform::HistoryEntryView<'_>> = Vec::with_capacity(count);
-    for i in 0..count {
-      let Some(text) = index.entry_text(i) else { continue };
-      let match_range = if needle_lc.is_empty() {
-        None
-      } else {
-        let hay_lc = text.to_lowercase();
-        match hay_lc.find(&needle_lc) {
-          Some(pos) => Some((pos, pos + needle_lc.len())),
-          None => continue,
-        }
-      };
-      let ts_ms = index.entry_ts_ms(i).unwrap_or(0);
-      entries.push(platform::HistoryEntryView { text, match_range, ts_ms });
-    }
+    // FTS5-backed search: empty query returns the cache; non-empty applies
+    // tokenized prefix matching with BM25 ranking. Match ranges come back
+    // pre-computed from FTS5's highlight().
+    const HISTORY_SEARCH_LIMIT: usize = 1000;
+    let hits = index.search(&self.history_search_query, HISTORY_SEARCH_LIMIT);
+    let entries: Vec<platform::HistoryEntryView<'_>> = hits
+      .iter()
+      .map(|h| platform::HistoryEntryView {
+        text: h.final_text.as_str(),
+        match_ranges: h.match_ranges.clone(),
+        ts_ms: h.ts_ms,
+      })
+      .collect();
     let visible = entries.len();
     let selected = self.history_browse_index.min(visible.saturating_sub(1));
     let visible_start = self.history_visible_start.min(visible.saturating_sub(1));
@@ -2604,10 +2600,9 @@ impl AppController {
         .map(|e| &e.text[..e.text.len().min(40)])
         .unwrap_or("(no entries)");
       eprintln!(
-        "AZAD_HISTORY_RENDER mode={} count={} filtered={} selected={} \
+        "AZAD_HISTORY_RENDER mode={} filtered={} selected={} \
          visible_start={} query={:?} first_preview={:?}",
         if self.history_expanded { "expanded" } else { "list" },
-        count,
         entries.len(),
         selected,
         visible_start,
@@ -2618,26 +2613,13 @@ impl AppController {
     platform::set_overlay_history_content(&entries, selected, visible_start, self.history_expanded);
   }
 
-  /// Returns the underlying transcript index (`entry_text` arg) of the entry
-  /// currently selected in the (filtered) list. None when there are no
-  /// entries that match the active filter.
+  /// Returns the text of the entry at the user's current cursor position
+  /// inside the (search-filtered) list. None when no entry matches.
   fn selected_history_entry_text(&self) -> Option<String> {
     let index = self.transcript_index.as_ref()?;
-    let needle_lc = self.history_search_query.to_lowercase();
-    let count = index.entry_count();
-    let mut filtered_pos = 0usize;
-    for i in 0..count {
-      let Some(text) = index.entry_text(i) else { continue };
-      let matches = needle_lc.is_empty() || text.to_lowercase().contains(&needle_lc);
-      if !matches {
-        continue;
-      }
-      if filtered_pos == self.history_browse_index {
-        return Some(text.to_string());
-      }
-      filtered_pos += 1;
-    }
-    None
+    const HISTORY_SEARCH_LIMIT: usize = 1000;
+    let hits = index.search(&self.history_search_query, HISTORY_SEARCH_LIMIT);
+    hits.into_iter().nth(self.history_browse_index).map(|h| h.final_text)
   }
 
   fn paste_from_history(&mut self) {

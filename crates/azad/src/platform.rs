@@ -674,11 +674,12 @@ pub fn set_overlay_stream_content(
 
 pub struct HistoryEntryView<'a> {
   pub text: &'a str,
-  /// Optional byte range inside `text` that should be highlighted. Set when
+  /// Byte ranges inside `text` that should be highlighted. Populated when
   /// the history list is filtered by a search query — the renderer paints
-  /// this range with a translucent yellow background. `None` for
-  /// unfiltered/empty-query renders.
-  pub match_range: Option<(usize, usize)>,
+  /// each range with a translucent yellow background. Empty for
+  /// unfiltered/empty-query renders. Multiple ranges support multi-token
+  /// highlighting from FTS5.
+  pub match_ranges: Vec<(usize, usize)>,
   /// Wall-clock timestamp (ms since UNIX epoch) when the entry was
   /// recorded. Renderer turns this into a compact "5s / 12m / 1h / 2d"
   /// label drawn outside the highlight bg on the left of the row.
@@ -3220,15 +3221,16 @@ unsafe fn render_overlay_history_list(
         NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, HISTORY_TEXT_ALPHA);
       let _: () = msg_send![label, setTextColor: color];
       // Match-highlight: when the rendered text starts the original entry,
-      // the byte offset of the match in the entry text equals its byte
-      // offset in `rendered` (head-anchored truncation preserves the
-      // beginning). If the helper appended "…" the match is still valid as
-      // long as it's before the cut point.
+      // byte offsets carry over (head-anchored truncation preserves the
+      // beginning). Drop ranges that fall past the rendered cut.
       let entry = &entries[entry_idx];
-      let match_in_rendered = entry.match_range.and_then(|(s, e)| {
-        let limit = rendered.len();
-        if s < limit { Some((s, e.min(limit))) } else { None }
-      });
+      let clamp_ranges = |limit: usize| -> Vec<(usize, usize)> {
+        entry
+          .match_ranges
+          .iter()
+          .filter_map(|&(s, e)| if s < limit { Some((s, e.min(limit))) } else { None })
+          .collect()
+      };
       if is_selected_expanded {
         let (exp_rendered, exp_body_h) = expanded_body.as_ref().unwrap();
         let _: () = msg_send![label, setMaximumNumberOfLines: 0isize];
@@ -3237,11 +3239,8 @@ unsafe fn render_overlay_history_list(
         let label_frame =
           NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(row_label_w, *exp_body_h));
         let _: () = msg_send![label, setFrame: label_frame];
-        let exp_match = entry.match_range.and_then(|(s, e)| {
-          let limit = exp_rendered.len();
-          if s < limit { Some((s, e.min(limit))) } else { None }
-        });
-        apply_history_label_text(label, exp_rendered, exp_match);
+        let exp_ranges = clamp_ranges(exp_rendered.len());
+        apply_history_label_text(label, exp_rendered, &exp_ranges);
         let _: () = msg_send![label, setHidden: NO];
         let _: () = msg_send![refs.card_view, addSubview: label];
       } else {
@@ -3249,7 +3248,8 @@ unsafe fn render_overlay_history_list(
         let label_frame =
           NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(row_label_w, *body_h));
         let _: () = msg_send![label, setFrame: label_frame];
-        apply_history_label_text(label, rendered, match_in_rendered);
+        let row_ranges = clamp_ranges(rendered.len());
+        apply_history_label_text(label, rendered, &row_ranges);
         let _: () = msg_send![label, setHidden: NO];
       }
     }
@@ -3341,20 +3341,14 @@ unsafe fn render_overlay_history_list(
 /// offsets of `text` (the renderer's measure system uses byte offsets); we
 /// convert to UTF-16 offsets here because NSAttributedString is UTF-16
 /// internally.
-unsafe fn apply_history_label_text(label: id, text: &str, match_range: Option<(usize, usize)>) {
+unsafe fn apply_history_label_text(label: id, text: &str, match_ranges: &[(usize, usize)]) {
   let ns_text = NSString::alloc(nil).init_str(text);
-  let Some((start, end)) = match_range else {
-    let _: () = msg_send![label, setStringValue: ns_text];
-    return;
-  };
-  if start >= end || end > text.len() {
+  if match_ranges.is_empty() {
     let _: () = msg_send![label, setStringValue: ns_text];
     return;
   }
   let attr: id = msg_send![class!(NSMutableAttributedString), alloc];
   let attr: id = msg_send![attr, initWithString: ns_text];
-  let utf16_loc = byte_offset_to_utf16_count(text, start);
-  let utf16_len = byte_offset_to_utf16_count(text, end) - utf16_loc;
   let highlight = NSColor::colorWithCalibratedRed_green_blue_alpha_(
     nil,
     SEARCH_MATCH_BG_R,
@@ -3363,9 +3357,25 @@ unsafe fn apply_history_label_text(label: id, text: &str, match_range: Option<(u
     SEARCH_MATCH_BG_ALPHA,
   );
   let bg_attr_name = NSString::alloc(nil).init_str("NSBackgroundColor");
-  let range = cocoa::foundation::NSRange::new(utf16_loc as u64, utf16_len as u64);
-  let _: () = msg_send![attr, addAttribute: bg_attr_name value: highlight range: range];
-  let _: () = msg_send![label, setAttributedStringValue: attr];
+  let mut applied_any = false;
+  for &(start, end) in match_ranges {
+    if start >= end || end > text.len() {
+      continue;
+    }
+    let utf16_loc = byte_offset_to_utf16_count(text, start);
+    let utf16_len = byte_offset_to_utf16_count(text, end) - utf16_loc;
+    if utf16_len == 0 {
+      continue;
+    }
+    let range = cocoa::foundation::NSRange::new(utf16_loc as u64, utf16_len as u64);
+    let _: () = msg_send![attr, addAttribute: bg_attr_name value: highlight range: range];
+    applied_any = true;
+  }
+  if applied_any {
+    let _: () = msg_send![label, setAttributedStringValue: attr];
+  } else {
+    let _: () = msg_send![label, setStringValue: ns_text];
+  }
 }
 
 fn byte_offset_to_utf16_count(text: &str, byte_offset: usize) -> usize {
