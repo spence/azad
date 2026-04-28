@@ -266,6 +266,13 @@ struct OverlayRefs {
   autocomplete_ts_labels: [id; AUTOCOMPLETE_MAX_ITEMS],
   search_field: id,
   search_icon: id,
+  /// 1-pt-wide blinking caret rendered manually because the panel's native
+  /// NSTextField caret never appears (likely the non-activating-panel +
+  /// accessory-policy combo confuses AppKit's responder-chain blink). A
+  /// CALayer-backed NSView with a white fill and an "opacity" blink
+  /// animation; positioned per keystroke at the right edge of the typed
+  /// text by `layout_history_search_caret`.
+  search_caret: id,
 }
 
 const AUTOCOMPLETE_ROW_HEIGHT: f64 = 22.0;
@@ -2696,6 +2703,9 @@ unsafe fn render_overlay_text(
   if refs.search_icon != nil {
     let _: () = msg_send![refs.search_icon, setHidden: YES];
   }
+  if refs.search_caret != nil {
+    let _: () = msg_send![refs.search_caret, setHidden: YES];
+  }
 
   let _: () = msg_send![refs.label, setAlignment: 1isize];
   let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
@@ -2769,6 +2779,14 @@ const HISTORY_LIST_HEIGHT: f64 = OVERLAY_PAD_TOP
 // host both the list area (HISTORY_LIST_HEIGHT) and the search bar.
 const SEARCH_BAR_HEIGHT: f64 = 30.0;
 const SEARCH_BAR_GAP: f64 = 6.0;
+// Custom blinking caret that stands in for the missing native NSTextField
+// caret. Width is 1 pt (visible on Retina at 2 device pixels). Height
+// matches the body font's cap height roughly; we just use the body font
+// size for clean math.
+const SEARCH_CARET_WIDTH: f64 = 1.0;
+const SEARCH_CARET_HEIGHT: f64 = 16.0;
+// macOS standard caret blink: 1.06 s period, 50% duty cycle.
+const SEARCH_CARET_BLINK_HALF_PERIOD: f64 = 0.53;
 // Search-field font intentionally matches `HISTORY_BODY_FONT_SIZE` so the
 // typed query feels visually continuous with the row text above it.
 // Card-local y of the search bar's bottom edge.
@@ -3350,16 +3368,46 @@ unsafe fn layout_history_hints(refs: OverlayRefs, _width: f64, _show_view: bool,
 /// history overlay. Text is left-aligned at the same x as the row body
 /// labels so the typed query is visually continuous with the rows; AppKit
 /// vertically centers single-line text within the frame automatically.
+/// Also positions the custom blinking caret immediately to the right of
+/// the typed text.
 unsafe fn layout_history_search_bar(refs: OverlayRefs, width: f64) {
-  if refs.search_field != nil {
-    let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
-    let field_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
-    let field_w = (width - field_x - OVERLAY_PAD_X).max(1.0);
-    let frame =
-      NSRect::new(NSPoint::new(field_x, SEARCH_BAR_Y), NSSize::new(field_w, SEARCH_BAR_HEIGHT));
-    let _: () = msg_send![refs.search_field, setFrame: frame];
-    let _: () = msg_send![refs.search_field, setHidden: NO];
-    let _: () = msg_send![refs.card_view, addSubview: refs.search_field];
+  if refs.search_field == nil {
+    return;
+  }
+  let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
+  let field_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
+  let field_w = (width - field_x - OVERLAY_PAD_X).max(1.0);
+  let frame =
+    NSRect::new(NSPoint::new(field_x, SEARCH_BAR_Y), NSSize::new(field_w, SEARCH_BAR_HEIGHT));
+  let _: () = msg_send![refs.search_field, setFrame: frame];
+  let _: () = msg_send![refs.search_field, setHidden: NO];
+  let _: () = msg_send![refs.card_view, addSubview: refs.search_field];
+
+  // Caret: width of the current text with the field's font, then place
+  // the 1-pt-wide caret bar immediately to the right.
+  if refs.search_caret != nil {
+    let s: id = msg_send![refs.search_field, stringValue];
+    let font: id = msg_send![refs.search_field, font];
+    let text_width = if s != nil && font != nil {
+      let attrs: id = msg_send![class!(NSMutableDictionary), dictionaryWithCapacity: 1usize];
+      let key = NSString::alloc(nil).init_str("NSFont");
+      let _: () = msg_send![attrs, setObject: font forKey: key];
+      let size: NSSize = msg_send![s, sizeWithAttributes: attrs];
+      size.width as f64
+    } else {
+      0.0
+    };
+    // 1pt offset from the right edge of the text so the caret doesn't
+    // overlap the last glyph.
+    let caret_x = field_x + text_width + 1.0;
+    let caret_y = SEARCH_BAR_Y + (SEARCH_BAR_HEIGHT - SEARCH_CARET_HEIGHT) / 2.0;
+    let caret_frame = NSRect::new(
+      NSPoint::new(caret_x, caret_y),
+      NSSize::new(SEARCH_CARET_WIDTH, SEARCH_CARET_HEIGHT),
+    );
+    let _: () = msg_send![refs.search_caret, setFrame: caret_frame];
+    let _: () = msg_send![refs.search_caret, setHidden: NO];
+    let _: () = msg_send![refs.card_view, addSubview: refs.search_caret];
   }
 }
 
@@ -4846,6 +4894,38 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   // compatibility but is left as nil; layout helpers skip when nil.
   let search_icon: id = nil;
 
+  // Blinking caret. CALayer-backed NSView with a white fill, hidden by
+  // default. The blink is a CABasicAnimation on `opacity` attached once at
+  // construction so it runs continuously while the view is visible.
+  let search_caret: id = msg_send![class!(NSView), alloc];
+  let search_caret: id = msg_send![search_caret, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(SEARCH_CARET_WIDTH, SEARCH_CARET_HEIGHT)
+  )];
+  let _: () = msg_send![search_caret, setWantsLayer: YES];
+  let caret_layer: id = msg_send![search_caret, layer];
+  if caret_layer != nil {
+    let white_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+    let cg: id = msg_send![white_color, CGColor];
+    let _: () = msg_send![caret_layer, setBackgroundColor: cg];
+    let anim: id = msg_send![class!(CABasicAnimation),
+                             animationWithKeyPath: NSString::alloc(nil).init_str("opacity")];
+    if anim != nil {
+      let from_v: id = msg_send![class!(NSNumber), numberWithDouble: 1.0f64];
+      let to_v: id = msg_send![class!(NSNumber), numberWithDouble: 0.0f64];
+      let _: () = msg_send![anim, setFromValue: from_v];
+      let _: () = msg_send![anim, setToValue: to_v];
+      let _: () = msg_send![anim, setDuration: SEARCH_CARET_BLINK_HALF_PERIOD];
+      let _: () = msg_send![anim, setAutoreverses: YES];
+      let _: () = msg_send![anim, setRepeatCount: f32::INFINITY];
+      let _: () = msg_send![caret_layer,
+                            addAnimation: anim
+                            forKey: NSString::alloc(nil).init_str("blink")];
+    }
+  }
+  let _: () = msg_send![search_caret, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: search_caret];
+
   let refs = OverlayRefs {
     window,
     card_view,
@@ -4871,6 +4951,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     autocomplete_ts_labels,
     search_field,
     search_icon,
+    search_caret,
   };
   render_overlay_text(refs, "", &[], None, false, false);
   refs
