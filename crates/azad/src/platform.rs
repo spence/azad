@@ -2811,7 +2811,6 @@ const SEARCH_MATCH_BG_ALPHA: f64 = 0.45;
 const HISTORY_TS_FONT_SIZE: f64 = 10.0;
 const HISTORY_TS_TEXT_ALPHA: f64 = 0.45;
 const HISTORY_TS_WIDTH: f64 = 26.0;
-const HISTORY_TS_X_PAD: f64 = 4.0;
 const HISTORY_TS_GAP: f64 = 6.0;
 
 // Per-row "▶" expand marker, drawn on the right edge of any row whose body
@@ -2950,12 +2949,13 @@ unsafe fn render_overlay_history_list(
     return;
   }
 
-  // Bg geometry: the highlight starts just right of the per-row time-ago
-  // column (so timestamps live OUTSIDE the highlight). Right edge mirrors
-  // the original concentric inset so rounded corners match the card.
-  let bg_right_pad = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
-  let bg_x = HISTORY_TS_X_PAD + HISTORY_TS_WIDTH + HISTORY_TS_GAP;
-  let bg_w_full = (width - bg_x - bg_right_pad).max(1.0);
+  // Bg geometry: highlight is concentric with the card's rounded corners
+  // (8 pt inset from each side). Time-ago labels live INSIDE the highlight
+  // on the right; "▶" expand marker also lives inside on the right but
+  // the timestamp gets the far-right slot (top-aligned, above the body
+  // line) and the ▶ sits to its left (centered on the body line).
+  let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
+  let bg_w_full = (width - 2.0 * bg_x).max(1.0);
   // Text width: symmetric inner padding inside the bg.
   let label_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
   let label_w_full = (bg_w_full - 2.0 * HISTORY_TEXT_INNER_PAD_X).max(1.0);
@@ -2965,13 +2965,12 @@ unsafe fn render_overlay_history_list(
   // scrolled-to entry sits flush with the card top so each subsequent Up
   // delivers a new top-flush entry.
   //
-  // Every row reserves a thin strip on the right for the "▶" expand
-  // marker so widths stay consistent whether or not the marker draws on
-  // a given row. We keep `label_w_bottom` as a name for any future
-  // bottom-row-specific tweak; today it equals `label_w_full` minus the
-  // marker reservation, same as every other row.
+  // Every row reserves a thin strip on the right of its body label for
+  // both the "▶" expand marker and the time-ago timestamp; widths stay
+  // consistent whether or not the marker draws.
   let is_bottom_anchored = visible_start == 0;
-  let label_w_full = (label_w_full - HISTORY_EXPAND_MARKER_ZONE).max(1.0);
+  let body_right_reserve = HISTORY_EXPAND_MARKER_ZONE + HISTORY_TS_WIDTH + HISTORY_TS_GAP;
+  let label_w_full = (label_w_full - body_right_reserve).max(1.0);
   let label_w_bottom = label_w_full;
 
   // Greedy fit: starting from `visible_start` (or selected_index, whichever is
@@ -3276,8 +3275,13 @@ unsafe fn render_overlay_history_list(
           // 1-line row — center the marker on the body.
           row_bottom_y + HISTORY_ROW_PAD_Y + (body_h - marker_h) / 2.0
         };
-        let marker_x =
-          bg_x + bg_w_full - HISTORY_EXPAND_MARKER_RIGHT_PAD - HISTORY_EXPAND_MARKER_WIDTH;
+        // ▶ sits just left of the timestamp column so the two never
+        // overlap on truncated rows.
+        let marker_x = bg_x + bg_w_full
+          - HISTORY_TEXT_INNER_PAD_X
+          - HISTORY_TS_WIDTH
+          - HISTORY_TS_GAP
+          - HISTORY_EXPAND_MARKER_WIDTH;
         let frame = NSRect::new(
           NSPoint::new(marker_x, marker_y),
           NSSize::new(HISTORY_EXPAND_MARKER_WIDTH, marker_h),
@@ -3291,28 +3295,27 @@ unsafe fn render_overlay_history_list(
       }
     }
 
-    // Time-ago label on the LEFT, OUTSIDE the highlight bg. Pinned to
-    // the TOP of the row so all timestamps line up across rows
-    // regardless of whether each row is 1 or 2 lines. Hidden when the
-    // selected row is expanded (the body fills the row visually).
+    // Time-ago label INSIDE the highlight bg, on the right edge,
+    // top-aligned with the body so timestamps line up vertically across
+    // rows regardless of 1- vs 2-line bodies. Hidden when the selected
+    // row is expanded (the body fills the row visually).
     let ts_label = refs.autocomplete_ts_labels[vis_idx];
     if ts_label != nil {
       if is_selected_expanded {
         let _: () = msg_send![ts_label, setHidden: YES];
       } else {
         let label_h = HISTORY_TS_FONT_SIZE + 4.0;
-        // Body's top edge in card-local coords. Place the timestamp's
-        // top edge at the same y so they align.
         let body_top = row_bottom_y + HISTORY_ROW_PAD_Y + body_h;
         let label_y = body_top - label_h;
-        let frame = NSRect::new(
-          NSPoint::new(HISTORY_TS_X_PAD, label_y),
-          NSSize::new(HISTORY_TS_WIDTH, label_h),
-        );
+        let label_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_TS_WIDTH;
+        let frame =
+          NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(HISTORY_TS_WIDTH, label_h));
         let _: () = msg_send![ts_label, setFrame: frame];
         let s = crate::transcript_history::format_timestamp_compact(entries[entry_idx].ts_ms);
         let _: () = msg_send![ts_label, setStringValue: NSString::alloc(nil).init_str(&s)];
         let _: () = msg_send![ts_label, setHidden: NO];
+        // Bring above the highlight bg so it stays visible on selected rows.
+        let _: () = msg_send![refs.card_view, addSubview: ts_label];
       }
     }
 
