@@ -2626,6 +2626,15 @@ impl AppController {
     if let Some(text) = self.selected_history_entry_text() {
       let paste_text =
         build_paste_text(&text, self.append_trailing_space_on_paste, &self.removed_words);
+      // Drop key-input claims BEFORE firing the synthetic Cmd+V. While
+      // `OVERLAY_ACCEPTS_KEY_INPUT` is set the HID tap's
+      // `claim_tap_search_input` intercepts every printable keydown — and
+      // `CGEventKeyboardGetUnicodeString` reports "v" for the V keydown
+      // even with Cmd held, so the tap was treating our own paste as a
+      // search-bar keystroke (`HistorySearchAppend("v")`) and the focused
+      // app never saw the chord. Resigning here lets the synthetic event
+      // flow through to the OS routing.
+      platform::set_overlay_key_input_enabled(false);
       let _ = platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
       let _ = platform::send_auto_submit(self.auto_submit_mode);
     }
