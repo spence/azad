@@ -2818,12 +2818,7 @@ const HISTORY_TS_GAP: f64 = 6.0;
 // available via right-arrow.
 const HISTORY_EXPAND_MARKER_FONT_SIZE: f64 = 11.0;
 const HISTORY_EXPAND_MARKER_ALPHA: f64 = 0.55;
-const HISTORY_EXPAND_MARKER_RIGHT_PAD: f64 = 6.0;
 const HISTORY_EXPAND_MARKER_WIDTH: f64 = 14.0;
-// Reserved on every row so widths don't jump as the user scrolls between
-// truncated and non-truncated entries.
-const HISTORY_EXPAND_MARKER_ZONE: f64 =
-  HISTORY_EXPAND_MARKER_WIDTH + HISTORY_EXPAND_MARKER_RIGHT_PAD;
 
 // Atomics that the renderer writes after every history-list draw so the app
 // side (which initiates the next render via Up/Down/Right) can make decisions
@@ -2966,10 +2961,11 @@ unsafe fn render_overlay_history_list(
   // delivers a new top-flush entry.
   //
   // Every row reserves a thin strip on the right of its body label for
-  // both the "▶" expand marker and the time-ago timestamp; widths stay
-  // consistent whether or not the marker draws.
+  // the time-ago timestamp; the "▶" expand marker stacks underneath the
+  // timestamp in the same column so we only reserve the wider one
+  // (timestamp). Widths stay consistent whether or not the marker draws.
   let is_bottom_anchored = visible_start == 0;
-  let body_right_reserve = HISTORY_EXPAND_MARKER_ZONE + HISTORY_TS_WIDTH + HISTORY_TS_GAP;
+  let body_right_reserve = HISTORY_TS_WIDTH + HISTORY_TS_GAP;
   let label_w_full = (label_w_full - body_right_reserve).max(1.0);
   let label_w_bottom = label_w_full;
 
@@ -3267,21 +3263,14 @@ unsafe fn render_overlay_history_list(
       let show_marker = row_truncated && !is_selected_expanded;
       if show_marker {
         let marker_h = HISTORY_EXPAND_MARKER_FONT_SIZE + 4.0;
-        // Vertically center on the (last visible) body line.
-        let marker_y = if body_h > &(HISTORY_BODY_LINE_HEIGHT * 1.5) {
-          // 2-line row — center the marker on the bottom line.
-          row_bottom_y + HISTORY_ROW_PAD_Y + (HISTORY_BODY_LINE_HEIGHT - marker_h) / 2.0
-        } else {
-          // 1-line row — center the marker on the body.
-          row_bottom_y + HISTORY_ROW_PAD_Y + (body_h - marker_h) / 2.0
-        };
-        // ▶ sits just left of the timestamp column so the two never
-        // overlap on truncated rows.
-        let marker_x = bg_x + bg_w_full
-          - HISTORY_TEXT_INNER_PAD_X
-          - HISTORY_TS_WIDTH
-          - HISTORY_TS_GAP
-          - HISTORY_EXPAND_MARKER_WIDTH;
+        let ts_h = HISTORY_TS_FONT_SIZE + 4.0;
+        // Stacked underneath the timestamp in the same right-edge
+        // column; right edges aligned. Truncated rows are always
+        // 2-line rows so there's enough vertical room to fit both.
+        let body_top = row_bottom_y + HISTORY_ROW_PAD_Y + body_h;
+        let ts_bottom = body_top - ts_h;
+        let marker_y = (ts_bottom - marker_h - 1.0).max(row_bottom_y);
+        let marker_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_EXPAND_MARKER_WIDTH;
         let frame = NSRect::new(
           NSPoint::new(marker_x, marker_y),
           NSSize::new(HISTORY_EXPAND_MARKER_WIDTH, marker_h),
