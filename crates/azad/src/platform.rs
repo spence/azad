@@ -2783,7 +2783,7 @@ const SEARCH_BAR_GAP: f64 = 6.0;
 // caret. Drawn 2 pt wide so it reads as a confident insertion bar at any
 // scale; height matches the body font's cap height roughly.
 const SEARCH_CARET_WIDTH: f64 = 2.0;
-const SEARCH_CARET_HEIGHT: f64 = 16.0;
+const SEARCH_CARET_HEIGHT: f64 = 19.0;
 // Inner field height — slightly larger than the body font's line height so
 // the typed glyphs have breathing room. Reused for vertical centring inside
 // `SEARCH_BAR_HEIGHT`.
