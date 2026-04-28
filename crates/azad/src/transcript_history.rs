@@ -169,13 +169,11 @@ impl TranscriptIndex {
       self.cache.truncate(MAX_ENTRIES);
     }
 
-    // Prune to MAX_ENTRIES on disk so the index doesn't grow forever.
-    // FTS rows are removed by the `transcripts_ad` trigger.
-    let _ = self.conn.execute(
-      "DELETE FROM transcripts WHERE id NOT IN \
-       (SELECT id FROM transcripts ORDER BY ts_ms DESC LIMIT ?)",
-      params![MAX_ENTRIES as i64],
-    );
+    // SQLite holds the full transcript history forever; the `MAX_ENTRIES`
+    // cap only bounds the in-memory `cache` (which is what the overlay's
+    // index-by-position rendering walks). Disk size at ~200 bytes/entry
+    // stays trivial even past 100k entries; if a user ever hits that
+    // scale we'd revisit with a vacuum job.
   }
 
   pub fn entry_count(&self) -> usize {
@@ -510,6 +508,24 @@ mod tests {
     assert!(idx.entry_text(0).unwrap().starts_with("entry "));
     let last_entry = format!("entry {}", MAX_ENTRIES + 49);
     assert_eq!(idx.entry_text(0).unwrap(), last_entry);
+  }
+
+  #[test]
+  fn disk_unbounded_only_cache_is_capped() {
+    let mut idx = open_in_memory();
+    let total_appended = MAX_ENTRIES + 50;
+    for i in 0..total_appended {
+      idx.append(i as u64, "", &format!("entry {i}"));
+    }
+    // Cache is capped at MAX_ENTRIES.
+    assert_eq!(idx.entry_count(), MAX_ENTRIES);
+    // SQLite kept every record — the prune-on-append used to delete
+    // anything past 1000, which silently lost migrated history.
+    let total: i64 = idx
+      .conn
+      .query_row("SELECT COUNT(*) FROM transcripts", [], |r| r.get(0))
+      .unwrap();
+    assert_eq!(total as usize, total_appended);
   }
 
   #[test]
