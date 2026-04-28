@@ -2780,11 +2780,14 @@ const HISTORY_LIST_HEIGHT: f64 = OVERLAY_PAD_TOP
 const SEARCH_BAR_HEIGHT: f64 = 30.0;
 const SEARCH_BAR_GAP: f64 = 6.0;
 // Custom blinking caret that stands in for the missing native NSTextField
-// caret. Width is 1 pt (visible on Retina at 2 device pixels). Height
-// matches the body font's cap height roughly; we just use the body font
-// size for clean math.
-const SEARCH_CARET_WIDTH: f64 = 1.0;
+// caret. Drawn 2 pt wide so it reads as a confident insertion bar at any
+// scale; height matches the body font's cap height roughly.
+const SEARCH_CARET_WIDTH: f64 = 2.0;
 const SEARCH_CARET_HEIGHT: f64 = 16.0;
+// Inner field height — slightly larger than the body font's line height so
+// the typed glyphs have breathing room. Reused for vertical centring inside
+// `SEARCH_BAR_HEIGHT`.
+const SEARCH_FIELD_HEIGHT: f64 = 20.0;
 // macOS standard caret blink: 1.06 s period, 50% duty cycle.
 const SEARCH_CARET_BLINK_HALF_PERIOD: f64 = 0.53;
 // Search-field font intentionally matches `HISTORY_BODY_FONT_SIZE` so the
@@ -2924,8 +2927,9 @@ unsafe fn render_overlay_history_list(
       let msg = if query_active { "No matches" } else { "No transcripts" };
       let text = NSString::alloc(nil).init_str(msg);
       let _: () = msg_send![label, setStringValue: text];
-      let list_area_h = HISTORY_CARD_HEIGHT - LIST_BASE_Y - OVERLAY_PAD_TOP;
-      let label_y = LIST_BASE_Y + (list_area_h - HISTORY_BODY_LINE_HEIGHT).max(0.0) / 2.0;
+      // Sit the message at the bottom of the (now-shrunken) list area,
+      // just above the search bar.
+      let label_y = LIST_BASE_Y + HISTORY_ROW_PAD_Y;
       let label_frame = NSRect::new(
         NSPoint::new(OVERLAY_PAD_X, label_y),
         NSSize::new(empty_content_width, HISTORY_BODY_LINE_HEIGHT),
@@ -2935,10 +2939,14 @@ unsafe fn render_overlay_history_list(
     }
     // Hint label still shows so the user knows Esc dismisses; "view ▶" stays
     // hidden because there's no entry to expand.
+    // Empty state: shrink to just the search bar + a one-line message.
+    // The dynamic-height rule below also applies here so the card
+    // doesn't carry empty space above the message.
+    let empty_height = LIST_BASE_Y + HISTORY_BODY_LINE_HEIGHT + OVERLAY_PAD_TOP;
     layout_history_search_bar(refs, width);
     layout_history_hints(refs, width, false, expanded);
-    apply_history_window_frame(refs, current_frame, screen, width, HISTORY_CARD_HEIGHT);
-    apply_history_card_frame(refs, width, HISTORY_CARD_HEIGHT);
+    apply_history_window_frame(refs, current_frame, screen, width, empty_height);
+    apply_history_card_frame(refs, width, empty_height);
     return;
   }
 
@@ -3072,8 +3080,17 @@ unsafe fn render_overlay_history_list(
     }
   }
 
-  // Card height stays fixed regardless of measured row mix or expansion.
-  let height = HISTORY_CARD_HEIGHT;
+  // Dynamic card height: when the fitted rows + their natural gaps don't
+  // fill the full HISTORY_CARD_HEIGHT budget, shrink the card from the
+  // top so there's no empty space above. The bottom stays anchored
+  // (NSWindow origin.y is bottom-left, and we leave origin.y alone in
+  // `apply_history_window_frame`). When the rows fill the budget,
+  // height stays at HISTORY_CARD_HEIGHT and gap-stretching distributes
+  // any remaining slack across the gaps for the top-anchor case.
+  let row_natural_total = measured.iter().map(|(_, h)| h + 2.0 * HISTORY_ROW_PAD_Y).sum::<f64>()
+    + (measured.len().saturating_sub(1) as f64) * HISTORY_ROW_GAP;
+  let natural_card_height = LIST_BASE_Y + row_natural_total + OVERLAY_PAD_TOP;
+  let height = natural_card_height.min(HISTORY_CARD_HEIGHT);
 
   // Vertical shift applied to the expanded row's bottom edge AND to all rows
   // below it (rows with smaller vis_idx). Items above the expanded row stay
@@ -3377,8 +3394,13 @@ unsafe fn layout_history_search_bar(refs: OverlayRefs, width: f64) {
   let bg_x = (OVERLAY_PAD_X - HISTORY_BG_X_INSET).max(2.0);
   let field_x = bg_x + HISTORY_TEXT_INNER_PAD_X;
   let field_w = (width - field_x - OVERLAY_PAD_X).max(1.0);
+  // NSTextField with setBezeled:NO doesn't vertical-center single-line
+  // text in an over-sized frame — it aligns the baseline near the bottom.
+  // Shrink the frame to roughly font line-height and y-center it inside
+  // the bar; that's the simplest way to get visually centred typed text.
+  let field_y = SEARCH_BAR_Y + (SEARCH_BAR_HEIGHT - SEARCH_FIELD_HEIGHT) / 2.0;
   let frame =
-    NSRect::new(NSPoint::new(field_x, SEARCH_BAR_Y), NSSize::new(field_w, SEARCH_BAR_HEIGHT));
+    NSRect::new(NSPoint::new(field_x, field_y), NSSize::new(field_w, SEARCH_FIELD_HEIGHT));
   let _: () = msg_send![refs.search_field, setFrame: frame];
   let _: () = msg_send![refs.search_field, setHidden: NO];
   let _: () = msg_send![refs.card_view, addSubview: refs.search_field];
