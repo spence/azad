@@ -415,7 +415,14 @@ fn split_overlay_visible_with_vad_hint_for_state(
   live_draft: &str,
   hold_active: bool,
   saw_vad_start_during_finalizing: bool,
+  finalizing_draft: &str,
 ) -> bool {
+  // The VAD-hint branch is purely a carryover from a prior turn — it must NOT fire
+  // when the live and finalizing drafts hold the same text, otherwise the renderer
+  // paints two overlays with identical content (one busy, one idle). The genuine
+  // turn-advance and hold paths still run via `_with_hold_for_state` above, which
+  // gates on `current > finalizing` or `manual_hold_active` — neither of which can
+  // produce a duplicate-text render.
   split_overlay_visible_with_hold_for_state(
     finalizing_turn_id,
     current_turn_id,
@@ -423,7 +430,8 @@ fn split_overlay_visible_with_vad_hint_for_state(
     hold_active,
   ) || (finalizing_turn_id.is_some()
     && saw_vad_start_during_finalizing
-    && !live_draft.trim().is_empty())
+    && !live_draft.trim().is_empty()
+    && !draft_matches_finalized_text(live_draft, finalizing_draft))
 }
 
 fn draft_matches_finalized_text(live_draft: &str, finalized_text: &str) -> bool {
@@ -1060,7 +1068,19 @@ impl AppController {
     self.dispatch_hotkey_input(HotkeyInput::FinalizePressed {
       overlay_visible: self.actionable_overlay_visible(),
     });
-    if raw_requested {
+    // Engine-stuck fallback for plain Enter: when there's a pending finalizing turn
+    // with a finalized draft sitting in the overlay AND the engine is `Idle` (i.e.
+    // no fresh `FinalText` is going to arrive), fall through to the raw-finalize
+    // path so the captured text actually pastes. This catches the post
+    // opt+space-during-finalize stuck state where the engine's finalize loop got
+    // disrupted and won't emit FinalText for the in-flight turn. The
+    // `last_pasted_turn_id != finalizing_turn_id` guard prevents a double-paste if
+    // a delayed FinalText eventually does arrive.
+    let engine_stuck = self.engine_state == EngineState::Idle
+      && self.finalizing_turn_id.is_some()
+      && !self.finalizing_draft.trim().is_empty()
+      && self.last_pasted_turn_id != self.finalizing_turn_id;
+    if raw_requested || engine_stuck {
       let turn_id = self.raw_finalize_target_turn_id();
       let _ = self.try_finalize_with_raw_text(turn_id);
     }
@@ -1207,6 +1227,7 @@ impl AppController {
       &self.latest_draft,
       self.held_top_overlay_active(),
       self.saw_vad_start_during_finalizing,
+      &self.finalizing_draft,
     ) || split_overlay_visible_with_live_divergence_for_state(
       self.finalizing_turn_id,
       &self.latest_draft,
@@ -2986,6 +3007,8 @@ impl AppController {
 
 #[cfg(test)]
 mod tests {
+  use std::time::{Duration, Instant};
+
   use super::{
     AppController,
     AzadConfig,
@@ -3173,6 +3196,7 @@ mod tests {
       "new words",
       false,
       true,
+      "previous text",
     ));
   }
 
@@ -3184,6 +3208,7 @@ mod tests {
       "new words",
       false,
       false,
+      "previous text",
     ));
   }
 
@@ -3195,6 +3220,141 @@ mod tests {
       "new words",
       false,
       true,
+      "previous text",
+    ));
+  }
+
+  #[test]
+  fn enter_falls_back_to_raw_paste_when_engine_is_idle_with_pending_finalize() {
+    // Reproduces the user-reported bug from 2026-04-29: after pressing opt+space
+    // during a finalizing turn (intent: "pause to think before pasting"), the
+    // engine's finalize loop gets disrupted and never emits FinalText for the
+    // in-flight turn. The finalizing_draft sits in the overlay, but pressing Enter
+    // dispatches FinalizePressed → FinalizeFromHotkey → session.finalize_current_turn()
+    // which is a no-op because the engine has nothing fresh to finalize. Only
+    // Opt+Enter (raw) pastes — because raw bypasses the engine via
+    // `try_finalize_with_raw_text` and uses `finalizing_draft` directly.
+    //
+    // After the fix, plain Enter also falls through to the raw path when the
+    // engine is `Idle` with a non-empty finalizing_draft.
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.models_ready = true;
+    controller.overlay_visible = true;
+    controller.engine_state = EngineState::Idle;
+    controller.manual_hold_active = false;
+    controller.current_turn_id = Some(7);
+    controller.finalizing_turn_id = Some(7);
+    controller.finalizing_draft = "the long utterance".to_string();
+    controller.latest_draft = "the long utterance".to_string();
+    controller.finalizing_deadline = Some(Instant::now() + Duration::from_secs(60));
+    controller.saw_vad_start_during_finalizing = true;
+    controller.latest_seen_turn_id = 7;
+
+    // Sanity: pre-fix this state was the "stuck" shape — overlay actionable, but
+    // dispatching FinalizePressed reaches no engine and no paste fires.
+    assert!(controller.actionable_overlay_visible());
+
+    controller.handle_finalize_hotkey_pressed(false);
+
+    // The fallback fires: raw-finalize clears the finalizing lane and captures
+    // the in-flight text into latest_final, even with no session attached.
+    assert_eq!(
+      controller.latest_final.as_deref(),
+      Some("the long utterance"),
+      "raw fallback must capture the finalizing draft as latest_final",
+    );
+    assert_eq!(
+      controller.finalizing_turn_id, None,
+      "raw fallback must clear the stuck finalizing lane",
+    );
+    assert_eq!(
+      controller.raw_handled_turn_id,
+      Some(7),
+      "raw fallback must mark the turn as raw-handled",
+    );
+    assert!(
+      controller.finalizing_draft.is_empty(),
+      "raw fallback must clear finalizing_draft (turn cleaned up)",
+    );
+  }
+
+  #[test]
+  fn enter_does_not_fall_back_when_engine_is_active() {
+    // Pin the gate: if the engine is in Speech state, the engine's own finalize
+    // loop is expected to deliver FinalText. The fallback must NOT preempt that —
+    // otherwise plain Enter would always race the engine and produce raw output
+    // instead of the polished full-pass text.
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.models_ready = true;
+    controller.overlay_visible = true;
+    controller.engine_state = EngineState::Speech;
+    controller.current_turn_id = Some(7);
+    controller.finalizing_turn_id = Some(7);
+    controller.finalizing_draft = "the long utterance".to_string();
+    controller.latest_draft = "the long utterance".to_string();
+    controller.finalizing_deadline = Some(Instant::now() + Duration::from_secs(60));
+    controller.latest_seen_turn_id = 7;
+
+    controller.handle_finalize_hotkey_pressed(false);
+
+    // No raw fallback fired — the engine is responsible for delivering FinalText.
+    assert!(
+      controller.latest_final.is_none(),
+      "raw fallback must not preempt the engine when it is active",
+    );
+    assert_eq!(
+      controller.finalizing_turn_id,
+      Some(7),
+      "finalizing turn stays in flight; engine will deliver FinalText",
+    );
+    assert!(controller.raw_handled_turn_id.is_none());
+  }
+
+  #[test]
+  fn enter_does_not_fall_back_when_finalizing_draft_is_empty() {
+    // Pin the gate: no text to fall back on means no fallback. Without this,
+    // pressing Enter during pre-speech setup (no draft yet) could leak into the
+    // raw path and produce an empty paste.
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.models_ready = true;
+    controller.overlay_visible = true;
+    controller.engine_state = EngineState::Idle;
+    controller.current_turn_id = Some(7);
+    controller.finalizing_turn_id = Some(7);
+    controller.finalizing_draft.clear();
+    controller.latest_draft.clear();
+    controller.latest_seen_turn_id = 7;
+
+    controller.handle_finalize_hotkey_pressed(false);
+
+    assert!(controller.latest_final.is_none());
+    assert_eq!(controller.finalizing_turn_id, Some(7));
+  }
+
+  #[test]
+  fn split_overlay_vad_hint_collapses_when_drafts_match() {
+    // Bug case: post opt+space-during-finalize, the engine re-emitted Finalizing for
+    // a new turn id but with the SAME content as the prior finalizing_draft. With the
+    // VAD-hint branch firing on `saw_vad_start_during_finalizing`, the renderer was
+    // showing two overlays with identical text (top busy + bottom idle). Filter the
+    // hint-only path on draft divergence so a duplicate finalized text never produces
+    // a phantom split lane.
+    assert!(!split_overlay_visible_with_vad_hint_for_state(
+      Some(5),
+      Some(5),
+      "the long utterance",
+      false,
+      true,
+      "the long utterance",
+    ));
+    // Real divergence still surfaces split mode.
+    assert!(split_overlay_visible_with_vad_hint_for_state(
+      Some(5),
+      Some(5),
+      "next thought begins",
+      false,
+      true,
+      "previous finalized sentence",
     ));
   }
 
