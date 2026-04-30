@@ -9,6 +9,7 @@ use asr::pipeline::{DebugStatsEvent, EngineState};
 use crate::config::AzadConfig;
 use crate::device::{DeviceController, DeviceEvent};
 use crate::hotkey_sm::{HotkeyEffect, HotkeyInput, HotkeyState, RuntimeSnapshot};
+use crate::input_log::{self, InputLogEntry, InputLogEvent, StateSnapshot};
 use crate::metrics_log::{self, MetricsLogEvent, MetricsLogRecord, TranscriptMode};
 use crate::model_download::{self, DownloadHandle};
 use crate::models::{self, PackStatus};
@@ -1020,6 +1021,7 @@ impl AppController {
   }
 
   fn handle_hotkey_pressed(&mut self) {
+    self.log_input_event(InputLogEvent::HotkeyPressed);
     // Pressing opt+space while in history mode dismisses history (without
     // pasting) and starts a fresh dictation turn. The user is signalling
     // "I want to talk now" — don't trap them in the list.
@@ -1042,6 +1044,7 @@ impl AppController {
   }
 
   fn handle_hotkey_released(&mut self) {
+    self.log_input_event(InputLogEvent::HotkeyReleased);
     if self.history_browsing {
       // Once in history mode the user is no longer required to hold opt+space —
       // they navigate with Up/Down and dismiss with Esc/Left or paste with Enter.
@@ -1055,6 +1058,7 @@ impl AppController {
   }
 
   fn handle_finalize_hotkey_pressed(&mut self, raw_requested: bool) {
+    self.log_input_event(InputLogEvent::FinalizeHotkeyPressed { raw_requested });
     if self.history_browsing {
       self.paste_from_history();
       return;
@@ -1081,6 +1085,11 @@ impl AppController {
       && !self.finalizing_draft.trim().is_empty()
       && self.last_pasted_turn_id != self.finalizing_turn_id;
     if raw_requested || engine_stuck {
+      if engine_stuck && !raw_requested {
+        if let Some(turn_id) = self.finalizing_turn_id {
+          self.log_input_event(InputLogEvent::RawFallbackFired { turn_id });
+        }
+      }
       let turn_id = self.raw_finalize_target_turn_id();
       let _ = self.try_finalize_with_raw_text(turn_id);
     }
@@ -1542,6 +1551,7 @@ impl AppController {
   }
 
   fn handle_overlay_cancel(&mut self) {
+    self.log_input_event(InputLogEvent::OverlayCancel);
     if self.history_browsing {
       // Esc always fully dismisses history regardless of expand state. The
       // list-mode "back" gesture is the Left arrow (HistoryCollapse), which
@@ -1723,6 +1733,7 @@ impl AppController {
         }
       }
       SpeechEvent::SpeechStartedByVad { .. } => {
+        self.log_input_event(InputLogEvent::EngineSpeechStart);
         self.note_stable_stream_progress();
         if self.finalizing_turn_id.is_some() {
           // Keep finalizing lane visible and prepare a fresh live lane below it.
@@ -1800,6 +1811,10 @@ impl AppController {
         self.handle_debug_stats_event(event);
       }
       SpeechEvent::Finalizing { turn_id, current_draft, .. } => {
+        self.log_input_event(InputLogEvent::EngineSpeechFinalizing {
+          turn_id,
+          draft_chars: current_draft.chars().count(),
+        });
         if self.debug_stats_enabled {
           eprintln!(
             "AZAD_FINALIZING_RECV turn_id={} draft_chars={} overlay_visible={} \
@@ -1866,6 +1881,7 @@ impl AppController {
         self.render_finalizing_overlay_state();
       }
       SpeechEvent::FinalizingCancelled { turn_id, .. } => {
+        self.log_input_event(InputLogEvent::EngineFinalizingCancelled { turn_id });
         if self.debug_stats_enabled {
           eprintln!(
             "AZAD_FINALIZING_CANCELLED_RECV turn_id={} finalizing_turn_id={:?} \
@@ -1892,6 +1908,10 @@ impl AppController {
         }
       }
       SpeechEvent::FinalText { turn_id, text, .. } => {
+        self.log_input_event(InputLogEvent::EngineFinalText {
+          turn_id,
+          text_chars: text.chars().count(),
+        });
         if !self.accept_turn(turn_id) {
           return;
         }
@@ -2012,6 +2032,7 @@ impl AppController {
         }
       }
       SpeechEvent::SessionEnded { session_id } => {
+        self.log_input_event(InputLogEvent::EngineSessionEnded);
         let should_restart = self.should_restart_after_session_end() || self.manual_hold_active;
         if self.debug_stats_enabled {
           eprintln!(
@@ -2484,7 +2505,17 @@ impl AppController {
       }));
     }
 
-    matches!(paste_result, PasteResult::Pasted)
+    let paste_ok = matches!(paste_result, PasteResult::Pasted);
+    self.log_input_event(InputLogEvent::PasteAttempt {
+      turn_id,
+      mode: match mode {
+        TranscriptMode::Normal => "normal",
+        TranscriptMode::Raw => "raw",
+      },
+      source: paste_result_label(paste_result),
+      paste_ok,
+    });
+    paste_ok
   }
 
   fn hide_overlay(&mut self) {
@@ -2498,6 +2529,7 @@ impl AppController {
   }
 
   fn handle_arrow_navigate(&mut self, direction: i32) {
+    self.log_input_event(InputLogEvent::ArrowNavigate { direction });
     // Up only pivots into history while opt+space is *actively held*. VAD-only
     // sessions (where the overlay shows because auto-detect picked up speech)
     // must let Up flow through to the focused app underneath — the user uses
@@ -2561,6 +2593,7 @@ impl AppController {
   }
 
   fn handle_history_collapse(&mut self) {
+    self.log_input_event(InputLogEvent::HistoryCollapse);
     if !self.history_browsing {
       return;
     }
@@ -2574,6 +2607,7 @@ impl AppController {
   }
 
   fn handle_history_expand(&mut self) {
+    self.log_input_event(InputLogEvent::HistoryExpand);
     if !self.history_browsing || self.history_expanded {
       return;
     }
@@ -2665,6 +2699,10 @@ impl AppController {
   }
 
   fn handle_history_search_changed(&mut self, query: String) {
+    self.log_input_event(InputLogEvent::HistorySearchEdit {
+      kind: "changed",
+      chars_appended: Some(query.chars().count()),
+    });
     if !self.history_browsing {
       return;
     }
@@ -2676,6 +2714,10 @@ impl AppController {
   }
 
   fn handle_history_search_append(&mut self, s: &str) {
+    self.log_input_event(InputLogEvent::HistorySearchEdit {
+      kind: "append",
+      chars_appended: Some(s.chars().count()),
+    });
     if !self.history_browsing {
       return;
     }
@@ -2684,6 +2726,10 @@ impl AppController {
   }
 
   fn handle_history_search_backspace(&mut self) {
+    self.log_input_event(InputLogEvent::HistorySearchEdit {
+      kind: "backspace",
+      chars_appended: None,
+    });
     if !self.history_browsing {
       return;
     }
@@ -2694,6 +2740,10 @@ impl AppController {
   }
 
   fn handle_history_search_delete_word(&mut self) {
+    self.log_input_event(InputLogEvent::HistorySearchEdit {
+      kind: "delete_word",
+      chars_appended: None,
+    });
     if !self.history_browsing || self.history_search_query.is_empty() {
       return;
     }
@@ -2712,6 +2762,7 @@ impl AppController {
   }
 
   fn handle_history_search_clear(&mut self) {
+    self.log_input_event(InputLogEvent::HistorySearchEdit { kind: "clear", chars_appended: None });
     if !self.history_browsing || self.history_search_query.is_empty() {
       return;
     }
@@ -2944,6 +2995,36 @@ impl AppController {
 
   fn accept_turn(&self, turn_id: u64) -> bool {
     turn_id >= self.turn_accept_floor
+  }
+
+  fn input_log_snapshot(&self) -> StateSnapshot {
+    StateSnapshot {
+      finalizing_turn_id: self.finalizing_turn_id,
+      current_turn_id: self.current_turn_id,
+      latest_seen_turn_id: self.latest_seen_turn_id,
+      finalizing_draft_chars: self.finalizing_draft.chars().count(),
+      latest_draft_chars: self.latest_draft.chars().count(),
+      engine_state: match self.engine_state {
+        EngineState::Idle => "idle",
+        EngineState::Speech => "speech",
+      },
+      manual_hold_active: self.manual_hold_active,
+      overlay_visible: self.overlay_visible,
+      saw_vad_start_during_finalizing: self.saw_vad_start_during_finalizing,
+      history_browsing: self.history_browsing,
+      last_pasted_turn_id: self.last_pasted_turn_id,
+      raw_handled_turn_id: self.raw_handled_turn_id,
+    }
+  }
+
+  fn log_input_event(&self, event: InputLogEvent) {
+    let entry = InputLogEntry {
+      schema_version: input_log::schema_version(),
+      ts_ms: input_log::now_epoch_ms(),
+      event,
+      state: self.input_log_snapshot(),
+    };
+    input_log::append(&entry);
   }
 
   fn observe_turn(&mut self, turn_id: u64) {
