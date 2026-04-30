@@ -5131,10 +5131,11 @@ extern "C" fn event_tap_callback(
     unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_AUTOREPEAT_FIELD) };
   let flags = unsafe { CGEventGetFlags(event) };
   let is_option = (flags & CGEventFlags::CGEventFlagAlternate.bits()) != 0;
+  let is_shift = (flags & CGEventFlags::CGEventFlagShift.bits()) != 0;
   let is_keydown = event_type == KCG_EVENT_KEY_DOWN;
   let is_autorepeat = autorepeat != 0;
 
-  if claim_tap_hotkey(keycode as u16, is_option, is_keydown, is_autorepeat) {
+  if claim_tap_hotkey(keycode as u16, is_option, is_shift, is_keydown, is_autorepeat) {
     return std::ptr::null_mut();
   }
   // History search bar: when active, intercept printable characters and
@@ -5149,7 +5150,13 @@ extern "C" fn event_tap_callback(
   event
 }
 
-fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool, is_autorepeat: bool) -> bool {
+fn claim_tap_hotkey(
+  keycode: u16,
+  is_option: bool,
+  is_shift: bool,
+  is_keydown: bool,
+  is_autorepeat: bool,
+) -> bool {
   // Option+Space: hold-to-talk.
   //
   // Dispatch `HotkeyPressed` on **every** non-autorepeat Opt+Space keydown (no edge-debounce),
@@ -5193,6 +5200,12 @@ fn claim_tap_hotkey(keycode: u16, is_option: bool, is_keydown: bool, is_autorepe
   if HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
     && (keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER)
   {
+    if is_shift {
+      // Shift+Enter is the user's "soft return / newline in the app underneath"
+      // escape hatch. Don't claim, don't dispatch — let the OS deliver the chord
+      // to whichever app has keyboard focus.
+      return false;
+    }
     if is_keydown {
       crate::app::send_event(AppEvent::FinalizeHotkeyPressed { raw_requested: is_option });
     }
@@ -5255,6 +5268,7 @@ fn claim_tap_search_input(
   }
   let is_option = (flags & CGEventFlags::CGEventFlagAlternate.bits()) != 0;
   let is_command = (flags & CGEventFlags::CGEventFlagCommand.bits()) != 0;
+  let is_shift = (flags & CGEventFlags::CGEventFlagShift.bits()) != 0;
 
   // Enter short-circuit: paste the selected history entry. Done here as a
   // belt-and-suspenders fix — `claim_tap_hotkey` should already handle
@@ -5262,7 +5276,14 @@ fn claim_tap_search_input(
   // when the panel is key + the search field is first responder there
   // were occurrences of Enter not pasting. This direct claim is
   // independent of that gate.
+  //
+  // Shift+Enter still passes through here too, mirroring the bypass in
+  // `claim_tap_hotkey` so a soft-return chord lands in the focused app even
+  // when the search field is first responder.
   if keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER {
+    if is_shift {
+      return false;
+    }
     crate::app::send_event(AppEvent::FinalizeHotkeyPressed { raw_requested: is_option });
     return true;
   }
