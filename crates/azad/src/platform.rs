@@ -3291,8 +3291,7 @@ unsafe fn render_overlay_history_list(
     }
 
     // The right-meta column is a vertical stack inside the highlight bg,
-    // anchored at the TOP of the bg so the full bg height — 30 pt for a
-    // 1-line row — is available to the stack. Top → bottom:
+    // CENTERED vertically within the bg. Top → bottom:
     //   - char-count
     //   - HISTORY_META_STACK_GAP (1 pt)
     //   - time-ago
@@ -3300,29 +3299,39 @@ unsafe fn render_overlay_history_list(
     //   - "▶" expand marker (only on truncated rows)
     //
     // All three labels share the same font size and label height so the
-    // full stack (9 + 1 + 9 + 1 + 9 = 29 pt) fits inside a 1-line row's
-    // 30-pt-tall bg with 1 pt of margin. On selected+expanded rows all
-    // three hide so the body fills the row.
+    // 3-item stack (9 + 1 + 9 + 1 + 9 = 29 pt) fits inside a 1-line row's
+    // 30-pt-tall bg with 1 pt of margin. The 2-item stack (no arrow) is
+    // 19 pt and gets centered in whatever bg height the row has. On
+    // selected+expanded rows all three hide so the body fills the row.
     let cc_h = HISTORY_CHAR_COUNT_FONT_SIZE + HISTORY_META_LABEL_VPAD;
     let ts_h = HISTORY_TS_FONT_SIZE + HISTORY_META_LABEL_VPAD;
     let marker_h = HISTORY_EXPAND_MARKER_FONT_SIZE + HISTORY_META_LABEL_VPAD;
     let bg_h_full = body_h + 2.0 * HISTORY_ROW_PAD_Y;
     let bg_top = row_bottom_y + bg_h_full;
-    let cc_y = bg_top - cc_h;
+    let row_truncated = rendered.ends_with('\u{2026}');
+    let show_marker = row_truncated && !is_selected_expanded;
+    // Stack height varies by whether the arrow is shown — center each
+    // shape independently so 1-line rows (no arrow) and 2-line truncated
+    // rows (3-item stack) both look balanced.
+    let stack_h = cc_h
+      + HISTORY_META_STACK_GAP
+      + ts_h
+      + if show_marker { HISTORY_META_STACK_GAP + marker_h } else { 0.0 };
+    let stack_top_offset = ((bg_h_full - stack_h) / 2.0).max(0.0);
+    let cc_y = bg_top - stack_top_offset - cc_h;
     let ts_y = cc_y - HISTORY_META_STACK_GAP - ts_h;
+    let marker_y = ts_y - HISTORY_META_STACK_GAP - marker_h;
 
     // "▶" expand marker — bottom of the stack, only when this row's body
     // was truncated (rendered text ended with "…"). Hidden in expanded
     // mode for the selected row.
     let marker = refs.autocomplete_expand_markers[vis_idx];
     if marker != nil {
-      let row_truncated = rendered.ends_with('\u{2026}');
-      let show_marker = row_truncated && !is_selected_expanded;
       if show_marker {
-        let marker_y = (ts_y - HISTORY_META_STACK_GAP - marker_h).max(row_bottom_y);
+        let marker_y_clamped = marker_y.max(row_bottom_y);
         let marker_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_EXPAND_MARKER_WIDTH;
         let frame = NSRect::new(
-          NSPoint::new(marker_x, marker_y),
+          NSPoint::new(marker_x, marker_y_clamped),
           NSSize::new(HISTORY_EXPAND_MARKER_WIDTH, marker_h),
         );
         let _: () = msg_send![marker, setFrame: frame];

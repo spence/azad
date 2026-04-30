@@ -371,20 +371,22 @@ fn extract_highlight_ranges(highlighted: &str) -> (String, Vec<(usize, usize)>) 
 }
 
 /// Compact char-count label rendered to the right of each history row, ABOVE the
-/// time-ago label. Always 1-3 chars wide so it fits the same column as
-/// [`format_timestamp_compact`]: plain integer up to 999, then `N.Mk` (truncated, not
-/// rounded) up to 9.9k, then `Nk` for 10k+, clamped at `999k` for pathologically long
-/// transcripts. Truncation (rather than rounding) keeps `1999` reading as `1.9k` —
-/// honest about the magnitude — instead of pretending it's already 2.0k.
+/// time-ago label. Mirrors [`format_timestamp_compact`]'s "tiny number + single-letter
+/// suffix" style: a `c` suffix on every output disambiguates "characters" from "k =
+/// kilometres / thousands / etc." at a glance. Plain integer up to 999, then `N.Mkc`
+/// (truncated, not rounded) up to 9.9k, then `Nkc` for 10k+, clamped at `999kc` for
+/// pathologically long transcripts. Truncation keeps `1999` reading as `1.9kc` — honest
+/// about magnitude — instead of pretending it's already 2.0kc. Worst case display is
+/// `999kc` (5 chars) which fits the 26 pt right-meta column at 8 pt font.
 pub fn format_char_count_compact(n: usize) -> String {
   if n < 1_000 {
-    format!("{n}")
+    format!("{n}c")
   } else if n < 10_000 {
-    format!("{}.{}k", n / 1000, (n % 1000) / 100)
+    format!("{}.{}kc", n / 1000, (n % 1000) / 100)
   } else if n < 1_000_000 {
-    format!("{}k", n / 1000)
+    format!("{}kc", n / 1000)
   } else {
-    "999k".to_string()
+    "999kc".to_string()
   }
 }
 
@@ -500,29 +502,29 @@ mod tests {
 
   #[test]
   fn format_char_count_compact_handles_each_range() {
-    // < 1000: plain integer.
-    assert_eq!(format_char_count_compact(0), "0");
-    assert_eq!(format_char_count_compact(1), "1");
-    assert_eq!(format_char_count_compact(47), "47");
-    assert_eq!(format_char_count_compact(100), "100");
-    assert_eq!(format_char_count_compact(500), "500");
-    assert_eq!(format_char_count_compact(999), "999");
-    // 1_000..10_000: N.Mk (truncate, not round).
-    assert_eq!(format_char_count_compact(1_000), "1.0k");
-    assert_eq!(format_char_count_compact(1_063), "1.0k");
-    assert_eq!(format_char_count_compact(1_100), "1.1k");
-    assert_eq!(format_char_count_compact(1_234), "1.2k");
-    assert_eq!(format_char_count_compact(1_999), "1.9k");
-    assert_eq!(format_char_count_compact(9_000), "9.0k");
-    assert_eq!(format_char_count_compact(9_999), "9.9k");
-    // 10_000..1_000_000: Nk (no decimal).
-    assert_eq!(format_char_count_compact(10_000), "10k");
-    assert_eq!(format_char_count_compact(12_345), "12k");
-    assert_eq!(format_char_count_compact(100_000), "100k");
-    assert_eq!(format_char_count_compact(999_999), "999k");
-    // 1_000_000+: clamp to "999k".
-    assert_eq!(format_char_count_compact(1_000_000), "999k");
-    assert_eq!(format_char_count_compact(usize::MAX), "999k");
+    // < 1000: plain integer + "c" suffix.
+    assert_eq!(format_char_count_compact(0), "0c");
+    assert_eq!(format_char_count_compact(1), "1c");
+    assert_eq!(format_char_count_compact(47), "47c");
+    assert_eq!(format_char_count_compact(100), "100c");
+    assert_eq!(format_char_count_compact(500), "500c");
+    assert_eq!(format_char_count_compact(999), "999c");
+    // 1_000..10_000: N.Mkc (truncate, not round).
+    assert_eq!(format_char_count_compact(1_000), "1.0kc");
+    assert_eq!(format_char_count_compact(1_063), "1.0kc");
+    assert_eq!(format_char_count_compact(1_100), "1.1kc");
+    assert_eq!(format_char_count_compact(1_234), "1.2kc");
+    assert_eq!(format_char_count_compact(1_999), "1.9kc");
+    assert_eq!(format_char_count_compact(9_000), "9.0kc");
+    assert_eq!(format_char_count_compact(9_999), "9.9kc");
+    // 10_000..1_000_000: Nkc (no decimal).
+    assert_eq!(format_char_count_compact(10_000), "10kc");
+    assert_eq!(format_char_count_compact(12_345), "12kc");
+    assert_eq!(format_char_count_compact(100_000), "100kc");
+    assert_eq!(format_char_count_compact(999_999), "999kc");
+    // 1_000_000+: clamp to "999kc".
+    assert_eq!(format_char_count_compact(1_000_000), "999kc");
+    assert_eq!(format_char_count_compact(usize::MAX), "999kc");
   }
 
   #[test]
