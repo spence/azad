@@ -264,6 +264,13 @@ struct OverlayRefs {
   /// side of every row, so the user can quickly date each entry without
   /// the label competing visually with the body text.
   autocomplete_ts_labels: [id; AUTOCOMPLETE_MAX_ITEMS],
+  /// Char-count labels ("47", "1.2k", "12k") parallel to
+  /// `autocomplete_labels`. Stacked ABOVE the time-ago label inside the
+  /// highlight bg, top-anchored. Same right-aligned 26pt column as the
+  /// timestamp; body wrap budget unchanged. Hidden on selected+expanded
+  /// rows (matches the time-ago hide rule) and on 1-line rows where
+  /// only char-count fits in the right meta column.
+  autocomplete_char_count_labels: [id; AUTOCOMPLETE_MAX_ITEMS],
   search_field: id,
   search_icon: id,
   /// 1-pt-wide blinking caret rendered manually because the panel's native
@@ -684,6 +691,11 @@ pub struct HistoryEntryView<'a> {
   /// recorded. Renderer turns this into a compact "5s / 12m / 1h / 2d"
   /// label drawn outside the highlight bg on the left of the row.
   pub ts_ms: i64,
+  /// User-perceived character count (`text.chars().count()`). Renderer turns
+  /// this into a compact label ("47" / "1.2k" / "12k") rendered above the
+  /// time-ago label inside the highlight bg, top-anchored. Same
+  /// right-aligned column as the timestamp; body wrap budget unchanged.
+  pub char_count: usize,
 }
 
 pub fn set_overlay_history_content(
@@ -2696,6 +2708,9 @@ unsafe fn render_overlay_text(
     if refs.autocomplete_ts_labels[i] != nil {
       let _: () = msg_send![refs.autocomplete_ts_labels[i], setHidden: YES];
     }
+    if refs.autocomplete_char_count_labels[i] != nil {
+      let _: () = msg_send![refs.autocomplete_char_count_labels[i], setHidden: YES];
+    }
   }
   // History-mode search bar widgets — hidden whenever we're not in history mode.
   if refs.search_field != nil {
@@ -2814,6 +2829,19 @@ const HISTORY_TS_TEXT_ALPHA: f64 = 0.45;
 const HISTORY_TS_WIDTH: f64 = 26.0;
 const HISTORY_TS_GAP: f64 = 6.0;
 
+// Per-row char-count label, stacked ABOVE the time-ago label inside the
+// highlight bg. Same right-aligned column as the timestamp; the alloc
+// reuses the timestamp's font + colour so they read as visual siblings —
+// hierarchy comes from position, not weight. Format from
+// `transcript_history::format_char_count_compact` is always ≤ 4 chars
+// ("47", "1.2k", "12k", "999k").
+const HISTORY_CHAR_COUNT_FONT_SIZE: f64 = HISTORY_TS_FONT_SIZE;
+const HISTORY_CHAR_COUNT_WIDTH: f64 = HISTORY_TS_WIDTH;
+// Vertical gap between the char-count and time-ago labels in the
+// right-meta stack. Time-ago and the expand marker keep their existing
+// 1-pt gap below them.
+const HISTORY_META_STACK_GAP: f64 = 2.0;
+
 // Per-row "▶" expand marker, drawn on the right edge of any row whose body
 // is truncated (with an ellipsis). Tells the user this entry has more text
 // available via right-arrow.
@@ -2889,6 +2917,9 @@ unsafe fn render_overlay_history_list(
       }
       if refs.autocomplete_ts_labels[i] != nil {
         let _: () = msg_send![refs.autocomplete_ts_labels[i], setHidden: YES];
+      }
+      if refs.autocomplete_char_count_labels[i] != nil {
+        let _: () = msg_send![refs.autocomplete_char_count_labels[i], setHidden: YES];
       }
     }
     let label = refs.autocomplete_labels[0];
@@ -3254,22 +3285,36 @@ unsafe fn render_overlay_history_list(
       }
     }
 
+    // The right-meta column is a vertical stack inside the highlight bg,
+    // top-aligned to the body top. Top → bottom:
+    //   - char-count (always visible unless selected+expanded)
+    //   - 2pt gap (HISTORY_META_STACK_GAP)
+    //   - time-ago (hidden on 1-line rows where the stack doesn't fit)
+    //   - 1pt gap
+    //   - "▶" expand marker (truncated rows only)
+    //
+    // 1-line row predicate: a row is 1-line when its body height is at most
+    // ~1.05× the single-line height. We compute it once and gate the
+    // time-ago + arrow on it. Char-count remains visible because it's the
+    // only meta item that always fits in a 1-line row's vertical budget.
+    let cc_h = HISTORY_CHAR_COUNT_FONT_SIZE + 4.0;
+    let ts_h = HISTORY_TS_FONT_SIZE + 4.0;
+    let body_top = row_bottom_y + HISTORY_ROW_PAD_Y + body_h;
+    let ts_y = body_top - cc_h - HISTORY_META_STACK_GAP - ts_h;
+    let row_is_single_line = *body_h <= HISTORY_BODY_LINE_HEIGHT * 1.05;
+
     // "▶" expand marker on the right edge — only when this row's body was
     // truncated (rendered text ended with "…"). Hidden in expanded mode
-    // for the selected row (the entry is already fully visible).
+    // for the selected row (the entry is already fully visible) and on
+    // 1-line rows (truncated rows are always 2-line by construction so
+    // this is belt-and-suspenders).
     let marker = refs.autocomplete_expand_markers[vis_idx];
     if marker != nil {
       let row_truncated = rendered.ends_with('\u{2026}');
-      let show_marker = row_truncated && !is_selected_expanded;
+      let show_marker = row_truncated && !is_selected_expanded && !row_is_single_line;
       if show_marker {
         let marker_h = HISTORY_EXPAND_MARKER_FONT_SIZE + 4.0;
-        let ts_h = HISTORY_TS_FONT_SIZE + 4.0;
-        // Stacked underneath the timestamp in the same right-edge
-        // column; right edges aligned. Truncated rows are always
-        // 2-line rows so there's enough vertical room to fit both.
-        let body_top = row_bottom_y + HISTORY_ROW_PAD_Y + body_h;
-        let ts_bottom = body_top - ts_h;
-        let marker_y = (ts_bottom - marker_h - 1.0).max(row_bottom_y);
+        let marker_y = (ts_y - marker_h - 1.0).max(row_bottom_y);
         let marker_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_EXPAND_MARKER_WIDTH;
         let frame = NSRect::new(
           NSPoint::new(marker_x, marker_y),
@@ -3285,26 +3330,41 @@ unsafe fn render_overlay_history_list(
     }
 
     // Time-ago label INSIDE the highlight bg, on the right edge,
-    // top-aligned with the body so timestamps line up vertically across
-    // rows regardless of 1- vs 2-line bodies. Hidden when the selected
-    // row is expanded (the body fills the row visually).
+    // stacked under the char-count. Hidden when the selected row is
+    // expanded OR when the row is single-line (no vertical room for
+    // both meta items).
     let ts_label = refs.autocomplete_ts_labels[vis_idx];
     if ts_label != nil {
-      if is_selected_expanded {
+      if is_selected_expanded || row_is_single_line {
         let _: () = msg_send![ts_label, setHidden: YES];
       } else {
-        let label_h = HISTORY_TS_FONT_SIZE + 4.0;
-        let body_top = row_bottom_y + HISTORY_ROW_PAD_Y + body_h;
-        let label_y = body_top - label_h;
         let label_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_TS_WIDTH;
-        let frame =
-          NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(HISTORY_TS_WIDTH, label_h));
+        let frame = NSRect::new(NSPoint::new(label_x, ts_y), NSSize::new(HISTORY_TS_WIDTH, ts_h));
         let _: () = msg_send![ts_label, setFrame: frame];
         let s = crate::transcript_history::format_timestamp_compact(entries[entry_idx].ts_ms);
         let _: () = msg_send![ts_label, setStringValue: NSString::alloc(nil).init_str(&s)];
         let _: () = msg_send![ts_label, setHidden: NO];
         // Bring above the highlight bg so it stays visible on selected rows.
         let _: () = msg_send![refs.card_view, addSubview: ts_label];
+      }
+    }
+
+    // Char-count label INSIDE the highlight bg, top-anchored at body_top.
+    // Always visible unless the selected row is expanded.
+    let cc_label = refs.autocomplete_char_count_labels[vis_idx];
+    if cc_label != nil {
+      if is_selected_expanded {
+        let _: () = msg_send![cc_label, setHidden: YES];
+      } else {
+        let cc_y = body_top - cc_h;
+        let cc_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_CHAR_COUNT_WIDTH;
+        let frame =
+          NSRect::new(NSPoint::new(cc_x, cc_y), NSSize::new(HISTORY_CHAR_COUNT_WIDTH, cc_h));
+        let _: () = msg_send![cc_label, setFrame: frame];
+        let s = crate::transcript_history::format_char_count_compact(entries[entry_idx].char_count);
+        let _: () = msg_send![cc_label, setStringValue: NSString::alloc(nil).init_str(&s)];
+        let _: () = msg_send![cc_label, setHidden: NO];
+        let _: () = msg_send![refs.card_view, addSubview: cc_label];
       }
     }
 
@@ -3326,6 +3386,9 @@ unsafe fn render_overlay_history_list(
     }
     if refs.autocomplete_ts_labels[i] != nil {
       let _: () = msg_send![refs.autocomplete_ts_labels[i], setHidden: YES];
+    }
+    if refs.autocomplete_char_count_labels[i] != nil {
+      let _: () = msg_send![refs.autocomplete_char_count_labels[i], setHidden: YES];
     }
   }
 
@@ -4643,6 +4706,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let mut autocomplete_bgs = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let mut autocomplete_expand_markers = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let mut autocomplete_ts_labels = [nil; AUTOCOMPLETE_MAX_ITEMS];
+  let mut autocomplete_char_count_labels = [nil; AUTOCOMPLETE_MAX_ITEMS];
   let ac_font: id = msg_send![class!(NSFont), systemFontOfSize: 14.0f64];
   let expand_marker_font: id =
     msg_send![class!(NSFont), systemFontOfSize: HISTORY_EXPAND_MARKER_FONT_SIZE];
@@ -4747,6 +4811,29 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     let _: () = msg_send![ts_label, setHidden: YES];
     let _: () = msg_send![card_view, addSubview: ts_label];
     autocomplete_ts_labels[i] = ts_label;
+
+    // Char-count label: same column / font / colour as the timestamp,
+    // stacked above it during render. We reuse the timestamp's font and
+    // colour objects for parity (single source of visual truth).
+    let cc_label: id = msg_send![class!(NSTextField), alloc];
+    let cc_label: id = msg_send![cc_label, initWithFrame: NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(HISTORY_CHAR_COUNT_WIDTH, HISTORY_CHAR_COUNT_FONT_SIZE + 4.0)
+    )];
+    let _: () = msg_send![cc_label, setBezeled: NO];
+    let _: () = msg_send![cc_label, setDrawsBackground: NO];
+    let _: () = msg_send![cc_label, setEditable: NO];
+    let _: () = msg_send![cc_label, setSelectable: NO];
+    let _: () = msg_send![cc_label, setUsesSingleLineMode: YES];
+    let _: () = msg_send![cc_label, setAlignment: 2isize]; // right
+    let _: () = msg_send![cc_label, setLineBreakMode: 4isize]; // truncate tail
+    if ts_font != nil {
+      let _: () = msg_send![cc_label, setFont: ts_font];
+    }
+    let _: () = msg_send![cc_label, setTextColor: ts_color];
+    let _: () = msg_send![cc_label, setHidden: YES];
+    let _: () = msg_send![card_view, addSubview: cc_label];
+    autocomplete_char_count_labels[i] = cc_label;
   }
 
   let notice_accessory_row: id = msg_send![class!(NSView), alloc];
@@ -4994,6 +5081,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     autocomplete_bgs,
     autocomplete_expand_markers,
     autocomplete_ts_labels,
+    autocomplete_char_count_labels,
     search_field,
     search_icon,
     search_caret,

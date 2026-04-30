@@ -2644,6 +2644,7 @@ impl AppController {
         text: h.final_text.as_str(),
         match_ranges: h.match_ranges.clone(),
         ts_ms: h.ts_ms,
+        char_count: h.final_text.chars().count(),
       })
       .collect();
     let visible = entries.len();
