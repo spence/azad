@@ -2559,31 +2559,39 @@ impl AppController {
     // they're all 1-line). The last fitted (start, count) lives on the
     // platform side; we read them here to know whether to slide the window.
     //
-    // Up (older, browse_index += 1): when selection would fall off the top
-    //   (entry_idx >= start + count), bump `visible_start` so selection
-    //   stays in the window — the renderer pins it to the top via greedy
-    //   fit from the new start.
-    // Down (newer, browse_index -= 1): when selection drops within
-    //   `DESCENT_LAG` of the bottom of the window, slide so selection
-    //   settles `DESCENT_LAG` slots above the bottom — the user gets a
-    //   couple of slots of in-window descent before the window slides.
-    const DESCENT_LAG: usize = 2;
+    // Both directions use a symmetric `LAG = 2` rule so the selected row
+    // stays off the window's edges by 2 slots after a scroll fires —
+    // pressing Up or Down keeps the highlighted row roughly centred
+    // instead of sticking it to the top/bottom edge.
+    //
+    // Up (older, browse_index += 1): scroll fires when the new selection
+    //   is within `LAG` of the top of the window; visible_start advances
+    //   so the selection lands `LAG` slots from the top of the new
+    //   window. (Was: scroll only fired AFTER the selection had moved
+    //   past the top, so the selected row sat at the top edge.)
+    // Down (newer, browse_index -= 1): mirror — scroll when within
+    //   `LAG` of the bottom; selection lands `LAG` slots from the
+    //   bottom of the new window.
+    const LAG: usize = 2;
     let last_start = platform::last_history_visible_start();
     let last_count = platform::last_history_visible_count().max(1);
     match direction {
       -1 => {
         if self.history_browse_index + 1 < count {
           self.history_browse_index += 1;
-          if self.history_browse_index >= last_start + last_count {
-            self.history_visible_start = last_start + 1;
+          if self.history_browse_index + LAG >= last_start + last_count {
+            // Symmetric to the Down arm below: pin the selection LAG
+            // slots from the top of the new window.
+            self.history_visible_start =
+              (self.history_browse_index + 1 + LAG).saturating_sub(last_count);
           }
         }
       }
       1 => {
         if self.history_browse_index > 0 {
           self.history_browse_index -= 1;
-          if self.history_browse_index < last_start + DESCENT_LAG {
-            self.history_visible_start = self.history_browse_index.saturating_sub(DESCENT_LAG);
+          if self.history_browse_index < last_start + LAG {
+            self.history_visible_start = self.history_browse_index.saturating_sub(LAG);
           }
         }
       }

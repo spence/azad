@@ -2820,32 +2820,37 @@ const SEARCH_MATCH_BG_G: f64 = 0.85;
 const SEARCH_MATCH_BG_B: f64 = 0.20;
 const SEARCH_MATCH_BG_ALPHA: f64 = 0.45;
 
-// Per-row time-ago label, drawn on the LEFT of each row OUTSIDE the
-// highlight bg. Format from `transcript_history::format_timestamp_compact`
-// is always ≤ 4 chars (e.g. "5s", "12m", "1h", "999d"). The fixed-width
-// column reserved for it is the same on every row so they align vertically.
-const HISTORY_TS_FONT_SIZE: f64 = 10.0;
+// Per-row right-meta column. Three items right-aligned in a 26-pt-wide
+// column inside the highlight bg, stacked top → bottom: char-count,
+// time-ago, expand marker. All three use the same small font so the
+// full stack fits inside a 1-line row's 30-pt-tall highlight bg —
+// 9 + 1 + 9 + 1 + 9 = 29 pt with 1 pt of safety margin.
+//
+// Char-count format is from `transcript_history::format_char_count_compact`
+// (always ≤ 4 chars: "47", "1.2k", "12k", "999k"); time-ago format is from
+// `format_timestamp_compact` (always ≤ 4 chars: "5s", "12m", "1h", "999d").
+// The arrow is the literal U+25B6 glyph.
+const HISTORY_TS_FONT_SIZE: f64 = 8.0;
 const HISTORY_TS_TEXT_ALPHA: f64 = 0.45;
 const HISTORY_TS_WIDTH: f64 = 26.0;
 const HISTORY_TS_GAP: f64 = 6.0;
 
-// Per-row char-count label, stacked ABOVE the time-ago label inside the
-// highlight bg. Same right-aligned column as the timestamp; the alloc
-// reuses the timestamp's font + colour so they read as visual siblings —
-// hierarchy comes from position, not weight. Format from
-// `transcript_history::format_char_count_compact` is always ≤ 4 chars
-// ("47", "1.2k", "12k", "999k").
+// Char-count mirrors the time-ago font size + width so the stack reads as
+// uniform siblings (visual hierarchy by position, not weight). Kept as
+// named consts (rather than inlining HISTORY_TS_*) to keep
+// "differentiate them later" a one-line change.
 const HISTORY_CHAR_COUNT_FONT_SIZE: f64 = HISTORY_TS_FONT_SIZE;
 const HISTORY_CHAR_COUNT_WIDTH: f64 = HISTORY_TS_WIDTH;
-// Vertical gap between the char-count and time-ago labels in the
-// right-meta stack. Time-ago and the expand marker keep their existing
-// 1-pt gap below them.
-const HISTORY_META_STACK_GAP: f64 = 2.0;
+// Per-label vertical padding (label height = font + this). Tighter than the
+// previous +4 so the three-item stack fits inside a 30-pt bg.
+const HISTORY_META_LABEL_VPAD: f64 = 1.0;
+// Vertical gap between adjacent meta items in the stack.
+const HISTORY_META_STACK_GAP: f64 = 1.0;
 
-// Per-row "▶" expand marker, drawn on the right edge of any row whose body
-// is truncated (with an ellipsis). Tells the user this entry has more text
-// available via right-arrow.
-const HISTORY_EXPAND_MARKER_FONT_SIZE: f64 = 11.0;
+// Per-row "▶" expand marker, anchored at the bottom of the right-meta
+// stack when the row's body is truncated. Sized to match the time-ago +
+// char-count font so the three-item stack fits inside a 1-line row's bg.
+const HISTORY_EXPAND_MARKER_FONT_SIZE: f64 = HISTORY_TS_FONT_SIZE;
 const HISTORY_EXPAND_MARKER_ALPHA: f64 = 0.55;
 const HISTORY_EXPAND_MARKER_WIDTH: f64 = 14.0;
 
@@ -3286,35 +3291,35 @@ unsafe fn render_overlay_history_list(
     }
 
     // The right-meta column is a vertical stack inside the highlight bg,
-    // top-aligned to the body top. Top → bottom:
-    //   - char-count (always visible unless selected+expanded)
-    //   - 2pt gap (HISTORY_META_STACK_GAP)
-    //   - time-ago (hidden on 1-line rows where the stack doesn't fit)
-    //   - 1pt gap
-    //   - "▶" expand marker (truncated rows only)
+    // anchored at the TOP of the bg so the full bg height — 30 pt for a
+    // 1-line row — is available to the stack. Top → bottom:
+    //   - char-count
+    //   - HISTORY_META_STACK_GAP (1 pt)
+    //   - time-ago
+    //   - HISTORY_META_STACK_GAP (1 pt)
+    //   - "▶" expand marker (only on truncated rows)
     //
-    // 1-line row predicate: a row is 1-line when its body height is at most
-    // ~1.05× the single-line height. We compute it once and gate the
-    // time-ago + arrow on it. Char-count remains visible because it's the
-    // only meta item that always fits in a 1-line row's vertical budget.
-    let cc_h = HISTORY_CHAR_COUNT_FONT_SIZE + 4.0;
-    let ts_h = HISTORY_TS_FONT_SIZE + 4.0;
-    let body_top = row_bottom_y + HISTORY_ROW_PAD_Y + body_h;
-    let ts_y = body_top - cc_h - HISTORY_META_STACK_GAP - ts_h;
-    let row_is_single_line = *body_h <= HISTORY_BODY_LINE_HEIGHT * 1.05;
+    // All three labels share the same font size and label height so the
+    // full stack (9 + 1 + 9 + 1 + 9 = 29 pt) fits inside a 1-line row's
+    // 30-pt-tall bg with 1 pt of margin. On selected+expanded rows all
+    // three hide so the body fills the row.
+    let cc_h = HISTORY_CHAR_COUNT_FONT_SIZE + HISTORY_META_LABEL_VPAD;
+    let ts_h = HISTORY_TS_FONT_SIZE + HISTORY_META_LABEL_VPAD;
+    let marker_h = HISTORY_EXPAND_MARKER_FONT_SIZE + HISTORY_META_LABEL_VPAD;
+    let bg_h_full = body_h + 2.0 * HISTORY_ROW_PAD_Y;
+    let bg_top = row_bottom_y + bg_h_full;
+    let cc_y = bg_top - cc_h;
+    let ts_y = cc_y - HISTORY_META_STACK_GAP - ts_h;
 
-    // "▶" expand marker on the right edge — only when this row's body was
-    // truncated (rendered text ended with "…"). Hidden in expanded mode
-    // for the selected row (the entry is already fully visible) and on
-    // 1-line rows (truncated rows are always 2-line by construction so
-    // this is belt-and-suspenders).
+    // "▶" expand marker — bottom of the stack, only when this row's body
+    // was truncated (rendered text ended with "…"). Hidden in expanded
+    // mode for the selected row.
     let marker = refs.autocomplete_expand_markers[vis_idx];
     if marker != nil {
       let row_truncated = rendered.ends_with('\u{2026}');
-      let show_marker = row_truncated && !is_selected_expanded && !row_is_single_line;
+      let show_marker = row_truncated && !is_selected_expanded;
       if show_marker {
-        let marker_h = HISTORY_EXPAND_MARKER_FONT_SIZE + 4.0;
-        let marker_y = (ts_y - marker_h - 1.0).max(row_bottom_y);
+        let marker_y = (ts_y - HISTORY_META_STACK_GAP - marker_h).max(row_bottom_y);
         let marker_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_EXPAND_MARKER_WIDTH;
         let frame = NSRect::new(
           NSPoint::new(marker_x, marker_y),
@@ -3329,13 +3334,12 @@ unsafe fn render_overlay_history_list(
       }
     }
 
-    // Time-ago label INSIDE the highlight bg, on the right edge,
-    // stacked under the char-count. Hidden when the selected row is
-    // expanded OR when the row is single-line (no vertical room for
-    // both meta items).
+    // Time-ago label INSIDE the highlight bg, right-aligned, stacked
+    // under the char-count. Hidden when the selected row is expanded
+    // (the body fills the row visually).
     let ts_label = refs.autocomplete_ts_labels[vis_idx];
     if ts_label != nil {
-      if is_selected_expanded || row_is_single_line {
+      if is_selected_expanded {
         let _: () = msg_send![ts_label, setHidden: YES];
       } else {
         let label_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_TS_WIDTH;
@@ -3349,14 +3353,13 @@ unsafe fn render_overlay_history_list(
       }
     }
 
-    // Char-count label INSIDE the highlight bg, top-anchored at body_top.
+    // Char-count label INSIDE the highlight bg, top-anchored to the bg.
     // Always visible unless the selected row is expanded.
     let cc_label = refs.autocomplete_char_count_labels[vis_idx];
     if cc_label != nil {
       if is_selected_expanded {
         let _: () = msg_send![cc_label, setHidden: YES];
       } else {
-        let cc_y = body_top - cc_h;
         let cc_x = bg_x + bg_w_full - HISTORY_TEXT_INNER_PAD_X - HISTORY_CHAR_COUNT_WIDTH;
         let frame =
           NSRect::new(NSPoint::new(cc_x, cc_y), NSSize::new(HISTORY_CHAR_COUNT_WIDTH, cc_h));
