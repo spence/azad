@@ -3036,7 +3036,16 @@ unsafe fn render_overlay_history_list(
         configure_history_body_label(label);
         fit_history_body_with_ellipsis(label, entries[entry_idx].text, row_label_w, body_max_height)
       };
-      let body_h = body_h_raw.max(HISTORY_BODY_LINE_HEIGHT).min(body_max_height);
+      // Pin every row to the 2-line max height regardless of how much
+      // content actually fits. Mixed 1-line / 2-line heights look jarring
+      // as the user cursors up the list (rows visibly resize between
+      // 30 pt and 48 pt). Uniform row height eliminates the bounce — short
+      // entries simply leave breathing room below their text. The
+      // `body_h_raw` from `fit_history_body_with_ellipsis` is still used
+      // implicitly because that helper sets the rendered text + ellipsis;
+      // we just override its height suggestion here.
+      let _ = body_h_raw;
+      let body_h = body_max_height;
       let row_h = body_h + 2.0 * HISTORY_ROW_PAD_Y;
       // Fit budget: the cumulative row stack may reach UP TO the inner top
       // border (HISTORY_LIST_HEIGHT - OVERLAY_PAD_TOP), measured from y=0.
