@@ -3130,24 +3130,22 @@ unsafe fn render_overlay_history_list(
     _ => 0.0,
   };
 
-  // Dynamic card height: when the fitted rows + their natural gaps don't
-  // fill the full HISTORY_CARD_HEIGHT budget, shrink the card from the
-  // top so there's no empty space above. The bottom stays anchored
-  // (NSWindow origin.y is bottom-left, and we leave origin.y alone in
-  // `apply_history_window_frame`). When the rows fill the budget,
-  // height stays at HISTORY_CARD_HEIGHT and gap-stretching distributes
-  // any remaining slack across the gaps for the top-anchor case.
-  let row_natural_total = measured.iter().map(|(_, h)| h + 2.0 * HISTORY_ROW_PAD_Y).sum::<f64>()
-    + (measured.len().saturating_sub(1) as f64) * HISTORY_ROW_GAP;
-  let natural_card_height = LIST_BASE_Y + row_natural_total + OVERLAY_PAD_TOP;
+  // Fixed card height in history mode: we hold the overlay at
+  // HISTORY_CARD_HEIGHT regardless of how many rows fit so the search bar
+  // sits in a stable position and the card doesn't visibly re-snap as the
+  // user types and the result count changes. Gap-stretching above the
+  // rows fills any slack between the top of the card and the highest
+  // fitted row.
+  //
   // Expand-up: when the selected row is the bottom-most visible (no room
   // below), the row grows UPWARD by `expand_delta` and the card's top
-  // edge moves up by the same amount to make room.
+  // edge moves up by the same amount to make room. This is the one case
+  // where the card grows beyond HISTORY_CARD_HEIGHT.
   let expand_up = sel_in_window == Some(0) && expand_delta > 0.0;
   let height = if expand_up {
-    (natural_card_height + expand_delta).min(OVERLAY_HEIGHT_MAX)
+    (HISTORY_CARD_HEIGHT + expand_delta).min(OVERLAY_HEIGHT_MAX)
   } else {
-    natural_card_height.min(HISTORY_CARD_HEIGHT)
+    HISTORY_CARD_HEIGHT
   };
 
   if overlay_debug_logs_enabled() {
