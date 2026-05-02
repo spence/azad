@@ -71,9 +71,22 @@ impl Default for AzadConfig {
       native_engine_logs_enabled: env_flag_enabled("AZAD_NATIVE_ENGINE_LOGS"),
       pipeline: PipelineConfig {
         vad_model_path: vad_path,
-        vad_thold: 0.45,
+        // Lowered from 0.45 → 0.30 to detect softer speech-starts faster.
+        // Trade-off: more permissive turn-start means a quiet false-positive
+        // (typing, breath, lip-smack) can spawn a turn — but the engine
+        // immediately hands such turns to the empty-draft path which paste-
+        // suppresses on `cleaned.is_empty()`, so the user-visible cost is
+        // an overlay flicker rather than a phantom paste. Companion changes:
+        // pre_roll_ms widened to 1500 below so the first slow-attack syllable
+        // isn't lost when start-detection fires late.
+        vad_thold: 0.30,
         vad_start_chunks: 1,
-        pre_roll_ms: 800,
+        // Widened from 800 → 1500 ms. With the lower vad_thold = 0.30 above
+        // we accept slightly slower first-detection, but the larger pre-roll
+        // means even when detection lags by a full second the engine still
+        // recovers the user's first 1.5 s of audio. Memory cost is trivial
+        // (1.5 s @ 16 kHz mono f32 ≈ 96 kB / circular buffer).
+        pre_roll_ms: 1500,
         // Was 240 ms. 240 ms of VAD-classified silence is easily reached during natural
         // connected speech — micro-pauses at word boundaries, consonant-heavy segments, or
         // brief Silero probability dips. Combined with EOU latching on an intermediate

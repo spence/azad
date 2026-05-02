@@ -141,6 +141,7 @@ const OVERLAY_NOTICE_AUTO_ON_FONT_SIZE: f64 = 11.5;
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
 const NS_VIEW_WIDTH_SIZABLE: u64 = 1 << 1;
 const NS_VIEW_HEIGHT_SIZABLE: u64 = 1 << 4;
+const NS_VIEW_MAX_Y_MARGIN: u64 = 1 << 5;
 const NSEVENT_MODIFIER_FLAG_OPTION: u64 = 1 << 19;
 const HOLD_HOTKEY_MODIFIERS: Modifiers = Modifiers::ALT;
 const HOLD_HOTKEY_KEY: Code = Code::Space;
@@ -4549,6 +4550,38 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let _: () = msg_send![debug_container, addSubview: scroll_view];
   let _: () = msg_send![body_view, addSubview: debug_container];
   let _: () = msg_send![tab_list_view, reloadData];
+
+  // Build-info footer (bottom-right corner of the window). Tiny dim text so
+  // it sits visually behind the controls, selectable so the user can copy
+  // the git SHA when filing reports. Values come from `build.rs` via
+  // `cargo:rustc-env`. Anchored in `content_view` (not `body_view`) so it
+  // sits in the window's bottom inset margin and doesn't compete for space
+  // with the tab content.
+  let build_info_text = format!("{} · {}", env!("AZAD_BUILD_GIT_SHA"), env!("AZAD_BUILD_TIME"));
+  let build_info_str = NSString::alloc(nil).init_str(&build_info_text);
+  let build_info_label: id = msg_send![class!(NSTextField), alloc];
+  let build_info_w: f64 = 280.0;
+  let build_info_h: f64 = 14.0;
+  let build_info_frame = NSRect::new(
+    NSPoint::new(SETTINGS_WINDOW_WIDTH - build_info_w - 8.0, 4.0),
+    NSSize::new(build_info_w, build_info_h),
+  );
+  let build_info_label: id = msg_send![build_info_label, initWithFrame: build_info_frame];
+  let _: () = msg_send![build_info_label, setStringValue: build_info_str];
+  let _: () = msg_send![build_info_label, setBezeled: NO];
+  let _: () = msg_send![build_info_label, setDrawsBackground: NO];
+  let _: () = msg_send![build_info_label, setEditable: NO];
+  let _: () = msg_send![build_info_label, setSelectable: YES];
+  let _: () = msg_send![build_info_label, setAlignment: 2isize]; // right
+  let build_info_font: id = msg_send![class!(NSFont), systemFontOfSize: 10.0f64];
+  let _: () = msg_send![build_info_label, setFont: build_info_font];
+  let build_info_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.5, 0.5, 0.5, 1.0);
+  let _: () = msg_send![build_info_label, setTextColor: build_info_color];
+  let _: () = msg_send![
+      build_info_label,
+      setAutoresizingMask: NS_VIEW_MIN_X_MARGIN | NS_VIEW_MAX_Y_MARGIN
+  ];
+  let _: () = msg_send![content_view, addSubview: build_info_label];
 
   let refs = SettingsWindowRefs {
     window,
