@@ -82,6 +82,16 @@ impl Default for AzadConfig {
         // paste spinner) but meaningfully widens the window against false VAD-silence cuts.
         eou_min_silence_ms: 350,
         eou_max_silence_ms: 1_000,
+        // VAD probability floor while a turn is in progress. Sub-floor chunks
+        // accumulate against `eou_max_silence_ms`. Was implicitly 0.30 (derived
+        // from `vad_thold - 0.15`) for years. Production turn 252 (2026-05-01)
+        // showed sustained vad_prob 0.01-0.24 during continuous user speech —
+        // sub-0.30 — so the engine misread soft continuation as silence and
+        // force-ended mid-clause. 0.10 keeps any non-trivial voice activity
+        // above the floor while staying above typical mic / room noise floor
+        // (< 0.05 in tests). Starting a turn still requires `vad_thold = 0.45`
+        // confidence; only the in-speech floor was lowered.
+        vad_in_speech_thold: 0.10,
         // Tentative-finalize: after EOU latches and `eou_min_silence_ms` is met,
         // wait this long before actually committing. If VAD picks up speech AND
         // EOU produces meaningful text inside the window, the latch is undone
