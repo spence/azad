@@ -275,6 +275,25 @@ cmd_stop() {
   else
     echo "Service not loaded: $SERVICE_TARGET"
   fi
+
+  # Also kill any standalone instance launchctl doesn't know about. If the
+  # user Cmd+Q'd and reopened Azad from Spotlight (or any path other than
+  # `just start`), the running process isn't a child of the LaunchAgent —
+  # bootout leaves it alive and the next kickstart bails through the app's
+  # secondary-launch-focuses-existing-instance guard, leaving a stale
+  # binary loaded. Match by the bundle's MacOS path so we never touch
+  # anything outside this app bundle.
+  local bundle_bin="${APP_MACOS_DIR}/azad"
+  if pgrep -f "${bundle_bin}" >/dev/null 2>&1; then
+    pkill -TERM -f "${bundle_bin}" >/dev/null 2>&1 || true
+    local _i
+    for _i in $(seq 1 20); do
+      pgrep -f "${bundle_bin}" >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+    pkill -KILL -f "${bundle_bin}" >/dev/null 2>&1 || true
+    echo "Stopped standalone Azad processes matching: ${bundle_bin}"
+  fi
 }
 
 cmd_restart() {
