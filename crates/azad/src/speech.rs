@@ -22,6 +22,13 @@ pub enum SpeechEvent {
   SpeechStartedByVad {
     session_id: u64,
   },
+  /// Fires on every turn-start, regardless of reason. Used by the renderer
+  /// to arm overlay state for `Manual` (force_start) turns that wouldn't
+  /// otherwise fire `SpeechStartedByVad`.
+  TurnStarted {
+    session_id: u64,
+    reason: asr::render::TurnStartedReason,
+  },
   DraftUpdated {
     session_id: u64,
     turn_id: u64,
@@ -137,6 +144,9 @@ impl ToonSessionSink for ForwardingSink {
       ToonSessionEvent::Listening => SpeechEvent::Listening { session_id: self.session_id },
       ToonSessionEvent::SpeechStartedByVad => {
         SpeechEvent::SpeechStartedByVad { session_id: self.session_id }
+      }
+      ToonSessionEvent::TurnStarted { reason } => {
+        SpeechEvent::TurnStarted { session_id: self.session_id, reason }
       }
       ToonSessionEvent::DraftUpdated { turn_id, committed, live } => {
         SpeechEvent::DraftUpdated { session_id: self.session_id, turn_id, committed, live }

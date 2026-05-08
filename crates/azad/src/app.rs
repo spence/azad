@@ -338,6 +338,25 @@ enum DraftOverlayAction {
   Clear,
 }
 
+/// Decision predicate for the `SpeechEvent::TurnStarted` handler arm. Returns
+/// true when the renderer should arm `overlay_pending_vad_text` so the next
+/// non-empty `DraftUpdated` brings the live overlay up.
+///
+/// VAD-driven turns are handled fully by `SpeechStartedByVad` (which arms the
+/// flag itself with full side effects); this predicate is the narrow defensive
+/// branch for `Manual` (engine-side `ManualOverride`) turns. Manual hold's
+/// hotkey effect normally opens the overlay synchronously *before* the engine
+/// event arrives, leaving `overlay_visible=true` — in that case we no-op so we
+/// don't double-arm. The bug case is `overlay_visible=false` at engine-event-
+/// arrival time (turn 9 desync): arming here gets the overlay shown on the
+/// next `DraftUpdated`.
+fn turn_started_should_arm_pending(
+  reason: asr::render::TurnStartedReason,
+  overlay_visible: bool,
+) -> bool {
+  matches!(reason, asr::render::TurnStartedReason::Manual) && !overlay_visible
+}
+
 /// Decide what to do with `overlay_pending_vad_text` when a `DraftUpdated` arrives.
 ///
 /// The previous implementation unconditionally cleared the pending flag after checking
@@ -1694,6 +1713,7 @@ impl AppController {
       SpeechEvent::SessionStarted { session_id }
       | SpeechEvent::Listening { session_id }
       | SpeechEvent::SpeechStartedByVad { session_id }
+      | SpeechEvent::TurnStarted { session_id, .. }
       | SpeechEvent::DraftUpdated { session_id, .. }
       | SpeechEvent::Finalizing { session_id, .. }
       | SpeechEvent::FinalizingCancelled { session_id, .. }
@@ -1751,6 +1771,29 @@ impl AppController {
         }
         // In auto-VAD mode, wait for actual draft text before showing overlay.
         self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
+      }
+      SpeechEvent::TurnStarted { reason, .. } => {
+        // Defensive overlay-arm for engine-side `ManualOverride` turn starts.
+        // The VAD path is fully handled by `SpeechStartedByVad` above (with
+        // its own side effects); the manual path historically had no engine
+        // event at all, so a `start_turn(ManualOverride)` whose hotkey
+        // effect didn't run on the renderer side (e.g. state desync) left
+        // the live overlay hidden through the entire turn — user reported
+        // turn 9 (audit "I'm happy to answer questions" 14 s, 95.5 %).
+        //
+        // Decision is in `turn_started_should_arm_pending`: manual paths
+        // arm only when the overlay is currently hidden. Manual hold's
+        // normal happy path opens the overlay synchronously via
+        // `HotkeyEffect::ActivateManualHold` -> `show_overlay_listening`
+        // BEFORE this event arrives; that path leaves `overlay_visible=true`
+        // and we no-op here. The desync case has `overlay_visible=false`
+        // when this arrives — we arm the flag so the next non-empty
+        // `DraftUpdated` calls `show_overlay_listening`. Crucially do NOT
+        // call `reset_turn_state()`, `hide_overlay()`, or clear
+        // `latest_draft` — manual hold owns those.
+        if turn_started_should_arm_pending(reason, self.overlay_visible) {
+          self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
+        }
       }
       SpeechEvent::DraftUpdated { turn_id, committed, live, .. } => {
         if !self.accept_turn(turn_id) {
@@ -3135,6 +3178,7 @@ mod tests {
     split_overlay_visible_with_live_divergence_for_state,
     split_overlay_visible_with_vad_hint_for_state,
     split_top_completion_for_state,
+    turn_started_should_arm_pending,
   };
 
   #[test]
@@ -3823,6 +3867,36 @@ mod tests {
         /* pending */ false, visible, /* cancel_suppression_active */ false,
       );
       assert_eq!(action, DraftOverlayAction::Clear, "visible={visible}");
+    }
+  }
+
+  #[test]
+  fn turn_started_arms_pending_for_manual_when_overlay_hidden() {
+    // Reproduces the turn-9 desync: engine fires TurnStarted{Manual} but the
+    // hotkey effect never ran on the renderer side, so overlay_visible=false.
+    // Predicate must return true so the next DraftUpdated brings the overlay up.
+    assert!(turn_started_should_arm_pending(asr::render::TurnStartedReason::Manual, false));
+  }
+
+  #[test]
+  fn turn_started_no_op_for_manual_when_overlay_already_visible() {
+    // Normal manual-hold happy path: HotkeyEffect::ActivateManualHold opened
+    // the overlay synchronously before the engine event arrived. Predicate
+    // must return false so we don't disturb that flow.
+    assert!(!turn_started_should_arm_pending(asr::render::TurnStartedReason::Manual, true));
+  }
+
+  #[test]
+  fn turn_started_no_op_for_vad_regardless_of_overlay_state() {
+    // The VAD path is fully handled by `SpeechStartedByVad`, which has its
+    // own side-effect set (reset_turn_state, hide_overlay, latest_draft
+    // clear). Reusing this defensive branch for Vad would either double-fire
+    // those effects or produce flicker. Always false for Vad.
+    for visible in [false, true] {
+      assert!(
+        !turn_started_should_arm_pending(asr::render::TurnStartedReason::Vad, visible),
+        "vad path should be a no-op here regardless of overlay_visible={visible}"
+      );
     }
   }
 
