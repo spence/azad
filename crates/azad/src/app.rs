@@ -1816,9 +1816,14 @@ impl AppController {
           draft_chars: current_draft.chars().count(),
         });
         if self.debug_stats_enabled {
+          let ts_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
           eprintln!(
-            "AZAD_FINALIZING_RECV turn_id={} draft_chars={} overlay_visible={} \
+            "AZAD_FINALIZING_RECV ts_ms={} turn_id={} draft_chars={} overlay_visible={} \
              prior_finalizing_turn_id={:?}",
+            ts_ms,
             turn_id,
             current_draft.chars().count(),
             self.overlay_visible,
