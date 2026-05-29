@@ -15,11 +15,7 @@ use crate::model_download::{self, DownloadHandle};
 use crate::models::{self, PackStatus};
 use crate::platform;
 use crate::platform::{
-  DeviceMenuModel,
-  DeviceMenuRow,
-  PasteResult,
-  SettingsTab,
-  SettingsViewModel,
+  DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsTab, SettingsViewModel,
 };
 use crate::preferred_store;
 use crate::settings::{AutoSubmitMode, PasteMethod};
@@ -1045,7 +1041,7 @@ impl AppController {
     self.last_pasted_turn_id = None;
     self.cancelled = false;
     self.hold_saw_speech = false;
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.latest_seen_turn_id = 0;
     self.turn_accept_floor = 1;
     self.current_turn_id = None;
@@ -1230,7 +1226,7 @@ impl AppController {
       let should_capture = self.always_listening_enabled || self.manual_hold_active;
       session.set_capture_enabled(should_capture);
     }
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.render_device_menu();
     if show_toggle_notice && !cfg!(test) {
       self.show_listen_toggle_notice(
@@ -1260,7 +1256,7 @@ impl AppController {
     self.hold_saw_speech = false;
     self.pending_always_listening_enabled = None;
     self.raw_finalize_requested = false;
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.clear_held_top_overlay();
 
     if let Some(session) = &self.session {
@@ -1372,7 +1368,7 @@ impl AppController {
     self.raw_finalize_requested = false;
     self.deferred_vad_start = false;
     self.accessibility_notice_deadline = None;
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.clear_held_top_overlay();
     self.current_turn_id = self.finalizing_turn_id;
     self.turn_accept_floor = self
@@ -1410,7 +1406,7 @@ impl AppController {
         }
         self.manual_hold_active = true;
         self.hold_saw_speech = false;
-        self.overlay_pending_vad_text = false;
+        self.clear_overlay_pending();
         if reset_turn_state {
           self.reset_turn_state_preserving_hotkey_state();
         }
@@ -1665,7 +1661,7 @@ impl AppController {
     self.hold_saw_speech = false;
     self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
     self.raw_finalize_requested = false;
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.clear_held_top_overlay();
     if !split_active {
       self.finalizing_deadline = None;
@@ -1867,7 +1863,30 @@ impl AppController {
         // `DraftUpdated` calls `show_overlay_listening`. Crucially do NOT
         // call `reset_turn_state()`, `hide_overlay()`, or clear
         // `latest_draft` — manual hold owns those.
-        if turn_started_should_arm_pending(reason, self.overlay_visible) {
+        let armed = turn_started_should_arm_pending(reason, self.overlay_visible);
+        if self.debug_stats_enabled {
+          let cancel_suppress_active =
+            self.cancel_vad_show_suppressed_until.is_some_and(|d| Instant::now() < d);
+          eprintln!(
+            "AZAD_OVERLAY_TURN_STARTED reason={:?} armed={} \
+             overlay_visible={} pending_before={} \
+             accessibility_notice_deadline_active={} \
+             listen_toggle_notice_active={} \
+             finalizing_turn_id={:?} manual_hold_active={} \
+             cancel_suppress_active={} current_turn={:?}",
+            reason,
+            armed,
+            self.overlay_visible,
+            self.overlay_pending_vad_text,
+            self.accessibility_notice_deadline.is_some(),
+            self.listen_toggle_notice.is_some(),
+            self.finalizing_turn_id,
+            self.manual_hold_active,
+            cancel_suppress_active,
+            self.current_turn_id,
+          );
+        }
+        if armed {
           self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
         }
       }
@@ -1890,17 +1909,36 @@ impl AppController {
           let cancel_suppression_active = self
             .cancel_vad_show_suppressed_until
             .is_some_and(|deadline| Instant::now() < deadline);
-          match draft_update_overlay_action(
+          let action = draft_update_overlay_action(
             self.overlay_pending_vad_text,
             self.overlay_visible,
             cancel_suppression_active,
-          ) {
+          );
+          if self.debug_stats_enabled {
+            eprintln!(
+              "AZAD_OVERLAY_DRAFT turn_id={} merged_chars={} \
+               pending={} visible={} cancel_suppress={} \
+               accessibility_notice_deadline_active={} \
+               finalizing_turn_id={:?} manual_hold_active={} \
+               action={:?}",
+              turn_id,
+              self.latest_draft.chars().count(),
+              self.overlay_pending_vad_text,
+              self.overlay_visible,
+              cancel_suppression_active,
+              self.accessibility_notice_deadline.is_some(),
+              self.finalizing_turn_id,
+              self.manual_hold_active,
+              action,
+            );
+          }
+          match action {
             DraftOverlayAction::Show => {
               self.show_overlay_listening();
-              self.overlay_pending_vad_text = false;
+              self.clear_overlay_pending();
             }
             DraftOverlayAction::Clear => {
-              self.overlay_pending_vad_text = false;
+              self.clear_overlay_pending();
             }
             DraftOverlayAction::KeepPendingForLater => {
               // Leave `overlay_pending_vad_text` alone; the next DraftUpdate after the
@@ -1999,7 +2037,7 @@ impl AppController {
           }
         }
 
-        self.overlay_pending_vad_text = false;
+        self.clear_overlay_pending();
         self.finalizing_deadline =
           Some(Instant::now() + Duration::from_millis(self.cfg.final_pass_timeout_ms));
         self.render_finalizing_overlay_state();
@@ -2199,7 +2237,7 @@ impl AppController {
         self.hold_saw_speech = false;
         self.deferred_vad_start = false;
         self.accessibility_notice_deadline = None;
-        self.overlay_pending_vad_text = false;
+        self.clear_overlay_pending();
         self.cancelled = false;
         self.last_pasted_turn_id = None;
         self.session_device_id = None;
@@ -2360,8 +2398,23 @@ impl AppController {
     }
   }
 
-  fn show_overlay_listening(&mut self) {
+  #[track_caller]
+  fn clear_overlay_pending(&mut self) {
+    if self.debug_stats_enabled && self.overlay_pending_vad_text {
+      let loc = std::panic::Location::caller();
+      eprintln!(
+        "AZAD_OVERLAY_PENDING_CLEAR at {}:{} overlay_visible={} current_turn={:?}",
+        loc.file(),
+        loc.line(),
+        self.overlay_visible,
+        self.current_turn_id,
+      );
+    }
     self.overlay_pending_vad_text = false;
+  }
+
+  fn show_overlay_listening(&mut self) {
+    self.clear_overlay_pending();
     if !self.overlay_visible {
       platform::show_overlay();
       self.overlay_visible = true;
@@ -2491,7 +2544,7 @@ impl AppController {
     preferred_store::save_always_listening_enabled(false);
     self.manual_hold_active = false;
     self.hold_saw_speech = false;
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.raw_finalize_requested = false;
     self.deferred_vad_start = false;
     self.finalizing_deadline = None;
@@ -2643,7 +2696,7 @@ impl AppController {
   }
 
   fn hide_overlay(&mut self) {
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.clear_held_top_overlay();
     self.listen_toggle_notice = None;
     if self.overlay_visible {
@@ -2996,7 +3049,7 @@ impl AppController {
     self.deferred_vad_start = false;
     self.accessibility_notice_deadline = None;
     self.listen_toggle_notice = None;
-    self.overlay_pending_vad_text = false;
+    self.clear_overlay_pending();
     self.clear_held_top_overlay();
     self.current_turn_id = None;
     self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
@@ -3224,37 +3277,18 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use super::{
-    AppController,
-    AzadConfig,
-    DraftOverlayAction,
-    EngineState,
-    HotkeyEffect,
-    ManualHoldReleaseAction,
-    ManualHoldReleasePlan,
-    RawFinalizeUiPlan,
-    SessionRecoveryState,
-    allow_immediate_restart_for_fault_count,
-    build_paste_text,
-    collapse_consecutive_duplicates,
-    draft_matches_finalized_text,
-    draft_update_overlay_action,
-    has_actionable_turn_context_for_snapshot,
-    has_started_turn_for_snapshot,
-    has_turn_context_for_snapshot,
-    is_stream_fault_message,
-    listen_toggle_notice,
-    manual_hold_release_plan,
-    next_current_turn_id,
-    raw_finalize_target_turn_id_for_state,
-    raw_finalize_ui_plan,
-    recovery_state_for_fault_count,
-    should_ignore_finalizing_event,
-    split_overlay_active_for_turns,
-    split_overlay_visible_for_state,
+    AppController, AzadConfig, DraftOverlayAction, EngineState, HotkeyEffect,
+    ManualHoldReleaseAction, ManualHoldReleasePlan, RawFinalizeUiPlan, SessionRecoveryState,
+    allow_immediate_restart_for_fault_count, build_paste_text, collapse_consecutive_duplicates,
+    draft_matches_finalized_text, draft_update_overlay_action,
+    has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
+    has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
+    manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
+    raw_finalize_ui_plan, recovery_state_for_fault_count, should_ignore_finalizing_event,
+    split_overlay_active_for_turns, split_overlay_visible_for_state,
     split_overlay_visible_with_hold_for_state,
     split_overlay_visible_with_live_divergence_for_state,
-    split_overlay_visible_with_vad_hint_for_state,
-    split_top_completion_for_state,
+    split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
     turn_started_should_arm_pending,
   };
 
@@ -3285,28 +3319,31 @@ mod tests {
   #[test]
   fn manual_hold_release_plan_disables_capture_when_listen_is_off() {
     let plan = manual_hold_release_plan(false, true, true);
-    assert_eq!(plan, ManualHoldReleasePlan {
-      capture_enabled: false,
-      action: ManualHoldReleaseAction::FinalizeTurn,
-    });
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan {
+        capture_enabled: false,
+        action: ManualHoldReleaseAction::FinalizeTurn,
+      }
+    );
   }
 
   #[test]
   fn manual_hold_release_plan_keeps_capture_when_listen_is_on() {
     let plan = manual_hold_release_plan(true, true, false);
-    assert_eq!(plan, ManualHoldReleasePlan {
-      capture_enabled: true,
-      action: ManualHoldReleaseAction::HideOverlay,
-    });
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan { capture_enabled: true, action: ManualHoldReleaseAction::HideOverlay }
+    );
   }
 
   #[test]
   fn manual_hold_release_plan_keeps_live_when_not_finalizing() {
     let plan = manual_hold_release_plan(false, false, true);
-    assert_eq!(plan, ManualHoldReleasePlan {
-      capture_enabled: false,
-      action: ManualHoldReleaseAction::KeepLive,
-    });
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan { capture_enabled: false, action: ManualHoldReleaseAction::KeepLive }
+    );
   }
 
   #[test]
