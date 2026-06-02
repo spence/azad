@@ -1226,7 +1226,18 @@ impl AppController {
       let should_capture = self.always_listening_enabled || self.manual_hold_active;
       session.set_capture_enabled(should_capture);
     }
-    self.clear_overlay_pending();
+    // Arm the overlay to surface on the first live draft of the turn that
+    // follows enabling always-listening. The engine force-starts a
+    // `ManualOverride` turn right after this toggle; if we cleared the flag
+    // here, that turn's drafts would never lift the overlay, because the
+    // "Listen ENABLED" notice holds `overlay_visible=true` and
+    // `turn_started_should_arm_pending` no-ops while the overlay looks visible.
+    // On disable we clear it as before.
+    if enabled {
+      self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
+    } else {
+      self.clear_overlay_pending();
+    }
     self.render_device_menu();
     if show_toggle_notice && !cfg!(test) {
       self.show_listen_toggle_notice(
@@ -1906,6 +1917,17 @@ impl AppController {
             self.clear_held_top_overlay();
           }
           self.latest_draft = merged;
+          // A live draft supersedes the transient "Listen ENABLED" notice: the
+          // user is mid-utterance and needs to see their words now, not the
+          // notice. Dismiss it and switch straight to the listening overlay,
+          // otherwise the notice owns the overlay (`visible=true`) so the
+          // action below resolves to `Clear` until the notice's own deadline
+          // expires (up to ~600 ms of hidden live text).
+          if self.listen_toggle_notice.is_some() {
+            self.listen_toggle_notice = None;
+            self.accessibility_notice_deadline = None;
+            self.show_overlay_listening();
+          }
           let cancel_suppression_active = self
             .cancel_vad_show_suppressed_until
             .is_some_and(|deadline| Instant::now() < deadline);
@@ -2387,7 +2409,16 @@ impl AppController {
         self.accessibility_notice_deadline = None;
         self.listen_toggle_notice = None;
         if self.overlay_visible && !self.manual_hold_active && self.finalizing_deadline.is_none() {
+          // Preserve an armed pending flag across the notice teardown. The
+          // notice expires ~600 ms in — typically just before the first live
+          // draft of the force-start turn that enabling always-listening
+          // kicks off. `hide_overlay()` clears the flag, which would strand
+          // the overlay hidden for the whole turn (the recurring "no overlay,
+          // flash at the end" bug). Re-arm after hiding so the next non-empty
+          // draft calls `show_overlay_listening`.
+          let preserve_pending = self.overlay_pending_vad_text;
           self.hide_overlay();
+          self.overlay_pending_vad_text = preserve_pending;
         }
       }
     }
@@ -3291,6 +3322,7 @@ mod tests {
     split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
     turn_started_should_arm_pending,
   };
+  use super::{LISTEN_TOGGLE_NOTICE_DURATION_MS, ListenToggleNotice};
 
   #[test]
   fn raw_finalize_hotkey_forces_overlay_hide_even_during_manual_hold() {
@@ -4060,6 +4092,51 @@ mod tests {
       );
       assert_eq!(action, DraftOverlayAction::Clear, "visible={visible}");
     }
+  }
+
+  #[test]
+  fn notice_expiry_preserves_armed_pending_for_incoming_turn() {
+    // Regression for the recurring "no overlay during streaming, flash at the
+    // end" bug (turn 958): enabling always-listening force-starts a
+    // `ManualOverride` turn while the "Listen ENABLED" notice holds the
+    // overlay. The notice expires ~600 ms in — just before that turn's first
+    // live draft. The notice-expiry tick used to call `hide_overlay()`, which
+    // cleared `overlay_pending_vad_text`, so the first draft hit
+    // `draft_update_overlay_action(pending=false, visible=false) == Clear` and
+    // the overlay never came up. The fix preserves the armed flag across the
+    // teardown so the next non-empty draft still resolves to `Show`.
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.history_browsing = false;
+    controller.manual_hold_active = false;
+    controller.finalizing_deadline = None;
+    controller.finalizing_turn_id = None;
+    controller.overlay_visible = true;
+    controller.overlay_pending_vad_text = true;
+    controller.listen_toggle_notice = Some(ListenToggleNotice {
+      enabled: true,
+      started_at: Instant::now() - Duration::from_secs(1),
+      duration: Duration::from_millis(LISTEN_TOGGLE_NOTICE_DURATION_MS),
+    });
+    controller.accessibility_notice_deadline = Some(Instant::now() - Duration::from_millis(1));
+
+    controller.on_tick();
+
+    assert!(controller.listen_toggle_notice.is_none(), "notice should expire");
+    assert!(controller.accessibility_notice_deadline.is_none(), "deadline should clear");
+    assert!(!controller.overlay_visible, "overlay hidden when notice tears down");
+    assert!(
+      controller.overlay_pending_vad_text,
+      "armed pending must survive notice teardown so the next draft shows the overlay"
+    );
+    // Confirm the surviving flag actually drives a Show on the next draft.
+    assert_eq!(
+      draft_update_overlay_action(
+        controller.overlay_pending_vad_text,
+        controller.overlay_visible,
+        /* cancel_suppression_active */ false,
+      ),
+      DraftOverlayAction::Show,
+    );
   }
 
   #[test]
