@@ -353,22 +353,31 @@ fn turn_started_should_arm_pending(
   matches!(reason, asr::render::TurnStartedReason::Manual) && !overlay_visible
 }
 
-/// Decide what to do with `overlay_pending_vad_text` when a `DraftUpdated` arrives.
+/// Decide what to do with the overlay when a non-empty `DraftUpdated` arrives.
 ///
-/// The previous implementation unconditionally cleared the pending flag after checking
-/// whether to show. That had a bug: if the user hit Escape and started talking again within
-/// `CANCEL_VAD_SHOW_SUPPRESSION_MS`, the new turn's first DraftUpdate hit the suppression
-/// branch, the show was correctly skipped — but the pending flag was then cleared, so no
-/// subsequent DraftUpdate past the suppression window could ever bring the overlay up.
-/// Transcription continued in the background with no visible overlay.
+/// `pending` is the armed `overlay_pending_vad_text` latch. `eligible_to_show` is a
+/// *fresh* recomputation of "this turn is one we should surface live text for" —
+/// always-listening-with-overlay-on-start, or manual hold, and not history-browsing.
+/// We show when the overlay is hidden and EITHER the latch is armed OR the turn is
+/// eligible. The `eligible_to_show` arm makes this self-healing: the latch can be lost
+/// by any of ~14 clear sites (notice teardown, turn resets, session rebuild, …) between
+/// turn-start and the first draft, but as long as we have real transcribed text for an
+/// eligible turn we still bring the overlay up. This is what closes the recurring
+/// "no overlay during streaming, flash at the end" class of bug rather than chasing each
+/// trigger that drops the latch.
+///
+/// `cancel_suppression_active` still wins: after Escape we suppress the show for
+/// `CANCEL_VAD_SHOW_SUPPRESSION_MS` and keep the latch intact (a later DraftUpdate past
+/// the window re-evaluates), so a quick Escape-then-talk doesn't bounce the overlay back.
 fn draft_update_overlay_action(
   pending: bool,
   overlay_visible: bool,
   cancel_suppression_active: bool,
+  eligible_to_show: bool,
 ) -> DraftOverlayAction {
   if cancel_suppression_active {
     DraftOverlayAction::KeepPendingForLater
-  } else if pending && !overlay_visible {
+  } else if !overlay_visible && (pending || eligible_to_show) {
     DraftOverlayAction::Show
   } else {
     DraftOverlayAction::Clear
@@ -1931,10 +1940,19 @@ impl AppController {
           let cancel_suppression_active = self
             .cancel_vad_show_suppressed_until
             .is_some_and(|deadline| Instant::now() < deadline);
+          // Recomputed fresh each draft, independent of the pending latch. A turn we
+          // are legitimately capturing (always-listening with overlay-on-start, or
+          // manual hold) and not history-browsing should surface its live text even
+          // if the latch was dropped between turn-start and now. We have real text
+          // here (non-empty merged), so this is not a noise-only flash.
+          let eligible_to_show = !self.history_browsing
+            && ((self.always_listening_enabled && self.cfg.show_overlay_on_vad_start)
+              || self.manual_hold_active);
           let action = draft_update_overlay_action(
             self.overlay_pending_vad_text,
             self.overlay_visible,
             cancel_suppression_active,
+            eligible_to_show,
           );
           if self.debug_stats_enabled {
             eprintln!(
@@ -4042,9 +4060,34 @@ mod tests {
   fn draft_overlay_shows_when_pending_and_hidden_and_unsuppressed() {
     let action = draft_update_overlay_action(
       /* pending */ true, /* overlay_visible */ false,
-      /* cancel_suppression_active */ false,
+      /* cancel_suppression_active */ false, /* eligible_to_show */ false,
     );
     assert_eq!(action, DraftOverlayAction::Show);
+  }
+
+  #[test]
+  fn draft_overlay_shows_when_eligible_even_without_pending() {
+    // Self-heal: the pending latch was dropped (e.g. notice teardown / turn reset
+    // cleared it) but we have real transcribed text for a turn we're legitimately
+    // capturing. The overlay must still come up. This is the arm that closes the
+    // recurring "no overlay during streaming" class of bug independent of which
+    // clear-site dropped the latch.
+    let action = draft_update_overlay_action(
+      /* pending */ false, /* overlay_visible */ false,
+      /* cancel_suppression_active */ false, /* eligible_to_show */ true,
+    );
+    assert_eq!(action, DraftOverlayAction::Show);
+  }
+
+  #[test]
+  fn draft_overlay_eligible_does_not_override_cancel_suppression() {
+    // Escape-then-talk must still suppress: eligibility does not punch through the
+    // post-cancel suppression window.
+    let action = draft_update_overlay_action(
+      /* pending */ false, /* overlay_visible */ false,
+      /* cancel_suppression_active */ true, /* eligible_to_show */ true,
+    );
+    assert_eq!(action, DraftOverlayAction::KeepPendingForLater);
   }
 
   #[test]
@@ -4057,7 +4100,7 @@ mod tests {
     // can still bring the overlay up.
     let action = draft_update_overlay_action(
       /* pending */ true, /* overlay_visible */ false,
-      /* cancel_suppression_active */ true,
+      /* cancel_suppression_active */ true, /* eligible_to_show */ false,
     );
     assert_eq!(action, DraftOverlayAction::KeepPendingForLater);
   }
@@ -4067,7 +4110,7 @@ mod tests {
     // Overlay is up; nothing to show. The pending flag should not linger.
     let action = draft_update_overlay_action(
       /* pending */ true, /* overlay_visible */ true,
-      /* cancel_suppression_active */ false,
+      /* cancel_suppression_active */ false, /* eligible_to_show */ true,
     );
     assert_eq!(action, DraftOverlayAction::Clear);
   }
@@ -4079,16 +4122,17 @@ mod tests {
     // the pending flag regardless of visibility.
     let action = draft_update_overlay_action(
       /* pending */ true, /* overlay_visible */ true,
-      /* cancel_suppression_active */ true,
+      /* cancel_suppression_active */ true, /* eligible_to_show */ false,
     );
     assert_eq!(action, DraftOverlayAction::KeepPendingForLater);
   }
 
   #[test]
-  fn draft_overlay_clears_when_not_pending_and_unsuppressed() {
+  fn draft_overlay_clears_when_not_pending_not_eligible_and_unsuppressed() {
     for visible in [false, true] {
       let action = draft_update_overlay_action(
         /* pending */ false, visible, /* cancel_suppression_active */ false,
+        /* eligible_to_show */ false,
       );
       assert_eq!(action, DraftOverlayAction::Clear, "visible={visible}");
     }
@@ -4134,6 +4178,7 @@ mod tests {
         controller.overlay_pending_vad_text,
         controller.overlay_visible,
         /* cancel_suppression_active */ false,
+        /* eligible_to_show */ false,
       ),
       DraftOverlayAction::Show,
     );
@@ -4174,6 +4219,7 @@ mod tests {
     for visible in [false, true] {
       let action = draft_update_overlay_action(
         /* pending */ false, visible, /* cancel_suppression_active */ true,
+        /* eligible_to_show */ false,
       );
       assert_eq!(action, DraftOverlayAction::KeepPendingForLater, "visible={visible}");
     }
