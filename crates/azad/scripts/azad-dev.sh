@@ -34,12 +34,24 @@ AZAD_NATIVE_ENGINE_LOGS="${AZAD_NATIVE_ENGINE_LOGS:-0}"
 
 CODESIGN_IDENTITY="${AZAD_CODESIGN_IDENTITY:-}"
 if [[ -z "$CODESIGN_IDENTITY" ]] && [[ -x /usr/bin/security ]]; then
-  DETECTED_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning \
-    "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null \
-    | awk -F\" '/Azad Dev Code Signing Root/{print $2; exit}')"
-  if [[ -n "${DETECTED_IDENTITY:-}" ]]; then
-    CODESIGN_IDENTITY="$DETECTED_IDENTITY"
-  fi
+  # TCC (Accessibility/Microphone/Input Monitoring) keys permission grants off the
+  # app's code-signing identity. An ad-hoc signature has no stable identity, so TCC
+  # falls back to the binary's cdhash — which changes on every rebuild, forcing the
+  # user to re-grant permissions after each `just install`. Sign with a stable
+  # identity so the designated requirement (and thus the grants) persist across builds.
+  #
+  # Preference order: an explicit Azad dev root (purpose-made), then the longer-lived
+  # Developer ID, then Apple Development. Falls through to ad-hoc only if none exist.
+  IDENTITY_LIST="$(/usr/bin/security find-identity -v -p codesigning \
+    "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null)"
+  for pattern in "Azad Dev Code Signing Root" "Developer ID Application" "Apple Development"; do
+    DETECTED_IDENTITY="$(printf '%s\n' "$IDENTITY_LIST" \
+      | awk -F\" -v p="$pattern" 'index($0, p){print $2; exit}')"
+    if [[ -n "${DETECTED_IDENTITY:-}" ]]; then
+      CODESIGN_IDENTITY="$DETECTED_IDENTITY"
+      break
+    fi
+  done
 fi
 
 usage() {
