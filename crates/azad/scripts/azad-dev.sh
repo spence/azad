@@ -42,11 +42,16 @@ if [[ -z "$CODESIGN_IDENTITY" ]] && [[ -x /usr/bin/security ]]; then
   #
   # Preference order: an explicit Azad dev root (purpose-made), then the longer-lived
   # Developer ID, then Apple Development. Falls through to ad-hoc only if none exist.
+  #
+  # We capture the 40-hex SHA-1 hash (field 2 of `1) <hash> "<name>"`), not the name,
+  # and sign with that. A machine that imported an exported identity AND has its own
+  # cert from the same team ends up with multiple certs sharing one common name, and
+  # `codesign --sign "<name>"` then fails as "ambiguous". The hash is unique per cert.
   IDENTITY_LIST="$(/usr/bin/security find-identity -v -p codesigning \
     "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null)"
   for pattern in "Azad Dev Code Signing Root" "Developer ID Application" "Apple Development"; do
     DETECTED_IDENTITY="$(printf '%s\n' "$IDENTITY_LIST" \
-      | awk -F\" -v p="$pattern" 'index($0, p){print $2; exit}')"
+      | awk -v p="$pattern" 'index($0, p){print $2; exit}')"
     if [[ -n "${DETECTED_IDENTITY:-}" ]]; then
       CODESIGN_IDENTITY="$DETECTED_IDENTITY"
       break
