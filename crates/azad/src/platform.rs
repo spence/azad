@@ -901,7 +901,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let insert_label = make_onboarding_row_label("Insert text by", insert_y);
   let _: () = msg_send![content_view, addSubview: insert_label];
   let insert_popup = make_onboarding_popup(
-    &["Pasting", "Typing", "Typing + copy to clipboard"],
+    &["Paste", "Direct", "Direct + copy to clipboard"],
     insert_y,
     sel!(settingsSelectPasteMethod:),
   );
@@ -5030,10 +5030,10 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let paste_method_popup: id = msg_send![class!(NSPopUpButton), alloc];
   let paste_method_popup: id =
     msg_send![paste_method_popup, initWithFrame: paste_method_popup_frame pullsDown: NO];
-  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Clipboard paste")];
+  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Paste")];
   let _: () =
-    msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing")];
-  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct typing + copy clipboard")];
+    msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct")];
+  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct + copy to clipboard")];
   let _: () = msg_send![paste_method_popup, setAction: sel!(settingsSelectPasteMethod:)];
   let _: () = msg_send![general_container, addSubview: paste_method_popup];
 
