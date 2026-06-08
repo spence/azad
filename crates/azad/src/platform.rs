@@ -123,7 +123,7 @@ const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
 const ONBOARDING_WINDOW_WIDTH: f64 = 640.0;
-const ONBOARDING_WINDOW_HEIGHT: f64 = 560.0;
+const ONBOARDING_WINDOW_HEIGHT: f64 = 680.0;
 const ONBOARDING_PAD_X: f64 = 40.0;
 const ONBOARDING_LABEL_WIDTH: f64 = 170.0;
 const ONBOARDING_CONTROL_X: f64 = ONBOARDING_PAD_X + ONBOARDING_LABEL_WIDTH + 12.0;
@@ -336,6 +336,9 @@ struct OnboardingWindowRefs {
   history_checkbox: id,
   insert_popup: id,
   login_checkbox: id,
+  perm_accessibility_status: id,
+  perm_microphone_status: id,
+  perm_input_monitoring_status: id,
 }
 
 /// State pushed to the first-run onboarding window so its controls reflect the
@@ -346,6 +349,9 @@ pub struct OnboardingViewModel {
   pub history_enabled: bool,
   pub paste_method: PasteMethod,
   pub run_on_startup_enabled: bool,
+  pub accessibility_status: PermissionStatus,
+  pub microphone_status: PermissionStatus,
+  pub input_monitoring_status: PermissionStatus,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -487,6 +493,13 @@ unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &Onboar
   let _: () = msg_send![refs.insert_popup, selectItemAtIndex: model.paste_method.ui_index()];
   let login_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.login_checkbox, setState: login_state];
+  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status, false);
+  set_permission_status_label(refs.perm_microphone_status, model.microphone_status, false);
+  set_permission_status_label(
+    refs.perm_input_monitoring_status,
+    model.input_monitoring_status,
+    true,
+  );
 }
 
 pub fn close_onboarding_window() {
@@ -511,6 +524,37 @@ unsafe fn ensure_onboarding_window() -> OnboardingWindowRefs {
     store.borrow_mut().replace(refs);
   });
   refs
+}
+
+fn current_onboarding_window() -> Option<OnboardingWindowRefs> {
+  ONBOARDING_WINDOW_REFS.with(|store| *store.borrow())
+}
+
+/// Refresh just the permission status indicators while the welcome window is
+/// open, so they flip live as the user grants access in System Settings.
+pub fn refresh_onboarding_permissions(
+  accessibility: PermissionStatus,
+  microphone: PermissionStatus,
+  input_monitoring: PermissionStatus,
+) {
+  if let Some(refs) = current_onboarding_window() {
+    unsafe {
+      set_permission_status_label(refs.perm_accessibility_status, accessibility, false);
+      set_permission_status_label(refs.perm_microphone_status, microphone, false);
+      set_permission_status_label(refs.perm_input_monitoring_status, input_monitoring, true);
+    }
+  }
+}
+
+unsafe fn set_permission_status_label(label: id, status: PermissionStatus, optional: bool) {
+  let (text, r, g, b) = match status {
+    PermissionStatus::Granted => ("● Granted", 0.20, 0.65, 0.30),
+    _ if optional => ("○ Optional", 0.55, 0.55, 0.55),
+    _ => ("○ Not granted", 0.85, 0.45, 0.10),
+  };
+  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
+  let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, 1.0);
+  let _: () = msg_send![label, setTextColor: color];
 }
 
 unsafe fn make_onboarding_label(text: &str, frame: NSRect, font_size: f64, bold: bool) -> id {
@@ -563,6 +607,48 @@ unsafe fn make_onboarding_checkbox(title: &str, y: f64, action: Sel) -> id {
   let _: () = msg_send![checkbox, setTitle: NSString::alloc(nil).init_str(title)];
   let _: () = msg_send![checkbox, setAction: action];
   checkbox
+}
+
+/// A permission row: name on the left, a live status label, and an "Open
+/// Settings" button tagged so one handler can route to the right pane. Returns
+/// the status-label id so the caller can refresh it live.
+unsafe fn make_onboarding_permission_row(
+  content_view: id,
+  delegate: id,
+  label_text: &str,
+  y: f64,
+  tag: i64,
+) -> id {
+  let label_frame =
+    NSRect::new(NSPoint::new(ONBOARDING_PAD_X, y), NSSize::new(150.0, ONBOARDING_ROW_HEIGHT));
+  let label = make_onboarding_label(label_text, label_frame, 13.0, false);
+  let _: () = msg_send![content_view, addSubview: label];
+
+  let status_frame = NSRect::new(
+    NSPoint::new(ONBOARDING_PAD_X + 160.0, y),
+    NSSize::new(150.0, ONBOARDING_ROW_HEIGHT),
+  );
+  let status_label = make_onboarding_label("…", status_frame, 13.0, false);
+  let _: () = msg_send![content_view, addSubview: status_label];
+
+  let button_w = 110.0;
+  let button_frame = NSRect::new(
+    NSPoint::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X - button_w, y - 2.0),
+    NSSize::new(button_w, ONBOARDING_ROW_HEIGHT + 4.0),
+  );
+  let button: id = msg_send![class!(NSButton), alloc];
+  let button: id = msg_send![button, initWithFrame: button_frame];
+  let _: () = msg_send![button, setTitle: NSString::alloc(nil).init_str("Open Settings")];
+  let _: () = msg_send![button, setBezelStyle: 1usize];
+  let _: () = msg_send![button, setButtonType: 0usize];
+  let _: () = msg_send![button, setTag: tag];
+  let _: () = msg_send![button, setAction: sel!(onboardingOpenPermission:)];
+  if delegate != nil {
+    let _: () = msg_send![button, setTarget: delegate];
+  }
+  let _: () = msg_send![content_view, addSubview: button];
+
+  status_label
 }
 
 unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
@@ -658,6 +744,46 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: login_checkbox];
 
+  let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()).unwrap_or(nil);
+
+  // Permissions section.
+  let perms_header_y = login_y - 50.0;
+  let perms_header_frame = NSRect::new(
+    NSPoint::new(ONBOARDING_PAD_X, perms_header_y),
+    NSSize::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0, ONBOARDING_ROW_HEIGHT),
+  );
+  let perms_header = make_onboarding_label("Permissions", perms_header_frame, 15.0, true);
+  let _: () = msg_send![content_view, addSubview: perms_header];
+
+  let perm_accessibility_status = make_onboarding_permission_row(
+    content_view,
+    delegate,
+    "Accessibility",
+    perms_header_y - 34.0,
+    0,
+  );
+  let perm_microphone_status =
+    make_onboarding_permission_row(content_view, delegate, "Microphone", perms_header_y - 68.0, 1);
+  let perm_input_monitoring_status = make_onboarding_permission_row(
+    content_view,
+    delegate,
+    "Input Monitoring",
+    perms_header_y - 102.0,
+    2,
+  );
+
+  let hint_frame = NSRect::new(
+    NSPoint::new(ONBOARDING_PAD_X, perms_header_y - 126.0),
+    NSSize::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0, 18.0),
+  );
+  let hint = make_onboarding_label(
+    "Microphone and Accessibility are required. Input Monitoring is optional.",
+    hint_frame,
+    11.0,
+    false,
+  );
+  let _: () = msg_send![content_view, addSubview: hint];
+
   let button_w = 160.0;
   let button_frame = NSRect::new(
     NSPoint::new((ONBOARDING_WINDOW_WIDTH - button_w) * 0.5, 22.0),
@@ -672,7 +798,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let _: () = msg_send![get_started_button, setAction: sel!(onboardingGetStarted:)];
   let _: () = msg_send![content_view, addSubview: get_started_button];
 
-  if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
+  if delegate != nil {
     let _: () = msg_send![get_started_button, setTarget: delegate];
     let _: () = msg_send![trigger_popup, setTarget: delegate];
     let _: () = msg_send![history_checkbox, setTarget: delegate];
@@ -687,6 +813,9 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     history_checkbox,
     insert_popup,
     login_checkbox,
+    perm_accessibility_status,
+    perm_microphone_status,
+    perm_input_monitoring_status,
   }
 }
 
@@ -1212,6 +1341,10 @@ fn register_delegate_class() -> &'static Class {
       onboarding_toggle_history as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(onboardingOpenPermission:),
+      onboarding_open_permission as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(settingsToggleRunOnStartup:),
       settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
     );
@@ -1488,6 +1621,23 @@ extern "C" fn onboarding_toggle_history(_: &Object, _: Sel, sender: id) {
     let state: i64 = msg_send![sender, state];
     crate::app::send_event(AppEvent::OnboardingToggleHistory(state != 0));
     crate::app::drain_events();
+  }
+}
+
+extern "C" fn onboarding_open_permission(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let tag: i64 = msg_send![sender, tag];
+    let anchor = match tag {
+      0 => "Privacy_Accessibility",
+      1 => "Privacy_Microphone",
+      2 => "Privacy_ListenEvent",
+      _ => return,
+    };
+    let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
+    let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
   }
 }
 
@@ -6303,10 +6453,11 @@ unsafe fn request_accessibility_prompt() -> bool {
 }
 
 /// Live macOS privacy-permission state for a single permission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PermissionStatus {
   Granted,
   Denied,
+  #[default]
   NotDetermined,
 }
 

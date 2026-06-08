@@ -270,6 +270,7 @@ struct AppController {
   // bootstrap for users who predate the welcome flow (see `bootstrap`).
   onboarding_complete: bool,
   pending_onboarding: bool,
+  onboarding_active: bool,
   pending_first_launch_settings: bool,
   download_handle: Option<DownloadHandle>,
   download_progress: (u64, u64),
@@ -862,6 +863,7 @@ impl AppController {
       models_ready: false,
       onboarding_complete: preferred_store::load_onboarding_complete().unwrap_or(false),
       pending_onboarding: false,
+      onboarding_active: false,
       pending_first_launch_settings: false,
       download_handle: None,
       download_progress: (0, 0),
@@ -1567,6 +1569,7 @@ impl AppController {
   fn handle_onboarding_get_started(&mut self) {
     eprintln!("AZAD_ONBOARDING get-started: completing onboarding");
     self.onboarding_complete = true;
+    self.onboarding_active = false;
     preferred_store::save_onboarding_complete(true);
     platform::close_onboarding_window();
     // First legitimate session spawn now that onboarding is complete.
@@ -1589,6 +1592,9 @@ impl AppController {
       history_enabled: self.history_enabled,
       paste_method: self.paste_method,
       run_on_startup_enabled: self.run_on_startup_enabled,
+      accessibility_status: platform::accessibility_authorization(),
+      microphone_status: platform::microphone_authorization(),
+      input_monitoring_status: platform::input_monitoring_authorization(),
     }
   }
 
@@ -2451,8 +2457,18 @@ impl AppController {
   fn on_tick(&mut self) {
     if self.pending_onboarding {
       self.pending_onboarding = false;
+      self.onboarding_active = true;
       eprintln!("AZAD_ONBOARDING showing welcome window");
       platform::show_onboarding_window(self.onboarding_view_model());
+    }
+    if self.onboarding_active {
+      // Poll permission state so the welcome window's indicators flip live as
+      // the user grants access in System Settings.
+      platform::refresh_onboarding_permissions(
+        platform::accessibility_authorization(),
+        platform::microphone_authorization(),
+        platform::input_monitoring_authorization(),
+      );
     }
     if self.pending_first_launch_settings {
       self.pending_first_launch_settings = false;
