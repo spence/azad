@@ -873,6 +873,12 @@ impl AppController {
 
   fn bootstrap(&mut self) {
     self.refresh_models_ready();
+    eprintln!(
+      "AZAD_PERMISSIONS accessibility={:?} microphone={:?} input_monitoring={:?}",
+      platform::accessibility_authorization(),
+      platform::microphone_authorization(),
+      platform::input_monitoring_authorization(),
+    );
     // Seed onboarding for users who predate the welcome flow: an unset flag plus
     // an already-downloaded model means a returning user — mark them onboarded so
     // they're never sent through first-run setup. A genuinely fresh profile (no
