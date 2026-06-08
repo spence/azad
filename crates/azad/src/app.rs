@@ -66,6 +66,7 @@ pub enum AppEvent {
   OnboardingToggleHistory(bool),
   OnboardingToggleLogin(bool),
   OnboardingDownloadModel,
+  OnboardingSelectDevice(usize),
   ModelDownloadProgress {
     pack_id: String,
     bytes_done: u64,
@@ -1073,6 +1074,7 @@ impl AppController {
         let pack_id = self.active_pack_id.clone();
         self.handle_settings_download_model(&pack_id);
       }
+      AppEvent::OnboardingSelectDevice(index) => self.handle_onboarding_select_device(index),
       AppEvent::ModelDownloadProgress { pack_id, bytes_done, bytes_total } => {
         self.handle_model_download_progress(&pack_id, bytes_done, bytes_total)
       }
@@ -1593,6 +1595,17 @@ impl AppController {
     preferred_store::save_history_enabled(enabled);
   }
 
+  fn handle_onboarding_select_device(&mut self, index: usize) {
+    let device_id = self
+      .device_snapshot
+      .as_ref()
+      .and_then(|s| s.devices.get(index))
+      .map(|d| d.id.clone());
+    if let Some(device_id) = device_id {
+      self.handle_menu_select_device(device_id);
+    }
+  }
+
   fn handle_onboarding_toggle_login(&mut self, enabled: bool) {
     // Persist unconditionally and let apply_run_on_startup_preference reconcile
     // the LaunchAgent. The settings handler only saves when an agent plist
@@ -1625,6 +1638,18 @@ impl AppController {
     let get_started_enabled = (self.models_ready || downloading)
       && accessibility_status == platform::PermissionStatus::Granted
       && microphone_status == platform::PermissionStatus::Granted;
+    let (devices, selected_device_index) = match &self.device_snapshot {
+      Some(snapshot) => {
+        let devices: Vec<(String, String)> =
+          snapshot.devices.iter().map(|d| (d.id.clone(), d.name.clone())).collect();
+        let selected = snapshot
+          .current_id
+          .as_deref()
+          .and_then(|cur| devices.iter().position(|(id, _)| id == cur));
+        (devices, selected)
+      }
+      None => (Vec::new(), None),
+    };
     platform::OnboardingViewModel {
       always_listening_enabled: self.always_listening_enabled,
       history_enabled: self.history_enabled,
@@ -1635,6 +1660,8 @@ impl AppController {
       model_status_text,
       model_downloading: downloading,
       get_started_enabled,
+      devices,
+      selected_device_index,
     }
   }
 

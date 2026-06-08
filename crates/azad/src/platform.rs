@@ -338,6 +338,7 @@ struct OnboardingWindowRefs {
   history_checkbox: id,
   insert_popup: id,
   login_checkbox: id,
+  device_popup: id,
   perm_accessibility_status: id,
   perm_microphone_status: id,
 }
@@ -357,6 +358,9 @@ pub struct OnboardingViewModel {
   /// "Get started" is enabled only once Download has been clicked (or the model
   /// is already present) AND Microphone + Accessibility are granted.
   pub get_started_enabled: bool,
+  /// Input devices as (id, display name); the picker is populated from these.
+  pub devices: Vec<(String, String)>,
+  pub selected_device_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -498,6 +502,13 @@ unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &Onboar
   let _: () = msg_send![refs.insert_popup, selectItemAtIndex: model.paste_method.ui_index()];
   let login_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.login_checkbox, setState: login_state];
+  let _: () = msg_send![refs.device_popup, removeAllItems];
+  for (_id, name) in &model.devices {
+    let _: () = msg_send![refs.device_popup, addItemWithTitle: NSString::alloc(nil).init_str(name)];
+  }
+  if let Some(idx) = model.selected_device_index {
+    let _: () = msg_send![refs.device_popup, selectItemAtIndex: idx as i64];
+  }
   apply_onboarding_dynamic(refs, model);
 }
 
@@ -805,6 +816,13 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: hint];
 
+  // Microphone device picker.
+  let device_y = perms_header_y - 134.0;
+  let device_label = make_onboarding_row_label("Microphone device", device_y);
+  let _: () = msg_send![content_view, addSubview: device_label];
+  let device_popup = make_onboarding_popup(&[], device_y, sel!(onboardingSelectDevice:));
+  let _: () = msg_send![content_view, addSubview: device_popup];
+
   let button_w = 160.0;
   let button_frame = NSRect::new(
     NSPoint::new((ONBOARDING_WINDOW_WIDTH - button_w) * 0.5, 22.0),
@@ -826,6 +844,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     let _: () = msg_send![history_checkbox, setTarget: delegate];
     let _: () = msg_send![insert_popup, setTarget: delegate];
     let _: () = msg_send![login_checkbox, setTarget: delegate];
+    let _: () = msg_send![device_popup, setTarget: delegate];
   }
 
   OnboardingWindowRefs {
@@ -837,6 +856,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     history_checkbox,
     insert_popup,
     login_checkbox,
+    device_popup,
     perm_accessibility_status,
     perm_microphone_status,
   }
@@ -1376,6 +1396,10 @@ fn register_delegate_class() -> &'static Class {
       onboarding_download_model as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(onboardingSelectDevice:),
+      onboarding_select_device as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(settingsToggleRunOnStartup:),
       settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
     );
@@ -1669,6 +1693,20 @@ extern "C" fn onboarding_toggle_login(_: &Object, _: Sel, sender: id) {
 extern "C" fn onboarding_download_model(_: &Object, _: Sel, _: id) {
   crate::app::send_event(AppEvent::OnboardingDownloadModel);
   crate::app::drain_events();
+}
+
+extern "C" fn onboarding_select_device(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let index: i64 = msg_send![sender, indexOfSelectedItem];
+    if index < 0 {
+      return;
+    }
+    crate::app::send_event(AppEvent::OnboardingSelectDevice(index as usize));
+    crate::app::drain_events();
+  }
 }
 
 extern "C" fn onboarding_open_permission(_: &Object, _: Sel, sender: id) {
