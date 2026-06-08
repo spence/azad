@@ -65,6 +65,7 @@ pub enum AppEvent {
   OnboardingSetTrigger(bool),
   OnboardingToggleHistory(bool),
   OnboardingToggleLogin(bool),
+  OnboardingDownloadModel,
   ModelDownloadProgress {
     pack_id: String,
     bytes_done: u64,
@@ -1068,6 +1069,10 @@ impl AppController {
       AppEvent::OnboardingSetTrigger(automatic) => self.handle_onboarding_set_trigger(automatic),
       AppEvent::OnboardingToggleHistory(enabled) => self.handle_onboarding_toggle_history(enabled),
       AppEvent::OnboardingToggleLogin(enabled) => self.handle_onboarding_toggle_login(enabled),
+      AppEvent::OnboardingDownloadModel => {
+        let pack_id = self.active_pack_id.clone();
+        self.handle_settings_download_model(&pack_id);
+      }
       AppEvent::ModelDownloadProgress { pack_id, bytes_done, bytes_total } => {
         self.handle_model_download_progress(&pack_id, bytes_done, bytes_total)
       }
@@ -1600,13 +1605,36 @@ impl AppController {
   }
 
   fn onboarding_view_model(&self) -> platform::OnboardingViewModel {
+    let downloading = self.download_handle.is_some();
+    let model_status_text = if downloading {
+      let pct = if self.download_progress.1 > 0 {
+        ((self.download_progress.0 as f64 / self.download_progress.1 as f64) * 100.0) as u8
+      } else {
+        0
+      };
+      format!("Downloading… {pct}%")
+    } else if self.models_ready {
+      "Ready".to_string()
+    } else {
+      "Not downloaded".to_string()
+    };
+    let accessibility_status = platform::accessibility_authorization();
+    let microphone_status = platform::microphone_authorization();
+    // "Get started" needs the model fetched (downloading or ready) AND both
+    // required permissions granted.
+    let get_started_enabled = (self.models_ready || downloading)
+      && accessibility_status == platform::PermissionStatus::Granted
+      && microphone_status == platform::PermissionStatus::Granted;
     platform::OnboardingViewModel {
       always_listening_enabled: self.always_listening_enabled,
       history_enabled: self.history_enabled,
       paste_method: self.paste_method,
       run_on_startup_enabled: self.run_on_startup_enabled,
-      accessibility_status: platform::accessibility_authorization(),
-      microphone_status: platform::microphone_authorization(),
+      accessibility_status,
+      microphone_status,
+      model_status_text,
+      model_downloading: downloading,
+      get_started_enabled,
     }
   }
 
@@ -1721,6 +1749,13 @@ impl AppController {
     self.refresh_models_ready();
     platform::update_settings_window(self.settings_view_model());
     if self.models_ready {
+      // Announce readiness via the overlay for the onboarding flow, where the
+      // user finished setup (closing the welcome window) while the download was
+      // still running. Suppressed while the welcome window is still open — it
+      // shows live progress itself.
+      if !self.onboarding_active {
+        self.show_overlay_notice("Model ready", "Azad is ready to dictate", Duration::from_secs(4));
+      }
       self.ensure_session();
     }
   }
@@ -2474,12 +2509,10 @@ impl AppController {
       platform::show_onboarding_window(self.onboarding_view_model());
     }
     if self.onboarding_active {
-      // Poll permission state so the welcome window's indicators flip live as
-      // the user grants access in System Settings.
-      platform::refresh_onboarding_permissions(
-        platform::accessibility_authorization(),
-        platform::microphone_authorization(),
-      );
+      // Push the dynamic state (download status, the "Get started" gate, and
+      // permission indicators) so the welcome window updates live as the
+      // download progresses and the user grants access in System Settings.
+      platform::update_onboarding_window(self.onboarding_view_model());
     }
     if self.pending_first_launch_settings {
       self.pending_first_launch_settings = false;

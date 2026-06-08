@@ -332,6 +332,8 @@ struct SettingsWindowRefs {
 struct OnboardingWindowRefs {
   window: id,
   get_started_button: id,
+  model_status_label: id,
+  download_button: id,
   trigger_popup: id,
   history_checkbox: id,
   insert_popup: id,
@@ -350,6 +352,11 @@ pub struct OnboardingViewModel {
   pub run_on_startup_enabled: bool,
   pub accessibility_status: PermissionStatus,
   pub microphone_status: PermissionStatus,
+  pub model_status_text: String,
+  pub model_downloading: bool,
+  /// "Get started" is enabled only once Download has been clicked (or the model
+  /// is already present) AND Microphone + Accessibility are granted.
+  pub get_started_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -491,8 +498,7 @@ unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &Onboar
   let _: () = msg_send![refs.insert_popup, selectItemAtIndex: model.paste_method.ui_index()];
   let login_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.login_checkbox, setState: login_state];
-  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status);
-  set_permission_status_label(refs.perm_microphone_status, model.microphone_status);
+  apply_onboarding_dynamic(refs, model);
 }
 
 pub fn close_onboarding_window() {
@@ -523,18 +529,26 @@ fn current_onboarding_window() -> Option<OnboardingWindowRefs> {
   ONBOARDING_WINDOW_REFS.with(|store| *store.borrow())
 }
 
-/// Refresh just the permission status indicators while the welcome window is
-/// open, so they flip live as the user grants access in System Settings.
-pub fn refresh_onboarding_permissions(
-  accessibility: PermissionStatus,
-  microphone: PermissionStatus,
-) {
+/// Refresh the dynamic parts of the welcome window (model status, the
+/// "Get started" gate, and permission indicators) while it's open, so they
+/// update live as the download progresses and the user grants access. Leaves
+/// the user-controlled popups and checkboxes untouched.
+pub fn update_onboarding_window(model: OnboardingViewModel) {
   if let Some(refs) = current_onboarding_window() {
     unsafe {
-      set_permission_status_label(refs.perm_accessibility_status, accessibility);
-      set_permission_status_label(refs.perm_microphone_status, microphone);
+      apply_onboarding_dynamic(refs, &model);
     }
   }
+}
+
+unsafe fn apply_onboarding_dynamic(refs: OnboardingWindowRefs, model: &OnboardingViewModel) {
+  let status = NSString::alloc(nil).init_str(&model.model_status_text);
+  let _: () = msg_send![refs.model_status_label, setStringValue: status];
+  let _: () =
+    msg_send![refs.download_button, setEnabled: if model.model_downloading { NO } else { YES }];
+  let _: () = msg_send![refs.get_started_button, setEnabled: if model.get_started_enabled { YES } else { NO }];
+  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status);
+  set_permission_status_label(refs.perm_microphone_status, model.microphone_status);
 }
 
 unsafe fn set_permission_status_label(label: id, status: PermissionStatus) {
@@ -692,9 +706,33 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: subhead];
 
-  // Section rows, top-down below the subhead. Download, the permission rows,
-  // and the mic picker land in follow-up commits.
-  let trigger_y = ONBOARDING_WINDOW_HEIGHT - 150.0;
+  // Section rows, top-down below the subhead. (The mic picker lands next.)
+  let download_y = ONBOARDING_WINDOW_HEIGHT - 140.0;
+  let download_label = make_onboarding_row_label("Model", download_y);
+  let _: () = msg_send![content_view, addSubview: download_label];
+  let model_status_frame = NSRect::new(
+    NSPoint::new(ONBOARDING_PAD_X + 160.0, download_y),
+    NSSize::new(220.0, ONBOARDING_ROW_HEIGHT),
+  );
+  let model_status_label = make_onboarding_label("…", model_status_frame, 13.0, false);
+  let _: () = msg_send![content_view, addSubview: model_status_label];
+  let download_button: id = {
+    let w = 110.0;
+    let frame = NSRect::new(
+      NSPoint::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X - w, download_y - 2.0),
+      NSSize::new(w, ONBOARDING_ROW_HEIGHT + 4.0),
+    );
+    let b: id = msg_send![class!(NSButton), alloc];
+    let b: id = msg_send![b, initWithFrame: frame];
+    let _: () = msg_send![b, setTitle: NSString::alloc(nil).init_str("Download")];
+    let _: () = msg_send![b, setBezelStyle: 1usize];
+    let _: () = msg_send![b, setButtonType: 0usize];
+    let _: () = msg_send![b, setAction: sel!(onboardingDownloadModel:)];
+    let _: () = msg_send![content_view, addSubview: b];
+    b
+  };
+
+  let trigger_y = download_y - 48.0;
   let trigger_label = make_onboarding_row_label("Start listening", trigger_y);
   let _: () = msg_send![content_view, addSubview: trigger_label];
   let trigger_popup = make_onboarding_popup(
@@ -783,6 +821,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
 
   if delegate != nil {
     let _: () = msg_send![get_started_button, setTarget: delegate];
+    let _: () = msg_send![download_button, setTarget: delegate];
     let _: () = msg_send![trigger_popup, setTarget: delegate];
     let _: () = msg_send![history_checkbox, setTarget: delegate];
     let _: () = msg_send![insert_popup, setTarget: delegate];
@@ -792,6 +831,8 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   OnboardingWindowRefs {
     window,
     get_started_button,
+    model_status_label,
+    download_button,
     trigger_popup,
     history_checkbox,
     insert_popup,
@@ -1331,6 +1372,10 @@ fn register_delegate_class() -> &'static Class {
       onboarding_open_permission as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(onboardingDownloadModel:),
+      onboarding_download_model as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(settingsToggleRunOnStartup:),
       settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
     );
@@ -1619,6 +1664,11 @@ extern "C" fn onboarding_toggle_login(_: &Object, _: Sel, sender: id) {
     crate::app::send_event(AppEvent::OnboardingToggleLogin(state != 0));
     crate::app::drain_events();
   }
+}
+
+extern "C" fn onboarding_download_model(_: &Object, _: Sel, _: id) {
+  crate::app::send_event(AppEvent::OnboardingDownloadModel);
+  crate::app::drain_events();
 }
 
 extern "C" fn onboarding_open_permission(_: &Object, _: Sel, sender: id) {
