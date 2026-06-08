@@ -1639,18 +1639,30 @@ impl AppController {
 
   fn onboarding_view_model(&self) -> platform::OnboardingViewModel {
     let downloading = self.download_handle.is_some();
+    let pack = models::pack_by_id(&self.active_pack_id).unwrap_or_else(models::default_pack);
+    let header = format!("{} · {}", pack.display_name, models::format_size(pack.total_size_bytes));
+    let path = models::pack_dir(&self.active_pack_id)
+      .map(|p| {
+        let s = p.display().to_string();
+        match std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()) {
+          Some(home) => s.strip_prefix(&home).map(|rest| format!("~{rest}")).unwrap_or(s),
+          None => s,
+        }
+      })
+      .unwrap_or_default();
     let model_status_text = if downloading {
       let pct = if self.download_progress.1 > 0 {
         ((self.download_progress.0 as f64 / self.download_progress.1 as f64) * 100.0) as u8
       } else {
         0
       };
-      format!("Downloading… {pct}%")
+      format!("{header}\nDownloading… {pct}%")
     } else if self.models_ready {
-      "Ready".to_string()
+      format!("{header}\n✓ Installed at {path}")
     } else {
-      "Not downloaded".to_string()
+      format!("{header}\nNot downloaded yet")
     };
+    let download_enabled = !self.models_ready && !downloading;
     let accessibility_status = platform::accessibility_authorization();
     let microphone_status = platform::microphone_authorization();
     // "Get started" needs the model fetched (downloading or ready) AND both
@@ -1678,7 +1690,7 @@ impl AppController {
       accessibility_status,
       microphone_status,
       model_status_text,
-      model_downloading: downloading,
+      download_enabled,
       get_started_enabled,
       devices,
       selected_device_index,

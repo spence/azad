@@ -123,7 +123,7 @@ const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
 const ONBOARDING_WINDOW_WIDTH: f64 = 640.0;
-const ONBOARDING_WINDOW_HEIGHT: f64 = 732.0;
+const ONBOARDING_WINDOW_HEIGHT: f64 = 560.0;
 const ONBOARDING_PAD_X: f64 = 40.0;
 const ONBOARDING_LABEL_WIDTH: f64 = 170.0;
 const ONBOARDING_CONTROL_X: f64 = ONBOARDING_PAD_X + ONBOARDING_LABEL_WIDTH + 12.0;
@@ -374,7 +374,9 @@ pub struct OnboardingViewModel {
   pub accessibility_status: PermissionStatus,
   pub microphone_status: PermissionStatus,
   pub model_status_text: String,
-  pub model_downloading: bool,
+  /// Download button enabled only when the model is absent (not ready, not
+  /// already downloading).
+  pub download_enabled: bool,
   /// "Get started" is enabled only once Download has been clicked (or the model
   /// is already present) AND Microphone + Accessibility are granted.
   pub get_started_enabled: bool,
@@ -608,7 +610,7 @@ unsafe fn apply_onboarding_dynamic(refs: OnboardingWindowRefs, model: &Onboardin
   let status = NSString::alloc(nil).init_str(&model.model_status_text);
   let _: () = msg_send![refs.model_status_label, setStringValue: status];
   let _: () =
-    msg_send![refs.download_button, setEnabled: if model.model_downloading { NO } else { YES }];
+    msg_send![refs.download_button, setEnabled: if model.download_enabled { YES } else { NO }];
   let _: () = msg_send![refs.get_started_button, setEnabled: if model.get_started_enabled { YES } else { NO }];
   set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status);
   set_permission_status_label(refs.perm_microphone_status, model.microphone_status);
@@ -759,7 +761,9 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let _: () = msg_send![window, setReleasedWhenClosed: NO];
   let _: () = msg_send![window, setTitleVisibility: 1isize]; // NSWindowTitleHidden
   let _: () = msg_send![window, setTitlebarAppearsTransparent: YES];
-  let _: () = msg_send![window, setMovable: NO];
+  // Chromeless but draggable: no title bar to grab, so let the user move it by
+  // dragging anywhere on the background (clicks on controls still work normally).
+  let _: () = msg_send![window, setMovableByWindowBackground: YES];
   // Hide close / miniaturize / zoom (NSWindowButton 0 / 1 / 2).
   for button_kind in [0isize, 1isize, 2isize] {
     let btn: id = msg_send![window, standardWindowButton: button_kind];
@@ -770,39 +774,55 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
 
   let content_view: id = msg_send![window, contentView];
 
-  let heading_frame = NSRect::new(
-    NSPoint::new(SETTINGS_INSET_X, ONBOARDING_WINDOW_HEIGHT - 64.0),
-    NSSize::new(ONBOARDING_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0, 30.0),
+  let full_w = ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0;
+  let heading = make_onboarding_label(
+    "Welcome to Azad",
+    NSRect::new(
+      NSPoint::new(ONBOARDING_PAD_X, ONBOARDING_WINDOW_HEIGHT - 48.0),
+      NSSize::new(full_w, 30.0),
+    ),
+    22.0,
+    true,
   );
-  let heading = make_onboarding_label("Welcome to Azad", heading_frame, 22.0, true);
   let _: () = msg_send![content_view, addSubview: heading];
-
-  let subhead_frame = NSRect::new(
-    NSPoint::new(SETTINGS_INSET_X, ONBOARDING_WINDOW_HEIGHT - 90.0),
-    NSSize::new(ONBOARDING_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0, 20.0),
-  );
   let subhead = make_onboarding_label(
     "Let's get you set up — finish below to start dictating.",
-    subhead_frame,
+    NSRect::new(
+      NSPoint::new(ONBOARDING_PAD_X, ONBOARDING_WINDOW_HEIGHT - 72.0),
+      NSSize::new(full_w, 18.0),
+    ),
     13.0,
     false,
   );
   let _: () = msg_send![content_view, addSubview: subhead];
 
-  // Section rows, top-down below the subhead. (The mic picker lands next.)
-  let download_y = ONBOARDING_WINDOW_HEIGHT - 140.0;
-  let download_label = make_onboarding_row_label("Model", download_y);
-  let _: () = msg_send![content_view, addSubview: download_label];
-  let model_status_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_PAD_X + 160.0, download_y),
-    NSSize::new(220.0, ONBOARDING_ROW_HEIGHT),
-  );
-  let model_status_label = make_onboarding_label("…", model_status_frame, 13.0, false);
-  let _: () = msg_send![content_view, addSubview: model_status_label];
+  // Model section: a two-line status (name · size, then location/progress); the
+  // Download button is disabled once the model is present.
+  let model_y = ONBOARDING_WINDOW_HEIGHT - 116.0;
+  let model_label = make_onboarding_row_label("Model", model_y + 9.0);
+  let _: () = msg_send![content_view, addSubview: model_label];
+  let model_status_label: id = {
+    let frame = NSRect::new(
+      NSPoint::new(ONBOARDING_PAD_X + 84.0, model_y - 4.0),
+      NSSize::new(full_w - 84.0 - 122.0, 42.0),
+    );
+    let l: id = msg_send![class!(NSTextField), alloc];
+    let l: id = msg_send![l, initWithFrame: frame];
+    let _: () = msg_send![l, setStringValue: NSString::alloc(nil).init_str("…")];
+    let _: () = msg_send![l, setBezeled: NO];
+    let _: () = msg_send![l, setDrawsBackground: NO];
+    let _: () = msg_send![l, setEditable: NO];
+    let _: () = msg_send![l, setSelectable: NO];
+    let _: () = msg_send![l, setUsesSingleLineMode: NO];
+    let font: id = msg_send![class!(NSFont), systemFontOfSize: 12.0];
+    let _: () = msg_send![l, setFont: font];
+    let _: () = msg_send![content_view, addSubview: l];
+    l
+  };
   let download_button: id = {
     let w = 110.0;
     let frame = NSRect::new(
-      NSPoint::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X - w, download_y - 2.0),
+      NSPoint::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X - w, model_y + 5.0),
       NSSize::new(w, ONBOARDING_ROW_HEIGHT + 4.0),
     );
     let b: id = msg_send![class!(NSButton), alloc];
@@ -815,7 +835,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     b
   };
 
-  let trigger_y = download_y - 48.0;
+  let trigger_y = model_y - 50.0;
   let trigger_label = make_onboarding_row_label("Start listening", trigger_y);
   let _: () = msg_send![content_view, addSubview: trigger_label];
   let trigger_popup = make_onboarding_popup(
@@ -827,7 +847,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
 
   // Listen shortcut: Space is fixed; the user picks the modifier combination
   // (>=1 required). History stays built-in (hold + Up), so it isn't shown here.
-  let shortcut_y = trigger_y - 48.0;
+  let shortcut_y = trigger_y - 40.0;
   let shortcut_label = make_onboarding_row_label("Listen shortcut", shortcut_y);
   let _: () = msg_send![content_view, addSubview: shortcut_label];
   let listen_mod_shift = make_onboarding_mod_checkbox(
@@ -858,14 +878,16 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     shortcut_y,
     MOD_COMMAND as i64,
   );
+  // Vertically center against the checkbox glyphs (the checkboxes center their
+  // titles; a full-height top-aligned label sits too high).
   let space_hint_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_CONTROL_X + 214.0, shortcut_y),
-    NSSize::new(80.0, ONBOARDING_ROW_HEIGHT),
+    NSPoint::new(ONBOARDING_CONTROL_X + 214.0, shortcut_y + 5.0),
+    NSSize::new(80.0, 16.0),
   );
   let space_hint = make_onboarding_label("+ Space", space_hint_frame, 12.0, false);
   let _: () = msg_send![content_view, addSubview: space_hint];
 
-  let history_y = shortcut_y - 48.0;
+  let history_y = shortcut_y - 40.0;
   let history_label = make_onboarding_row_label("History", history_y);
   let _: () = msg_send![content_view, addSubview: history_label];
   let history_checkbox = make_onboarding_checkbox(
@@ -875,7 +897,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: history_checkbox];
 
-  let insert_y = history_y - 48.0;
+  let insert_y = history_y - 40.0;
   let insert_label = make_onboarding_row_label("Insert text by", insert_y);
   let _: () = msg_send![content_view, addSubview: insert_label];
   let insert_popup = make_onboarding_popup(
@@ -885,7 +907,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: insert_popup];
 
-  let login_y = insert_y - 48.0;
+  let login_y = insert_y - 40.0;
   let login_label = make_onboarding_row_label("Startup", login_y);
   let _: () = msg_send![content_view, addSubview: login_label];
   let login_checkbox = make_onboarding_checkbox(
@@ -898,7 +920,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()).unwrap_or(nil);
 
   // Permissions section.
-  let perms_header_y = login_y - 50.0;
+  let perms_header_y = login_y - 42.0;
   let perms_header_frame = NSRect::new(
     NSPoint::new(ONBOARDING_PAD_X, perms_header_y),
     NSSize::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0, ONBOARDING_ROW_HEIGHT),
@@ -910,14 +932,14 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     content_view,
     delegate,
     "Accessibility",
-    perms_header_y - 34.0,
+    perms_header_y - 30.0,
     0,
   );
   let perm_microphone_status =
-    make_onboarding_permission_row(content_view, delegate, "Microphone", perms_header_y - 68.0, 1);
+    make_onboarding_permission_row(content_view, delegate, "Microphone", perms_header_y - 60.0, 1);
 
   let hint_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_PAD_X, perms_header_y - 96.0),
+    NSPoint::new(ONBOARDING_PAD_X, perms_header_y - 82.0),
     NSSize::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0, 18.0),
   );
   let hint = make_onboarding_label(
@@ -929,7 +951,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let _: () = msg_send![content_view, addSubview: hint];
 
   // Microphone device picker.
-  let device_y = perms_header_y - 134.0;
+  let device_y = perms_header_y - 116.0;
   let device_label = make_onboarding_row_label("Microphone device", device_y);
   let _: () = msg_send![content_view, addSubview: device_label];
   let device_popup = make_onboarding_popup(&[], device_y, sel!(onboardingSelectDevice:));
@@ -937,7 +959,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
 
   let button_w = 160.0;
   let button_frame = NSRect::new(
-    NSPoint::new((ONBOARDING_WINDOW_WIDTH - button_w) * 0.5, 22.0),
+    NSPoint::new((ONBOARDING_WINDOW_WIDTH - button_w) * 0.5, device_y - 44.0),
     NSSize::new(button_w, 34.0),
   );
   let get_started_button: id = msg_send![class!(NSButton), alloc];
