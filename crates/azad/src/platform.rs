@@ -511,16 +511,28 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let window_frame =
     NSRect::new(NSPoint::new(x, y), NSSize::new(ONBOARDING_WINDOW_WIDTH, ONBOARDING_WINDOW_HEIGHT));
 
-  // Titled but not closable or miniaturizable: the user completes setup via
-  // "Get started" rather than dismissing the gate.
-  let style = NSWindowStyleMask::NSTitledWindowMask;
+  // Chromeless: a titled window with its title bar and traffic-light buttons
+  // hidden, content drawn full-height (FullSizeContentView = 1 << 15), and
+  // movement disabled — so it reads as a custom welcome panel, not a normal
+  // window the user can drag, minimize, or close. Setup completes via
+  // "Get started", never by dismissing it.
+  let style_mask: u64 = NSWindowStyleMask::NSTitledWindowMask.bits() | (1u64 << 15);
   let window: id = msg_send![class!(NSWindow), alloc];
   let window: id = msg_send![window, initWithContentRect: window_frame
-                                                styleMask: style
+                                                styleMask: style_mask
                                                   backing: NSBackingStoreType::NSBackingStoreBuffered
                                                     defer: NO];
   let _: () = msg_send![window, setReleasedWhenClosed: NO];
-  let _: () = msg_send![window, setTitle: NSString::alloc(nil).init_str("Welcome to Azad")];
+  let _: () = msg_send![window, setTitleVisibility: 1isize]; // NSWindowTitleHidden
+  let _: () = msg_send![window, setTitlebarAppearsTransparent: YES];
+  let _: () = msg_send![window, setMovable: NO];
+  // Hide close / miniaturize / zoom (NSWindowButton 0 / 1 / 2).
+  for button_kind in [0isize, 1isize, 2isize] {
+    let btn: id = msg_send![window, standardWindowButton: button_kind];
+    if btn != nil {
+      let _: () = msg_send![btn, setHidden: YES];
+    }
+  }
 
   let content_view: id = msg_send![window, contentView];
 
