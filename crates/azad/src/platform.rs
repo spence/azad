@@ -730,7 +730,7 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let login_checkbox = make_onboarding_checkbox(
     "Open Azad automatically at login",
     login_y,
-    sel!(settingsToggleRunOnStartup:),
+    sel!(onboardingToggleLogin:),
   );
   let _: () = msg_send![content_view, addSubview: login_checkbox];
 
@@ -1323,6 +1323,10 @@ fn register_delegate_class() -> &'static Class {
       onboarding_toggle_history as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(onboardingToggleLogin:),
+      onboarding_toggle_login as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(onboardingOpenPermission:),
       onboarding_open_permission as extern "C" fn(&Object, Sel, id),
     );
@@ -1602,6 +1606,17 @@ extern "C" fn onboarding_toggle_history(_: &Object, _: Sel, sender: id) {
     }
     let state: i64 = msg_send![sender, state];
     crate::app::send_event(AppEvent::OnboardingToggleHistory(state != 0));
+    crate::app::drain_events();
+  }
+}
+
+extern "C" fn onboarding_toggle_login(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::OnboardingToggleLogin(state != 0));
     crate::app::drain_events();
   }
 }
@@ -6475,10 +6490,11 @@ pub fn input_monitoring_authorization() -> PermissionStatus {
   }
 }
 
-// IOHIDRequestType is a C enum with implicit values: kIOHIDRequestTypeListenEvent
-// is the FIRST member (0); kIOHIDRequestTypePostEvent is 1. Querying 1 (post)
-// returns Granted spuriously — Input Monitoring is the listen-event access (0).
-const KIOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 0;
+// IOHIDRequestType (IOKit hidsystem/IOHIDLib.h) is a C enum with implicit values:
+// kIOHIDRequestTypePostEvent is the FIRST member (0), kIOHIDRequestTypeListenEvent
+// is the SECOND (1). Input Monitoring is the listen-event access, so query 1;
+// querying 0 (post) returns Granted spuriously.
+const KIOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
 
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {

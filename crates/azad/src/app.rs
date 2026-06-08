@@ -64,6 +64,7 @@ pub enum AppEvent {
   OnboardingGetStarted,
   OnboardingSetTrigger(bool),
   OnboardingToggleHistory(bool),
+  OnboardingToggleLogin(bool),
   ModelDownloadProgress {
     pack_id: String,
     bytes_done: u64,
@@ -1066,6 +1067,7 @@ impl AppController {
       AppEvent::OnboardingGetStarted => self.handle_onboarding_get_started(),
       AppEvent::OnboardingSetTrigger(automatic) => self.handle_onboarding_set_trigger(automatic),
       AppEvent::OnboardingToggleHistory(enabled) => self.handle_onboarding_toggle_history(enabled),
+      AppEvent::OnboardingToggleLogin(enabled) => self.handle_onboarding_toggle_login(enabled),
       AppEvent::ModelDownloadProgress { pack_id, bytes_done, bytes_total } => {
         self.handle_model_download_progress(&pack_id, bytes_done, bytes_total)
       }
@@ -1584,6 +1586,17 @@ impl AppController {
   fn handle_onboarding_toggle_history(&mut self, enabled: bool) {
     self.history_enabled = enabled;
     preferred_store::save_history_enabled(enabled);
+  }
+
+  fn handle_onboarding_toggle_login(&mut self, enabled: bool) {
+    // Persist unconditionally and let apply_run_on_startup_preference reconcile
+    // the LaunchAgent. The settings handler only saves when an agent plist
+    // already exists, which a fresh profile lacks — so the onboarding choice
+    // (especially opt-out) would otherwise be silently dropped and later
+    // overridden by the returning-user seeding.
+    self.run_on_startup_enabled = enabled;
+    preferred_store::save_run_on_startup_enabled(enabled);
+    self.apply_run_on_startup_preference();
   }
 
   fn onboarding_view_model(&self) -> platform::OnboardingViewModel {
