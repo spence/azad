@@ -122,6 +122,8 @@ const SETTINGS_METRICS_TOP_GAP: f64 = 14.0;
 const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
+const ONBOARDING_WINDOW_WIDTH: f64 = 640.0;
+const ONBOARDING_WINDOW_HEIGHT: f64 = 560.0;
 const SETTINGS_LABEL_WIDTH: f64 = 180.0;
 const SETTINGS_POPUP_WIDTH: f64 = 220.0;
 const SETTINGS_CONTROL_VERTICAL_GAP: f64 = 14.0;
@@ -231,6 +233,7 @@ thread_local! {
     static DEVICE_MENU_MODEL: RefCell<DeviceMenuModel> = RefCell::new(DeviceMenuModel::default());
     static HOTKEY_MANAGER_REF: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
     static SETTINGS_WINDOW_REFS: RefCell<Option<SettingsWindowRefs>> = const { RefCell::new(None) };
+    static ONBOARDING_WINDOW_REFS: RefCell<Option<OnboardingWindowRefs>> = const { RefCell::new(None) };
     static SETTINGS_LAST_MODEL: RefCell<Option<SettingsViewModel>> = const { RefCell::new(None) };
 }
 
@@ -317,6 +320,18 @@ struct SettingsWindowRefs {
   models_download_button: id,
   models_cancel_button: id,
 }
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct OnboardingWindowRefs {
+  window: id,
+  get_started_button: id,
+}
+
+/// View model pushed to the first-run onboarding window. Fields for each
+/// section are added as the sections land; the scaffold needs none yet.
+#[derive(Debug, Clone, Default)]
+pub struct OnboardingViewModel {}
 
 #[derive(Debug, Clone, Default)]
 pub struct DeviceMenuModel {
@@ -436,6 +451,117 @@ pub fn show_settings_window(model: SettingsViewModel) {
     let _: () = msg_send![app, activateIgnoringOtherApps: YES];
     let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
   }
+}
+
+pub fn show_onboarding_window(_model: OnboardingViewModel) {
+  unsafe {
+    let refs = ensure_onboarding_window();
+    let app = NSApp();
+    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
+    let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+    let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
+  }
+}
+
+pub fn close_onboarding_window() {
+  let refs = ONBOARDING_WINDOW_REFS.with(|store| store.borrow_mut().take());
+  if let Some(refs) = refs {
+    unsafe {
+      let _: () = msg_send![refs.window, orderOut: nil];
+      let app = NSApp();
+      app.setActivationPolicy_(
+        NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
+      );
+    }
+  }
+}
+
+unsafe fn ensure_onboarding_window() -> OnboardingWindowRefs {
+  if let Some(existing) = ONBOARDING_WINDOW_REFS.with(|store| *store.borrow()) {
+    return existing;
+  }
+  let refs = create_onboarding_window();
+  ONBOARDING_WINDOW_REFS.with(|store| {
+    store.borrow_mut().replace(refs);
+  });
+  refs
+}
+
+unsafe fn make_onboarding_label(text: &str, frame: NSRect, font_size: f64, bold: bool) -> id {
+  let label: id = msg_send![class!(NSTextField), alloc];
+  let label: id = msg_send![label, initWithFrame: frame];
+  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
+  let _: () = msg_send![label, setBezeled: NO];
+  let _: () = msg_send![label, setDrawsBackground: NO];
+  let _: () = msg_send![label, setEditable: NO];
+  let _: () = msg_send![label, setSelectable: NO];
+  let font: id = if bold {
+    msg_send![class!(NSFont), boldSystemFontOfSize: font_size]
+  } else {
+    msg_send![class!(NSFont), systemFontOfSize: font_size]
+  };
+  let _: () = msg_send![label, setFont: font];
+  label
+}
+
+unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
+  let frame = main_screen_frame();
+  let x = frame.origin.x + (frame.size.width - ONBOARDING_WINDOW_WIDTH) * 0.5;
+  let y = frame.origin.y + (frame.size.height - ONBOARDING_WINDOW_HEIGHT) * 0.5;
+  let window_frame =
+    NSRect::new(NSPoint::new(x, y), NSSize::new(ONBOARDING_WINDOW_WIDTH, ONBOARDING_WINDOW_HEIGHT));
+
+  // Titled but not closable or miniaturizable: the user completes setup via
+  // "Get started" rather than dismissing the gate.
+  let style = NSWindowStyleMask::NSTitledWindowMask;
+  let window: id = msg_send![class!(NSWindow), alloc];
+  let window: id = msg_send![window, initWithContentRect: window_frame
+                                                styleMask: style
+                                                  backing: NSBackingStoreType::NSBackingStoreBuffered
+                                                    defer: NO];
+  let _: () = msg_send![window, setReleasedWhenClosed: NO];
+  let _: () = msg_send![window, setTitle: NSString::alloc(nil).init_str("Welcome to Azad")];
+
+  let content_view: id = msg_send![window, contentView];
+
+  let heading_frame = NSRect::new(
+    NSPoint::new(SETTINGS_INSET_X, ONBOARDING_WINDOW_HEIGHT - 64.0),
+    NSSize::new(ONBOARDING_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0, 30.0),
+  );
+  let heading = make_onboarding_label("Welcome to Azad", heading_frame, 22.0, true);
+  let _: () = msg_send![content_view, addSubview: heading];
+
+  let subhead_frame = NSRect::new(
+    NSPoint::new(SETTINGS_INSET_X, ONBOARDING_WINDOW_HEIGHT - 90.0),
+    NSSize::new(ONBOARDING_WINDOW_WIDTH - SETTINGS_INSET_X * 2.0, 20.0),
+  );
+  let subhead = make_onboarding_label(
+    "Let's get you set up — finish below to start dictating.",
+    subhead_frame,
+    13.0,
+    false,
+  );
+  let _: () = msg_send![content_view, addSubview: subhead];
+
+  let button_w = 160.0;
+  let button_frame = NSRect::new(
+    NSPoint::new((ONBOARDING_WINDOW_WIDTH - button_w) * 0.5, 22.0),
+    NSSize::new(button_w, 34.0),
+  );
+  let get_started_button: id = msg_send![class!(NSButton), alloc];
+  let get_started_button: id = msg_send![get_started_button, initWithFrame: button_frame];
+  let _: () = msg_send![get_started_button, setTitle: NSString::alloc(nil).init_str("Get started")];
+  let _: () = msg_send![get_started_button, setBezelStyle: 1usize];
+  let _: () = msg_send![get_started_button, setButtonType: 0usize];
+  let _: () = msg_send![get_started_button, setKeyEquivalent: NSString::alloc(nil).init_str("\r")];
+  let _: () = msg_send![get_started_button, setAction: sel!(onboardingGetStarted:)];
+  let _: () = msg_send![content_view, addSubview: get_started_button];
+
+  if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
+    let _: () = msg_send![get_started_button, setTarget: delegate];
+  }
+
+  OnboardingWindowRefs { window, get_started_button }
 }
 
 pub fn update_settings_window(model: SettingsViewModel) {
@@ -928,6 +1054,10 @@ fn register_delegate_class() -> &'static Class {
     decl.add_method(sel!(toggleDevices:), toggle_devices as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(openSettings:), open_settings as extern "C" fn(&Object, Sel, id));
     decl.add_method(
+      sel!(onboardingGetStarted:),
+      onboarding_get_started as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(settingsToggleRunOnStartup:),
       settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
     );
@@ -1176,6 +1306,11 @@ extern "C" fn toggle_devices(this: &Object, _: Sel, _: id) {
 
 extern "C" fn open_settings(_: &Object, _: Sel, _: id) {
   crate::app::send_event(AppEvent::MenuOpenSettings);
+  crate::app::drain_events();
+}
+
+extern "C" fn onboarding_get_started(_: &Object, _: Sel, _: id) {
+  crate::app::send_event(AppEvent::OnboardingGetStarted);
   crate::app::drain_events();
 }
 

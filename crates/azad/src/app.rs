@@ -61,6 +61,7 @@ pub enum AppEvent {
   SettingsRefresh,
   SettingsDownloadModel(String),
   SettingsCancelDownload,
+  OnboardingGetStarted,
   ModelDownloadProgress {
     pack_id: String,
     bytes_done: u64,
@@ -266,6 +267,7 @@ struct AppController {
   // (and grab the mic) until the user has finished setup. Seeded true on
   // bootstrap for users who predate the welcome flow (see `bootstrap`).
   onboarding_complete: bool,
+  pending_onboarding: bool,
   pending_first_launch_settings: bool,
   download_handle: Option<DownloadHandle>,
   download_progress: (u64, u64),
@@ -857,6 +859,7 @@ impl AppController {
       active_pack_id,
       models_ready: false,
       onboarding_complete: preferred_store::load_onboarding_complete().unwrap_or(false),
+      pending_onboarding: false,
       pending_first_launch_settings: false,
       download_handle: None,
       download_progress: (0, 0),
@@ -897,7 +900,11 @@ impl AppController {
       preferred_store::save_run_on_startup_enabled(true);
     }
     self.apply_run_on_startup_preference();
-    if !self.models_ready {
+    // A fresh profile goes through the welcome flow; a returning user whose
+    // model is somehow missing still gets the legacy first-run Settings popup.
+    if !self.onboarding_complete {
+      self.pending_onboarding = true;
+    } else if !self.models_ready {
       self.pending_first_launch_settings = true;
     }
     self.start_device_controller();
@@ -1052,6 +1059,7 @@ impl AppController {
       AppEvent::SettingsRefresh => self.handle_settings_refresh(),
       AppEvent::SettingsDownloadModel(pack_id) => self.handle_settings_download_model(&pack_id),
       AppEvent::SettingsCancelDownload => self.handle_settings_cancel_download(),
+      AppEvent::OnboardingGetStarted => self.handle_onboarding_get_started(),
       AppEvent::ModelDownloadProgress { pack_id, bytes_done, bytes_total } => {
         self.handle_model_download_progress(&pack_id, bytes_done, bytes_total)
       }
@@ -1550,6 +1558,15 @@ impl AppController {
 
   fn handle_menu_open_settings(&mut self) {
     platform::show_settings_window(self.settings_view_model());
+  }
+
+  fn handle_onboarding_get_started(&mut self) {
+    eprintln!("AZAD_ONBOARDING get-started: completing onboarding");
+    self.onboarding_complete = true;
+    preferred_store::save_onboarding_complete(true);
+    platform::close_onboarding_window();
+    // First legitimate session spawn now that onboarding is complete.
+    self.ensure_session();
   }
 
   fn apply_run_on_startup_preference(&mut self) {
@@ -2402,6 +2419,11 @@ impl AppController {
   }
 
   fn on_tick(&mut self) {
+    if self.pending_onboarding {
+      self.pending_onboarding = false;
+      eprintln!("AZAD_ONBOARDING showing welcome window");
+      platform::show_onboarding_window(platform::OnboardingViewModel::default());
+    }
     if self.pending_first_launch_settings {
       self.pending_first_launch_settings = false;
       let mut vm = self.settings_view_model();
