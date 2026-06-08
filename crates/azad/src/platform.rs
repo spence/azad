@@ -6491,7 +6491,10 @@ pub fn input_monitoring_authorization() -> PermissionStatus {
   }
 }
 
-const KIOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+// IOHIDRequestType is a C enum with implicit values: kIOHIDRequestTypeListenEvent
+// is the FIRST member (0); kIOHIDRequestTypePostEvent is 1. Querying 1 (post)
+// returns Granted spuriously — Input Monitoring is the listen-event access (0).
+const KIOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 0;
 
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
