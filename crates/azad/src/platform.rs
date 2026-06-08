@@ -124,6 +124,12 @@ const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
 const ONBOARDING_WINDOW_WIDTH: f64 = 640.0;
 const ONBOARDING_WINDOW_HEIGHT: f64 = 560.0;
+const ONBOARDING_PAD_X: f64 = 40.0;
+const ONBOARDING_LABEL_WIDTH: f64 = 170.0;
+const ONBOARDING_CONTROL_X: f64 = ONBOARDING_PAD_X + ONBOARDING_LABEL_WIDTH + 12.0;
+const ONBOARDING_CONTROL_WIDTH: f64 =
+  ONBOARDING_WINDOW_WIDTH - ONBOARDING_CONTROL_X - ONBOARDING_PAD_X;
+const ONBOARDING_ROW_HEIGHT: f64 = 26.0;
 const SETTINGS_LABEL_WIDTH: f64 = 180.0;
 const SETTINGS_POPUP_WIDTH: f64 = 220.0;
 const SETTINGS_CONTROL_VERTICAL_GAP: f64 = 14.0;
@@ -326,12 +332,21 @@ struct SettingsWindowRefs {
 struct OnboardingWindowRefs {
   window: id,
   get_started_button: id,
+  trigger_popup: id,
+  history_checkbox: id,
+  insert_popup: id,
+  login_checkbox: id,
 }
 
-/// View model pushed to the first-run onboarding window. Fields for each
-/// section are added as the sections land; the scaffold needs none yet.
+/// State pushed to the first-run onboarding window so its controls reflect the
+/// current preferences. Fields are added as sections land.
 #[derive(Debug, Clone, Default)]
-pub struct OnboardingViewModel {}
+pub struct OnboardingViewModel {
+  pub always_listening_enabled: bool,
+  pub history_enabled: bool,
+  pub paste_method: PasteMethod,
+  pub run_on_startup_enabled: bool,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DeviceMenuModel {
@@ -453,14 +468,25 @@ pub fn show_settings_window(model: SettingsViewModel) {
   }
 }
 
-pub fn show_onboarding_window(_model: OnboardingViewModel) {
+pub fn show_onboarding_window(model: OnboardingViewModel) {
   unsafe {
     let refs = ensure_onboarding_window();
+    apply_onboarding_view_model(refs, &model);
     let app = NSApp();
     app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
     let _: () = msg_send![app, activateIgnoringOtherApps: YES];
     let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
   }
+}
+
+unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &OnboardingViewModel) {
+  let trigger_index: i64 = if model.always_listening_enabled { 0 } else { 1 };
+  let _: () = msg_send![refs.trigger_popup, selectItemAtIndex: trigger_index];
+  let history_state: i64 = if model.history_enabled { 1 } else { 0 };
+  let _: () = msg_send![refs.history_checkbox, setState: history_state];
+  let _: () = msg_send![refs.insert_popup, selectItemAtIndex: model.paste_method.ui_index()];
+  let login_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
+  let _: () = msg_send![refs.login_checkbox, setState: login_state];
 }
 
 pub fn close_onboarding_window() {
@@ -502,6 +528,41 @@ unsafe fn make_onboarding_label(text: &str, frame: NSRect, font_size: f64, bold:
   };
   let _: () = msg_send![label, setFont: font];
   label
+}
+
+unsafe fn make_onboarding_row_label(text: &str, y: f64) -> id {
+  let frame = NSRect::new(
+    NSPoint::new(ONBOARDING_PAD_X, y),
+    NSSize::new(ONBOARDING_LABEL_WIDTH, ONBOARDING_ROW_HEIGHT),
+  );
+  make_onboarding_label(text, frame, 13.0, false)
+}
+
+unsafe fn make_onboarding_popup(items: &[&str], y: f64, action: Sel) -> id {
+  let frame = NSRect::new(
+    NSPoint::new(ONBOARDING_CONTROL_X, y - 2.0),
+    NSSize::new(ONBOARDING_CONTROL_WIDTH, ONBOARDING_ROW_HEIGHT + 4.0),
+  );
+  let popup: id = msg_send![class!(NSPopUpButton), alloc];
+  let popup: id = msg_send![popup, initWithFrame: frame pullsDown: NO];
+  for item in items {
+    let _: () = msg_send![popup, addItemWithTitle: NSString::alloc(nil).init_str(item)];
+  }
+  let _: () = msg_send![popup, setAction: action];
+  popup
+}
+
+unsafe fn make_onboarding_checkbox(title: &str, y: f64, action: Sel) -> id {
+  let frame = NSRect::new(
+    NSPoint::new(ONBOARDING_CONTROL_X, y),
+    NSSize::new(ONBOARDING_CONTROL_WIDTH, ONBOARDING_ROW_HEIGHT),
+  );
+  let checkbox: id = msg_send![class!(NSButton), alloc];
+  let checkbox: id = msg_send![checkbox, initWithFrame: frame];
+  let _: () = msg_send![checkbox, setButtonType: 3usize];
+  let _: () = msg_send![checkbox, setTitle: NSString::alloc(nil).init_str(title)];
+  let _: () = msg_send![checkbox, setAction: action];
+  checkbox
 }
 
 unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
@@ -555,6 +616,48 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: subhead];
 
+  // Section rows, top-down below the subhead. Download, the permission rows,
+  // and the mic picker land in follow-up commits.
+  let trigger_y = ONBOARDING_WINDOW_HEIGHT - 150.0;
+  let trigger_label = make_onboarding_row_label("Start listening", trigger_y);
+  let _: () = msg_send![content_view, addSubview: trigger_label];
+  let trigger_popup = make_onboarding_popup(
+    &["Automatically", "Manually (hold shortcut)"],
+    trigger_y,
+    sel!(onboardingSetTrigger:),
+  );
+  let _: () = msg_send![content_view, addSubview: trigger_popup];
+
+  let history_y = trigger_y - 48.0;
+  let history_label = make_onboarding_row_label("History", history_y);
+  let _: () = msg_send![content_view, addSubview: history_label];
+  let history_checkbox = make_onboarding_checkbox(
+    "Keep a searchable history of dictations",
+    history_y,
+    sel!(onboardingToggleHistory:),
+  );
+  let _: () = msg_send![content_view, addSubview: history_checkbox];
+
+  let insert_y = history_y - 48.0;
+  let insert_label = make_onboarding_row_label("Insert text by", insert_y);
+  let _: () = msg_send![content_view, addSubview: insert_label];
+  let insert_popup = make_onboarding_popup(
+    &["Pasting", "Typing", "Typing + copy to clipboard"],
+    insert_y,
+    sel!(settingsSelectPasteMethod:),
+  );
+  let _: () = msg_send![content_view, addSubview: insert_popup];
+
+  let login_y = insert_y - 48.0;
+  let login_label = make_onboarding_row_label("Startup", login_y);
+  let _: () = msg_send![content_view, addSubview: login_label];
+  let login_checkbox = make_onboarding_checkbox(
+    "Open Azad automatically at login",
+    login_y,
+    sel!(settingsToggleRunOnStartup:),
+  );
+  let _: () = msg_send![content_view, addSubview: login_checkbox];
+
   let button_w = 160.0;
   let button_frame = NSRect::new(
     NSPoint::new((ONBOARDING_WINDOW_WIDTH - button_w) * 0.5, 22.0),
@@ -571,9 +674,20 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
 
   if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
     let _: () = msg_send![get_started_button, setTarget: delegate];
+    let _: () = msg_send![trigger_popup, setTarget: delegate];
+    let _: () = msg_send![history_checkbox, setTarget: delegate];
+    let _: () = msg_send![insert_popup, setTarget: delegate];
+    let _: () = msg_send![login_checkbox, setTarget: delegate];
   }
 
-  OnboardingWindowRefs { window, get_started_button }
+  OnboardingWindowRefs {
+    window,
+    get_started_button,
+    trigger_popup,
+    history_checkbox,
+    insert_popup,
+    login_checkbox,
+  }
 }
 
 pub fn update_settings_window(model: SettingsViewModel) {
@@ -1090,6 +1204,14 @@ fn register_delegate_class() -> &'static Class {
       onboarding_get_started as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(onboardingSetTrigger:),
+      onboarding_set_trigger as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(onboardingToggleHistory:),
+      onboarding_toggle_history as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(settingsToggleRunOnStartup:),
       settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
     );
@@ -1344,6 +1466,29 @@ extern "C" fn open_settings(_: &Object, _: Sel, _: id) {
 extern "C" fn onboarding_get_started(_: &Object, _: Sel, _: id) {
   crate::app::send_event(AppEvent::OnboardingGetStarted);
   crate::app::drain_events();
+}
+
+extern "C" fn onboarding_set_trigger(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let index: i64 = msg_send![sender, indexOfSelectedItem];
+    // Item 0 = Automatically (always listening), 1 = Manually.
+    crate::app::send_event(AppEvent::OnboardingSetTrigger(index == 0));
+    crate::app::drain_events();
+  }
+}
+
+extern "C" fn onboarding_toggle_history(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::OnboardingToggleHistory(state != 0));
+    crate::app::drain_events();
+  }
 }
 
 extern "C" fn settings_toggle_run_on_startup(_: &Object, _: Sel, sender: id) {

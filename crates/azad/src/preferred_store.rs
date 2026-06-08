@@ -198,6 +198,19 @@ pub fn load_history_enabled() -> bool {
   }
 }
 
+pub fn save_history_enabled(enabled: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(HISTORY_ENABLED_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
 pub fn load_paste_method() -> PasteMethod {
   unsafe {
     let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];

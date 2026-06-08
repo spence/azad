@@ -62,6 +62,8 @@ pub enum AppEvent {
   SettingsDownloadModel(String),
   SettingsCancelDownload,
   OnboardingGetStarted,
+  OnboardingSetTrigger(bool),
+  OnboardingToggleHistory(bool),
   ModelDownloadProgress {
     pack_id: String,
     bytes_done: u64,
@@ -1060,6 +1062,8 @@ impl AppController {
       AppEvent::SettingsDownloadModel(pack_id) => self.handle_settings_download_model(&pack_id),
       AppEvent::SettingsCancelDownload => self.handle_settings_cancel_download(),
       AppEvent::OnboardingGetStarted => self.handle_onboarding_get_started(),
+      AppEvent::OnboardingSetTrigger(automatic) => self.handle_onboarding_set_trigger(automatic),
+      AppEvent::OnboardingToggleHistory(enabled) => self.handle_onboarding_toggle_history(enabled),
       AppEvent::ModelDownloadProgress { pack_id, bytes_done, bytes_total } => {
         self.handle_model_download_progress(&pack_id, bytes_done, bytes_total)
       }
@@ -1567,6 +1571,25 @@ impl AppController {
     platform::close_onboarding_window();
     // First legitimate session spawn now that onboarding is complete.
     self.ensure_session();
+  }
+
+  fn handle_onboarding_set_trigger(&mut self, automatic: bool) {
+    self.always_listening_enabled = automatic;
+    preferred_store::save_always_listening_enabled(automatic);
+  }
+
+  fn handle_onboarding_toggle_history(&mut self, enabled: bool) {
+    self.history_enabled = enabled;
+    preferred_store::save_history_enabled(enabled);
+  }
+
+  fn onboarding_view_model(&self) -> platform::OnboardingViewModel {
+    platform::OnboardingViewModel {
+      always_listening_enabled: self.always_listening_enabled,
+      history_enabled: self.history_enabled,
+      paste_method: self.paste_method,
+      run_on_startup_enabled: self.run_on_startup_enabled,
+    }
   }
 
   fn apply_run_on_startup_preference(&mut self) {
@@ -2429,7 +2452,7 @@ impl AppController {
     if self.pending_onboarding {
       self.pending_onboarding = false;
       eprintln!("AZAD_ONBOARDING showing welcome window");
-      platform::show_onboarding_window(platform::OnboardingViewModel::default());
+      platform::show_onboarding_window(self.onboarding_view_model());
     }
     if self.pending_first_launch_settings {
       self.pending_first_launch_settings = false;
