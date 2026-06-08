@@ -1992,6 +1992,13 @@ impl AppController {
         if !self.accept_turn(turn_id) {
           return;
         }
+        // A raw finalize (opt+enter) already pasted and dismissed this turn. The
+        // engine keeps streaming drafts for a beat afterward; without this guard
+        // those late drafts re-show the overlay (the "flash"/"stuck overlay after
+        // raw paste" bug). Mirrors the Finalizing handler's raw-handled guard.
+        if should_ignore_finalizing_event(self.raw_handled_turn_id, turn_id) {
+          return;
+        }
         self.note_stable_stream_progress();
         self.observe_turn(turn_id);
         let merged = format!("{committed}{live}");
@@ -2541,20 +2548,42 @@ impl AppController {
     self.overlay_pending_vad_text = false;
   }
 
+  #[track_caller]
   fn show_overlay_listening(&mut self) {
     self.clear_overlay_pending();
     if !self.overlay_visible {
+      if self.debug_stats_enabled {
+        let loc = std::panic::Location::caller();
+        eprintln!(
+          "AZAD_OVERLAY_SHOW kind=listening at {}:{} current_turn={:?} finalizing_turn={:?}",
+          loc.file(),
+          loc.line(),
+          self.current_turn_id,
+          self.finalizing_turn_id,
+        );
+      }
       platform::show_overlay();
       self.overlay_visible = true;
     }
     self.render_listening_overlay();
   }
 
+  #[track_caller]
   fn render_finalizing_overlay_state(&mut self) {
     if self.accessibility_notice_deadline.is_some() {
       return;
     }
     if !self.overlay_visible {
+      if self.debug_stats_enabled {
+        let loc = std::panic::Location::caller();
+        eprintln!(
+          "AZAD_OVERLAY_SHOW kind=finalizing at {}:{} current_turn={:?} finalizing_turn={:?}",
+          loc.file(),
+          loc.line(),
+          self.current_turn_id,
+          self.finalizing_turn_id,
+        );
+      }
       platform::show_overlay();
       self.overlay_visible = true;
     }
@@ -2823,11 +2852,16 @@ impl AppController {
     paste_ok
   }
 
+  #[track_caller]
   fn hide_overlay(&mut self) {
     self.clear_overlay_pending();
     self.clear_held_top_overlay();
     self.listen_toggle_notice = None;
     if self.overlay_visible {
+      if self.debug_stats_enabled {
+        let loc = std::panic::Location::caller();
+        eprintln!("AZAD_OVERLAY_HIDE at {}:{}", loc.file(), loc.line());
+      }
       platform::hide_overlay();
       self.overlay_visible = false;
     }
@@ -3207,6 +3241,20 @@ impl AppController {
       self.manual_hold_active,
       self.raw_finalize_requested,
     );
+    if self.debug_stats_enabled {
+      eprintln!(
+        "AZAD_RAW_FINALIZE turn_id={} targets_finalizing={} hide_overlay={} disable_capture={} \
+         deferred_vad_start={} always_listening={} overlay_visible={} finalizing_turn={:?}",
+        turn_id,
+        raw_targets_finalizing_lane,
+        ui_plan.hide_overlay,
+        ui_plan.disable_capture,
+        self.deferred_vad_start,
+        self.always_listening_enabled,
+        self.overlay_visible,
+        self.finalizing_turn_id,
+      );
+    }
     if raw_targets_finalizing_lane {
       self.finalizing_turn_id = None;
       self.finalizing_deadline = None;

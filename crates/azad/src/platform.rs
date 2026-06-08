@@ -747,7 +747,12 @@ pub fn create_launch_agent_plist_if_missing() {
   }
 }
 
+#[track_caller]
 pub fn show_overlay() {
+  if overlay_debug_logs_enabled() {
+    let loc = std::panic::Location::caller();
+    eprintln!("AZAD_WIN main=front at {}:{}", loc.file(), loc.line());
+  }
   unsafe {
     let refs = ensure_overlay();
     move_overlay_to_cursor_screen(refs, true);
@@ -758,7 +763,12 @@ pub fn show_overlay() {
   set_arrow_hotkeys_enabled(true);
 }
 
+#[track_caller]
 pub fn show_overlay_top() {
+  if overlay_debug_logs_enabled() {
+    let loc = std::panic::Location::caller();
+    eprintln!("AZAD_WIN top=front at {}:{}", loc.file(), loc.line());
+  }
   unsafe {
     let refs = ensure_overlay_top();
     if let Some(bottom) = current_overlay() {
@@ -770,9 +780,14 @@ pub fn show_overlay_top() {
   }
 }
 
+#[track_caller]
 pub fn hide_overlay() {
   hide_overlay_top();
   if let Some(refs) = current_overlay() {
+    if overlay_debug_logs_enabled() {
+      let loc = std::panic::Location::caller();
+      eprintln!("AZAD_WIN main=out at {}:{}", loc.file(), loc.line());
+    }
     unsafe {
       let _: () = msg_send![refs.window, orderOut: nil];
       let app = NSApp();
@@ -784,8 +799,13 @@ pub fn hide_overlay() {
   set_arrow_hotkeys_enabled(false);
 }
 
+#[track_caller]
 pub fn hide_overlay_top() {
   if let Some(refs) = current_overlay_top() {
+    if overlay_debug_logs_enabled() {
+      let loc = std::panic::Location::caller();
+      eprintln!("AZAD_WIN top=out at {}:{}", loc.file(), loc.line());
+    }
     unsafe {
       let _: () = msg_send![refs.window, orderOut: nil];
     }
