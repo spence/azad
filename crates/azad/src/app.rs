@@ -22,7 +22,7 @@ use crate::platform::{
   SettingsViewModel,
 };
 use crate::preferred_store;
-use crate::settings::{AutoSubmitMode, PasteMethod};
+use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
 use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
 use crate::transcript_history::TranscriptIndex;
 
@@ -55,6 +55,7 @@ pub enum AppEvent {
   SettingsToggleDebugStats(bool),
   SettingsSelectPasteMethod(PasteMethod),
   SettingsSelectAutoSubmit(AutoSubmitMode),
+  SettingsSelectOverlayPosition(OverlayPosition),
   SettingsToggleAppendTrailingSpace(bool),
   SettingsAddRemovedWord(String),
   SettingsRemoveRemovedWord(String),
@@ -64,6 +65,8 @@ pub enum AppEvent {
   OnboardingGetStarted,
   OnboardingSetTrigger(bool),
   OnboardingToggleHistory(bool),
+  OnboardingToggleAppendTrailingSpace(bool),
+  OnboardingSetOverlayPosition(OverlayPosition),
   OnboardingToggleLogin(bool),
   OnboardingDownloadModel,
   OnboardingSelectDevice(usize),
@@ -262,6 +265,7 @@ struct AppController {
   paste_method: PasteMethod,
   auto_submit_mode: AutoSubmitMode,
   append_trailing_space_on_paste: bool,
+  overlay_position: OverlayPosition,
   debug_stats_enabled: bool,
   turn_started_at: HashMap<u64, Instant>,
   turn_finalize_outcomes: HashMap<u64, (String, String)>,
@@ -806,6 +810,7 @@ impl AppController {
     let paste_method = preferred_store::load_paste_method();
     let auto_submit_mode = preferred_store::load_auto_submit_mode();
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
+    let overlay_position = preferred_store::load_overlay_position();
     let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
     platform::set_overlay_debug_logs_enabled(debug_stats_enabled);
     let active_pack_id = preferred_store::load_active_model_pack()
@@ -858,6 +863,7 @@ impl AppController {
       paste_method,
       auto_submit_mode,
       append_trailing_space_on_paste,
+      overlay_position,
       debug_stats_enabled,
       turn_started_at: HashMap::new(),
       turn_finalize_outcomes: HashMap::new(),
@@ -887,6 +893,7 @@ impl AppController {
 
   fn bootstrap(&mut self) {
     self.refresh_models_ready();
+    platform::set_overlay_position(self.overlay_position);
     eprintln!(
       "AZAD_PERMISSIONS accessibility={:?} microphone={:?} input_monitoring={:?}",
       platform::accessibility_authorization(),
@@ -1062,6 +1069,9 @@ impl AppController {
         self.handle_settings_select_paste_method(method)
       }
       AppEvent::SettingsSelectAutoSubmit(mode) => self.handle_settings_select_auto_submit(mode),
+      AppEvent::SettingsSelectOverlayPosition(pos) => {
+        self.handle_settings_select_overlay_position(pos)
+      }
       AppEvent::SettingsToggleAppendTrailingSpace(enabled) => {
         self.handle_settings_toggle_append_trailing_space(enabled)
       }
@@ -1073,6 +1083,12 @@ impl AppController {
       AppEvent::OnboardingGetStarted => self.handle_onboarding_get_started(),
       AppEvent::OnboardingSetTrigger(automatic) => self.handle_onboarding_set_trigger(automatic),
       AppEvent::OnboardingToggleHistory(enabled) => self.handle_onboarding_toggle_history(enabled),
+      AppEvent::OnboardingToggleAppendTrailingSpace(enabled) => {
+        self.handle_onboarding_toggle_append_trailing_space(enabled)
+      }
+      AppEvent::OnboardingSetOverlayPosition(pos) => {
+        self.handle_onboarding_set_overlay_position(pos)
+      }
       AppEvent::OnboardingToggleLogin(enabled) => self.handle_onboarding_toggle_login(enabled),
       AppEvent::OnboardingDownloadModel => {
         let pack_id = self.active_pack_id.clone();
@@ -1602,6 +1618,17 @@ impl AppController {
     preferred_store::save_history_enabled(enabled);
   }
 
+  fn handle_onboarding_toggle_append_trailing_space(&mut self, enabled: bool) {
+    self.append_trailing_space_on_paste = enabled;
+    preferred_store::save_append_trailing_space_on_paste(enabled);
+  }
+
+  fn handle_onboarding_set_overlay_position(&mut self, pos: OverlayPosition) {
+    self.overlay_position = pos;
+    preferred_store::save_overlay_position(pos);
+    platform::set_overlay_position(pos);
+  }
+
   fn handle_onboarding_set_listen_modifier(&mut self, bit: u8, enabled: bool) {
     let current = platform::listen_modifiers();
     let next = if enabled { current | bit } else { current & !bit };
@@ -1686,6 +1713,8 @@ impl AppController {
       always_listening_enabled: self.always_listening_enabled,
       history_enabled: self.history_enabled,
       paste_method: self.paste_method,
+      append_trailing_space_on_paste: self.append_trailing_space_on_paste,
+      overlay_position: self.overlay_position,
       run_on_startup_enabled: self.run_on_startup_enabled,
       accessibility_status,
       microphone_status,
@@ -1745,6 +1774,13 @@ impl AppController {
   fn handle_settings_select_auto_submit(&mut self, mode: AutoSubmitMode) {
     self.auto_submit_mode = mode;
     preferred_store::save_auto_submit_mode(mode);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
+  fn handle_settings_select_overlay_position(&mut self, pos: OverlayPosition) {
+    self.overlay_position = pos;
+    preferred_store::save_overlay_position(pos);
+    platform::set_overlay_position(pos);
     platform::update_settings_window(self.settings_view_model());
   }
 
@@ -1852,6 +1888,7 @@ impl AppController {
       run_on_startup_enabled: self.run_on_startup_enabled,
       paste_method: self.paste_method,
       auto_submit_mode: self.auto_submit_mode,
+      overlay_position: self.overlay_position,
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
       debug_stats_enabled: self.debug_stats_enabled,
       metrics_text,

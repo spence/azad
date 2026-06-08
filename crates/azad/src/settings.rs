@@ -87,9 +87,56 @@ impl AutoSubmitMode {
   }
 }
 
+/// Which display the speaking overlay appears on. All modes keep the existing
+/// top-center anchor; they differ only in which screen is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverlayPosition {
+  /// The screen under the mouse cursor (the app's original hardcoded behavior).
+  #[default]
+  FollowCursor,
+  /// The primary display (the one carrying the menu bar).
+  PrimaryMonitor,
+  /// The display containing the focused window of the frontmost app.
+  ActiveWindow,
+}
+
+impl OverlayPosition {
+  pub fn from_prefs_value(value: &str) -> Self {
+    match value {
+      "primary_monitor" => Self::PrimaryMonitor,
+      "active_window" => Self::ActiveWindow,
+      _ => Self::FollowCursor,
+    }
+  }
+
+  pub fn prefs_value(self) -> &'static str {
+    match self {
+      Self::FollowCursor => "follow_cursor",
+      Self::PrimaryMonitor => "primary_monitor",
+      Self::ActiveWindow => "active_window",
+    }
+  }
+
+  pub fn from_ui_index(index: i64) -> Self {
+    match index {
+      1 => Self::PrimaryMonitor,
+      2 => Self::ActiveWindow,
+      _ => Self::FollowCursor,
+    }
+  }
+
+  pub fn ui_index(self) -> i64 {
+    match self {
+      Self::FollowCursor => 0,
+      Self::PrimaryMonitor => 1,
+      Self::ActiveWindow => 2,
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{AutoSubmitMode, PasteMethod};
+  use super::{AutoSubmitMode, OverlayPosition, PasteMethod};
 
   #[test]
   fn paste_method_roundtrips_preferences_values() {
@@ -127,5 +174,23 @@ mod tests {
   #[test]
   fn auto_submit_invalid_pref_defaults_off() {
     assert_eq!(AutoSubmitMode::from_prefs_value("invalid"), AutoSubmitMode::Off);
+  }
+
+  #[test]
+  fn overlay_position_roundtrips_preferences_values() {
+    for pos in [
+      OverlayPosition::FollowCursor,
+      OverlayPosition::PrimaryMonitor,
+      OverlayPosition::ActiveWindow,
+    ] {
+      assert_eq!(OverlayPosition::from_prefs_value(pos.prefs_value()), pos);
+      assert_eq!(OverlayPosition::from_ui_index(pos.ui_index()), pos);
+    }
+  }
+
+  #[test]
+  fn overlay_position_invalid_pref_defaults_to_follow_cursor() {
+    assert_eq!(OverlayPosition::from_prefs_value("nope"), OverlayPosition::FollowCursor);
+    assert_eq!(OverlayPosition::from_ui_index(99), OverlayPosition::FollowCursor);
   }
 }

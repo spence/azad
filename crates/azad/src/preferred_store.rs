@@ -5,7 +5,7 @@ use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::NSString;
 use objc::{class, msg_send, sel, sel_impl};
 
-use crate::settings::{AutoSubmitMode, PasteMethod};
+use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
 
 const PREFERRED_DEVICE_KEY: &str = "AzadPreferredInputDeviceId";
 const ALWAYS_LISTENING_KEY: &str = "AzadAlwaysListeningEnabled";
@@ -13,6 +13,7 @@ const DEBUG_STATS_ENABLED_KEY: &str = "AzadDebugStatsEnabled";
 const RUN_ON_STARTUP_KEY: &str = "AzadRunOnStartup";
 const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
 const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
+const OVERLAY_POSITION_KEY: &str = "AzadOverlayPosition";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
@@ -298,6 +299,35 @@ pub fn save_auto_submit_mode(mode: AutoSubmitMode) {
 
     let key = NSString::alloc(nil).init_str(AUTO_SUBMIT_MODE_KEY);
     let value = NSString::alloc(nil).init_str(mode.prefs_value());
+    let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
+}
+
+pub fn load_overlay_position() -> OverlayPosition {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return OverlayPosition::default();
+    }
+
+    let key = NSString::alloc(nil).init_str(OVERLAY_POSITION_KEY);
+    let value: id = msg_send![defaults, stringForKey: key];
+    let Some(value) = nsstring_to_string(value) else {
+      return OverlayPosition::default();
+    };
+    OverlayPosition::from_prefs_value(value.trim())
+  }
+}
+
+pub fn save_overlay_position(pos: OverlayPosition) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(OVERLAY_POSITION_KEY);
+    let value = NSString::alloc(nil).init_str(pos.prefs_value());
     let _: () = msg_send![defaults, setObject: value forKey: key];
   }
 }

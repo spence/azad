@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cocoa::appkit::{
   NSApp,
@@ -37,7 +37,7 @@ use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::app::AppEvent;
-use crate::settings::{AutoSubmitMode, PasteMethod};
+use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
 
 const KEYCODE_RETURN: u16 = 0x24;
 const KEYCODE_DIRECT_INPUT: u16 = 0x00;
@@ -123,7 +123,7 @@ const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
 const ONBOARDING_WINDOW_WIDTH: f64 = 640.0;
-const ONBOARDING_WINDOW_HEIGHT: f64 = 560.0;
+const ONBOARDING_WINDOW_HEIGHT: f64 = 640.0;
 const ONBOARDING_PAD_X: f64 = 40.0;
 const ONBOARDING_LABEL_WIDTH: f64 = 170.0;
 const ONBOARDING_CONTROL_X: f64 = ONBOARDING_PAD_X + ONBOARDING_LABEL_WIDTH + 12.0;
@@ -163,6 +163,11 @@ pub const MOD_COMMAND: u8 = 8;
 // Read on the azad-hotkey-tap thread (Acquire); written from the main thread
 // (Release). One byte = no torn read. Default Option == today's behavior.
 static LISTEN_MODIFIERS: AtomicU8 = AtomicU8::new(MOD_OPTION);
+
+// Which display the overlay targets. Stored as `OverlayPosition::ui_index()`;
+// read on the main thread inside the positioner, written from AppController.
+// Default 0 == FollowCursor == today's hardcoded behavior.
+static OVERLAY_POSITION: AtomicU8 = AtomicU8::new(0);
 
 static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
@@ -254,7 +259,15 @@ thread_local! {
     static SETTINGS_WINDOW_REFS: RefCell<Option<SettingsWindowRefs>> = const { RefCell::new(None) };
     static ONBOARDING_WINDOW_REFS: RefCell<Option<OnboardingWindowRefs>> = const { RefCell::new(None) };
     static SETTINGS_LAST_MODEL: RefCell<Option<SettingsViewModel>> = const { RefCell::new(None) };
+    // Short-TTL cache of the active-window display frame so ActiveWindow mode
+    // doesn't do synchronous Accessibility IPC on every streaming reposition.
+    static ACTIVE_WINDOW_SCREEN_CACHE: RefCell<Option<(NSRect, Instant)>> =
+      const { RefCell::new(None) };
 }
+
+// How long an `ax_focused_window_screen_frame` result stays fresh before
+// ActiveWindow mode re-queries Accessibility.
+const ACTIVE_WINDOW_SCREEN_CACHE_TTL: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy)]
 struct OverlayRefs {
@@ -331,6 +344,7 @@ struct SettingsWindowRefs {
   run_on_startup_checkbox: id,
   paste_method_popup: id,
   auto_submit_popup: id,
+  overlay_position_popup: id,
   append_trailing_space_checkbox: id,
   removed_words_tags_view: id,
   removed_words_input: id,
@@ -357,6 +371,8 @@ struct OnboardingWindowRefs {
   listen_mod_command: id,
   history_checkbox: id,
   insert_popup: id,
+  append_trailing_space_checkbox: id,
+  overlay_position_popup: id,
   login_checkbox: id,
   device_popup: id,
   perm_accessibility_status: id,
@@ -370,6 +386,8 @@ pub struct OnboardingViewModel {
   pub always_listening_enabled: bool,
   pub history_enabled: bool,
   pub paste_method: PasteMethod,
+  pub append_trailing_space_on_paste: bool,
+  pub overlay_position: OverlayPosition,
   pub run_on_startup_enabled: bool,
   pub accessibility_status: PermissionStatus,
   pub microphone_status: PermissionStatus,
@@ -410,6 +428,7 @@ pub struct SettingsViewModel {
   pub run_on_startup_enabled: bool,
   pub paste_method: PasteMethod,
   pub auto_submit_mode: AutoSubmitMode,
+  pub overlay_position: OverlayPosition,
   pub append_trailing_space_on_paste: bool,
   pub debug_stats_enabled: bool,
   pub metrics_text: String,
@@ -535,6 +554,10 @@ unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &Onboar
   let history_state: i64 = if model.history_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.history_checkbox, setState: history_state];
   let _: () = msg_send![refs.insert_popup, selectItemAtIndex: model.paste_method.ui_index()];
+  let trailing_space_state: i64 = if model.append_trailing_space_on_paste { 1 } else { 0 };
+  let _: () = msg_send![refs.append_trailing_space_checkbox, setState: trailing_space_state];
+  let _: () =
+    msg_send![refs.overlay_position_popup, selectItemAtIndex: model.overlay_position.ui_index()];
   let login_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.login_checkbox, setState: login_state];
   let _: () = msg_send![refs.device_popup, removeAllItems];
@@ -907,7 +930,27 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: insert_popup];
 
-  let login_y = insert_y - 40.0;
+  let trailing_space_y = insert_y - 40.0;
+  let trailing_space_label = make_onboarding_row_label("Trailing space", trailing_space_y);
+  let _: () = msg_send![content_view, addSubview: trailing_space_label];
+  let append_trailing_space_checkbox = make_onboarding_checkbox(
+    "Append a space after each insert",
+    trailing_space_y,
+    sel!(onboardingToggleAppendTrailingSpace:),
+  );
+  let _: () = msg_send![content_view, addSubview: append_trailing_space_checkbox];
+
+  let overlay_position_y = trailing_space_y - 40.0;
+  let overlay_position_label = make_onboarding_row_label("Overlay position", overlay_position_y);
+  let _: () = msg_send![content_view, addSubview: overlay_position_label];
+  let overlay_position_popup = make_onboarding_popup(
+    &["Follow cursor", "Primary display", "Active window"],
+    overlay_position_y,
+    sel!(onboardingSetOverlayPosition:),
+  );
+  let _: () = msg_send![content_view, addSubview: overlay_position_popup];
+
+  let login_y = overlay_position_y - 40.0;
   let login_label = make_onboarding_row_label("Startup", login_y);
   let _: () = msg_send![content_view, addSubview: login_label];
   let login_checkbox = make_onboarding_checkbox(
@@ -981,6 +1024,8 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     let _: () = msg_send![listen_mod_command, setTarget: delegate];
     let _: () = msg_send![history_checkbox, setTarget: delegate];
     let _: () = msg_send![insert_popup, setTarget: delegate];
+    let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
+    let _: () = msg_send![overlay_position_popup, setTarget: delegate];
     let _: () = msg_send![login_checkbox, setTarget: delegate];
     let _: () = msg_send![device_popup, setTarget: delegate];
   }
@@ -997,6 +1042,8 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     listen_mod_command,
     history_checkbox,
     insert_popup,
+    append_trailing_space_checkbox,
+    overlay_position_popup,
     login_checkbox,
     device_popup,
     perm_accessibility_status,
@@ -1195,7 +1242,7 @@ pub fn show_overlay() {
   }
   unsafe {
     let refs = ensure_overlay();
-    move_overlay_to_cursor_screen(refs, true);
+    move_overlay_to_target_screen(refs, true);
     let _: () = msg_send![refs.window, orderFrontRegardless];
   }
   set_escape_hotkey_enabled(true);
@@ -1214,7 +1261,7 @@ pub fn show_overlay_top() {
     if let Some(bottom) = current_overlay() {
       position_overlay_top_relative_to_bottom(refs, bottom);
     } else {
-      move_overlay_to_cursor_screen(refs, true);
+      move_overlay_to_target_screen(refs, true);
     }
     let _: () = msg_send![refs.window, orderFrontRegardless];
   }
@@ -1264,7 +1311,7 @@ pub fn set_overlay_stream_content(
     return;
   };
   unsafe {
-    move_overlay_to_cursor_screen(refs, false);
+    move_overlay_to_target_screen(refs, false);
     render_overlay_text(refs, draft, activity, busy_phase, show_raw_badge, show_hold_badge);
     render_overlay_history_position(refs, history_position);
   }
@@ -1299,7 +1346,7 @@ pub fn set_overlay_history_content(
     return;
   };
   unsafe {
-    move_overlay_to_cursor_screen(refs, false);
+    move_overlay_to_target_screen(refs, false);
     render_overlay_history_list(refs, entries, selected_index, visible_start, expanded);
   }
 }
@@ -1368,7 +1415,7 @@ fn set_overlay_notice_content_styled(
   let rendered = if body.is_empty() { title.to_string() } else { format!("{title}\n{body}") };
 
   unsafe {
-    move_overlay_to_cursor_screen(refs, false);
+    move_overlay_to_target_screen(refs, false);
     let notice_activity = match style {
       OverlayNoticeStyle::Standard => Vec::new(),
       OverlayNoticeStyle::ListenToggle { enabled, progress } => {
@@ -1536,6 +1583,14 @@ fn register_delegate_class() -> &'static Class {
       onboarding_toggle_history as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(onboardingToggleAppendTrailingSpace:),
+      onboarding_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(onboardingSetOverlayPosition:),
+      onboarding_set_overlay_position as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(onboardingToggleLogin:),
       onboarding_toggle_login as extern "C" fn(&Object, Sel, id),
     );
@@ -1570,6 +1625,10 @@ fn register_delegate_class() -> &'static Class {
     decl.add_method(
       sel!(settingsSelectAutoSubmit:),
       settings_select_auto_submit as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(settingsSelectOverlayPosition:),
+      settings_select_overlay_position as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
       sel!(settingsToggleAppendTrailingSpace:),
@@ -1835,6 +1894,30 @@ extern "C" fn onboarding_toggle_history(_: &Object, _: Sel, sender: id) {
   }
 }
 
+extern "C" fn onboarding_toggle_append_trailing_space(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::OnboardingToggleAppendTrailingSpace(state != 0));
+    crate::app::drain_events();
+  }
+}
+
+extern "C" fn onboarding_set_overlay_position(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let index: i64 = msg_send![sender, indexOfSelectedItem];
+    crate::app::send_event(AppEvent::OnboardingSetOverlayPosition(OverlayPosition::from_ui_index(
+      index,
+    )));
+    crate::app::drain_events();
+  }
+}
+
 extern "C" fn onboarding_toggle_login(_: &Object, _: Sel, sender: id) {
   unsafe {
     if sender == nil {
@@ -1938,6 +2021,19 @@ extern "C" fn settings_select_auto_submit(_: &Object, _: Sel, sender: id) {
     crate::app::send_event(AppEvent::SettingsSelectAutoSubmit(AutoSubmitMode::from_ui_index(
       index,
     )));
+    crate::app::drain_events();
+  }
+}
+
+extern "C" fn settings_select_overlay_position(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let index: i64 = msg_send![sender, indexOfSelectedItem];
+    crate::app::send_event(AppEvent::SettingsSelectOverlayPosition(
+      OverlayPosition::from_ui_index(index),
+    ));
     crate::app::drain_events();
   }
 }
@@ -3218,6 +3314,10 @@ unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsVi
       refs.auto_submit_popup,
       selectItemAtIndex: model.auto_submit_mode.ui_index()
   ];
+  let _: () = msg_send![
+      refs.overlay_position_popup,
+      selectItemAtIndex: model.overlay_position.ui_index()
+  ];
   let append_trailing_space_state: i64 = if model.append_trailing_space_on_paste { 1 } else { 0 };
   let _: () = msg_send![
       refs.append_trailing_space_checkbox,
@@ -4444,6 +4544,142 @@ fn cursor_screen_frame() -> Option<NSRect> {
   }
 }
 
+/// The primary display — `NSScreen.screens[0]`, the one carrying the menu bar
+/// and the global-coordinate origin. NOT `mainScreen` (which tracks keyboard
+/// focus and would behave like ActiveWindow on a secondary display).
+fn primary_screen_frame() -> NSRect {
+  unsafe {
+    let screens: id = msg_send![class!(NSScreen), screens];
+    if screens != nil {
+      let count: usize = msg_send![screens, count];
+      if count > 0 {
+        let screen: id = msg_send![screens, objectAtIndex: 0usize];
+        if screen != nil {
+          return NSScreen::frame(screen);
+        }
+      }
+    }
+    main_screen_frame()
+  }
+}
+
+/// Resolve which screen the overlay should anchor to, per the user's
+/// `OverlayPosition` preference. Every mode falls back to the cursor screen and
+/// then the main screen so we always return a usable frame. `force_fresh`
+/// (set on the first show of an utterance) bypasses the ActiveWindow AX cache.
+fn resolve_overlay_target_screen(force_fresh: bool) -> NSRect {
+  match overlay_position() {
+    OverlayPosition::FollowCursor => cursor_screen_frame().unwrap_or_else(main_screen_frame),
+    OverlayPosition::PrimaryMonitor => primary_screen_frame(),
+    OverlayPosition::ActiveWindow => active_window_screen_frame_cached(force_fresh)
+      .or_else(cursor_screen_frame)
+      .unwrap_or_else(main_screen_frame),
+  }
+}
+
+/// `ax_focused_window_screen_frame` behind a short-TTL cache so ActiveWindow
+/// mode doesn't do synchronous AX IPC on every streaming reposition (~10-30 Hz).
+/// On a fresh read failure we fall through (caller then uses cursor/main) and do
+/// not poison the cache. `bypass` forces a fresh read (used on first show).
+fn active_window_screen_frame_cached(bypass: bool) -> Option<NSRect> {
+  ACTIVE_WINDOW_SCREEN_CACHE.with(|slot| {
+    if !bypass {
+      if let Some((frame, at)) = *slot.borrow() {
+        if at.elapsed() < ACTIVE_WINDOW_SCREEN_CACHE_TTL {
+          return Some(frame);
+        }
+      }
+    }
+    let fresh = ax_focused_window_screen_frame();
+    if let Some(frame) = fresh {
+      *slot.borrow_mut() = Some((frame, Instant::now()));
+    }
+    fresh
+  })
+}
+
+/// Screen containing the focused window of the frontmost app, via Accessibility.
+/// Returns None (caller falls back) if the app is Azad itself, AX can't read the
+/// window (full-screen / sandboxed apps), or any attribute is missing.
+fn ax_focused_window_screen_frame() -> Option<NSRect> {
+  unsafe {
+    let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+    if workspace == nil {
+      return None;
+    }
+    let app: id = msg_send![workspace, frontmostApplication];
+    if app == nil {
+      return None;
+    }
+    let pid: i32 = msg_send![app, processIdentifier];
+    // Never chase our own windows (onboarding / Settings activate Azad).
+    if pid == std::process::id() as i32 {
+      return None;
+    }
+
+    let app_el = AXUIElementCreateApplication(pid);
+    if app_el.is_null() {
+      return None;
+    }
+    // Cap blocking if the target app's main thread is wedged.
+    let _ = AXUIElementSetMessagingTimeout(app_el, 0.15);
+
+    let result = ax_focused_window_screen_frame_inner(app_el);
+    CFRelease(app_el);
+    result
+  }
+}
+
+unsafe fn ax_focused_window_screen_frame_inner(app_el: *const c_void) -> Option<NSRect> {
+  let window = ax_copy_element_attribute(app_el, "AXFocusedWindow")?;
+  let pos = ax_copy_point_attribute(window, "AXPosition");
+  let size = ax_copy_size_attribute(window, "AXSize");
+  CFRelease(window);
+  let (pos, size) = (pos?, size?);
+
+  // AX is top-left-origin / Y-down in the global space; Cocoa screen frames are
+  // bottom-left-origin / Y-up. Flip via NSMaxY(primary). Hit-test the window
+  // CENTER so a window straddling displays maps to where most of it sits.
+  let primary = primary_screen_frame();
+  let cx = pos.x + size.width * 0.5;
+  let cocoa_cy = (primary.origin.y + primary.size.height) - (pos.y + size.height * 0.5);
+  screen_frame_for_point(NSPoint::new(cx, cocoa_cy))
+}
+
+/// Copy an AX element-valued attribute (e.g. AXFocusedWindow). Caller CFReleases.
+unsafe fn ax_copy_element_attribute(
+  element: *const c_void,
+  attribute: &str,
+) -> Option<*const c_void> {
+  // `alloc/init` is +1-retained and not autoreleased; release it after the copy
+  // (it's only an input) so the ActiveWindow hot path doesn't slowly leak.
+  let attr = NSString::alloc(nil).init_str(attribute);
+  let mut value: *const c_void = std::ptr::null();
+  let status = AXUIElementCopyAttributeValue(element, attr as *const c_void, &mut value);
+  let _: () = msg_send![attr, release];
+  if status != 0 || value.is_null() {
+    return None;
+  }
+  Some(value)
+}
+
+unsafe fn ax_copy_point_attribute(element: *const c_void, attribute: &str) -> Option<NSPoint> {
+  let value = ax_copy_element_attribute(element, attribute)?;
+  let mut point = NSPoint::new(0.0, 0.0);
+  let ok =
+    AXValueGetValue(value, KAX_VALUE_CG_POINT_TYPE, &mut point as *mut NSPoint as *mut c_void);
+  CFRelease(value);
+  if ok { Some(point) } else { None }
+}
+
+unsafe fn ax_copy_size_attribute(element: *const c_void, attribute: &str) -> Option<NSSize> {
+  let value = ax_copy_element_attribute(element, attribute)?;
+  let mut size = NSSize::new(0.0, 0.0);
+  let ok = AXValueGetValue(value, KAX_VALUE_CG_SIZE_TYPE, &mut size as *mut NSSize as *mut c_void);
+  CFRelease(value);
+  if ok { Some(size) } else { None }
+}
+
 fn is_left_mouse_button_down() -> bool {
   unsafe {
     let pressed: u64 = msg_send![class!(NSEvent), pressedMouseButtons];
@@ -4525,12 +4761,12 @@ fn remap_origin_proportionally(
   target_origin + source_ratio * target_range
 }
 
-unsafe fn move_overlay_to_cursor_screen(refs: OverlayRefs, force_default_anchor: bool) {
+unsafe fn move_overlay_to_target_screen(refs: OverlayRefs, force_default_anchor: bool) {
   if !force_default_anchor && is_left_mouse_button_down() {
     return;
   }
 
-  let target_screen = cursor_screen_frame().unwrap_or_else(main_screen_frame);
+  let target_screen = resolve_overlay_target_screen(force_default_anchor);
   let current_frame: NSRect = msg_send![refs.window, frame];
   let current_screen = current_overlay_screen_frame(current_frame);
   if !force_default_anchor
@@ -5030,7 +5266,8 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let paste_method_popup: id = msg_send![class!(NSPopUpButton), alloc];
   let paste_method_popup: id =
     msg_send![paste_method_popup, initWithFrame: paste_method_popup_frame pullsDown: NO];
-  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Paste")];
+  let _: () =
+    msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Paste")];
   let _: () =
     msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct")];
   let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct + copy to clipboard")];
@@ -5070,8 +5307,40 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let _: () = msg_send![auto_submit_popup, setAction: sel!(settingsSelectAutoSubmit:)];
   let _: () = msg_send![general_container, addSubview: auto_submit_popup];
 
+  let overlay_position_y = auto_submit_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let overlay_position_label_frame = NSRect::new(
+    NSPoint::new(0.0, overlay_position_y),
+    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
+  );
+  let overlay_position_label: id = msg_send![class!(NSTextField), alloc];
+  let overlay_position_label: id =
+    msg_send![overlay_position_label, initWithFrame: overlay_position_label_frame];
+  let _: () = msg_send![
+      overlay_position_label,
+      setStringValue: NSString::alloc(nil).init_str("Overlay position")
+  ];
+  let _: () = msg_send![overlay_position_label, setBezeled: NO];
+  let _: () = msg_send![overlay_position_label, setDrawsBackground: NO];
+  let _: () = msg_send![overlay_position_label, setEditable: NO];
+  let _: () = msg_send![overlay_position_label, setSelectable: NO];
+  let _: () = msg_send![overlay_position_label, setAlignment: 0isize];
+  let _: () = msg_send![general_container, addSubview: overlay_position_label];
+
+  let overlay_position_popup_frame = NSRect::new(
+    NSPoint::new(paste_method_popup_x, overlay_position_y - 2.0),
+    NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
+  );
+  let overlay_position_popup: id = msg_send![class!(NSPopUpButton), alloc];
+  let overlay_position_popup: id =
+    msg_send![overlay_position_popup, initWithFrame: overlay_position_popup_frame pullsDown: NO];
+  let _: () = msg_send![overlay_position_popup, addItemWithTitle: NSString::alloc(nil).init_str("Follow cursor")];
+  let _: () = msg_send![overlay_position_popup, addItemWithTitle: NSString::alloc(nil).init_str("Primary display")];
+  let _: () = msg_send![overlay_position_popup, addItemWithTitle: NSString::alloc(nil).init_str("Active window")];
+  let _: () = msg_send![overlay_position_popup, setAction: sel!(settingsSelectOverlayPosition:)];
+  let _: () = msg_send![general_container, addSubview: overlay_position_popup];
+
   let append_trailing_space_y =
-    auto_submit_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+    overlay_position_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
   let append_trailing_space_frame = NSRect::new(
     NSPoint::new(0.0, append_trailing_space_y),
     NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
@@ -5308,6 +5577,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     let _: () = msg_send![run_on_startup_checkbox, setTarget: delegate];
     let _: () = msg_send![paste_method_popup, setTarget: delegate];
     let _: () = msg_send![auto_submit_popup, setTarget: delegate];
+    let _: () = msg_send![overlay_position_popup, setTarget: delegate];
     let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
     let _: () = msg_send![removed_words_add_button, setTarget: delegate];
     let _: () = msg_send![models_download_button, setTarget: delegate];
@@ -5370,6 +5640,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     run_on_startup_checkbox,
     paste_method_popup,
     auto_submit_popup,
+    overlay_position_popup,
     append_trailing_space_checkbox,
     removed_words_tags_view,
     removed_words_input,
@@ -5958,6 +6229,16 @@ fn modifiers_for_mask(mask: u8) -> Modifiers {
 
 pub fn listen_modifiers() -> u8 {
   LISTEN_MODIFIERS.load(Ordering::Relaxed)
+}
+
+pub fn overlay_position() -> OverlayPosition {
+  OverlayPosition::from_ui_index(OVERLAY_POSITION.load(Ordering::Relaxed) as i64)
+}
+
+/// Set the overlay target-display mode. The positioner reads the atomic on the
+/// next show / content update, so the change applies live. Caller persists.
+pub fn set_overlay_position(pos: OverlayPosition) {
+  OVERLAY_POSITION.store(pos.ui_index() as u8, Ordering::Release);
 }
 
 /// Apply a new listen-modifier mask live. The HID tap reads the atomic on the
@@ -6801,9 +7082,21 @@ fn maybe_request_accessibility_permission_once() {
   }
 }
 
+// AXValueType tags from <ApplicationServices/.../AXValue.h>.
+const KAX_VALUE_CG_POINT_TYPE: u32 = 1;
+const KAX_VALUE_CG_SIZE_TYPE: u32 = 2;
+
 unsafe extern "C" {
   fn AXIsProcessTrusted() -> bool;
   fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+  fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
+  fn AXUIElementCopyAttributeValue(
+    element: *const c_void,
+    attribute: *const c_void,
+    value: *mut *const c_void,
+  ) -> i32;
+  fn AXUIElementSetMessagingTimeout(element: *const c_void, timeout: f32) -> i32;
+  fn AXValueGetValue(value: *const c_void, the_type: u32, value_ptr: *mut c_void) -> bool;
 }
 
 type CGEventTapCallBack = extern "C" fn(
