@@ -338,7 +338,6 @@ struct OnboardingWindowRefs {
   login_checkbox: id,
   perm_accessibility_status: id,
   perm_microphone_status: id,
-  perm_input_monitoring_status: id,
 }
 
 /// State pushed to the first-run onboarding window so its controls reflect the
@@ -351,7 +350,6 @@ pub struct OnboardingViewModel {
   pub run_on_startup_enabled: bool,
   pub accessibility_status: PermissionStatus,
   pub microphone_status: PermissionStatus,
-  pub input_monitoring_status: PermissionStatus,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -493,13 +491,8 @@ unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &Onboar
   let _: () = msg_send![refs.insert_popup, selectItemAtIndex: model.paste_method.ui_index()];
   let login_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.login_checkbox, setState: login_state];
-  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status, false);
-  set_permission_status_label(refs.perm_microphone_status, model.microphone_status, false);
-  set_permission_status_label(
-    refs.perm_input_monitoring_status,
-    model.input_monitoring_status,
-    true,
-  );
+  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status);
+  set_permission_status_label(refs.perm_microphone_status, model.microphone_status);
 }
 
 pub fn close_onboarding_window() {
@@ -535,21 +528,18 @@ fn current_onboarding_window() -> Option<OnboardingWindowRefs> {
 pub fn refresh_onboarding_permissions(
   accessibility: PermissionStatus,
   microphone: PermissionStatus,
-  input_monitoring: PermissionStatus,
 ) {
   if let Some(refs) = current_onboarding_window() {
     unsafe {
-      set_permission_status_label(refs.perm_accessibility_status, accessibility, false);
-      set_permission_status_label(refs.perm_microphone_status, microphone, false);
-      set_permission_status_label(refs.perm_input_monitoring_status, input_monitoring, true);
+      set_permission_status_label(refs.perm_accessibility_status, accessibility);
+      set_permission_status_label(refs.perm_microphone_status, microphone);
     }
   }
 }
 
-unsafe fn set_permission_status_label(label: id, status: PermissionStatus, optional: bool) {
+unsafe fn set_permission_status_label(label: id, status: PermissionStatus) {
   let (text, r, g, b) = match status {
     PermissionStatus::Granted => ("● Granted", 0.20, 0.65, 0.30),
-    _ if optional => ("○ Optional", 0.55, 0.55, 0.55),
     _ => ("○ Not granted", 0.85, 0.45, 0.10),
   };
   let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
@@ -764,20 +754,13 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let perm_microphone_status =
     make_onboarding_permission_row(content_view, delegate, "Microphone", perms_header_y - 68.0, 1);
-  let perm_input_monitoring_status = make_onboarding_permission_row(
-    content_view,
-    delegate,
-    "Input Monitoring",
-    perms_header_y - 102.0,
-    2,
-  );
 
   let hint_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_PAD_X, perms_header_y - 126.0),
+    NSPoint::new(ONBOARDING_PAD_X, perms_header_y - 96.0),
     NSSize::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0, 18.0),
   );
   let hint = make_onboarding_label(
-    "Microphone and Accessibility are required. Input Monitoring is optional.",
+    "Microphone and Accessibility are required to use Azad.",
     hint_frame,
     11.0,
     false,
@@ -815,7 +798,6 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     login_checkbox,
     perm_accessibility_status,
     perm_microphone_status,
-    perm_input_monitoring_status,
   }
 }
 
@@ -1633,7 +1615,6 @@ extern "C" fn onboarding_open_permission(_: &Object, _: Sel, sender: id) {
     let anchor = match tag {
       0 => "Privacy_Accessibility",
       1 => "Privacy_Microphone",
-      2 => "Privacy_ListenEvent",
       _ => return,
     };
     let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");

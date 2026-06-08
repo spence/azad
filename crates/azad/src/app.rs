@@ -1594,7 +1594,6 @@ impl AppController {
       run_on_startup_enabled: self.run_on_startup_enabled,
       accessibility_status: platform::accessibility_authorization(),
       microphone_status: platform::microphone_authorization(),
-      input_monitoring_status: platform::input_monitoring_authorization(),
     }
   }
 
@@ -2467,7 +2466,6 @@ impl AppController {
       platform::refresh_onboarding_permissions(
         platform::accessibility_authorization(),
         platform::microphone_authorization(),
-        platform::input_monitoring_authorization(),
       );
     }
     if self.pending_first_launch_settings {
