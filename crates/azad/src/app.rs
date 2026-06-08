@@ -1814,6 +1814,8 @@ impl AppController {
 
     SettingsViewModel {
       selected_tab: SettingsTab::General,
+      accessibility_status: platform::accessibility_authorization(),
+      microphone_status: platform::microphone_authorization(),
       run_on_startup_enabled: self.run_on_startup_enabled,
       paste_method: self.paste_method,
       auto_submit_mode: self.auto_submit_mode,
@@ -2540,6 +2542,12 @@ impl AppController {
       // permission indicators) so the welcome window updates live as the
       // download progresses and the user grants access in System Settings.
       platform::update_onboarding_window(self.onboarding_view_model());
+    }
+    if platform::settings_window_is_open() {
+      platform::refresh_settings_permissions(
+        platform::accessibility_authorization(),
+        platform::microphone_authorization(),
+      );
     }
     if self.pending_first_launch_settings {
       self.pending_first_launch_settings = false;

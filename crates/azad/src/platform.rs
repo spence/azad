@@ -311,6 +311,9 @@ struct SettingsWindowRefs {
   tab_list_view: id,
   general_container: id,
   models_container: id,
+  permissions_container: id,
+  perm_accessibility_status: id,
+  perm_microphone_status: id,
   debug_container: id,
   run_on_startup_checkbox: id,
   paste_method_popup: id,
@@ -381,6 +384,8 @@ pub struct DeviceMenuRow {
 #[derive(Debug, Clone)]
 pub struct SettingsViewModel {
   pub selected_tab: SettingsTab,
+  pub accessibility_status: PermissionStatus,
+  pub microphone_status: PermissionStatus,
   pub run_on_startup_enabled: bool,
   pub paste_method: PasteMethod,
   pub auto_submit_mode: AutoSubmitMode,
@@ -399,6 +404,7 @@ pub enum SettingsTab {
   #[default]
   General,
   Models,
+  Permissions,
   Debug,
 }
 
@@ -1842,13 +1848,14 @@ fn settings_pack_id_for_tag(_tag: isize) -> String {
 }
 
 extern "C" fn settings_tab_rows(_: &Object, _: Sel, _: id) -> isize {
-  3
+  4
 }
 
 unsafe fn settings_tab_label(row: isize) -> &'static str {
   match row {
     1 => "Models",
-    2 => "Debug",
+    2 => "Permissions",
+    3 => "Debug",
     _ => "General",
   }
 }
@@ -1856,7 +1863,8 @@ unsafe fn settings_tab_label(row: isize) -> &'static str {
 unsafe fn settings_tab_from_row(row: isize) -> SettingsTab {
   match row {
     1 => SettingsTab::Models,
-    2 => SettingsTab::Debug,
+    2 => SettingsTab::Permissions,
+    3 => SettingsTab::Debug,
     _ => SettingsTab::General,
   }
 }
@@ -1865,7 +1873,8 @@ unsafe fn settings_row_for_tab(tab: SettingsTab) -> isize {
   match tab {
     SettingsTab::General => 0,
     SettingsTab::Models => 1,
-    SettingsTab::Debug => 2,
+    SettingsTab::Permissions => 2,
+    SettingsTab::Debug => 3,
   }
 }
 
@@ -2987,14 +2996,31 @@ fn current_settings_window() -> Option<SettingsWindowRefs> {
   SETTINGS_WINDOW_REFS.with(|store| *store.borrow())
 }
 
+pub fn settings_window_is_open() -> bool {
+  current_settings_window().is_some()
+}
+
+/// Live-refresh the Settings → Permissions indicators while the window is open,
+/// so they flip as the user grants access in System Settings.
+pub fn refresh_settings_permissions(accessibility: PermissionStatus, microphone: PermissionStatus) {
+  if let Some(refs) = current_settings_window() {
+    unsafe {
+      set_permission_status_label(refs.perm_accessibility_status, accessibility);
+      set_permission_status_label(refs.perm_microphone_status, microphone);
+    }
+  }
+}
+
 unsafe fn apply_settings_selected_tab(refs: SettingsWindowRefs, tab: SettingsTab) {
-  let (general_hidden, models_hidden, debug_hidden) = match tab {
-    SettingsTab::General => (NO, YES, YES),
-    SettingsTab::Models => (YES, NO, YES),
-    SettingsTab::Debug => (YES, YES, NO),
+  let (general_hidden, models_hidden, permissions_hidden, debug_hidden) = match tab {
+    SettingsTab::General => (NO, YES, YES, YES),
+    SettingsTab::Models => (YES, NO, YES, YES),
+    SettingsTab::Permissions => (YES, YES, NO, YES),
+    SettingsTab::Debug => (YES, YES, YES, NO),
   };
   let _: () = msg_send![refs.general_container, setHidden: general_hidden];
   let _: () = msg_send![refs.models_container, setHidden: models_hidden];
+  let _: () = msg_send![refs.permissions_container, setHidden: permissions_hidden];
   let _: () = msg_send![refs.debug_container, setHidden: debug_hidden];
 
   if refs.tab_list_view != nil {
@@ -3014,6 +3040,8 @@ unsafe fn apply_settings_selected_tab(refs: SettingsWindowRefs, tab: SettingsTab
 }
 
 unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsViewModel) {
+  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status);
+  set_permission_status_label(refs.perm_microphone_status, model.microphone_status);
   let run_on_startup_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.run_on_startup_checkbox, setState: run_on_startup_state];
 
@@ -4755,6 +4783,37 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
       models_container,
       setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
   ];
+  let permissions_container: id = msg_send![class!(NSView), alloc];
+  let permissions_container: id = msg_send![permissions_container, initWithFrame: content_frame];
+  let _: () = msg_send![
+      permissions_container,
+      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+  ];
+  let perm_delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()).unwrap_or(nil);
+  let perm_top = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
+  let perm_accessibility_status = make_onboarding_permission_row(
+    permissions_container,
+    perm_delegate,
+    "Accessibility",
+    perm_top,
+    0,
+  );
+  let perm_microphone_status = make_onboarding_permission_row(
+    permissions_container,
+    perm_delegate,
+    "Microphone",
+    perm_top - 38.0,
+    1,
+  );
+  let perm_hint_frame =
+    NSRect::new(NSPoint::new(0.0, perm_top - 76.0), NSSize::new(content_width, 18.0));
+  let perm_hint = make_onboarding_label(
+    "Required to capture audio and insert text. Click Open Settings to grant.",
+    perm_hint_frame,
+    11.0,
+    false,
+  );
+  let _: () = msg_send![permissions_container, addSubview: perm_hint];
   let debug_container: id = msg_send![class!(NSView), alloc];
   let debug_container: id = msg_send![debug_container, initWithFrame: content_frame];
   let _: () = msg_send![
@@ -5095,6 +5154,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let _: () = msg_send![sidebar_scroll, setDocumentView: tab_list_view];
   let _: () = msg_send![body_view, addSubview: general_container];
   let _: () = msg_send![body_view, addSubview: models_container];
+  let _: () = msg_send![body_view, addSubview: permissions_container];
   let _: () = msg_send![debug_container, addSubview: debug_checkbox];
   let _: () = msg_send![debug_container, addSubview: refresh_button];
   let _: () = msg_send![debug_container, addSubview: scroll_view];
@@ -5138,6 +5198,9 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     tab_list_view,
     general_container,
     models_container,
+    permissions_container,
+    perm_accessibility_status,
+    perm_microphone_status,
     debug_container,
     run_on_startup_checkbox,
     paste_method_popup,
