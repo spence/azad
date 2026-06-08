@@ -4,7 +4,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use cocoa::appkit::{
@@ -123,7 +123,7 @@ const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
 const ONBOARDING_WINDOW_WIDTH: f64 = 640.0;
-const ONBOARDING_WINDOW_HEIGHT: f64 = 680.0;
+const ONBOARDING_WINDOW_HEIGHT: f64 = 732.0;
 const ONBOARDING_PAD_X: f64 = 40.0;
 const ONBOARDING_LABEL_WIDTH: f64 = 170.0;
 const ONBOARDING_CONTROL_X: f64 = ONBOARDING_PAD_X + ONBOARDING_LABEL_WIDTH + 12.0;
@@ -168,7 +168,10 @@ static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static DEVICE_HEADER_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static SEARCH_FIELD_DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
-static HOTKEY_OPTION_SPACE_ID: OnceLock<u32> = OnceLock::new();
+// Carbon-fallback id for the listen hotkey. Mutable (AtomicU32, 0 = unset) so
+// the modifier combination can be re-registered live. Tap path is primary; this
+// only fires when Accessibility is denied.
+static HOTKEY_LISTEN_ID: AtomicU32 = AtomicU32::new(0);
 static HOTKEY_ESCAPE_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ENTER_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ENTER_OPTION_ID: OnceLock<u32> = OnceLock::new();
@@ -348,6 +351,10 @@ struct OnboardingWindowRefs {
   model_status_label: id,
   download_button: id,
   trigger_popup: id,
+  listen_mod_shift: id,
+  listen_mod_control: id,
+  listen_mod_option: id,
+  listen_mod_command: id,
   history_checkbox: id,
   insert_popup: id,
   login_checkbox: id,
@@ -374,6 +381,8 @@ pub struct OnboardingViewModel {
   /// Input devices as (id, display name); the picker is populated from these.
   pub devices: Vec<(String, String)>,
   pub selected_device_index: Option<usize>,
+  /// Listen-hotkey modifier mask (platform MOD_* bits); drives the checkboxes.
+  pub listen_modifiers: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -533,7 +542,26 @@ unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &Onboar
   if let Some(idx) = model.selected_device_index {
     let _: () = msg_send![refs.device_popup, selectItemAtIndex: idx as i64];
   }
+  sync_listen_mod_checkboxes(refs, model.listen_modifiers);
   apply_onboarding_dynamic(refs, model);
+}
+
+unsafe fn sync_listen_mod_checkboxes(refs: OnboardingWindowRefs, mask: u8) {
+  let on = |bit: u8| -> i64 { if mask & bit != 0 { 1 } else { 0 } };
+  let _: () = msg_send![refs.listen_mod_shift, setState: on(MOD_SHIFT)];
+  let _: () = msg_send![refs.listen_mod_control, setState: on(MOD_CONTROL)];
+  let _: () = msg_send![refs.listen_mod_option, setState: on(MOD_OPTION)];
+  let _: () = msg_send![refs.listen_mod_command, setState: on(MOD_COMMAND)];
+}
+
+/// Re-sync the listen-modifier checkboxes to `mask` — used after a toggle so a
+/// rejected change (e.g. unchecking the last modifier) snaps back visually.
+pub fn sync_onboarding_listen_modifiers(mask: u8) {
+  if let Some(refs) = current_onboarding_window() {
+    unsafe {
+      sync_listen_mod_checkboxes(refs, mask);
+    }
+  }
 }
 
 pub fn close_onboarding_window() {
@@ -646,6 +674,26 @@ unsafe fn make_onboarding_checkbox(title: &str, y: f64, action: Sel) -> id {
   let _: () = msg_send![checkbox, setTitle: NSString::alloc(nil).init_str(title)];
   let _: () = msg_send![checkbox, setAction: action];
   checkbox
+}
+
+/// A small modifier checkbox for the listen-shortcut row, tagged with its MOD_*
+/// bit so one handler routes all four. Target is set with the other controls.
+unsafe fn make_onboarding_mod_checkbox(
+  content_view: id,
+  title: &str,
+  x: f64,
+  y: f64,
+  tag: i64,
+) -> id {
+  let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(52.0, ONBOARDING_ROW_HEIGHT));
+  let cb: id = msg_send![class!(NSButton), alloc];
+  let cb: id = msg_send![cb, initWithFrame: frame];
+  let _: () = msg_send![cb, setButtonType: 3usize];
+  let _: () = msg_send![cb, setTitle: NSString::alloc(nil).init_str(title)];
+  let _: () = msg_send![cb, setTag: tag];
+  let _: () = msg_send![cb, setAction: sel!(onboardingToggleListenModifier:)];
+  let _: () = msg_send![content_view, addSubview: cb];
+  cb
 }
 
 /// A permission row: name on the left, a live status label, and an "Open
@@ -777,7 +825,47 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   );
   let _: () = msg_send![content_view, addSubview: trigger_popup];
 
-  let history_y = trigger_y - 48.0;
+  // Listen shortcut: Space is fixed; the user picks the modifier combination
+  // (>=1 required). History stays built-in (hold + Up), so it isn't shown here.
+  let shortcut_y = trigger_y - 48.0;
+  let shortcut_label = make_onboarding_row_label("Listen shortcut", shortcut_y);
+  let _: () = msg_send![content_view, addSubview: shortcut_label];
+  let listen_mod_shift = make_onboarding_mod_checkbox(
+    content_view,
+    "⇧",
+    ONBOARDING_CONTROL_X,
+    shortcut_y,
+    MOD_SHIFT as i64,
+  );
+  let listen_mod_control = make_onboarding_mod_checkbox(
+    content_view,
+    "⌃",
+    ONBOARDING_CONTROL_X + 52.0,
+    shortcut_y,
+    MOD_CONTROL as i64,
+  );
+  let listen_mod_option = make_onboarding_mod_checkbox(
+    content_view,
+    "⌥",
+    ONBOARDING_CONTROL_X + 104.0,
+    shortcut_y,
+    MOD_OPTION as i64,
+  );
+  let listen_mod_command = make_onboarding_mod_checkbox(
+    content_view,
+    "⌘",
+    ONBOARDING_CONTROL_X + 156.0,
+    shortcut_y,
+    MOD_COMMAND as i64,
+  );
+  let space_hint_frame = NSRect::new(
+    NSPoint::new(ONBOARDING_CONTROL_X + 214.0, shortcut_y),
+    NSSize::new(80.0, ONBOARDING_ROW_HEIGHT),
+  );
+  let space_hint = make_onboarding_label("+ Space", space_hint_frame, 12.0, false);
+  let _: () = msg_send![content_view, addSubview: space_hint];
+
+  let history_y = shortcut_y - 48.0;
   let history_label = make_onboarding_row_label("History", history_y);
   let _: () = msg_send![content_view, addSubview: history_label];
   let history_checkbox = make_onboarding_checkbox(
@@ -865,6 +953,10 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     let _: () = msg_send![get_started_button, setTarget: delegate];
     let _: () = msg_send![download_button, setTarget: delegate];
     let _: () = msg_send![trigger_popup, setTarget: delegate];
+    let _: () = msg_send![listen_mod_shift, setTarget: delegate];
+    let _: () = msg_send![listen_mod_control, setTarget: delegate];
+    let _: () = msg_send![listen_mod_option, setTarget: delegate];
+    let _: () = msg_send![listen_mod_command, setTarget: delegate];
     let _: () = msg_send![history_checkbox, setTarget: delegate];
     let _: () = msg_send![insert_popup, setTarget: delegate];
     let _: () = msg_send![login_checkbox, setTarget: delegate];
@@ -877,6 +969,10 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     model_status_label,
     download_button,
     trigger_popup,
+    listen_mod_shift,
+    listen_mod_control,
+    listen_mod_option,
+    listen_mod_command,
     history_checkbox,
     insert_popup,
     login_checkbox,
@@ -1424,6 +1520,10 @@ fn register_delegate_class() -> &'static Class {
       onboarding_select_device as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(onboardingToggleListenModifier:),
+      onboarding_toggle_listen_modifier as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(settingsToggleRunOnStartup:),
       settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
     );
@@ -1729,6 +1829,21 @@ extern "C" fn onboarding_select_device(_: &Object, _: Sel, sender: id) {
       return;
     }
     crate::app::send_event(AppEvent::OnboardingSelectDevice(index as usize));
+    crate::app::drain_events();
+  }
+}
+
+extern "C" fn onboarding_toggle_listen_modifier(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let tag: i64 = msg_send![sender, tag];
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::OnboardingSetListenModifier {
+      bit: tag as u8,
+      enabled: state != 0,
+    });
     crate::app::drain_events();
   }
 }
@@ -5809,6 +5924,48 @@ fn modifiers_for_mask(mask: u8) -> Modifiers {
   mods
 }
 
+pub fn listen_modifiers() -> u8 {
+  LISTEN_MODIFIERS.load(Ordering::Relaxed)
+}
+
+/// Apply a new listen-modifier mask live. The HID tap reads the atomic on the
+/// next keystroke (no re-arm); the Carbon fallback is re-registered so the OLD
+/// chord stops triggering too (only fires when Accessibility is denied, but
+/// must still be correct). No-op for an empty mask. Caller persists.
+pub fn set_listen_modifiers(mask: u8) {
+  if mask == 0 {
+    return;
+  }
+  let old = LISTEN_MODIFIERS.swap(mask, Ordering::Release);
+  if old != mask {
+    relink_listen_hotkey_fallback(old, mask);
+  }
+}
+
+fn relink_listen_hotkey_fallback(old_mask: u8, new_mask: u8) {
+  HOTKEY_MANAGER_REF.with(|slot| {
+    let borrow = slot.borrow();
+    let Some(manager) = borrow.as_ref() else {
+      return;
+    };
+    let old = HotKey::new(Some(modifiers_for_mask(old_mask)), HOLD_HOTKEY_KEY);
+    let old_id = old.id();
+    let _ = manager.unregister(old);
+    let new = HotKey::new(Some(modifiers_for_mask(new_mask)), HOLD_HOTKEY_KEY);
+    let new_id = new.id();
+    match manager.register(new) {
+      Ok(()) => HOTKEY_LISTEN_ID.store(new_id, Ordering::Relaxed),
+      Err(err) => {
+        eprintln!("Azad: failed to re-register listen hotkey fallback: {err}");
+        // Roll back so a working chord remains registered.
+        let rollback = HotKey::new(Some(modifiers_for_mask(old_mask)), HOLD_HOTKEY_KEY);
+        let _ = manager.register(rollback);
+        HOTKEY_LISTEN_ID.store(old_id, Ordering::Relaxed);
+      }
+    }
+  });
+}
+
 fn install_global_hotkeys() {
   let manager = match GlobalHotKeyManager::new() {
     Ok(manager) => manager,
@@ -5827,7 +5984,7 @@ fn install_global_hotkeys() {
     return;
   }
 
-  let _ = HOTKEY_OPTION_SPACE_ID.set(hotkey_id);
+  HOTKEY_LISTEN_ID.store(hotkey_id, Ordering::Relaxed);
 
   let escape_hotkey = HotKey::new(None, Code::Escape);
   let _ = HOTKEY_ESCAPE_ID.set(escape_hotkey.id());
@@ -6151,14 +6308,13 @@ fn claim_tap_search_input(
 }
 
 fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
-  if let Some(option_space_id) = HOTKEY_OPTION_SPACE_ID.get().copied() {
-    if event.id == option_space_id {
-      match event.state {
-        HotKeyState::Pressed => crate::app::send_event(AppEvent::HotkeyPressed),
-        HotKeyState::Released => crate::app::send_event(AppEvent::HotkeyReleased),
-      }
-      return;
+  let listen_id = HOTKEY_LISTEN_ID.load(Ordering::Relaxed);
+  if listen_id != 0 && event.id == listen_id {
+    match event.state {
+      HotKeyState::Pressed => crate::app::send_event(AppEvent::HotkeyPressed),
+      HotKeyState::Released => crate::app::send_event(AppEvent::HotkeyReleased),
     }
+    return;
   }
 
   if let Some(escape_id) = HOTKEY_ESCAPE_ID.get().copied() {

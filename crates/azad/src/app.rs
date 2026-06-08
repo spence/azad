@@ -67,6 +67,10 @@ pub enum AppEvent {
   OnboardingToggleLogin(bool),
   OnboardingDownloadModel,
   OnboardingSelectDevice(usize),
+  OnboardingSetListenModifier {
+    bit: u8,
+    enabled: bool,
+  },
   ModelDownloadProgress {
     pack_id: String,
     bytes_done: u64,
@@ -1075,6 +1079,9 @@ impl AppController {
         self.handle_settings_download_model(&pack_id);
       }
       AppEvent::OnboardingSelectDevice(index) => self.handle_onboarding_select_device(index),
+      AppEvent::OnboardingSetListenModifier { bit, enabled } => {
+        self.handle_onboarding_set_listen_modifier(bit, enabled)
+      }
       AppEvent::ModelDownloadProgress { pack_id, bytes_done, bytes_total } => {
         self.handle_model_download_progress(&pack_id, bytes_done, bytes_total)
       }
@@ -1595,6 +1602,19 @@ impl AppController {
     preferred_store::save_history_enabled(enabled);
   }
 
+  fn handle_onboarding_set_listen_modifier(&mut self, bit: u8, enabled: bool) {
+    let current = platform::listen_modifiers();
+    let next = if enabled { current | bit } else { current & !bit };
+    // At least one modifier is required (a bare-Space global trigger would
+    // consume Space everywhere). A toggle that would clear the last one is
+    // rejected; we re-sync the checkboxes to the effective mask either way.
+    if next != 0 {
+      platform::set_listen_modifiers(next);
+      preferred_store::save_listen_modifiers(next);
+    }
+    platform::sync_onboarding_listen_modifiers(platform::listen_modifiers());
+  }
+
   fn handle_onboarding_select_device(&mut self, index: usize) {
     let device_id = self
       .device_snapshot
@@ -1662,6 +1682,7 @@ impl AppController {
       get_started_enabled,
       devices,
       selected_device_index,
+      listen_modifiers: platform::listen_modifiers(),
     }
   }
 

@@ -232,8 +232,6 @@ pub fn load_listen_modifiers() -> Option<u8> {
   }
 }
 
-// Consumed by the onboarding modifier checkboxes (next commit).
-#[allow(dead_code)]
 pub fn save_listen_modifiers(mask: u8) {
   unsafe {
     let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
