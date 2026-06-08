@@ -15,7 +15,11 @@ use crate::model_download::{self, DownloadHandle};
 use crate::models::{self, PackStatus};
 use crate::platform;
 use crate::platform::{
-  DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsTab, SettingsViewModel,
+  DeviceMenuModel,
+  DeviceMenuRow,
+  PasteResult,
+  SettingsTab,
+  SettingsViewModel,
 };
 use crate::preferred_store;
 use crate::settings::{AutoSubmitMode, PasteMethod};
@@ -141,7 +145,7 @@ fn spawn_heartbeat_thread() {
               "AZAD_HEARTBEAT session_present={} always_listening={} manual_hold_active={} \
              engine_state={:?} overlay_visible={} current_turn={:?} latest_seen_turn={} \
              last_pasted_turn={:?} cancelled={} hold_saw_speech={} pending_recovery={} \
-             history_browsing={} capture_enabled={}",
+             history_browsing={} capture_enabled={} onboarding_complete={}",
               ctrl.session.is_some(),
               ctrl.always_listening_enabled,
               ctrl.manual_hold_active,
@@ -155,6 +159,7 @@ fn spawn_heartbeat_thread() {
               ctrl.pending_recovery_restart,
               ctrl.history_browsing,
               capture_enabled,
+              ctrl.onboarding_complete,
             );
           }
           Err(_) => {
@@ -256,6 +261,10 @@ struct AppController {
   cancel_vad_show_suppressed_until: Option<Instant>,
   active_pack_id: String,
   models_ready: bool,
+  // Gate on first-run onboarding: the app must not spawn a capture session
+  // (and grab the mic) until the user has finished setup. Seeded true on
+  // bootstrap for users who predate the welcome flow (see `bootstrap`).
+  onboarding_complete: bool,
   pending_first_launch_settings: bool,
   download_handle: Option<DownloadHandle>,
   download_progress: (u64, u64),
@@ -844,6 +853,7 @@ impl AppController {
       cancel_vad_show_suppressed_until: None,
       active_pack_id,
       models_ready: false,
+      onboarding_complete: preferred_store::load_onboarding_complete().unwrap_or(false),
       pending_first_launch_settings: false,
       download_handle: None,
       download_progress: (0, 0),
@@ -861,6 +871,14 @@ impl AppController {
   fn bootstrap(&mut self) {
     self.apply_run_on_startup_preference();
     self.refresh_models_ready();
+    // Seed onboarding for users who predate the welcome flow: an unset flag plus
+    // an already-downloaded model means a returning user — treat them as onboarded
+    // so they're never sent through first-run setup. A genuinely fresh profile
+    // (no model yet) keeps the flag unset and goes through onboarding.
+    if preferred_store::load_onboarding_complete().is_none() && self.models_ready {
+      self.onboarding_complete = true;
+      preferred_store::save_onboarding_complete(true);
+    }
     if !self.models_ready {
       self.pending_first_launch_settings = true;
     }
@@ -875,6 +893,13 @@ impl AppController {
     if self.models_ready {
       self.cfg.rebuild_pipeline_paths(pack);
     }
+  }
+
+  /// The app may spawn a capture session only once models are present AND the
+  /// user has finished first-run onboarding. Gating session spawning here keeps
+  /// the mic from being grabbed before the user has consented (see 38a76a7).
+  fn ready_to_run(&self) -> bool {
+    self.models_ready && self.onboarding_complete
   }
 
   fn start_device_controller(&mut self) {
@@ -1020,7 +1045,7 @@ impl AppController {
   }
 
   fn start_session(&mut self) {
-    if !self.models_ready {
+    if !self.ready_to_run() {
       return;
     }
     let Some(snapshot) = self.device_snapshot.as_ref() else {
@@ -1094,7 +1119,7 @@ impl AppController {
   }
 
   fn ensure_session(&mut self) {
-    if !self.models_ready {
+    if !self.ready_to_run() {
       return;
     }
     if self.session.is_none() {
@@ -3326,18 +3351,37 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use super::{
-    AppController, AzadConfig, DraftOverlayAction, EngineState, HotkeyEffect,
-    ManualHoldReleaseAction, ManualHoldReleasePlan, RawFinalizeUiPlan, SessionRecoveryState,
-    allow_immediate_restart_for_fault_count, build_paste_text, collapse_consecutive_duplicates,
-    draft_matches_finalized_text, draft_update_overlay_action,
-    has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
-    has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
-    manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
-    raw_finalize_ui_plan, recovery_state_for_fault_count, should_ignore_finalizing_event,
-    split_overlay_active_for_turns, split_overlay_visible_for_state,
+    AppController,
+    AzadConfig,
+    DraftOverlayAction,
+    EngineState,
+    HotkeyEffect,
+    ManualHoldReleaseAction,
+    ManualHoldReleasePlan,
+    RawFinalizeUiPlan,
+    SessionRecoveryState,
+    allow_immediate_restart_for_fault_count,
+    build_paste_text,
+    collapse_consecutive_duplicates,
+    draft_matches_finalized_text,
+    draft_update_overlay_action,
+    has_actionable_turn_context_for_snapshot,
+    has_started_turn_for_snapshot,
+    has_turn_context_for_snapshot,
+    is_stream_fault_message,
+    listen_toggle_notice,
+    manual_hold_release_plan,
+    next_current_turn_id,
+    raw_finalize_target_turn_id_for_state,
+    raw_finalize_ui_plan,
+    recovery_state_for_fault_count,
+    should_ignore_finalizing_event,
+    split_overlay_active_for_turns,
+    split_overlay_visible_for_state,
     split_overlay_visible_with_hold_for_state,
     split_overlay_visible_with_live_divergence_for_state,
-    split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
+    split_overlay_visible_with_vad_hint_for_state,
+    split_top_completion_for_state,
     turn_started_should_arm_pending,
   };
   use super::{LISTEN_TOGGLE_NOTICE_DURATION_MS, ListenToggleNotice};
@@ -3369,31 +3413,28 @@ mod tests {
   #[test]
   fn manual_hold_release_plan_disables_capture_when_listen_is_off() {
     let plan = manual_hold_release_plan(false, true, true);
-    assert_eq!(
-      plan,
-      ManualHoldReleasePlan {
-        capture_enabled: false,
-        action: ManualHoldReleaseAction::FinalizeTurn,
-      }
-    );
+    assert_eq!(plan, ManualHoldReleasePlan {
+      capture_enabled: false,
+      action: ManualHoldReleaseAction::FinalizeTurn,
+    });
   }
 
   #[test]
   fn manual_hold_release_plan_keeps_capture_when_listen_is_on() {
     let plan = manual_hold_release_plan(true, true, false);
-    assert_eq!(
-      plan,
-      ManualHoldReleasePlan { capture_enabled: true, action: ManualHoldReleaseAction::HideOverlay }
-    );
+    assert_eq!(plan, ManualHoldReleasePlan {
+      capture_enabled: true,
+      action: ManualHoldReleaseAction::HideOverlay
+    });
   }
 
   #[test]
   fn manual_hold_release_plan_keeps_live_when_not_finalizing() {
     let plan = manual_hold_release_plan(false, false, true);
-    assert_eq!(
-      plan,
-      ManualHoldReleasePlan { capture_enabled: false, action: ManualHoldReleaseAction::KeepLive }
-    );
+    assert_eq!(plan, ManualHoldReleasePlan {
+      capture_enabled: false,
+      action: ManualHoldReleaseAction::KeepLive
+    });
   }
 
   #[test]

@@ -16,6 +16,7 @@ const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
+const ONBOARDING_COMPLETE_KEY: &str = "AzadOnboardingComplete";
 
 pub fn load_preferred_device_id() -> Option<String> {
   unsafe {
@@ -132,6 +133,40 @@ pub fn save_run_on_startup_enabled(enabled: bool) {
 
     let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
     let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+/// Returns `None` when the user has never been through onboarding (key absent),
+/// so the bootstrap seeding can distinguish a fresh profile from one that
+/// explicitly completed (or is mid-) onboarding.
+pub fn load_onboarding_complete() -> Option<bool> {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return None;
+    }
+
+    let key = NSString::alloc(nil).init_str(ONBOARDING_COMPLETE_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return None;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    Some(value != 0)
+  }
+}
+
+pub fn save_onboarding_complete(complete: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(ONBOARDING_COMPLETE_KEY);
+    let value = if complete { YES } else { NO };
     let _: () = msg_send![defaults, setBool: value forKey: key];
   }
 }
