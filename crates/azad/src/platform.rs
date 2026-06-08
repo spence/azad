@@ -5640,9 +5640,12 @@ fn install_global_hotkeys() {
 /// app (VNC viewers, remote-desktop clients, etc.) can intercept them. Runs on a dedicated
 /// thread so slow work on the main thread never causes macOS to disable the tap for timeout.
 ///
-/// Requires the **Input Monitoring** privacy permission. If the tap fails to create we fall
-/// back silently to the Carbon `RegisterEventHotKey` path — which works in most apps but gets
-/// swallowed by screen-sharing / VNC clients that install their own HID tap.
+/// Authorized by **Accessibility**, which Azad already requires: this is an *active*
+/// tap (`kCGEventTapOptionDefault`) that can consume the hotkey, and active taps are
+/// gated on Accessibility — not Input Monitoring (that gates listen-only taps). So once
+/// Accessibility is granted the tap succeeds, including over screen-sharing. If it still
+/// fails to create we fall back silently to the Carbon `RegisterEventHotKey` path — which
+/// works in most apps but gets swallowed by VNC clients that install their own HID tap.
 fn install_hotkey_event_tap() {
   std::thread::Builder::new()
     .name("azad-hotkey-tap".to_string())
@@ -5659,8 +5662,8 @@ fn install_hotkey_event_tap() {
       );
       if tap.is_null() {
         eprintln!(
-          "Azad: couldn't install HID event tap — grant Input Monitoring in System Settings to \
-           claim hotkeys over VNC / screen-sharing clients. Falling back to Carbon hotkeys."
+          "Azad: couldn't install HID event tap — grant Accessibility in System Settings so the \
+           active tap can claim hotkeys over VNC / screen-sharing clients. Falling back to Carbon."
         );
         return;
       }
