@@ -248,6 +248,7 @@ struct AppController {
   hotkey_state: HotkeyState,
   raw_finalize_requested: bool,
   run_on_startup_enabled: bool,
+  history_enabled: bool,
   paste_method: PasteMethod,
   auto_submit_mode: AutoSubmitMode,
   append_trailing_space_on_paste: bool,
@@ -789,6 +790,7 @@ impl AppController {
   fn new(cfg: AzadConfig) -> Self {
     let always_listening_enabled = preferred_store::load_always_listening_enabled();
     let run_on_startup_enabled = preferred_store::load_run_on_startup_enabled();
+    let history_enabled = preferred_store::load_history_enabled();
     let paste_method = preferred_store::load_paste_method();
     let auto_submit_mode = preferred_store::load_auto_submit_mode();
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
@@ -840,6 +842,7 @@ impl AppController {
       hotkey_state: HotkeyState::default(),
       raw_finalize_requested: false,
       run_on_startup_enabled,
+      history_enabled,
       paste_method,
       auto_submit_mode,
       append_trailing_space_on_paste,
@@ -869,16 +872,25 @@ impl AppController {
   }
 
   fn bootstrap(&mut self) {
-    self.apply_run_on_startup_preference();
     self.refresh_models_ready();
     // Seed onboarding for users who predate the welcome flow: an unset flag plus
-    // an already-downloaded model means a returning user — treat them as onboarded
-    // so they're never sent through first-run setup. A genuinely fresh profile
-    // (no model yet) keeps the flag unset and goes through onboarding.
+    // an already-downloaded model means a returning user — mark them onboarded so
+    // they're never sent through first-run setup. A genuinely fresh profile (no
+    // model yet) keeps the flag unset and goes through onboarding.
     if preferred_store::load_onboarding_complete().is_none() && self.models_ready {
       self.onboarding_complete = true;
       preferred_store::save_onboarding_complete(true);
     }
+    // A returning/onboarded user with no explicit run-on-startup preference keeps
+    // the old on-by-default behavior; a fresh (not-yet-onboarded) user defaults
+    // off and onboarding sets it explicitly. Decoupled from the onboarding seed
+    // above so it still fires for a user whose onboarding flag was set earlier —
+    // it must never silently disable an existing user's auto-start.
+    if self.onboarding_complete && preferred_store::load_run_on_startup_enabled_raw().is_none() {
+      self.run_on_startup_enabled = true;
+      preferred_store::save_run_on_startup_enabled(true);
+    }
+    self.apply_run_on_startup_preference();
     if !self.models_ready {
       self.pending_first_launch_settings = true;
     }
@@ -900,6 +912,17 @@ impl AppController {
   /// the mic from being grabbed before the user has consented (see 38a76a7).
   fn ready_to_run(&self) -> bool {
     self.models_ready && self.onboarding_complete
+  }
+
+  /// Record a finalized turn to the transcript history, unless the user has
+  /// turned history off. Existing entries stay browsable; only new writes stop.
+  fn record_history(&mut self, turn_id: u64, cleaned: &str) {
+    if !self.history_enabled {
+      return;
+    }
+    if let Some(index) = &mut self.transcript_index {
+      index.append(turn_id, &self.finalizing_draft, cleaned);
+    }
   }
 
   fn start_device_controller(&mut self) {
@@ -1524,14 +1547,21 @@ impl AppController {
   }
 
   fn apply_run_on_startup_preference(&mut self) {
-    platform::create_launch_agent_plist_if_missing();
-    if platform::set_launch_agent_startup_enabled(self.run_on_startup_enabled) {
-      return;
+    // Only register a login item when the user has opted in. Never create a
+    // LaunchAgent just to disable it — a fresh profile that hasn't consented
+    // keeps no login item at all. An existing plist (user opt-in, or a dev
+    // `just install`) still gets its RunAtLoad synced to the preference.
+    if self.run_on_startup_enabled {
+      platform::create_launch_agent_plist_if_missing();
     }
-    eprintln!(
-      "Azad: failed to apply run-on-startup preference (enabled={})",
-      self.run_on_startup_enabled
-    );
+    if platform::launch_agent_plist_exists()
+      && !platform::set_launch_agent_startup_enabled(self.run_on_startup_enabled)
+    {
+      eprintln!(
+        "Azad: failed to apply run-on-startup preference (enabled={})",
+        self.run_on_startup_enabled
+      );
+    }
   }
 
   fn handle_settings_toggle_run_on_startup(&mut self, enabled: bool) {
@@ -2193,9 +2223,7 @@ impl AppController {
           if !cleaned.is_empty() && !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
             if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
               self.last_pasted_turn_id = Some(turn_id);
-              if let Some(index) = &mut self.transcript_index {
-                index.append(turn_id, &self.finalizing_draft, &cleaned);
-              }
+              self.record_history(turn_id, &cleaned);
             } else {
               eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
             }
@@ -2241,9 +2269,7 @@ impl AppController {
           let should_hide_overlay = !self.manual_hold_active && !hold_top_for_next_turn;
           if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
             self.last_pasted_turn_id = Some(turn_id);
-            if let Some(index) = &mut self.transcript_index {
-              index.append(turn_id, &self.finalizing_draft, &cleaned);
-            }
+            self.record_history(turn_id, &cleaned);
           } else {
             eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
           }

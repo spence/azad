@@ -536,6 +536,10 @@ fn launch_agent_plist_path() -> Option<PathBuf> {
   Some(path)
 }
 
+pub fn launch_agent_plist_exists() -> bool {
+  launch_agent_plist_path().map(|p| p.exists()).unwrap_or(false)
+}
+
 pub fn create_launch_agent_plist_if_missing() {
   let plist_path = match launch_agent_plist_path() {
     Some(p) => p,

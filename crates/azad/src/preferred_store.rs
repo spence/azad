@@ -17,6 +17,7 @@ const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
 const ONBOARDING_COMPLETE_KEY: &str = "AzadOnboardingComplete";
+const HISTORY_ENABLED_KEY: &str = "AzadHistoryEnabled";
 
 pub fn load_preferred_device_id() -> Option<String> {
   unsafe {
@@ -106,22 +107,30 @@ pub fn save_debug_stats_enabled(enabled: bool) {
   }
 }
 
-pub fn load_run_on_startup_enabled() -> bool {
+/// `None` when the user has never set a preference (key absent), so the bootstrap
+/// seeding can preserve a returning user's prior auto-start behavior instead of
+/// silently flipping it off under the new opt-in default.
+pub fn load_run_on_startup_enabled_raw() -> Option<bool> {
   unsafe {
     let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
     if defaults == nil {
-      return true;
+      return None;
     }
 
     let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
     let existing: id = msg_send![defaults, objectForKey: key];
     if existing == nil {
-      return true;
+      return None;
     }
 
     let value: i8 = msg_send![defaults, boolForKey: key];
-    value != 0
+    Some(value != 0)
   }
+}
+
+/// Defaults to OFF: the app must not register a login item unless the user opts in.
+pub fn load_run_on_startup_enabled() -> bool {
+  load_run_on_startup_enabled_raw().unwrap_or(false)
 }
 
 pub fn save_run_on_startup_enabled(enabled: bool) {
@@ -168,6 +177,24 @@ pub fn save_onboarding_complete(complete: bool) {
     let key = NSString::alloc(nil).init_str(ONBOARDING_COMPLETE_KEY);
     let value = if complete { YES } else { NO };
     let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn load_history_enabled() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return true;
+    }
+
+    let key = NSString::alloc(nil).init_str(HISTORY_ENABLED_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return true;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
   }
 }
 
