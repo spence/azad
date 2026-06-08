@@ -225,7 +225,7 @@ mod tests {
       .reduce(InteractionInput::HoldReleased { snapshot: snapshot(true, true, true, true, true) });
     assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: false,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
   }
 
@@ -242,7 +242,7 @@ mod tests {
     });
     assert_eq!(first_release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: true,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
     assert!(sm.manual_finalize_pending());
 
@@ -263,7 +263,7 @@ mod tests {
     });
     assert_eq!(second_release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: true,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
   }
 
@@ -280,7 +280,7 @@ mod tests {
     });
     assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: true,
-      has_started_turn: false,
+      has_started_turn: false
     }]);
     assert!(!sm.manual_finalize_pending());
   }
@@ -298,7 +298,7 @@ mod tests {
     });
     assert_eq!(first_release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: true,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
     assert!(!sm.manual_finalize_pending());
 
@@ -349,7 +349,7 @@ mod tests {
       .reduce(InteractionInput::HoldReleased { snapshot: snapshot(true, true, true, true, true) });
     assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: false,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
     assert!(!sm.manual_finalize_pending());
   }
@@ -371,7 +371,7 @@ mod tests {
       .reduce(InteractionInput::HoldReleased { snapshot: snapshot(true, false, true, true, true) });
     assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: true,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
   }
 
@@ -483,7 +483,7 @@ mod tests {
     });
     assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: false,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
     assert!(!sm.manual_finalize_pending());
   }
@@ -638,7 +638,7 @@ mod tests {
     });
     assert_eq!(effects, vec![InteractionEffect::ReleaseManualHold {
       should_finalize: true,
-      has_started_turn: true,
+      has_started_turn: true
     }]);
     assert_core_state(&sm, Some(1000), false, true);
   }

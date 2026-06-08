@@ -1379,6 +1379,16 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
     return PasteResult::EmptyText;
   }
 
+  // In test builds, report success without touching the real Accessibility /
+  // clipboard / keystroke FFI. App-logic tests exercise the post-paste state
+  // transitions; routing them through the live paths would (a) make them depend
+  // on the unsigned test binary's TCC grant — which resets on every rebuild and
+  // flips `AccessibilityRequired`, wiping the state under test — and (b) inject
+  // real Cmd+V keystrokes into whatever app is focused during `cargo test`.
+  if cfg!(test) {
+    return PasteResult::Pasted;
+  }
+
   if !ensure_accessibility_for_auto_paste() {
     eprintln!("Azad: insert skipped due to missing Accessibility permission");
     return PasteResult::AccessibilityRequired;
