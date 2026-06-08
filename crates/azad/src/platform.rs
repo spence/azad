@@ -4,7 +4,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use cocoa::appkit::{
@@ -151,8 +151,18 @@ const NS_VIEW_WIDTH_SIZABLE: u64 = 1 << 1;
 const NS_VIEW_HEIGHT_SIZABLE: u64 = 1 << 4;
 const NS_VIEW_MAX_Y_MARGIN: u64 = 1 << 5;
 const NSEVENT_MODIFIER_FLAG_OPTION: u64 = 1 << 19;
-const HOLD_HOTKEY_MODIFIERS: Modifiers = Modifiers::ALT;
 const HOLD_HOTKEY_KEY: Code = Code::Space;
+
+// The listen hotkey is always Space; only the modifier combination is
+// user-configurable (>=1 required, default Option). Our own 4-bit mask so it
+// serializes cleanly and is independent of CGEventFlags / global_hotkey.
+pub const MOD_SHIFT: u8 = 1;
+pub const MOD_CONTROL: u8 = 2;
+pub const MOD_OPTION: u8 = 4;
+pub const MOD_COMMAND: u8 = 8;
+// Read on the azad-hotkey-tap thread (Acquire); written from the main thread
+// (Release). One byte = no torn read. Default Option == today's behavior.
+static LISTEN_MODIFIERS: AtomicU8 = AtomicU8::new(MOD_OPTION);
 
 static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
@@ -444,6 +454,14 @@ pub fn run_app() {
     });
 
     setup_status_bar(delegate);
+    // Seed the configured listen-hotkey modifiers before installing the hotkeys,
+    // so the Carbon fallback registers the right chord and the tap reads it from
+    // the first keystroke. Absent pref keeps the compiled default (Option).
+    if let Some(mask) = crate::preferred_store::load_listen_modifiers() {
+      if mask != 0 {
+        LISTEN_MODIFIERS.store(mask, Ordering::Release);
+      }
+    }
     install_global_hotkeys();
     install_hotkey_event_tap();
 
@@ -1257,7 +1275,7 @@ pub fn is_raw_mode_pressed() -> bool {
 }
 
 pub fn hold_hotkey_overlaps_raw_modifier() -> bool {
-  HOLD_HOTKEY_MODIFIERS.contains(Modifiers::ALT)
+  LISTEN_MODIFIERS.load(Ordering::Relaxed) & MOD_OPTION != 0
 }
 
 pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> PasteResult {
@@ -5755,6 +5773,42 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   refs
 }
 
+/// Build our MOD_* mask from the live CGEventFlags booleans (tap thread).
+fn current_mod_mask(is_option: bool, is_shift: bool, is_command: bool, is_control: bool) -> u8 {
+  let mut m = 0u8;
+  if is_shift {
+    m |= MOD_SHIFT;
+  }
+  if is_control {
+    m |= MOD_CONTROL;
+  }
+  if is_option {
+    m |= MOD_OPTION;
+  }
+  if is_command {
+    m |= MOD_COMMAND;
+  }
+  m
+}
+
+/// Translate our MOD_* mask to global_hotkey Modifiers for the Carbon fallback.
+fn modifiers_for_mask(mask: u8) -> Modifiers {
+  let mut mods = Modifiers::empty();
+  if mask & MOD_SHIFT != 0 {
+    mods |= Modifiers::SHIFT;
+  }
+  if mask & MOD_CONTROL != 0 {
+    mods |= Modifiers::CONTROL;
+  }
+  if mask & MOD_OPTION != 0 {
+    mods |= Modifiers::ALT;
+  }
+  if mask & MOD_COMMAND != 0 {
+    mods |= Modifiers::META;
+  }
+  mods
+}
+
 fn install_global_hotkeys() {
   let manager = match GlobalHotKeyManager::new() {
     Ok(manager) => manager,
@@ -5764,11 +5818,12 @@ fn install_global_hotkeys() {
     }
   };
 
-  let hotkey = HotKey::new(Some(HOLD_HOTKEY_MODIFIERS), HOLD_HOTKEY_KEY);
+  let listen_mods = modifiers_for_mask(LISTEN_MODIFIERS.load(Ordering::Relaxed));
+  let hotkey = HotKey::new(Some(listen_mods), HOLD_HOTKEY_KEY);
   let hotkey_id = hotkey.id();
 
   if let Err(err) = manager.register(hotkey) {
-    eprintln!("Azad: failed to register Option+Space hotkey (might be in use): {}", err);
+    eprintln!("Azad: failed to register listen hotkey (might be in use): {}", err);
     return;
   }
 
@@ -5888,10 +5943,20 @@ extern "C" fn event_tap_callback(
   let flags = unsafe { CGEventGetFlags(event) };
   let is_option = (flags & CGEventFlags::CGEventFlagAlternate.bits()) != 0;
   let is_shift = (flags & CGEventFlags::CGEventFlagShift.bits()) != 0;
+  let is_command = (flags & CGEventFlags::CGEventFlagCommand.bits()) != 0;
+  let is_control = (flags & CGEventFlags::CGEventFlagControl.bits()) != 0;
   let is_keydown = event_type == KCG_EVENT_KEY_DOWN;
   let is_autorepeat = autorepeat != 0;
 
-  if claim_tap_hotkey(keycode as u16, is_option, is_shift, is_keydown, is_autorepeat) {
+  if claim_tap_hotkey(
+    keycode as u16,
+    is_option,
+    is_shift,
+    is_command,
+    is_control,
+    is_keydown,
+    is_autorepeat,
+  ) {
     return std::ptr::null_mut();
   }
   // History search bar: when active, intercept printable characters and
@@ -5910,6 +5975,8 @@ fn claim_tap_hotkey(
   keycode: u16,
   is_option: bool,
   is_shift: bool,
+  is_command: bool,
+  is_control: bool,
   is_keydown: bool,
   is_autorepeat: bool,
 ) -> bool {
@@ -5927,7 +5994,14 @@ fn claim_tap_hotkey(
   // keyup — a bare Space keyup not preceded by Opt+Space should pass through normally — but it
   // no longer gates dispatch.
   if keycode == KEYCODE_SPACE {
-    if is_keydown && is_option {
+    // Listen hotkey: Space plus the user-configured modifier set. Superset-match
+    // (all wanted modifiers held; extras OK) so the default (Option) is identical
+    // to the old `is_option` check. `wanted != 0` guards against a corrupt empty
+    // mask turning bare Space into a global trigger.
+    let wanted = LISTEN_MODIFIERS.load(Ordering::Acquire);
+    let live = current_mod_mask(is_option, is_shift, is_command, is_control);
+    let mods_match = wanted != 0 && (live & wanted) == wanted;
+    if is_keydown && mods_match {
       if is_autorepeat {
         // Claim the event so the remote VNC never gets a flood of spaces, but don't dispatch
         // — the state machine already knows we're holding.

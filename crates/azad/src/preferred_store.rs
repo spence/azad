@@ -18,6 +18,7 @@ const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
 const ONBOARDING_COMPLETE_KEY: &str = "AzadOnboardingComplete";
 const HISTORY_ENABLED_KEY: &str = "AzadHistoryEnabled";
+const LISTEN_MODIFIERS_KEY: &str = "AzadListenModifiers";
 
 pub fn load_preferred_device_id() -> Option<String> {
   unsafe {
@@ -208,6 +209,40 @@ pub fn save_history_enabled(enabled: bool) {
     let key = NSString::alloc(nil).init_str(HISTORY_ENABLED_KEY);
     let value = if enabled { YES } else { NO };
     let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+/// Listen-hotkey modifier mask (platform MOD_* bits). `None` when unset, so a
+/// returning user with no preference keeps the compiled default (Option).
+pub fn load_listen_modifiers() -> Option<u8> {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return None;
+    }
+
+    let key = NSString::alloc(nil).init_str(LISTEN_MODIFIERS_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return None;
+    }
+
+    let value: i64 = msg_send![defaults, integerForKey: key];
+    Some((value & 0xFF) as u8)
+  }
+}
+
+// Consumed by the onboarding modifier checkboxes (next commit).
+#[allow(dead_code)]
+pub fn save_listen_modifiers(mask: u8) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(LISTEN_MODIFIERS_KEY);
+    let _: () = msg_send![defaults, setInteger: mask as i64 forKey: key];
   }
 }
 
