@@ -3652,6 +3652,9 @@ unsafe fn render_overlay_text(
       NSSize::new(chip_w, OVERLAY_CONNECTOR_CHIP_HEIGHT),
     );
     let _: () = msg_send![refs.connector_chip, setFrame: chip_frame];
+    // Unhide the container itself, not just its children: a hidden NSView renders
+    // neither its own layer background nor its subviews.
+    let _: () = msg_send![refs.connector_chip, setHidden: NO];
 
     if has_icon {
       let icon_y =
