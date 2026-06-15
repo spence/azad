@@ -7,6 +7,7 @@ use asr::devices::DeviceStateSnapshot;
 use asr::pipeline::{DebugStatsEvent, EngineState};
 
 use crate::config::AzadConfig;
+use crate::connectors;
 use crate::device::{DeviceController, DeviceEvent};
 use crate::hotkey_sm::{HotkeyEffect, HotkeyInput, HotkeyState, RuntimeSnapshot};
 use crate::input_log::{self, InputLogEntry, InputLogEvent, StateSnapshot};
@@ -15,6 +16,7 @@ use crate::model_download::{self, DownloadHandle};
 use crate::models::{self, PackStatus};
 use crate::platform;
 use crate::platform::{
+  ConnectorRowVM,
   DeviceMenuModel,
   DeviceMenuRow,
   PasteResult,
@@ -57,6 +59,10 @@ pub enum AppEvent {
   SettingsSelectAutoSubmit(AutoSubmitMode),
   SettingsSelectOverlayPosition(OverlayPosition),
   SettingsToggleAppendTrailingSpace(bool),
+  SettingsToggleConnector {
+    index: usize,
+    enabled: bool,
+  },
   SettingsAddRemovedWord(String),
   SettingsRemoveRemovedWord(String),
   SettingsRefresh,
@@ -303,6 +309,23 @@ struct AppController {
   // at render time and on paste.
   history_search_query: String,
   removed_words: Vec<String>,
+  // Built-in connectors (only `enabled` is mutable/persisted) and the connector
+  // latched for the current turn, if any. Detection runs on the streaming draft
+  // (see `SpeechEvent::DraftUpdated`); the latch resets per turn.
+  connectors: Vec<connectors::Connector>,
+  active_connector: Option<ActiveConnector>,
+}
+
+/// The connector latched for the current turn. `clean_query` is the transcription
+/// with the trigger phrase stripped — held for the deferred routing follow-up; the
+/// paste path does not consume it yet.
+#[derive(Debug, Clone)]
+struct ActiveConnector {
+  #[allow(dead_code)]
+  id: &'static str,
+  tag_label: &'static str,
+  #[allow(dead_code)]
+  clean_query: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -817,6 +840,12 @@ impl AppController {
       .unwrap_or_else(|| models::default_pack().id.to_string());
     let transcript_index = TranscriptIndex::load();
     let removed_words = preferred_store::load_removed_words();
+    let mut connectors = connectors::builtin_connectors();
+    if let Some(enabled_ids) = preferred_store::load_enabled_connector_ids() {
+      for c in &mut connectors {
+        c.enabled = enabled_ids.iter().any(|id| id == c.id);
+      }
+    }
     Self {
       cfg,
       session: None,
@@ -888,6 +917,8 @@ impl AppController {
       history_expanded: false,
       history_search_query: String::new(),
       removed_words,
+      connectors,
+      active_connector: None,
     }
   }
 
@@ -1074,6 +1105,9 @@ impl AppController {
       }
       AppEvent::SettingsToggleAppendTrailingSpace(enabled) => {
         self.handle_settings_toggle_append_trailing_space(enabled)
+      }
+      AppEvent::SettingsToggleConnector { index, enabled } => {
+        self.handle_settings_toggle_connector(index, enabled)
       }
       AppEvent::SettingsAddRemovedWord(word) => self.handle_settings_add_removed_word(word),
       AppEvent::SettingsRemoveRemovedWord(word) => self.handle_settings_remove_removed_word(word),
@@ -1790,6 +1824,17 @@ impl AppController {
     platform::update_settings_window(self.settings_view_model());
   }
 
+  fn handle_settings_toggle_connector(&mut self, index: usize, enabled: bool) {
+    let Some(connector) = self.connectors.get_mut(index) else {
+      return;
+    };
+    connector.enabled = enabled;
+    let enabled_ids: Vec<String> =
+      self.connectors.iter().filter(|c| c.enabled).map(|c| c.id.to_string()).collect();
+    preferred_store::save_enabled_connector_ids(&enabled_ids);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
   fn handle_settings_add_removed_word(&mut self, word: String) {
     let word = word.trim().to_ascii_lowercase();
     if word.is_empty() || self.removed_words.iter().any(|w| w == &word) {
@@ -1897,6 +1942,11 @@ impl AppController {
       model_download_bytes_done: self.download_progress.0,
       model_download_bytes_total: self.download_progress.1,
       removed_words: self.removed_words.clone(),
+      connectors: self
+        .connectors
+        .iter()
+        .map(|c| ConnectorRowVM { display_name: c.display_name.to_string(), enabled: c.enabled })
+        .collect(),
     }
   }
 
@@ -2186,6 +2236,7 @@ impl AppController {
             self.clear_held_top_overlay();
           }
           self.latest_draft = merged;
+          self.update_active_connector();
           // A live draft supersedes the transient "Listen ENABLED" notice: the
           // user is mid-utterance and needs to see their words now, not the
           // notice. Dismiss it and switch straight to the listening overlay,
@@ -2756,6 +2807,10 @@ impl AppController {
     self.render_listening_overlay();
   }
 
+  fn active_connector_tag(&self) -> &str {
+    self.active_connector.as_ref().map(|a| a.tag_label).unwrap_or("")
+  }
+
   #[track_caller]
   fn render_finalizing_overlay_state(&mut self) {
     if self.accessibility_notice_deadline.is_some() {
@@ -2790,6 +2845,7 @@ impl AppController {
         self.raw_badge_visible(),
         self.hold_badge_visible(),
         "",
+        self.active_connector_tag(),
       );
       return;
     }
@@ -2802,6 +2858,7 @@ impl AppController {
       self.raw_badge_visible(),
       self.hold_badge_visible(),
       "",
+      self.active_connector_tag(),
     );
   }
 
@@ -2833,6 +2890,7 @@ impl AppController {
       self.raw_badge_visible(),
       self.hold_badge_visible(),
       "",
+      self.active_connector_tag(),
     );
   }
 
@@ -3386,11 +3444,32 @@ impl AppController {
     self.reset_turn_state_preserving_hotkey_state();
   }
 
+  /// Detects/refreshes the connector for the current turn from `latest_draft`.
+  /// Latches on the first draft whose leading phrase fully matches an enabled
+  /// connector (a partial prefix never matches, so the tag can't flicker off);
+  /// once latched, keeps the latched connector and only refreshes its stripped
+  /// `clean_query` as the draft grows.
+  fn update_active_connector(&mut self) {
+    if self.active_connector.is_none() {
+      if let Some(m) = connectors::detect(&self.latest_draft, &self.connectors) {
+        self.active_connector =
+          Some(ActiveConnector { id: m.id, tag_label: m.tag_label, clean_query: m.clean_query });
+      }
+      return;
+    }
+    let id = self.active_connector.as_ref().map(|a| a.id);
+    let trigger = id.and_then(|id| self.connectors.iter().find(|c| c.id == id)).map(|c| c.trigger);
+    if let (Some(trigger), Some(active)) = (trigger, self.active_connector.as_mut()) {
+      active.clean_query = connectors::strip_trigger(&self.latest_draft, trigger);
+    }
+  }
+
   fn reset_turn_state_preserving_hotkey_state(&mut self) {
     self.cancelled = false;
     self.last_pasted_turn_id = None;
     self.hold_saw_speech = false;
     self.latest_draft.clear();
+    self.active_connector = None;
     self.latest_final = None;
     self.finalizing_deadline = None;
     self.finalizing_turn_id = None;

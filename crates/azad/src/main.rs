@@ -4,6 +4,7 @@
 
 mod app;
 mod config;
+mod connectors;
 mod device;
 mod hotkey_sm;
 mod input_log;

@@ -145,6 +145,15 @@ const OVERLAY_NOTICE_AUTO_ON_CHIP_WIDTH: f64 = 96.0;
 const OVERLAY_NOTICE_AUTO_ON_CHIP_HEIGHT: f64 = 22.0;
 const OVERLAY_NOTICE_AUTO_ON_FONT_SIZE: f64 = 11.5;
 
+// Connector tag chip: a small rounded pill rendered top-left inside the overlay
+// card, above the live transcription. `RESERVE` (height + gap) is folded into the
+// card's height math so the body text drops below the chip without overlap.
+const OVERLAY_CONNECTOR_CHIP_HEIGHT: f64 = 20.0;
+const OVERLAY_CONNECTOR_CHIP_GAP: f64 = 6.0;
+const OVERLAY_CONNECTOR_CHIP_PAD_X: f64 = 9.0;
+const OVERLAY_CONNECTOR_CHIP_FONT_SIZE: f64 = 11.5;
+const OVERLAY_CONNECTOR_CHIP_RADIUS: f64 = 9.0;
+
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
 const NS_VIEW_WIDTH_SIZABLE: u64 = 1 << 1;
@@ -276,6 +285,8 @@ struct OverlayRefs {
   label: id,
   hold_badge: id,
   raw_badge: id,
+  connector_chip: id,
+  connector_chip_label: id,
   meter_view: id,
   wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
   busy_gradient_layer: id,
@@ -341,6 +352,8 @@ struct SettingsWindowRefs {
   perm_accessibility_status: id,
   perm_microphone_status: id,
   debug_container: id,
+  connectors_container: id,
+  connectors_checkboxes_view: id,
   run_on_startup_checkbox: id,
   paste_method_popup: id,
   auto_submit_popup: id,
@@ -437,6 +450,16 @@ pub struct SettingsViewModel {
   pub model_download_bytes_done: u64,
   pub model_download_bytes_total: u64,
   pub removed_words: Vec<String>,
+  pub connectors: Vec<ConnectorRowVM>,
+}
+
+/// One row in the Settings → Connectors tab. The toggle handler keys off the row
+/// index (matching `AppController::connectors` order), so the row only carries
+/// what it renders.
+#[derive(Debug, Clone)]
+pub struct ConnectorRowVM {
+  pub display_name: String,
+  pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -446,6 +469,7 @@ pub enum SettingsTab {
   Models,
   Permissions,
   Debug,
+  Connectors,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1306,13 +1330,22 @@ pub fn set_overlay_stream_content(
   show_raw_badge: bool,
   show_hold_badge: bool,
   history_position: &str,
+  connector_tag: &str,
 ) {
   let Some(refs) = current_overlay() else {
     return;
   };
   unsafe {
     move_overlay_to_target_screen(refs, false);
-    render_overlay_text(refs, draft, activity, busy_phase, show_raw_badge, show_hold_badge);
+    render_overlay_text(
+      refs,
+      draft,
+      activity,
+      busy_phase,
+      show_raw_badge,
+      show_hold_badge,
+      connector_tag,
+    );
     render_overlay_history_position(refs, history_position);
   }
 }
@@ -1359,7 +1392,7 @@ pub fn set_overlay_top_stream_content(draft: &str, activity: &[f32], busy_phase:
     if let Some(bottom) = current_overlay() {
       position_overlay_top_relative_to_bottom(refs, bottom);
     }
-    render_overlay_text(refs, draft, activity, busy_phase, false, false);
+    render_overlay_text(refs, draft, activity, busy_phase, false, false, "");
     if let Some(bottom) = current_overlay() {
       position_overlay_top_relative_to_bottom(refs, bottom);
     }
@@ -1422,7 +1455,7 @@ fn set_overlay_notice_content_styled(
         listen_toggle_notice_activity(enabled, progress)
       }
     };
-    render_overlay_text(refs, &rendered, &notice_activity, None, false, false);
+    render_overlay_text(refs, &rendered, &notice_activity, None, false, false, "");
     apply_overlay_notice_style(refs, style);
     hide_overlay_notice_accessory(refs);
   }
@@ -1617,6 +1650,10 @@ fn register_delegate_class() -> &'static Class {
     decl.add_method(
       sel!(settingsToggleDebug:),
       settings_toggle_debug as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(settingsToggleConnector:),
+      settings_toggle_connector as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
       sel!(settingsSelectPasteMethod:),
@@ -2001,6 +2038,21 @@ extern "C" fn settings_toggle_debug(_: &Object, _: Sel, sender: id) {
   }
 }
 
+extern "C" fn settings_toggle_connector(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let index: isize = msg_send![sender, tag];
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::SettingsToggleConnector {
+      index: index as usize,
+      enabled: state != 0,
+    });
+    crate::app::drain_events();
+  }
+}
+
 extern "C" fn settings_select_paste_method(_: &Object, _: Sel, sender: id) {
   unsafe {
     if sender == nil {
@@ -2109,7 +2161,7 @@ fn settings_pack_id_for_tag(_tag: isize) -> String {
 }
 
 extern "C" fn settings_tab_rows(_: &Object, _: Sel, _: id) -> isize {
-  4
+  5
 }
 
 unsafe fn settings_tab_label(row: isize) -> &'static str {
@@ -2117,6 +2169,7 @@ unsafe fn settings_tab_label(row: isize) -> &'static str {
     1 => "Models",
     2 => "Permissions",
     3 => "Debug",
+    4 => "Connectors",
     _ => "General",
   }
 }
@@ -2126,6 +2179,7 @@ unsafe fn settings_tab_from_row(row: isize) -> SettingsTab {
     1 => SettingsTab::Models,
     2 => SettingsTab::Permissions,
     3 => SettingsTab::Debug,
+    4 => SettingsTab::Connectors,
     _ => SettingsTab::General,
   }
 }
@@ -2136,6 +2190,7 @@ unsafe fn settings_row_for_tab(tab: SettingsTab) -> isize {
     SettingsTab::Models => 1,
     SettingsTab::Permissions => 2,
     SettingsTab::Debug => 3,
+    SettingsTab::Connectors => 4,
   }
 }
 
@@ -3273,16 +3328,19 @@ pub fn refresh_settings_permissions(accessibility: PermissionStatus, microphone:
 }
 
 unsafe fn apply_settings_selected_tab(refs: SettingsWindowRefs, tab: SettingsTab) {
-  let (general_hidden, models_hidden, permissions_hidden, debug_hidden) = match tab {
-    SettingsTab::General => (NO, YES, YES, YES),
-    SettingsTab::Models => (YES, NO, YES, YES),
-    SettingsTab::Permissions => (YES, YES, NO, YES),
-    SettingsTab::Debug => (YES, YES, YES, NO),
-  };
+  let (general_hidden, models_hidden, permissions_hidden, debug_hidden, connectors_hidden) =
+    match tab {
+      SettingsTab::General => (NO, YES, YES, YES, YES),
+      SettingsTab::Models => (YES, NO, YES, YES, YES),
+      SettingsTab::Permissions => (YES, YES, NO, YES, YES),
+      SettingsTab::Debug => (YES, YES, YES, NO, YES),
+      SettingsTab::Connectors => (YES, YES, YES, YES, NO),
+    };
   let _: () = msg_send![refs.general_container, setHidden: general_hidden];
   let _: () = msg_send![refs.models_container, setHidden: models_hidden];
   let _: () = msg_send![refs.permissions_container, setHidden: permissions_hidden];
   let _: () = msg_send![refs.debug_container, setHidden: debug_hidden];
+  let _: () = msg_send![refs.connectors_container, setHidden: connectors_hidden];
 
   if refs.tab_list_view != nil {
     let row = settings_row_for_tab(tab);
@@ -3331,6 +3389,7 @@ unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsVi
   let _: () = msg_send![refs.metrics_text_view, setString: metrics];
 
   apply_removed_words_tags(refs, &model.removed_words);
+  apply_connector_rows(refs, &model.connectors);
   apply_models_view_state(refs, model);
 
   SETTINGS_LAST_MODEL.with(|m| m.borrow_mut().replace(model.clone()));
@@ -3391,6 +3450,47 @@ unsafe fn apply_removed_words_tags(refs: SettingsWindowRefs, words: &[String]) {
   }
 }
 
+unsafe fn apply_connector_rows(refs: SettingsWindowRefs, connectors: &[ConnectorRowVM]) {
+  let container = refs.connectors_checkboxes_view;
+  if container == nil {
+    return;
+  }
+
+  loop {
+    let subviews: id = msg_send![container, subviews];
+    let count: usize = msg_send![subviews, count];
+    if count == 0 {
+      break;
+    }
+    let child: id = msg_send![subviews, objectAtIndex: 0usize];
+    let _: () = msg_send![child, removeFromSuperview];
+  }
+
+  let container_frame: NSRect = msg_send![container, frame];
+  let row_stride = SETTINGS_CONTROL_HEIGHT + 6.0;
+  for (i, c) in connectors.iter().enumerate() {
+    let y = container_frame.size.height - (i as f64 + 1.0) * row_stride;
+    let frame = NSRect::new(
+      NSPoint::new(0.0, y),
+      NSSize::new(container_frame.size.width, SETTINGS_CONTROL_HEIGHT),
+    );
+    let checkbox: id = msg_send![class!(NSButton), alloc];
+    let checkbox: id = msg_send![checkbox, initWithFrame: frame];
+    let _: () = msg_send![checkbox, setButtonType: 3usize];
+    let _: () = msg_send![checkbox, setTitle: NSString::alloc(nil).init_str(&c.display_name)];
+    let state: i64 = if c.enabled { 1 } else { 0 };
+    let _: () = msg_send![checkbox, setState: state];
+    let _: () = msg_send![checkbox, setTag: i as isize];
+    let _: () = msg_send![checkbox, setAction: sel!(settingsToggleConnector:)];
+    STATUS_DELEGATE_REF.with(|r| {
+      if let Some(delegate) = *r.borrow() {
+        let _: () = msg_send![checkbox, setTarget: delegate];
+      }
+    });
+    let _: () = msg_send![container, addSubview: checkbox];
+  }
+}
+
 unsafe fn apply_models_view_state(refs: SettingsWindowRefs, model: &SettingsViewModel) {
   use crate::models::{PackStatus, format_size};
 
@@ -3434,13 +3534,21 @@ unsafe fn render_overlay_text(
   busy_phase: Option<f32>,
   show_raw_badge: bool,
   show_hold_badge: bool,
+  connector_tag: &str,
 ) {
   let current_frame: NSRect = msg_send![refs.window, frame];
   let screen = overlay_screen_frame_for_window(current_frame);
   let width = overlay_width_for_screen(screen);
   let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
 
-  let max_body_height = (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
+  // Space reserved at the top of the card for the connector chip, folded into the
+  // body height budget so the transcription drops below it.
+  let show_chip = !connector_tag.is_empty();
+  let chip_reserve =
+    if show_chip { OVERLAY_CONNECTOR_CHIP_HEIGHT + OVERLAY_CONNECTOR_CHIP_GAP } else { 0.0 };
+
+  let max_body_height =
+    (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM - chip_reserve).max(1.0);
 
   let (rendered_body, mut measured_body_height) =
     fit_rendered_body_for_height(refs.label, body_text, content_width, max_body_height);
@@ -3452,7 +3560,7 @@ unsafe fn render_overlay_text(
     .min(max_body_height);
   let is_single_line = rendered_body.is_empty()
     || (!rendered_body.contains('\n') && body_height <= OVERLAY_TEXT_LINE_HEIGHT * 1.35);
-  let content_height = OVERLAY_PAD_TOP + body_height + OVERLAY_PAD_BOTTOM;
+  let content_height = OVERLAY_PAD_TOP + chip_reserve + body_height + OVERLAY_PAD_BOTTOM;
   let height = content_height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
 
   let default_x = screen.origin.x + (screen.size.width - width) * 0.5;
@@ -3495,7 +3603,7 @@ unsafe fn render_overlay_text(
 
   apply_busy_border_style(refs, busy_phase, width, height);
 
-  let available_height = (height - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM).max(1.0);
+  let available_height = (height - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM - chip_reserve).max(1.0);
   let body_text_height = body_height.min(available_height).max(1.0);
   let body_y = if is_single_line {
     OVERLAY_PAD_BOTTOM + ((available_height - body_text_height) * 0.5).max(0.0)
@@ -3510,6 +3618,32 @@ unsafe fn render_overlay_text(
     NSRect::new(NSPoint::new(OVERLAY_PAD_X, meter_y), NSSize::new(content_width, meter_height));
   let _: () = msg_send![refs.label, setFrame: body_frame];
   let _: () = msg_send![refs.meter_view, setFrame: meter_frame];
+
+  if show_chip {
+    let _: () = msg_send![
+      refs.connector_chip_label,
+      setStringValue: NSString::alloc(nil).init_str(connector_tag)
+    ];
+    let _: () = msg_send![refs.connector_chip_label, sizeToFit];
+    let label_frame: NSRect = msg_send![refs.connector_chip_label, frame];
+    let label_h = label_frame.size.height.min(OVERLAY_CONNECTOR_CHIP_HEIGHT);
+    let chip_w = (label_frame.size.width + OVERLAY_CONNECTOR_CHIP_PAD_X * 2.0).min(content_width);
+    let chip_y = height - OVERLAY_PAD_TOP - OVERLAY_CONNECTOR_CHIP_HEIGHT;
+    let chip_frame = NSRect::new(
+      NSPoint::new(OVERLAY_PAD_X, chip_y),
+      NSSize::new(chip_w, OVERLAY_CONNECTOR_CHIP_HEIGHT),
+    );
+    let label_y = ((OVERLAY_CONNECTOR_CHIP_HEIGHT - label_h) * 0.5).max(0.0);
+    let inner_label_frame = NSRect::new(NSPoint::new(0.0, label_y), NSSize::new(chip_w, label_h));
+    let _: () = msg_send![refs.connector_chip, setFrame: chip_frame];
+    let _: () = msg_send![refs.connector_chip_label, setFrame: inner_label_frame];
+    let _: () = msg_send![refs.connector_chip, setHidden: NO];
+    let _: () = msg_send![refs.connector_chip_label, setHidden: NO];
+  } else {
+    let _: () = msg_send![refs.connector_chip, setHidden: YES];
+    let _: () = msg_send![refs.connector_chip_label, setHidden: YES];
+  }
+
   let mut badge_right = (width - OVERLAY_RAW_BADGE_RIGHT_INSET).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
   if show_raw_badge {
     let raw_badge_x = (badge_right - OVERLAY_RAW_BADGE_WIDTH).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
@@ -3732,6 +3866,8 @@ unsafe fn render_overlay_history_list(
   let _: () = msg_send![refs.meter_view, setHidden: YES];
   let _: () = msg_send![refs.raw_badge, setHidden: YES];
   let _: () = msg_send![refs.hold_badge, setHidden: YES];
+  let _: () = msg_send![refs.connector_chip, setHidden: YES];
+  let _: () = msg_send![refs.connector_chip_label, setHidden: YES];
   // Hide the busy gradient (the rotating border-pulse) but leave the mask layer
   // alone — `apply_busy_border_style` doesn't always re-show the mask, and a
   // hidden mask clips the gradient to fully-transparent alpha (the missing-
@@ -5222,6 +5358,41 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
       setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
   ];
 
+  let connectors_container: id = msg_send![class!(NSView), alloc];
+  let connectors_container: id = msg_send![connectors_container, initWithFrame: content_frame];
+  let _: () = msg_send![
+      connectors_container,
+      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
+  ];
+  let connectors_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
+  let connectors_hint_frame = NSRect::new(
+    NSPoint::new(0.0, connectors_top_y),
+    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
+  );
+  let connectors_hint: id = msg_send![class!(NSTextField), alloc];
+  let connectors_hint: id = msg_send![connectors_hint, initWithFrame: connectors_hint_frame];
+  let _: () = msg_send![
+      connectors_hint,
+      setStringValue: NSString::alloc(nil).init_str(
+        "Open an utterance with a connector\u{2019}s phrase (e.g. \u{201c}hey claude\u{201d}) to tag it."
+      )
+  ];
+  let _: () = msg_send![connectors_hint, setBezeled: NO];
+  let _: () = msg_send![connectors_hint, setDrawsBackground: NO];
+  let _: () = msg_send![connectors_hint, setEditable: NO];
+  let _: () = msg_send![connectors_hint, setSelectable: NO];
+  let _: () = msg_send![connectors_hint, setAlignment: 0isize];
+  let _: () = msg_send![connectors_container, addSubview: connectors_hint];
+
+  let connectors_checkboxes_height =
+    (connectors_top_y - SETTINGS_CONTROL_VERTICAL_GAP).max(SETTINGS_CONTROL_HEIGHT);
+  let connectors_checkboxes_frame =
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(content_width, connectors_checkboxes_height));
+  let connectors_checkboxes_view: id = msg_send![class!(NSView), alloc];
+  let connectors_checkboxes_view: id =
+    msg_send![connectors_checkboxes_view, initWithFrame: connectors_checkboxes_frame];
+  let _: () = msg_send![connectors_container, addSubview: connectors_checkboxes_view];
+
   let general_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
   let run_on_startup_frame = NSRect::new(
     NSPoint::new(0.0, general_top_y),
@@ -5594,6 +5765,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let _: () = msg_send![debug_container, addSubview: refresh_button];
   let _: () = msg_send![debug_container, addSubview: scroll_view];
   let _: () = msg_send![body_view, addSubview: debug_container];
+  let _: () = msg_send![body_view, addSubview: connectors_container];
   let _: () = msg_send![tab_list_view, reloadData];
 
   // Build-info footer (bottom-right corner of the window). Tiny dim text so
@@ -5637,6 +5809,8 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     perm_accessibility_status,
     perm_microphone_status,
     debug_container,
+    connectors_container,
+    connectors_checkboxes_view,
     run_on_startup_checkbox,
     paste_method_popup,
     auto_submit_popup,
@@ -5786,6 +5960,44 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![hold_badge, setTextColor: hold_color];
   let _: () = msg_send![hold_badge, setHidden: YES];
   let _: () = msg_send![card_view, addSubview: hold_badge];
+
+  // Connector tag chip — a card-level subview (like the raw/hold badges) so it
+  // survives `hide_overlay_notice_accessory`, which the AUTO ON chip does not.
+  let connector_chip: id = msg_send![class!(NSView), alloc];
+  let connector_chip: id = msg_send![connector_chip, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(0.0, OVERLAY_CONNECTOR_CHIP_HEIGHT)
+  )];
+  let _: () = msg_send![connector_chip, setWantsLayer: YES];
+  let connector_chip_layer: id = msg_send![connector_chip, layer];
+  if connector_chip_layer != nil {
+    let chip_bg = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.36, 0.52, 0.96, 0.30);
+    let chip_bg_cg: id = msg_send![chip_bg, CGColor];
+    let _: () = msg_send![connector_chip_layer, setBackgroundColor: chip_bg_cg];
+    let _: () = msg_send![connector_chip_layer, setCornerRadius: OVERLAY_CONNECTOR_CHIP_RADIUS];
+  }
+  let _: () = msg_send![connector_chip, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: connector_chip];
+
+  let connector_chip_label: id = msg_send![class!(NSTextField), alloc];
+  let connector_chip_label: id = msg_send![connector_chip_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(0.0, OVERLAY_CONNECTOR_CHIP_HEIGHT)
+  )];
+  let _: () = msg_send![connector_chip_label, setBezeled: NO];
+  let _: () = msg_send![connector_chip_label, setDrawsBackground: NO];
+  let _: () = msg_send![connector_chip_label, setEditable: NO];
+  let _: () = msg_send![connector_chip_label, setSelectable: NO];
+  let _: () = msg_send![connector_chip_label, setAlignment: 1isize];
+  let _: () = msg_send![connector_chip_label, setUsesSingleLineMode: YES];
+  let connector_chip_font: id =
+    msg_send![class!(NSFont), boldSystemFontOfSize: OVERLAY_CONNECTOR_CHIP_FONT_SIZE];
+  let _: () = msg_send![connector_chip_label, setFont: connector_chip_font];
+  let connector_chip_text =
+    NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+  let _: () = msg_send![connector_chip_label, setTextColor: connector_chip_text];
+  let _: () = msg_send![connector_chip_label, setHidden: YES];
+  let _: () = msg_send![connector_chip, addSubview: connector_chip_label];
 
   // Inline autocomplete: separator + rows
   let autocomplete_separator: id = msg_send![class!(NSView), alloc];
@@ -6165,6 +6377,8 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     label,
     hold_badge,
     raw_badge,
+    connector_chip,
+    connector_chip_label,
     meter_view,
     wave_bars,
     busy_gradient_layer,
@@ -6187,7 +6401,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     search_icon,
     search_caret,
   };
-  render_overlay_text(refs, "", &[], None, false, false);
+  render_overlay_text(refs, "", &[], None, false, false, "");
   refs
 }
 

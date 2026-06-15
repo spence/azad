@@ -17,6 +17,7 @@ const OVERLAY_POSITION_KEY: &str = "AzadOverlayPosition";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
+const ENABLED_CONNECTORS_KEY: &str = "AzadEnabledConnectors";
 const ONBOARDING_COMPLETE_KEY: &str = "AzadOnboardingComplete";
 const HISTORY_ENABLED_KEY: &str = "AzadHistoryEnabled";
 const LISTEN_MODIFIERS_KEY: &str = "AzadListenModifiers";
@@ -425,6 +426,49 @@ pub fn save_removed_words(words: &[String]) {
 
     let key = NSString::alloc(nil).init_str(REMOVED_WORDS_KEY);
     let joined = words.join(",");
+    let value = NSString::alloc(nil).init_str(&joined);
+    let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
+}
+
+/// Returns `None` when the key is absent so bootstrap keeps the built-in default
+/// enabled set; `Some(vec![])` means the user explicitly disabled every connector.
+pub fn load_enabled_connector_ids() -> Option<Vec<String>> {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return None;
+    }
+
+    let key = NSString::alloc(nil).init_str(ENABLED_CONNECTORS_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return None;
+    }
+
+    let value: id = msg_send![defaults, stringForKey: key];
+    let Some(value) = nsstring_to_string(value) else {
+      return Some(Vec::new());
+    };
+    Some(
+      value
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect(),
+    )
+  }
+}
+
+pub fn save_enabled_connector_ids(ids: &[String]) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(ENABLED_CONNECTORS_KEY);
+    let joined = ids.join(",");
     let value = NSString::alloc(nil).init_str(&joined);
     let _: () = msg_send![defaults, setObject: value forKey: key];
   }
