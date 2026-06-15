@@ -254,6 +254,7 @@ cmd_install() {
   install -m 644 "${CRATE_DIR}/assets/azad-black.png" "${APP_RESOURCES_DIR}/azad-black.png"
   install -m 644 "${CRATE_DIR}/assets/azad-white.png" "${APP_RESOURCES_DIR}/azad-white.png"
   install -m 644 "${CRATE_DIR}/assets/azad.icns" "${APP_RESOURCES_DIR}/azad.icns"
+  install -m 644 "${CRATE_DIR}/assets/claude.svg" "${APP_RESOURCES_DIR}/claude.svg"
   write_info_plist
   write_launch_agent_plist
   codesign_app_if_configured

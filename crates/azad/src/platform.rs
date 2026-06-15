@@ -153,6 +153,8 @@ const OVERLAY_CONNECTOR_CHIP_GAP: f64 = 6.0;
 const OVERLAY_CONNECTOR_CHIP_PAD_X: f64 = 9.0;
 const OVERLAY_CONNECTOR_CHIP_FONT_SIZE: f64 = 11.5;
 const OVERLAY_CONNECTOR_CHIP_RADIUS: f64 = 9.0;
+const OVERLAY_CONNECTOR_CHIP_ICON_SIZE: f64 = 13.0;
+const OVERLAY_CONNECTOR_CHIP_ICON_GAP: f64 = 5.0;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -250,6 +252,9 @@ const KCG_EVENT_SOURCE_USER_DATA_FIELD: u32 = 42;
 thread_local! {
     static OVERLAY_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
     static OVERLAY_TOP_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
+    // Cached connector chip icon, keyed by asset name. Loaded as a template image
+    // (tinted at render time) once per name to keep file I/O off the streaming path.
+    static CONNECTOR_ICON_CACHE: RefCell<Option<(String, id)>> = const { RefCell::new(None) };
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static SEARCH_FIELD_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
@@ -287,6 +292,7 @@ struct OverlayRefs {
   raw_badge: id,
   connector_chip: id,
   connector_chip_label: id,
+  connector_chip_icon: id,
   meter_view: id,
   wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
   busy_gradient_layer: id,
@@ -1331,6 +1337,7 @@ pub fn set_overlay_stream_content(
   show_hold_badge: bool,
   history_position: &str,
   connector_tag: &str,
+  connector_icon: &str,
 ) {
   let Some(refs) = current_overlay() else {
     return;
@@ -1345,6 +1352,7 @@ pub fn set_overlay_stream_content(
       show_raw_badge,
       show_hold_badge,
       connector_tag,
+      connector_icon,
     );
     render_overlay_history_position(refs, history_position);
   }
@@ -1392,7 +1400,7 @@ pub fn set_overlay_top_stream_content(draft: &str, activity: &[f32], busy_phase:
     if let Some(bottom) = current_overlay() {
       position_overlay_top_relative_to_bottom(refs, bottom);
     }
-    render_overlay_text(refs, draft, activity, busy_phase, false, false, "");
+    render_overlay_text(refs, draft, activity, busy_phase, false, false, "", "");
     if let Some(bottom) = current_overlay() {
       position_overlay_top_relative_to_bottom(refs, bottom);
     }
@@ -1455,7 +1463,7 @@ fn set_overlay_notice_content_styled(
         listen_toggle_notice_activity(enabled, progress)
       }
     };
-    render_overlay_text(refs, &rendered, &notice_activity, None, false, false, "");
+    render_overlay_text(refs, &rendered, &notice_activity, None, false, false, "", "");
     apply_overlay_notice_style(refs, style);
     hide_overlay_notice_accessory(refs);
   }
@@ -3535,6 +3543,7 @@ unsafe fn render_overlay_text(
   show_raw_badge: bool,
   show_hold_badge: bool,
   connector_tag: &str,
+  connector_icon: &str,
 ) {
   let current_frame: NSRect = msg_send![refs.window, frame];
   let screen = overlay_screen_frame_for_window(current_frame);
@@ -3620,6 +3629,14 @@ unsafe fn render_overlay_text(
   let _: () = msg_send![refs.meter_view, setFrame: meter_frame];
 
   if show_chip {
+    let icon_image = connector_chip_icon_image(connector_icon);
+    let has_icon = icon_image != nil;
+    let icon_block = if has_icon {
+      OVERLAY_CONNECTOR_CHIP_ICON_SIZE + OVERLAY_CONNECTOR_CHIP_ICON_GAP
+    } else {
+      0.0
+    };
+
     let _: () = msg_send![
       refs.connector_chip_label,
       setStringValue: NSString::alloc(nil).init_str(connector_tag)
@@ -3627,21 +3644,42 @@ unsafe fn render_overlay_text(
     let _: () = msg_send![refs.connector_chip_label, sizeToFit];
     let label_frame: NSRect = msg_send![refs.connector_chip_label, frame];
     let label_h = label_frame.size.height.min(OVERLAY_CONNECTOR_CHIP_HEIGHT);
-    let chip_w = (label_frame.size.width + OVERLAY_CONNECTOR_CHIP_PAD_X * 2.0).min(content_width);
+    let chip_w =
+      (OVERLAY_CONNECTOR_CHIP_PAD_X * 2.0 + icon_block + label_frame.size.width).min(content_width);
     let chip_y = height - OVERLAY_PAD_TOP - OVERLAY_CONNECTOR_CHIP_HEIGHT;
     let chip_frame = NSRect::new(
       NSPoint::new(OVERLAY_PAD_X, chip_y),
       NSSize::new(chip_w, OVERLAY_CONNECTOR_CHIP_HEIGHT),
     );
-    let label_y = ((OVERLAY_CONNECTOR_CHIP_HEIGHT - label_h) * 0.5).max(0.0);
-    let inner_label_frame = NSRect::new(NSPoint::new(0.0, label_y), NSSize::new(chip_w, label_h));
     let _: () = msg_send![refs.connector_chip, setFrame: chip_frame];
+
+    if has_icon {
+      let icon_y =
+        ((OVERLAY_CONNECTOR_CHIP_HEIGHT - OVERLAY_CONNECTOR_CHIP_ICON_SIZE) * 0.5).max(0.0);
+      let icon_frame = NSRect::new(
+        NSPoint::new(OVERLAY_CONNECTOR_CHIP_PAD_X, icon_y),
+        NSSize::new(OVERLAY_CONNECTOR_CHIP_ICON_SIZE, OVERLAY_CONNECTOR_CHIP_ICON_SIZE),
+      );
+      let _: () = msg_send![refs.connector_chip_icon, setImage: icon_image];
+      let icon_tint = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+      set_image_view_tint_if_supported(refs.connector_chip_icon, icon_tint);
+      let _: () = msg_send![refs.connector_chip_icon, setFrame: icon_frame];
+      let _: () = msg_send![refs.connector_chip_icon, setHidden: NO];
+    } else {
+      let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
+    }
+
+    let label_x = OVERLAY_CONNECTOR_CHIP_PAD_X + icon_block;
+    let label_y = ((OVERLAY_CONNECTOR_CHIP_HEIGHT - label_h) * 0.5).max(0.0);
+    let label_w = (chip_w - label_x - OVERLAY_CONNECTOR_CHIP_PAD_X).max(1.0);
+    let inner_label_frame =
+      NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(label_w, label_h));
     let _: () = msg_send![refs.connector_chip_label, setFrame: inner_label_frame];
-    let _: () = msg_send![refs.connector_chip, setHidden: NO];
     let _: () = msg_send![refs.connector_chip_label, setHidden: NO];
   } else {
     let _: () = msg_send![refs.connector_chip, setHidden: YES];
     let _: () = msg_send![refs.connector_chip_label, setHidden: YES];
+    let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
   }
 
   let mut badge_right = (width - OVERLAY_RAW_BADGE_RIGHT_INSET).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
@@ -3868,6 +3906,7 @@ unsafe fn render_overlay_history_list(
   let _: () = msg_send![refs.hold_badge, setHidden: YES];
   let _: () = msg_send![refs.connector_chip, setHidden: YES];
   let _: () = msg_send![refs.connector_chip_label, setHidden: YES];
+  let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
   // Hide the busy gradient (the rotating border-pulse) but leave the mask layer
   // alone — `apply_busy_border_style` doesn't always re-show the mask, and a
   // hidden mask clips the gradient to fully-transparent alpha (the missing-
@@ -5999,6 +6038,15 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![connector_chip_label, setHidden: YES];
   let _: () = msg_send![connector_chip, addSubview: connector_chip_label];
 
+  let connector_chip_icon: id = msg_send![class!(NSImageView), alloc];
+  let connector_chip_icon: id = msg_send![connector_chip_icon, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(OVERLAY_CONNECTOR_CHIP_ICON_SIZE, OVERLAY_CONNECTOR_CHIP_ICON_SIZE)
+  )];
+  let _: () = msg_send![connector_chip_icon, setImageScaling: 3isize];
+  let _: () = msg_send![connector_chip_icon, setHidden: YES];
+  let _: () = msg_send![connector_chip, addSubview: connector_chip_icon];
+
   // Inline autocomplete: separator + rows
   let autocomplete_separator: id = msg_send![class!(NSView), alloc];
   let autocomplete_separator: id = msg_send![autocomplete_separator, initWithFrame: NSRect::new(
@@ -6379,6 +6427,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     raw_badge,
     connector_chip,
     connector_chip_label,
+    connector_chip_icon,
     meter_view,
     wave_bars,
     busy_gradient_layer,
@@ -6401,7 +6450,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     search_icon,
     search_caret,
   };
-  render_overlay_text(refs, "", &[], None, false, false, "");
+  render_overlay_text(refs, "", &[], None, false, false, "", "");
   refs
 }
 
@@ -7444,6 +7493,26 @@ unsafe fn assign_status_icon(status_item: id) {
   } else {
     let _: () = msg_send![button, setTitle: NSString::alloc(nil).init_str("Azad")];
   }
+}
+
+/// Loads the connector chip icon (an `assets/` file, e.g. an SVG) as a cached
+/// template image so it tints to the chip text color. `nil` if the name is empty
+/// or the file can't be loaded — callers fall back to a text-only chip.
+unsafe fn connector_chip_icon_image(name: &str) -> id {
+  if name.is_empty() {
+    return nil;
+  }
+  let cached = CONNECTOR_ICON_CACHE
+    .with(|c| c.borrow().as_ref().filter(|(n, _)| n == name).map(|(_, img)| *img));
+  if let Some(img) = cached {
+    return img;
+  }
+  let img = load_icon(name);
+  if img != nil {
+    let _: () = msg_send![img, setTemplate: YES];
+    CONNECTOR_ICON_CACHE.with(|c| *c.borrow_mut() = Some((name.to_string(), img)));
+  }
+  img
 }
 
 unsafe fn load_icon(name: &str) -> id {

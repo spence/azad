@@ -324,6 +324,7 @@ struct ActiveConnector {
   #[allow(dead_code)]
   id: &'static str,
   tag_label: &'static str,
+  tag_icon: &'static str,
   #[allow(dead_code)]
   clean_query: String,
 }
@@ -2811,6 +2812,10 @@ impl AppController {
     self.active_connector.as_ref().map(|a| a.tag_label).unwrap_or("")
   }
 
+  fn active_connector_icon(&self) -> &str {
+    self.active_connector.as_ref().map(|a| a.tag_icon).unwrap_or("")
+  }
+
   #[track_caller]
   fn render_finalizing_overlay_state(&mut self) {
     if self.accessibility_notice_deadline.is_some() {
@@ -2846,6 +2851,7 @@ impl AppController {
         self.hold_badge_visible(),
         "",
         self.active_connector_tag(),
+        self.active_connector_icon(),
       );
       return;
     }
@@ -2859,6 +2865,7 @@ impl AppController {
       self.hold_badge_visible(),
       "",
       self.active_connector_tag(),
+      self.active_connector_icon(),
     );
   }
 
@@ -2891,6 +2898,7 @@ impl AppController {
       self.hold_badge_visible(),
       "",
       self.active_connector_tag(),
+      self.active_connector_icon(),
     );
   }
 
@@ -3452,8 +3460,12 @@ impl AppController {
   fn update_active_connector(&mut self) {
     if self.active_connector.is_none() {
       if let Some(m) = connectors::detect(&self.latest_draft, &self.connectors) {
-        self.active_connector =
-          Some(ActiveConnector { id: m.id, tag_label: m.tag_label, clean_query: m.clean_query });
+        self.active_connector = Some(ActiveConnector {
+          id: m.id,
+          tag_label: m.tag_label,
+          tag_icon: m.tag_icon,
+          clean_query: m.clean_query,
+        });
       }
       return;
     }

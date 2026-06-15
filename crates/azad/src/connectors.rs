@@ -18,6 +18,9 @@ pub struct Connector {
   pub trigger: &'static str,
   /// Short label shown in the overlay chip when the connector is active.
   pub tag_label: &'static str,
+  /// Asset file (in `assets/`, bundled into `Contents/Resources/`) rendered as an
+  /// icon in the overlay chip, left of `tag_label`. Empty for no icon.
+  pub tag_icon: &'static str,
   pub enabled: bool,
 }
 
@@ -26,6 +29,7 @@ pub struct Connector {
 pub struct ConnectorMatch {
   pub id: &'static str,
   pub tag_label: &'static str,
+  pub tag_icon: &'static str,
   /// The utterance with the leading trigger phrase removed.
   pub clean_query: String,
 }
@@ -36,7 +40,8 @@ pub fn builtin_connectors() -> Vec<Connector> {
     id: "claude",
     display_name: "Claude",
     trigger: "hey claude",
-    tag_label: "✦ Claude",
+    tag_label: "Claude",
+    tag_icon: "claude.svg",
     enabled: true,
   }]
 }
@@ -47,6 +52,7 @@ pub fn detect(utterance: &str, connectors: &[Connector]) -> Option<ConnectorMatc
     trigger_matches_prefix(utterance, c.trigger).then(|| ConnectorMatch {
       id: c.id,
       tag_label: c.tag_label,
+      tag_icon: c.tag_icon,
       clean_query: strip_trigger(utterance, c.trigger),
     })
   })
@@ -144,7 +150,8 @@ mod tests {
   fn detect_returns_match_for_enabled_connector() {
     let m = detect("hey claude open the door", &connectors()).expect("should match");
     assert_eq!(m.id, "claude");
-    assert_eq!(m.tag_label, "✦ Claude");
+    assert_eq!(m.tag_label, "Claude");
+    assert_eq!(m.tag_icon, "claude.svg");
     assert_eq!(m.clean_query, "open the door");
   }
 
