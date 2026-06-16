@@ -983,8 +983,9 @@ impl AppController {
     if !self.history_enabled {
       return;
     }
+    let cleaned = self.strip_active_trigger(cleaned);
     if let Some(index) = &mut self.transcript_index {
-      index.append(turn_id, &self.finalizing_draft, cleaned);
+      index.append(turn_id, &self.finalizing_draft, &cleaned);
     }
   }
 
@@ -2816,6 +2817,21 @@ impl AppController {
     self.active_connector.as_ref().map(|a| a.tag_icon).unwrap_or("")
   }
 
+  /// `text` with the latched connector's trigger phrase removed, so the matched
+  /// lead-in (e.g. "hey claude") is dropped from the surfaced transcription.
+  /// Returns `text` unchanged when no connector is latched. Applied at the
+  /// user-facing surfaces (display, paste, history); `latest_draft` and the
+  /// finalize state machine keep the full text.
+  fn strip_active_trigger(&self, text: &str) -> String {
+    let Some(active) = &self.active_connector else {
+      return text.to_string();
+    };
+    match self.connectors.iter().find(|c| c.id == active.id) {
+      Some(conn) => connectors::strip_trigger(text, conn.trigger),
+      None => text.to_string(),
+    }
+  }
+
   #[track_caller]
   fn render_finalizing_overlay_state(&mut self) {
     if self.accessibility_notice_deadline.is_some() {
@@ -2839,12 +2855,12 @@ impl AppController {
     if self.split_overlay_visible() {
       platform::show_overlay_top();
       platform::set_overlay_top_stream_content(
-        &self.finalizing_draft,
+        &self.strip_active_trigger(&self.finalizing_draft),
         &self.finalizing_activity_history,
         Some(self.busy_border_phase),
       );
       platform::set_overlay_stream_content(
-        &self.latest_draft,
+        &self.strip_active_trigger(&self.latest_draft),
         &self.activity_history,
         None,
         self.raw_badge_visible(),
@@ -2858,7 +2874,7 @@ impl AppController {
 
     platform::hide_overlay_top();
     platform::set_overlay_stream_content(
-      &self.finalizing_draft,
+      &self.strip_active_trigger(&self.finalizing_draft),
       &self.finalizing_activity_history,
       Some(self.busy_border_phase),
       self.raw_badge_visible(),
@@ -2886,12 +2902,12 @@ impl AppController {
       platform::hide_overlay_top();
     }
     let body_text = if held_active && !live_has_text {
-      self.held_top_draft.as_str()
+      self.held_top_draft.clone()
     } else {
-      self.latest_draft.as_str()
+      self.strip_active_trigger(&self.latest_draft)
     };
     platform::set_overlay_stream_content(
-      body_text,
+      &body_text,
       &self.activity_history,
       None,
       self.raw_badge_visible(),
@@ -2994,6 +3010,8 @@ impl AppController {
   }
 
   fn try_paste(&mut self, turn_id: u64, mode: TranscriptMode, text: &str) -> bool {
+    let text = self.strip_active_trigger(text);
+    let text = text.as_str();
     let paste_text =
       build_paste_text(text, self.append_trailing_space_on_paste, &self.removed_words);
 
