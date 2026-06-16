@@ -155,6 +155,10 @@ const OVERLAY_CONNECTOR_CHIP_FONT_SIZE: f64 = 11.5;
 const OVERLAY_CONNECTOR_CHIP_RADIUS: f64 = 9.0;
 const OVERLAY_CONNECTOR_CHIP_ICON_SIZE: f64 = 13.0;
 const OVERLAY_CONNECTOR_CHIP_ICON_GAP: f64 = 5.0;
+// Claude brand color (#D97757) — used for the connector chip fill.
+const CLAUDE_BRAND_R: f64 = 0.851;
+const CLAUDE_BRAND_G: f64 = 0.467;
+const CLAUDE_BRAND_B: f64 = 0.341;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -6013,7 +6017,13 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![connector_chip, setWantsLayer: YES];
   let connector_chip_layer: id = msg_send![connector_chip, layer];
   if connector_chip_layer != nil {
-    let chip_bg = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.36, 0.52, 0.96, 0.30);
+    let chip_bg = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+      nil,
+      CLAUDE_BRAND_R,
+      CLAUDE_BRAND_G,
+      CLAUDE_BRAND_B,
+      0.90,
+    );
     let chip_bg_cg: id = msg_send![chip_bg, CGColor];
     let _: () = msg_send![connector_chip_layer, setBackgroundColor: chip_bg_cg];
     let _: () = msg_send![connector_chip_layer, setCornerRadius: OVERLAY_CONNECTOR_CHIP_RADIUS];
