@@ -6,6 +6,7 @@ mod app;
 mod config;
 mod connectors;
 mod device;
+mod gateway;
 mod hotkey_sm;
 mod input_log;
 mod interaction_sm;

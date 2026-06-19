@@ -37,6 +37,7 @@ use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::app::AppEvent;
+use crate::gateway::ConvStatus;
 use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
 
 const KEYCODE_RETURN: u16 = 0x24;
@@ -155,10 +156,27 @@ const OVERLAY_CONNECTOR_CHIP_FONT_SIZE: f64 = 11.5;
 const OVERLAY_CONNECTOR_CHIP_RADIUS: f64 = 9.0;
 const OVERLAY_CONNECTOR_CHIP_ICON_SIZE: f64 = 13.0;
 const OVERLAY_CONNECTOR_CHIP_ICON_GAP: f64 = 5.0;
-// Claude brand color (#D97757) — used for the connector chip fill.
+// Claude brand color (#D97757) — used for the connector chip fill and the reply text.
 const CLAUDE_BRAND_R: f64 = 0.851;
 const CLAUDE_BRAND_G: f64 = 0.467;
 const CLAUDE_BRAND_B: f64 = 0.341;
+
+// Conversation-mode layout. The query is capped to a few lines (head-kept); the divider
+// is a thin rule with gaps above/below; the reply consumes the remaining space up to the
+// card max, keeping the streaming tail visible.
+const OVERLAY_CONV_DIVIDER_THICKNESS: f64 = 1.0;
+const OVERLAY_CONV_DIVIDER_ALPHA: f64 = 0.15;
+const OVERLAY_CONV_DIVIDER_GAP: f64 = 8.0;
+const OVERLAY_CONV_QUERY_MAX_HEIGHT: f64 = OVERLAY_TEXT_LINE_HEIGHT * 3.0;
+const OVERLAY_CONV_STATUS_FONT_SIZE: f64 = 14.0;
+// A thin voice-activity strip pinned at the bottom in conversation mode, so the user can
+// see the mic is live and hears their follow-up even while the prior reply is on screen.
+const OVERLAY_CONV_WAVE_HEIGHT: f64 = 18.0;
+const OVERLAY_CONV_WAVE_GAP: f64 = 6.0;
+// Warning amber for the error line (distinct from the terracotta reply).
+const OVERLAY_CONV_ERROR_R: f64 = 1.0;
+const OVERLAY_CONV_ERROR_G: f64 = 0.58;
+const OVERLAY_CONV_ERROR_B: f64 = 0.22;
 
 // NSAutoresizingMaskOptions (see AppKit NSView.h)
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
@@ -297,6 +315,13 @@ struct OverlayRefs {
   connector_chip: id,
   connector_chip_label: id,
   connector_chip_icon: id,
+  // Conversation-mode views (gateway "hey claude" replies). Stacked below the pinned chip:
+  // the user's query, a divider, the streaming reply, and a status/error line. Mutually
+  // exclusive with the speech `label`/`meter_view` — each renderer hides the other's.
+  conv_query_label: id,
+  conv_divider: id,
+  conv_reply_label: id,
+  conv_status_label: id,
   meter_view: id,
   wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
   busy_gradient_layer: id,
@@ -1359,6 +1384,54 @@ pub fn set_overlay_stream_content(
       connector_icon,
     );
     render_overlay_history_position(refs, history_position);
+  }
+}
+
+/// Render a gateway conversation turn into the overlay: pinned chip, the user's query, a
+/// divider, then the streaming reply (or a thinking/error status line), plus a bottom
+/// voice-activity strip. Mutually exclusive with `set_overlay_stream_content`.
+pub fn set_overlay_conversation_content(
+  connector_tag: &str,
+  connector_icon: &str,
+  user_query: &str,
+  reply: &str,
+  status: ConvStatus,
+  error_msg: &str,
+  activity: &[f32],
+  busy_phase: Option<f32>,
+) {
+  let Some(refs) = current_overlay() else {
+    return;
+  };
+  unsafe {
+    move_overlay_to_target_screen(refs, false);
+    render_overlay_conversation(
+      refs,
+      connector_tag,
+      connector_icon,
+      user_query,
+      reply,
+      status,
+      error_msg,
+      activity,
+      busy_phase,
+    );
+  }
+}
+
+/// Clear and hide the conversation-mode views so a hide/show cycle never flashes stale
+/// query/reply text. Safe to call when no overlay exists.
+pub fn reset_overlay_conversation_views() {
+  let Some(refs) = current_overlay() else {
+    return;
+  };
+  unsafe {
+    for v in [refs.conv_query_label, refs.conv_reply_label, refs.conv_status_label] {
+      if v != nil {
+        let _: () = msg_send![v, setStringValue: NSString::alloc(nil).init_str("")];
+      }
+    }
+    hide_conversation_views(refs);
   }
 }
 
@@ -3539,6 +3612,325 @@ unsafe fn apply_models_view_state(refs: SettingsWindowRefs, model: &SettingsView
   }
 }
 
+/// Lay out the pinned connector chip at the top of the card. Shared by the speech and
+/// conversation renderers so the chip is byte-identical in both. Empty `connector_tag`
+/// hides the chip.
+unsafe fn layout_connector_chip(
+  refs: OverlayRefs,
+  connector_tag: &str,
+  connector_icon: &str,
+  height: f64,
+  content_width: f64,
+) {
+  if connector_tag.is_empty() {
+    let _: () = msg_send![refs.connector_chip, setHidden: YES];
+    let _: () = msg_send![refs.connector_chip_label, setHidden: YES];
+    let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
+    return;
+  }
+  let icon_image = connector_chip_icon_image(connector_icon);
+  let has_icon = icon_image != nil;
+  let icon_block =
+    if has_icon { OVERLAY_CONNECTOR_CHIP_ICON_SIZE + OVERLAY_CONNECTOR_CHIP_ICON_GAP } else { 0.0 };
+
+  let _: () = msg_send![
+    refs.connector_chip_label,
+    setStringValue: NSString::alloc(nil).init_str(connector_tag)
+  ];
+  let _: () = msg_send![refs.connector_chip_label, sizeToFit];
+  let label_frame: NSRect = msg_send![refs.connector_chip_label, frame];
+  let label_h = label_frame.size.height.min(OVERLAY_CONNECTOR_CHIP_HEIGHT);
+  let chip_w =
+    (OVERLAY_CONNECTOR_CHIP_PAD_X * 2.0 + icon_block + label_frame.size.width).min(content_width);
+  let chip_y = height - OVERLAY_PAD_TOP - OVERLAY_CONNECTOR_CHIP_HEIGHT;
+  let chip_frame = NSRect::new(
+    NSPoint::new(OVERLAY_PAD_X, chip_y),
+    NSSize::new(chip_w, OVERLAY_CONNECTOR_CHIP_HEIGHT),
+  );
+  let _: () = msg_send![refs.connector_chip, setFrame: chip_frame];
+  // Unhide the container itself, not just its children: a hidden NSView renders neither
+  // its own layer background nor its subviews.
+  let _: () = msg_send![refs.connector_chip, setHidden: NO];
+
+  if has_icon {
+    let icon_y =
+      ((OVERLAY_CONNECTOR_CHIP_HEIGHT - OVERLAY_CONNECTOR_CHIP_ICON_SIZE) * 0.5).max(0.0);
+    let icon_frame = NSRect::new(
+      NSPoint::new(OVERLAY_CONNECTOR_CHIP_PAD_X, icon_y),
+      NSSize::new(OVERLAY_CONNECTOR_CHIP_ICON_SIZE, OVERLAY_CONNECTOR_CHIP_ICON_SIZE),
+    );
+    let _: () = msg_send![refs.connector_chip_icon, setImage: icon_image];
+    let icon_tint = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+    set_image_view_tint_if_supported(refs.connector_chip_icon, icon_tint);
+    let _: () = msg_send![refs.connector_chip_icon, setFrame: icon_frame];
+    let _: () = msg_send![refs.connector_chip_icon, setHidden: NO];
+  } else {
+    let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
+  }
+
+  let label_x = OVERLAY_CONNECTOR_CHIP_PAD_X + icon_block;
+  let label_y = ((OVERLAY_CONNECTOR_CHIP_HEIGHT - label_h) * 0.5).max(0.0);
+  let label_w = (chip_w - label_x - OVERLAY_CONNECTOR_CHIP_PAD_X).max(1.0);
+  let inner_label_frame =
+    NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(label_w, label_h));
+  let _: () = msg_send![refs.connector_chip_label, setFrame: inner_label_frame];
+  let _: () = msg_send![refs.connector_chip_label, setHidden: NO];
+}
+
+unsafe fn hide_conversation_views(refs: OverlayRefs) {
+  for v in [refs.conv_query_label, refs.conv_divider, refs.conv_reply_label, refs.conv_status_label]
+  {
+    if v != nil {
+      let _: () = msg_send![v, setHidden: YES];
+    }
+  }
+}
+
+/// Like [`fit_rendered_body_for_height`] but keeps the HEAD of the text — drops trailing
+/// words and appends an ellipsis. Used for the user's query (short; the beginning matters).
+unsafe fn fit_rendered_head_for_height(
+  label: id,
+  body_text: &str,
+  width: f64,
+  max_height: f64,
+) -> (String, f64) {
+  let trimmed = body_text.trim();
+  if trimmed.is_empty() {
+    return (String::new(), OVERLAY_TEXT_LINE_HEIGHT.min(max_height));
+  }
+  let measured_full = measure_label_height(label, trimmed, width);
+  if measured_full <= max_height + 0.5 {
+    return (trimmed.to_string(), measured_full);
+  }
+
+  // Byte index just past each word (a non-ws followed by ws, plus the final word).
+  let mut word_ends = Vec::new();
+  let mut prev_ws = true;
+  for (idx, ch) in trimmed.char_indices() {
+    let is_ws = ch.is_whitespace();
+    if is_ws && !prev_ws {
+      word_ends.push(idx);
+    }
+    prev_ws = is_ws;
+  }
+  if !prev_ws {
+    word_ends.push(trimmed.len());
+  }
+  if word_ends.is_empty() {
+    return (trimmed.to_string(), measured_full);
+  }
+
+  let mut lo = 0usize;
+  let mut hi = word_ends.len() - 1;
+  while lo < hi {
+    let mid = (lo + hi + 1) / 2;
+    let candidate = format!("{}…", trimmed[..word_ends[mid]].trim_end());
+    let measured = measure_label_height(label, &candidate, width);
+    if measured <= max_height + 0.5 {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  let rendered = format!("{}…", trimmed[..word_ends[lo]].trim_end());
+  let measured = measure_label_height(label, &rendered, width);
+  (rendered, measured)
+}
+
+unsafe fn render_overlay_conversation(
+  refs: OverlayRefs,
+  connector_tag: &str,
+  connector_icon: &str,
+  user_query: &str,
+  reply: &str,
+  status: ConvStatus,
+  error_msg: &str,
+  activity: &[f32],
+  busy_phase: Option<f32>,
+) {
+  let current_frame: NSRect = msg_send![refs.window, frame];
+  let screen = overlay_screen_frame_for_window(current_frame);
+  let width = overlay_width_for_screen(screen);
+  let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
+
+  // Hide the speech-mode widgets conversation mode replaces. The wave is reused as a
+  // bottom strip (handled below), so meter_view is NOT hidden here.
+  let _: () = msg_send![refs.label, setHidden: YES];
+  let _: () = msg_send![refs.raw_badge, setHidden: YES];
+  let _: () = msg_send![refs.hold_badge, setHidden: YES];
+  hide_overlay_notice_accessory(refs);
+  if refs.autocomplete_separator != nil {
+    let _: () = msg_send![refs.autocomplete_separator, setHidden: YES];
+  }
+
+  let chip_reserve = OVERLAY_CONNECTOR_CHIP_HEIGHT + OVERLAY_CONNECTOR_CHIP_GAP;
+  let wave_reserve = OVERLAY_CONV_WAVE_HEIGHT + OVERLAY_CONV_WAVE_GAP;
+  let max_inner =
+    (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM - chip_reserve - wave_reserve)
+      .max(1.0);
+
+  let has_query = !user_query.trim().is_empty();
+  let (rendered_query, query_h) = if has_query {
+    fit_rendered_head_for_height(
+      refs.conv_query_label,
+      user_query,
+      content_width,
+      OVERLAY_CONV_QUERY_MAX_HEIGHT.min(max_inner),
+    )
+  } else {
+    (String::new(), 0.0)
+  };
+
+  let show_reply =
+    matches!(status, ConvStatus::Streaming | ConvStatus::Done) && !reply.trim().is_empty();
+  let status_text = match status {
+    ConvStatus::Thinking => "Thinking…".to_string(),
+    ConvStatus::Error => {
+      if error_msg.is_empty() {
+        "Gateway error.".to_string()
+      } else {
+        error_msg.to_string()
+      }
+    }
+    _ => String::new(),
+  };
+  let show_status = !status_text.is_empty();
+
+  let divider_block = if has_query && (show_reply || show_status) {
+    OVERLAY_CONV_DIVIDER_GAP + OVERLAY_CONV_DIVIDER_THICKNESS + OVERLAY_CONV_DIVIDER_GAP
+  } else {
+    0.0
+  };
+
+  let lower_budget = (max_inner - query_h - divider_block).max(OVERLAY_TEXT_LINE_HEIGHT);
+  let (rendered_reply, reply_h) = if show_reply {
+    // `fit_rendered_body_for_height` drops LEADING words, keeping the streaming tail.
+    fit_rendered_body_for_height(refs.conv_reply_label, reply, content_width, lower_budget)
+  } else {
+    (String::new(), 0.0)
+  };
+  let (rendered_status, status_h) = if show_status {
+    let budget = lower_budget.min(OVERLAY_TEXT_LINE_HEIGHT * 2.0);
+    let measured =
+      measure_label_height(refs.conv_status_label, &status_text, content_width).min(budget);
+    (status_text.clone(), measured.max(OVERLAY_TEXT_LINE_HEIGHT.min(budget)))
+  } else {
+    (String::new(), 0.0)
+  };
+
+  let lower_h = reply_h.max(status_h);
+  let inner_used = query_h + divider_block + lower_h;
+  let content_height =
+    OVERLAY_PAD_TOP + chip_reserve + inner_used + wave_reserve + OVERLAY_PAD_BOTTOM;
+  let height = content_height.clamp(OVERLAY_HEIGHT_MIN, OVERLAY_HEIGHT_MAX);
+
+  let default_x = screen.origin.x + (screen.size.width - width) * 0.5;
+  let default_y = screen.origin.y + screen.size.height * 0.08;
+  let x = if current_frame.size.width <= 0.0 { default_x } else { current_frame.origin.x };
+  let y = if current_frame.size.height <= 0.0 { default_y } else { current_frame.origin.y };
+  let overlay_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+  if (current_frame.origin.x - overlay_frame.origin.x).abs() > 0.05
+    || (current_frame.origin.y - overlay_frame.origin.y).abs() > 0.05
+    || (current_frame.size.width - overlay_frame.size.width).abs() > 0.05
+    || (current_frame.size.height - overlay_frame.size.height).abs() > 0.05
+  {
+    let _: () = msg_send![refs.window, setFrame: overlay_frame display: YES];
+  }
+
+  let card_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
+  let _: () = msg_send![refs.card_view, setFrame: card_frame];
+  let card_layer: id = msg_send![refs.card_view, layer];
+  if card_layer != nil {
+    let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
+    let card_cg: id = msg_send![card_color, CGColor];
+    let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
+  }
+
+  apply_busy_border_style(refs, busy_phase, width, height);
+  layout_connector_chip(refs, connector_tag, connector_icon, height, content_width);
+
+  // Stacked blocks, bottom-left origin (top -> bottom = high y -> low y).
+  let chip_top = height - OVERLAY_PAD_TOP - OVERLAY_CONNECTOR_CHIP_HEIGHT;
+  let query_top = chip_top - OVERLAY_CONNECTOR_CHIP_GAP;
+
+  if has_query {
+    let query_y = query_top - query_h;
+    let query_frame =
+      NSRect::new(NSPoint::new(OVERLAY_PAD_X, query_y), NSSize::new(content_width, query_h));
+    let _: () = msg_send![refs.conv_query_label, setFrame: query_frame];
+    let _: () = msg_send![refs.conv_query_label, setStringValue: NSString::alloc(nil).init_str(&rendered_query)];
+    let _: () = msg_send![refs.conv_query_label, setHidden: NO];
+  } else {
+    let _: () = msg_send![refs.conv_query_label, setHidden: YES];
+  }
+
+  let lower_top = if divider_block > 0.0 {
+    let divider_y = query_top - query_h - OVERLAY_CONV_DIVIDER_GAP - OVERLAY_CONV_DIVIDER_THICKNESS;
+    let divider_frame = NSRect::new(
+      NSPoint::new(OVERLAY_PAD_X, divider_y),
+      NSSize::new(content_width, OVERLAY_CONV_DIVIDER_THICKNESS),
+    );
+    let _: () = msg_send![refs.conv_divider, setFrame: divider_frame];
+    let _: () = msg_send![refs.conv_divider, setHidden: NO];
+    divider_y - OVERLAY_CONV_DIVIDER_GAP
+  } else {
+    let _: () = msg_send![refs.conv_divider, setHidden: YES];
+    query_top - query_h
+  };
+
+  if show_reply {
+    let reply_y = (lower_top - reply_h).max(OVERLAY_PAD_BOTTOM + wave_reserve);
+    let reply_frame =
+      NSRect::new(NSPoint::new(OVERLAY_PAD_X, reply_y), NSSize::new(content_width, reply_h));
+    let _: () = msg_send![refs.conv_reply_label, setFrame: reply_frame];
+    let _: () = msg_send![refs.conv_reply_label, setStringValue: NSString::alloc(nil).init_str(&rendered_reply)];
+    let _: () = msg_send![refs.conv_reply_label, setHidden: NO];
+  } else {
+    let _: () = msg_send![refs.conv_reply_label, setHidden: YES];
+  }
+
+  if show_status {
+    let color = if matches!(status, ConvStatus::Error) {
+      NSColor::colorWithCalibratedRed_green_blue_alpha_(
+        nil,
+        OVERLAY_CONV_ERROR_R,
+        OVERLAY_CONV_ERROR_G,
+        OVERLAY_CONV_ERROR_B,
+        0.95,
+      )
+    } else {
+      NSColor::colorWithCalibratedRed_green_blue_alpha_(
+        nil,
+        CLAUDE_BRAND_R,
+        CLAUDE_BRAND_G,
+        CLAUDE_BRAND_B,
+        0.95,
+      )
+    };
+    let _: () = msg_send![refs.conv_status_label, setTextColor: color];
+    let status_y = (lower_top - status_h).max(OVERLAY_PAD_BOTTOM + wave_reserve);
+    let status_frame =
+      NSRect::new(NSPoint::new(OVERLAY_PAD_X, status_y), NSSize::new(content_width, status_h));
+    let _: () = msg_send![refs.conv_status_label, setFrame: status_frame];
+    let _: () = msg_send![
+      refs.conv_status_label,
+      setStringValue: NSString::alloc(nil).init_str(&rendered_status)
+    ];
+    let _: () = msg_send![refs.conv_status_label, setHidden: NO];
+  } else {
+    let _: () = msg_send![refs.conv_status_label, setHidden: YES];
+  }
+
+  // Voice-activity strip pinned at the bottom.
+  let meter_frame = NSRect::new(
+    NSPoint::new(OVERLAY_PAD_X, OVERLAY_PAD_BOTTOM),
+    NSSize::new(content_width, OVERLAY_CONV_WAVE_HEIGHT),
+  );
+  let _: () = msg_send![refs.meter_view, setFrame: meter_frame];
+  let _: () = msg_send![refs.meter_view, setHidden: NO];
+  render_activity_wave(refs, activity, meter_frame.size.width, meter_frame.size.height);
+}
+
 unsafe fn render_overlay_text(
   refs: OverlayRefs,
   body_text: &str,
@@ -3632,62 +4024,7 @@ unsafe fn render_overlay_text(
   let _: () = msg_send![refs.label, setFrame: body_frame];
   let _: () = msg_send![refs.meter_view, setFrame: meter_frame];
 
-  if show_chip {
-    let icon_image = connector_chip_icon_image(connector_icon);
-    let has_icon = icon_image != nil;
-    let icon_block = if has_icon {
-      OVERLAY_CONNECTOR_CHIP_ICON_SIZE + OVERLAY_CONNECTOR_CHIP_ICON_GAP
-    } else {
-      0.0
-    };
-
-    let _: () = msg_send![
-      refs.connector_chip_label,
-      setStringValue: NSString::alloc(nil).init_str(connector_tag)
-    ];
-    let _: () = msg_send![refs.connector_chip_label, sizeToFit];
-    let label_frame: NSRect = msg_send![refs.connector_chip_label, frame];
-    let label_h = label_frame.size.height.min(OVERLAY_CONNECTOR_CHIP_HEIGHT);
-    let chip_w =
-      (OVERLAY_CONNECTOR_CHIP_PAD_X * 2.0 + icon_block + label_frame.size.width).min(content_width);
-    let chip_y = height - OVERLAY_PAD_TOP - OVERLAY_CONNECTOR_CHIP_HEIGHT;
-    let chip_frame = NSRect::new(
-      NSPoint::new(OVERLAY_PAD_X, chip_y),
-      NSSize::new(chip_w, OVERLAY_CONNECTOR_CHIP_HEIGHT),
-    );
-    let _: () = msg_send![refs.connector_chip, setFrame: chip_frame];
-    // Unhide the container itself, not just its children: a hidden NSView renders
-    // neither its own layer background nor its subviews.
-    let _: () = msg_send![refs.connector_chip, setHidden: NO];
-
-    if has_icon {
-      let icon_y =
-        ((OVERLAY_CONNECTOR_CHIP_HEIGHT - OVERLAY_CONNECTOR_CHIP_ICON_SIZE) * 0.5).max(0.0);
-      let icon_frame = NSRect::new(
-        NSPoint::new(OVERLAY_CONNECTOR_CHIP_PAD_X, icon_y),
-        NSSize::new(OVERLAY_CONNECTOR_CHIP_ICON_SIZE, OVERLAY_CONNECTOR_CHIP_ICON_SIZE),
-      );
-      let _: () = msg_send![refs.connector_chip_icon, setImage: icon_image];
-      let icon_tint = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
-      set_image_view_tint_if_supported(refs.connector_chip_icon, icon_tint);
-      let _: () = msg_send![refs.connector_chip_icon, setFrame: icon_frame];
-      let _: () = msg_send![refs.connector_chip_icon, setHidden: NO];
-    } else {
-      let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
-    }
-
-    let label_x = OVERLAY_CONNECTOR_CHIP_PAD_X + icon_block;
-    let label_y = ((OVERLAY_CONNECTOR_CHIP_HEIGHT - label_h) * 0.5).max(0.0);
-    let label_w = (chip_w - label_x - OVERLAY_CONNECTOR_CHIP_PAD_X).max(1.0);
-    let inner_label_frame =
-      NSRect::new(NSPoint::new(label_x, label_y), NSSize::new(label_w, label_h));
-    let _: () = msg_send![refs.connector_chip_label, setFrame: inner_label_frame];
-    let _: () = msg_send![refs.connector_chip_label, setHidden: NO];
-  } else {
-    let _: () = msg_send![refs.connector_chip, setHidden: YES];
-    let _: () = msg_send![refs.connector_chip_label, setHidden: YES];
-    let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
-  }
+  layout_connector_chip(refs, connector_tag, connector_icon, height, content_width);
 
   let mut badge_right = (width - OVERLAY_RAW_BADGE_RIGHT_INSET).max(OVERLAY_RAW_BADGE_RIGHT_INSET);
   if show_raw_badge {
@@ -3745,6 +4082,9 @@ unsafe fn render_overlay_text(
   if refs.search_caret != nil {
     let _: () = msg_send![refs.search_caret, setHidden: YES];
   }
+  // Hide conversation-mode views so a speech render after a gateway turn shows no stale
+  // query/divider/reply. (One block covers all four `render_overlay_text` callers.)
+  hide_conversation_views(refs);
 
   let _: () = msg_send![refs.label, setAlignment: 1isize];
   let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
@@ -3914,6 +4254,7 @@ unsafe fn render_overlay_history_list(
   let _: () = msg_send![refs.connector_chip, setHidden: YES];
   let _: () = msg_send![refs.connector_chip_label, setHidden: YES];
   let _: () = msg_send![refs.connector_chip_icon, setHidden: YES];
+  hide_conversation_views(refs);
   // Hide the busy gradient (the rotating border-pulse) but leave the mask layer
   // alone — `apply_busy_border_style` doesn't always re-show the mask, and a
   // hidden mask clips the gradient to fully-transparent alpha (the missing-
@@ -6060,6 +6401,98 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![connector_chip_icon, setHidden: YES];
   let _: () = msg_send![connector_chip, addSubview: connector_chip_icon];
 
+  // Conversation-mode views: the user's query (white), a divider, the streaming reply
+  // (terracotta), and a status/error line. All card-level subviews, started hidden.
+  let conv_text_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 1.0, 1.0, 1.0, 0.95);
+  let conv_body_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_TEXT_FONT_SIZE];
+
+  let conv_query_label: id = msg_send![class!(NSTextField), alloc];
+  let conv_query_label: id = msg_send![conv_query_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(1.0, OVERLAY_TEXT_LINE_HEIGHT)
+  )];
+  let _: () = msg_send![conv_query_label, setStringValue: NSString::alloc(nil).init_str("")];
+  let _: () = msg_send![conv_query_label, setBezeled: NO];
+  let _: () = msg_send![conv_query_label, setDrawsBackground: NO];
+  let _: () = msg_send![conv_query_label, setEditable: NO];
+  let _: () = msg_send![conv_query_label, setSelectable: NO];
+  let _: () = msg_send![conv_query_label, setAlignment: 0isize];
+  let _: () = msg_send![conv_query_label, setLineBreakMode: 0isize];
+  let _: () = msg_send![conv_query_label, setUsesSingleLineMode: NO];
+  let _: () = msg_send![conv_query_label, setMaximumNumberOfLines: 0isize];
+  let _: () = msg_send![conv_query_label, setFont: conv_body_font];
+  let _: () = msg_send![conv_query_label, setTextColor: conv_text_color];
+  let _: () = msg_send![conv_query_label, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: conv_query_label];
+
+  let conv_divider: id = msg_send![class!(NSView), alloc];
+  let conv_divider: id = msg_send![conv_divider, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(1.0, OVERLAY_CONV_DIVIDER_THICKNESS)
+  )];
+  let _: () = msg_send![conv_divider, setWantsLayer: YES];
+  let conv_divider_layer: id = msg_send![conv_divider, layer];
+  if conv_divider_layer != nil {
+    let divider_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+      nil,
+      1.0,
+      1.0,
+      1.0,
+      OVERLAY_CONV_DIVIDER_ALPHA,
+    );
+    let divider_cg: id = msg_send![divider_color, CGColor];
+    let _: () = msg_send![conv_divider_layer, setBackgroundColor: divider_cg];
+  }
+  let _: () = msg_send![conv_divider, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: conv_divider];
+
+  let conv_reply_label: id = msg_send![class!(NSTextField), alloc];
+  let conv_reply_label: id = msg_send![conv_reply_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(1.0, OVERLAY_TEXT_LINE_HEIGHT)
+  )];
+  let _: () = msg_send![conv_reply_label, setStringValue: NSString::alloc(nil).init_str("")];
+  let _: () = msg_send![conv_reply_label, setBezeled: NO];
+  let _: () = msg_send![conv_reply_label, setDrawsBackground: NO];
+  let _: () = msg_send![conv_reply_label, setEditable: NO];
+  let _: () = msg_send![conv_reply_label, setSelectable: NO];
+  let _: () = msg_send![conv_reply_label, setAlignment: 0isize];
+  let _: () = msg_send![conv_reply_label, setLineBreakMode: 0isize];
+  let _: () = msg_send![conv_reply_label, setUsesSingleLineMode: NO];
+  let _: () = msg_send![conv_reply_label, setMaximumNumberOfLines: 0isize];
+  let _: () = msg_send![conv_reply_label, setFont: conv_body_font];
+  let conv_reply_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+    nil,
+    CLAUDE_BRAND_R,
+    CLAUDE_BRAND_G,
+    CLAUDE_BRAND_B,
+    1.0,
+  );
+  let _: () = msg_send![conv_reply_label, setTextColor: conv_reply_color];
+  let _: () = msg_send![conv_reply_label, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: conv_reply_label];
+
+  let conv_status_label: id = msg_send![class!(NSTextField), alloc];
+  let conv_status_label: id = msg_send![conv_status_label, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(1.0, OVERLAY_TEXT_LINE_HEIGHT)
+  )];
+  let _: () = msg_send![conv_status_label, setStringValue: NSString::alloc(nil).init_str("")];
+  let _: () = msg_send![conv_status_label, setBezeled: NO];
+  let _: () = msg_send![conv_status_label, setDrawsBackground: NO];
+  let _: () = msg_send![conv_status_label, setEditable: NO];
+  let _: () = msg_send![conv_status_label, setSelectable: NO];
+  let _: () = msg_send![conv_status_label, setAlignment: 0isize];
+  let _: () = msg_send![conv_status_label, setLineBreakMode: 0isize];
+  let _: () = msg_send![conv_status_label, setUsesSingleLineMode: NO];
+  let _: () = msg_send![conv_status_label, setMaximumNumberOfLines: 0isize];
+  let conv_status_font: id =
+    msg_send![class!(NSFont), systemFontOfSize: OVERLAY_CONV_STATUS_FONT_SIZE];
+  let _: () = msg_send![conv_status_label, setFont: conv_status_font];
+  let _: () = msg_send![conv_status_label, setTextColor: conv_reply_color];
+  let _: () = msg_send![conv_status_label, setHidden: YES];
+  let _: () = msg_send![card_view, addSubview: conv_status_label];
+
   // Inline autocomplete: separator + rows
   let autocomplete_separator: id = msg_send![class!(NSView), alloc];
   let autocomplete_separator: id = msg_send![autocomplete_separator, initWithFrame: NSRect::new(
@@ -6441,6 +6874,10 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     connector_chip,
     connector_chip_label,
     connector_chip_icon,
+    conv_query_label,
+    conv_divider,
+    conv_reply_label,
+    conv_status_label,
     meter_view,
     wave_bars,
     busy_gradient_layer,

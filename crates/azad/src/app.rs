@@ -9,6 +9,7 @@ use asr::pipeline::{DebugStatsEvent, EngineState};
 use crate::config::AzadConfig;
 use crate::connectors;
 use crate::device::{DeviceController, DeviceEvent};
+use crate::gateway::{self, ConvStatus, GatewayCommand, GatewayEvent};
 use crate::hotkey_sm::{HotkeyEffect, HotkeyInput, HotkeyState, RuntimeSnapshot};
 use crate::input_log::{self, InputLogEntry, InputLogEvent, StateSnapshot};
 use crate::metrics_log::{self, MetricsLogEvent, MetricsLogRecord, TranscriptMode};
@@ -114,6 +115,7 @@ pub enum AppEvent {
   HistorySearchClear,
   Speech(SpeechEvent),
   Device(DeviceEvent),
+  Gateway(crate::gateway::GatewayEvent),
 }
 
 static EVENT_TX: OnceLock<Sender<AppEvent>> = OnceLock::new();
@@ -314,6 +316,11 @@ struct AppController {
   // (see `SpeechEvent::DraftUpdated`); the latch resets per turn.
   connectors: Vec<connectors::Connector>,
   active_connector: Option<ActiveConnector>,
+  // Sticky gateway conversation. Unlike `active_connector` (which resets every turn),
+  // this survives turn boundaries: once "hey claude" opens a thread, every later
+  // utterance is a follow-up in the same thread until Escape/close clears it.
+  gateway_conn: GatewayConnState,
+  gateway_conv: Option<GatewayConversation>,
 }
 
 /// The connector latched for the current turn. `clean_query` is the transcription
@@ -321,12 +328,55 @@ struct AppController {
 /// paste path does not consume it yet.
 #[derive(Debug, Clone)]
 struct ActiveConnector {
-  #[allow(dead_code)]
   id: &'static str,
   tag_label: &'static str,
   tag_icon: &'static str,
   #[allow(dead_code)]
   clean_query: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GatewayConnState {
+  Disconnected,
+  Connecting,
+  Connected,
+}
+
+/// State of the live conversation with the gateway agent. Created on the first "hey
+/// claude" turn that finalizes with a non-empty query and torn down only on
+/// Escape/close/fatal error.
+#[derive(Debug, Clone)]
+struct GatewayConversation {
+  /// `None` until the daemon's `runs.create` response delivers it; then reused for
+  /// follow-ups.
+  thread_id: Option<String>,
+  tag_label: &'static str,
+  tag_icon: &'static str,
+  last_query: String,
+  reply: String,
+  status: ConvStatus,
+  error_msg: String,
+  activity_label: Option<String>,
+  awaiting_run_id: Option<String>,
+  /// A query that finalized before the socket finished connecting; flushed on `Connected`.
+  pending_query_until_thread: Option<String>,
+}
+
+impl GatewayConversation {
+  fn new(tag_label: &'static str, tag_icon: &'static str) -> Self {
+    GatewayConversation {
+      thread_id: None,
+      tag_label,
+      tag_icon,
+      last_query: String::new(),
+      reply: String::new(),
+      status: ConvStatus::Thinking,
+      error_msg: String::new(),
+      activity_label: None,
+      awaiting_run_id: None,
+      pending_query_until_thread: None,
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -653,6 +703,23 @@ fn has_started_turn_for_snapshot(
   !latest_draft.trim().is_empty()
 }
 
+/// Map a raw gateway error / disconnect reason to a short message for the overlay error
+/// state, smoothing the common cases while keeping anything unexpected readable.
+fn friendly_gateway_error(raw: &str) -> String {
+  let lower = raw.to_ascii_lowercase();
+  if lower.contains("agent_unavailable") {
+    "Claude is unavailable — is the browser adapter connected?".to_string()
+  } else if lower.contains("refused") || lower.contains("os error 61") {
+    "Gateway unavailable — is local-agent-gatewayd running?".to_string()
+  } else if lower.contains("closed") || lower.contains("send failed") {
+    "Connection to the gateway was lost.".to_string()
+  } else if lower.contains("user_approval_required") {
+    "Gateway rejected the request (approval required).".to_string()
+  } else {
+    format!("Gateway error: {raw}")
+  }
+}
+
 fn preview_text_for_metrics(text: &str, max_chars: usize) -> String {
   let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
   if normalized.chars().count() <= max_chars {
@@ -920,6 +987,8 @@ impl AppController {
       removed_words,
       connectors,
       active_connector: None,
+      gateway_conn: GatewayConnState::Disconnected,
+      gateway_conv: None,
     }
   }
 
@@ -1152,6 +1221,7 @@ impl AppController {
       AppEvent::HistorySearchClear => self.handle_history_search_clear(),
       AppEvent::Speech(ev) => self.handle_speech_event(ev),
       AppEvent::Device(ev) => self.handle_device_event(ev),
+      AppEvent::Gateway(ev) => self.handle_gateway_event(ev),
     }
   }
 
@@ -1975,6 +2045,37 @@ impl AppController {
       self.exit_history_mode();
       return;
     }
+    // Escape ends a gateway conversation: close the thread, tear down the socket, and
+    // return capture to the normal rule. Takes precedence over the dictation cancel.
+    if let Some(conv) = self.gateway_conv.take() {
+      if let Some(thread_id) = conv.thread_id {
+        gateway::send_command(GatewayCommand::Close {
+          req_id: gateway::make_request_id(),
+          thread_id,
+        });
+      }
+      gateway::send_command(GatewayCommand::Shutdown);
+      self.gateway_conn = GatewayConnState::Disconnected;
+      self.cancelled = true;
+      self.manual_hold_active = false;
+      self.hold_saw_speech = false;
+      self.raw_finalize_requested = false;
+      self.finalizing_deadline = None;
+      self.finalizing_turn_id = None;
+      self.finalizing_draft.clear();
+      self.raw_handled_turn_id = None;
+      self.turn_started_at.clear();
+      self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
+      if let Some(session) = &self.session {
+        session.release_manual_hold();
+        session.cancel_current_turn();
+        if !self.always_listening_enabled {
+          session.set_capture_enabled(false);
+        }
+      }
+      self.hide_overlay();
+      return;
+    }
     if !self.overlay_visible {
       return;
     }
@@ -2163,7 +2264,9 @@ impl AppController {
         }
         self.saw_vad_start_during_finalizing = false;
         self.reset_turn_state();
-        if self.overlay_visible {
+        // A live gateway conversation keeps the prior reply on screen while the user
+        // speaks the follow-up; only hide when there's no conversation open.
+        if self.overlay_visible && self.gateway_conv.is_none() {
           self.hide_overlay();
         }
         // In auto-VAD mode, wait for actual draft text before showing overlay.
@@ -2479,14 +2582,18 @@ impl AppController {
           self.turn_started_at.remove(&turn_id);
           self.raw_handled_turn_id = None;
           if !cleaned.is_empty() && !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-            if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
+            if self.gateway_should_handle_turn() {
+              self.submit_to_gateway(turn_id, &cleaned);
+            } else if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
               self.last_pasted_turn_id = Some(turn_id);
               self.record_history(turn_id, &cleaned);
             } else {
               eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
             }
           }
-          if self.overlay_visible {
+          // A live gateway conversation owns the card via `submit_to_gateway`; only fall
+          // back to the listening overlay when no conversation is open.
+          if self.overlay_visible && self.gateway_conv.is_none() {
             self.render_listening_overlay();
           }
           return;
@@ -2497,10 +2604,14 @@ impl AppController {
           self.turn_started_at.remove(&turn_id);
           self.raw_handled_turn_id = None;
           self.maybe_start_deferred_vad_turn();
-          if !self.always_listening_enabled && !self.manual_hold_active {
+          if !self.should_keep_capture_for_followups() {
             if let Some(session) = &self.session {
               session.set_capture_enabled(false);
             }
+          }
+          // Bare "hey claude" / empty follow-up: keep the conversation on screen, listening.
+          if self.gateway_conv.is_some() {
+            self.show_conversation_overlay();
           }
           return;
         }
@@ -2509,7 +2620,7 @@ impl AppController {
           self.turn_started_at.remove(&turn_id);
           self.raw_handled_turn_id = None;
           self.maybe_start_deferred_vad_turn();
-          if !self.always_listening_enabled && !self.manual_hold_active {
+          if !self.should_keep_capture_for_followups() {
             if let Some(session) = &self.session {
               session.set_capture_enabled(false);
             }
@@ -2519,24 +2630,29 @@ impl AppController {
         self.raw_handled_turn_id = None;
         self.latest_final = Some(cleaned.clone());
         if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-          // Keep the finalizing spinner on screen through the paste window so the visual
-          // transition coincides with the paste appearing in the target app. Hiding first and
-          // then doing a ~100 ms blocking paste creates a perceptible "overlay gone / nothing
-          // happening / paste appears" gap; hiding after leaves the overlay responsible for
-          // "still working" state right up until the moment the text lands.
-          let should_hide_overlay = !self.manual_hold_active && !hold_top_for_next_turn;
-          if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
-            self.last_pasted_turn_id = Some(turn_id);
-            self.record_history(turn_id, &cleaned);
+          if self.gateway_should_handle_turn() {
+            // Route to the gateway instead of pasting; the overlay shows the reply.
+            self.submit_to_gateway(turn_id, &cleaned);
           } else {
-            eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
-          }
-          if should_hide_overlay {
-            self.hide_overlay();
+            // Keep the finalizing spinner on screen through the paste window so the visual
+            // transition coincides with the paste appearing in the target app. Hiding first
+            // and then doing a ~100 ms blocking paste creates a perceptible "overlay gone /
+            // nothing happening / paste appears" gap; hiding after leaves the overlay
+            // responsible for "still working" state right up until the moment the text lands.
+            let should_hide_overlay = !self.manual_hold_active && !hold_top_for_next_turn;
+            if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
+              self.last_pasted_turn_id = Some(turn_id);
+              self.record_history(turn_id, &cleaned);
+            } else {
+              eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
+            }
+            if should_hide_overlay {
+              self.hide_overlay();
+            }
           }
         }
         self.maybe_start_deferred_vad_turn();
-        if !self.always_listening_enabled && !self.manual_hold_active {
+        if !self.should_keep_capture_for_followups() {
           if let Some(session) = &self.session {
             session.set_capture_enabled(false);
           }
@@ -2852,6 +2968,14 @@ impl AppController {
       self.overlay_visible = true;
     }
 
+    // A live gateway conversation owns the whole card; the finalize spinner/split lanes
+    // are suppressed in favor of the streaming reply.
+    if self.gateway_conv.is_some() {
+      platform::hide_overlay_top();
+      self.render_conversation_overlay();
+      return;
+    }
+
     if self.split_overlay_visible() {
       platform::show_overlay_top();
       platform::set_overlay_top_stream_content(
@@ -2889,6 +3013,12 @@ impl AppController {
     if self.accessibility_notice_deadline.is_some() {
       return;
     }
+    // During a gateway conversation, follow-up speech keeps the prior exchange on screen
+    // (the activity wave signals listening) rather than swapping in the plain draft view.
+    if self.gateway_conv.is_some() {
+      self.render_conversation_overlay();
+      return;
+    }
     let held_active = self.held_top_overlay_active();
     let live_has_text = !self.latest_draft.trim().is_empty();
     if held_active && live_has_text {
@@ -2916,6 +3046,191 @@ impl AppController {
       self.active_connector_tag(),
       self.active_connector_icon(),
     );
+  }
+
+  /// True when this finalized turn must go to the gateway instead of being pasted —
+  /// either a sticky conversation is open, or this is the first "hey claude" turn.
+  fn gateway_should_handle_turn(&self) -> bool {
+    self.gateway_conv.is_some()
+      || self.active_connector.as_ref().map(|a| a.id) == Some(gateway::GATEWAY_AGENT)
+  }
+
+  /// Capture must stay on between turns while a conversation is open so follow-up speech
+  /// is heard without re-triggering, on top of the normal always-listening / hold rules.
+  fn should_keep_capture_for_followups(&self) -> bool {
+    self.always_listening_enabled || self.manual_hold_active || self.gateway_conv.is_some()
+  }
+
+  /// Tag label/icon for a new conversation: the latched connector's, else the built-in
+  /// gateway connector's.
+  fn gateway_connector_tags(&self) -> (&'static str, &'static str) {
+    if let Some(active) = &self.active_connector {
+      return (active.tag_label, active.tag_icon);
+    }
+    self
+      .connectors
+      .iter()
+      .find(|c| c.id == gateway::GATEWAY_AGENT)
+      .map(|c| (c.tag_label, c.tag_icon))
+      .unwrap_or(("Claude", "claude.svg"))
+  }
+
+  /// Warm the WebSocket while the user is still speaking, so it's ready by finalize.
+  fn maybe_begin_gateway_connect(&mut self) {
+    if self.gateway_conv.is_some() {
+      return;
+    }
+    self.gateway_conn = GatewayConnState::Connecting;
+    gateway::ensure_worker();
+  }
+
+  /// Submit a finalized turn's query to the gateway: opens a thread on the first turn,
+  /// then sends follow-ups in the same thread. Never pastes into the focused app.
+  fn submit_to_gateway(&mut self, turn_id: u64, cleaned: &str) {
+    let query = self.strip_active_trigger(cleaned).trim().to_string();
+    if query.is_empty() {
+      // Bare "hey claude" or an empty follow-up: send nothing, keep listening.
+      if self.gateway_conv.is_some() {
+        self.show_conversation_overlay();
+      }
+      return;
+    }
+    gateway::ensure_worker();
+    let (tag_label, tag_icon) = self.gateway_connector_tags();
+    {
+      let conv = self
+        .gateway_conv
+        .get_or_insert_with(|| GatewayConversation::new(tag_label, tag_icon));
+      conv.last_query = query.clone();
+      conv.reply.clear();
+      conv.error_msg.clear();
+      conv.activity_label = None;
+      conv.status = ConvStatus::Thinking;
+      match conv.thread_id.clone() {
+        None => {
+          let req_id = gateway::make_request_id();
+          if self.gateway_conn == GatewayConnState::Connected {
+            gateway::send_command(GatewayCommand::SendNewThread { req_id, query });
+          } else {
+            // Finalize beat the connect; the query is flushed when `Connected` arrives.
+            conv.pending_query_until_thread = Some(query);
+          }
+        }
+        Some(thread_id) => {
+          let req_id = gateway::make_request_id();
+          gateway::send_command(GatewayCommand::SendFollowup { req_id, thread_id, query });
+        }
+      }
+    }
+    // Never paste the query, and stop the SessionEnded fallback from re-pasting it.
+    self.last_pasted_turn_id = Some(turn_id);
+    self.latest_final = None;
+    if let Some(session) = &self.session {
+      session.set_capture_enabled(true);
+    }
+    self.show_conversation_overlay();
+  }
+
+  fn show_conversation_overlay(&mut self) {
+    if self.gateway_conv.is_none() {
+      return;
+    }
+    if !self.overlay_visible {
+      platform::show_overlay();
+      self.overlay_visible = true;
+    }
+    self.render_conversation_overlay();
+  }
+
+  fn render_conversation_overlay(&self) {
+    let Some(conv) = self.gateway_conv.as_ref() else {
+      return;
+    };
+    let busy_phase = matches!(conv.status, ConvStatus::Thinking | ConvStatus::Streaming)
+      .then_some(self.busy_border_phase);
+    platform::set_overlay_conversation_content(
+      conv.tag_label,
+      conv.tag_icon,
+      &conv.last_query,
+      &conv.reply,
+      conv.status,
+      &conv.error_msg,
+      &self.activity_history,
+      busy_phase,
+    );
+  }
+
+  fn handle_gateway_event(&mut self, event: GatewayEvent) {
+    match event {
+      GatewayEvent::Connected => {
+        self.gateway_conn = GatewayConnState::Connected;
+        // Flush a query that finalized before the socket was ready.
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          if conv.thread_id.is_none() {
+            if let Some(query) = conv.pending_query_until_thread.take() {
+              let req_id = gateway::make_request_id();
+              gateway::send_command(GatewayCommand::SendNewThread { req_id, query });
+            }
+          }
+        }
+      }
+      GatewayEvent::Disconnected { reason } => {
+        self.gateway_conn = GatewayConnState::Disconnected;
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          conv.status = ConvStatus::Error;
+          conv.error_msg = friendly_gateway_error(&reason);
+        }
+        self.show_conversation_overlay();
+      }
+      GatewayEvent::RunAccepted { thread_id, run_id } => {
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          conv.thread_id.get_or_insert(thread_id);
+          conv.awaiting_run_id = Some(run_id);
+          if conv.status != ConvStatus::Streaming {
+            conv.status = ConvStatus::Thinking;
+          }
+        }
+        self.show_conversation_overlay();
+      }
+      GatewayEvent::Delta { thread_id, content, delta, replace } => {
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          if conv.thread_id.as_deref() == Some(thread_id.as_str()) {
+            conv.status = ConvStatus::Streaming;
+            conv.activity_label = None;
+            gateway::apply_delta(&mut conv.reply, content.as_deref(), delta.as_deref(), replace);
+          }
+        }
+        self.show_conversation_overlay();
+      }
+      GatewayEvent::Completed { thread_id, content } => {
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          if conv.thread_id.as_deref() == Some(thread_id.as_str()) {
+            if !content.is_empty() {
+              conv.reply = content;
+            }
+            conv.status = ConvStatus::Done;
+            conv.activity_label = None;
+          }
+        }
+        self.show_conversation_overlay();
+      }
+      GatewayEvent::Activity { phase, label } => {
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          if !matches!(conv.status, ConvStatus::Streaming | ConvStatus::Done) {
+            conv.status = ConvStatus::Thinking;
+          }
+          conv.activity_label = if phase == gateway::ConvPhase::Idle { None } else { label };
+        }
+        self.show_conversation_overlay();
+      }
+      GatewayEvent::Failed { error } | GatewayEvent::RequestError { error } => {
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          conv.status = ConvStatus::Error;
+          conv.error_msg = friendly_gateway_error(&error);
+        }
+        self.show_conversation_overlay();
+      }
+    }
   }
 
   fn raw_badge_visible(&self) -> bool {
@@ -3137,6 +3452,7 @@ impl AppController {
       platform::hide_overlay();
       self.overlay_visible = false;
     }
+    platform::reset_overlay_conversation_views();
   }
 
   fn handle_arrow_navigate(&mut self, direction: i32) {
@@ -3478,12 +3794,17 @@ impl AppController {
   fn update_active_connector(&mut self) {
     if self.active_connector.is_none() {
       if let Some(m) = connectors::detect(&self.latest_draft, &self.connectors) {
+        let id = m.id;
         self.active_connector = Some(ActiveConnector {
-          id: m.id,
+          id,
           tag_label: m.tag_label,
           tag_icon: m.tag_icon,
           clean_query: m.clean_query,
         });
+        // Warm the socket while the user is still speaking so it's ready by finalize.
+        if id == gateway::GATEWAY_AGENT {
+          self.maybe_begin_gateway_connect();
+        }
       }
       return;
     }
@@ -3561,6 +3882,14 @@ impl AppController {
     self.raw_finalize_requested = false;
     self.dispatch_hotkey_input(HotkeyInput::SpeechFinalized);
     self.latest_final = Some(raw_text.clone());
+
+    // Opt+Enter while a gateway turn/conversation is live submits the query instead of
+    // raw-pasting; keep the overlay up and capture on.
+    if self.gateway_should_handle_turn() {
+      self.submit_to_gateway(turn_id, &raw_text);
+      self.maybe_start_deferred_vad_turn();
+      return true;
+    }
 
     if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
       // Keep the overlay up through the paste window so the dismissal coincides with the
