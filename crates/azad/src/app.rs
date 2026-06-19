@@ -360,6 +360,10 @@ struct GatewayConversation {
   awaiting_run_id: Option<String>,
   /// A query that finalized before the socket finished connecting; flushed on `Connected`.
   pending_query_until_thread: Option<String>,
+  /// The live (stripped) draft of a follow-up the user is currently speaking, before it
+  /// finalizes. When set, the overlay shows it as the forming query with an empty reply so
+  /// the new utterance gets its own space instead of cramping under the prior reply.
+  composing_query: Option<String>,
 }
 
 impl GatewayConversation {
@@ -375,6 +379,7 @@ impl GatewayConversation {
       activity_label: None,
       awaiting_run_id: None,
       pending_query_until_thread: None,
+      composing_query: None,
     }
   }
 }
@@ -2342,6 +2347,14 @@ impl AppController {
           }
           self.latest_draft = merged;
           self.update_active_connector();
+          // In a live conversation, surface the follow-up the user is speaking as the
+          // forming query so it has its own space (rendered above the reply slot).
+          if self.gateway_conv.is_some() {
+            let forming = self.strip_active_trigger(&self.latest_draft);
+            if let Some(conv) = self.gateway_conv.as_mut() {
+              conv.composing_query = Some(forming);
+            }
+          }
           // A live draft supersedes the transient "Listen ENABLED" notice: the
           // user is mid-utterance and needs to see their words now, not the
           // notice. Dismiss it and switch straight to the listening overlay,
@@ -2609,7 +2622,11 @@ impl AppController {
               session.set_capture_enabled(false);
             }
           }
-          // Bare "hey claude" / empty follow-up: keep the conversation on screen, listening.
+          // Bare "hey claude" / empty follow-up: drop the (empty) forming query so the
+          // prior exchange shows again, and keep the conversation on screen, listening.
+          if let Some(conv) = self.gateway_conv.as_mut() {
+            conv.composing_query = None;
+          }
           if self.gateway_conv.is_some() {
             self.show_conversation_overlay();
           }
@@ -3105,6 +3122,7 @@ impl AppController {
       conv.reply.clear();
       conv.error_msg.clear();
       conv.activity_label = None;
+      conv.composing_query = None;
       conv.status = ConvStatus::Thinking;
       match conv.thread_id.clone() {
         None => {
@@ -3146,14 +3164,27 @@ impl AppController {
     let Some(conv) = self.gateway_conv.as_ref() else {
       return;
     };
-    let busy_phase = matches!(conv.status, ConvStatus::Thinking | ConvStatus::Streaming)
+    // Chip shows the connector plus the model + effort it's routed to.
+    let chip = format!(
+      "{} · {} · {}",
+      conv.tag_label,
+      gateway::GATEWAY_MODEL_ID,
+      gateway::GATEWAY_MODEL_EFFORT
+    );
+    // While the user is speaking a follow-up, show the forming query with an empty reply
+    // (no thinking spinner) so it has its own space; the wave strip signals listening.
+    let (query, reply, status) = match &conv.composing_query {
+      Some(forming) => (forming.as_str(), "", ConvStatus::Done),
+      None => (conv.last_query.as_str(), conv.reply.as_str(), conv.status),
+    };
+    let busy_phase = matches!(status, ConvStatus::Thinking | ConvStatus::Streaming)
       .then_some(self.busy_border_phase);
     platform::set_overlay_conversation_content(
-      conv.tag_label,
+      &chip,
       conv.tag_icon,
-      &conv.last_query,
-      &conv.reply,
-      conv.status,
+      query,
+      reply,
+      status,
       &conv.error_msg,
       &self.activity_history,
       busy_phase,

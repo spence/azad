@@ -320,7 +320,11 @@ struct OverlayRefs {
   // exclusive with the speech `label`/`meter_view` — each renderer hides the other's.
   conv_query_label: id,
   conv_divider: id,
-  conv_reply_label: id,
+  // The reply lives in a scrollable NSTextView so long answers can be scrolled rather
+  // than tail-truncated. `conv_reply_scroll` is the NSScrollView container (what we
+  // show/hide/frame); `conv_reply_text` is its NSTextView documentView.
+  conv_reply_scroll: id,
+  conv_reply_text: id,
   conv_status_label: id,
   meter_view: id,
   wave_bars: [id; OVERLAY_WAVE_BAR_COUNT],
@@ -1426,10 +1430,13 @@ pub fn reset_overlay_conversation_views() {
     return;
   };
   unsafe {
-    for v in [refs.conv_query_label, refs.conv_reply_label, refs.conv_status_label] {
+    for v in [refs.conv_query_label, refs.conv_status_label] {
       if v != nil {
         let _: () = msg_send![v, setStringValue: NSString::alloc(nil).init_str("")];
       }
+    }
+    if refs.conv_reply_text != nil {
+      let _: () = msg_send![refs.conv_reply_text, setString: NSString::alloc(nil).init_str("")];
     }
     hide_conversation_views(refs);
   }
@@ -3678,7 +3685,8 @@ unsafe fn layout_connector_chip(
 }
 
 unsafe fn hide_conversation_views(refs: OverlayRefs) {
-  for v in [refs.conv_query_label, refs.conv_divider, refs.conv_reply_label, refs.conv_status_label]
+  for v in
+    [refs.conv_query_label, refs.conv_divider, refs.conv_reply_scroll, refs.conv_status_label]
   {
     if v != nil {
       let _: () = msg_send![v, setHidden: YES];
@@ -3803,11 +3811,36 @@ unsafe fn render_overlay_conversation(
   };
 
   let lower_budget = (max_inner - query_h - divider_block).max(OVERLAY_TEXT_LINE_HEIGHT);
-  let (rendered_reply, reply_h) = if show_reply {
-    // `fit_rendered_body_for_height` drops LEADING words, keeping the streaming tail.
-    fit_rendered_body_for_height(refs.conv_reply_label, reply, content_width, lower_budget)
+  let mut reply_changed = false;
+  let reply_h = if show_reply {
+    // Update the scrolling text view only when the reply text actually changed, so idle
+    // re-renders (the activity wave, meter ticks) don't reset the user's scroll position.
+    let new_reply = NSString::alloc(nil).init_str(reply);
+    let cur: id = msg_send![refs.conv_reply_text, string];
+    let same = if cur != nil {
+      let eq: bool = msg_send![cur, isEqualToString: new_reply];
+      eq
+    } else {
+      false
+    };
+    if !same {
+      let _: () = msg_send![refs.conv_reply_text, setString: new_reply];
+      let reply_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_TEXT_FONT_SIZE];
+      let reply_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
+        nil,
+        CLAUDE_BRAND_R,
+        CLAUDE_BRAND_G,
+        CLAUDE_BRAND_B,
+        1.0,
+      );
+      let _: () = msg_send![refs.conv_reply_text, setFont: reply_font];
+      let _: () = msg_send![refs.conv_reply_text, setTextColor: reply_color];
+      reply_changed = true;
+    }
+    // The card grows with the reply up to the budget; beyond that the text view scrolls.
+    measure_textview_height(refs.conv_reply_text, content_width).min(lower_budget)
   } else {
-    (String::new(), 0.0)
+    0.0
   };
   let (rendered_status, status_h) = if show_status {
     let budget = lower_budget.min(OVERLAY_TEXT_LINE_HEIGHT * 2.0);
@@ -3882,11 +3915,15 @@ unsafe fn render_overlay_conversation(
     let reply_y = (lower_top - reply_h).max(OVERLAY_PAD_BOTTOM + wave_reserve);
     let reply_frame =
       NSRect::new(NSPoint::new(OVERLAY_PAD_X, reply_y), NSSize::new(content_width, reply_h));
-    let _: () = msg_send![refs.conv_reply_label, setFrame: reply_frame];
-    let _: () = msg_send![refs.conv_reply_label, setStringValue: NSString::alloc(nil).init_str(&rendered_reply)];
-    let _: () = msg_send![refs.conv_reply_label, setHidden: NO];
+    let _: () = msg_send![refs.conv_reply_scroll, setFrame: reply_frame];
+    let _: () = msg_send![refs.conv_reply_scroll, setHidden: NO];
+    if reply_changed {
+      // Follow the streaming tail; unchanged re-renders leave the scroll position be, so
+      // the user can scroll back up to read earlier text once the reply settles.
+      let _: () = msg_send![refs.conv_reply_text, scrollToEndOfDocument: nil];
+    }
   } else {
-    let _: () = msg_send![refs.conv_reply_label, setHidden: YES];
+    let _: () = msg_send![refs.conv_reply_scroll, setHidden: YES];
   }
 
   if show_status {
@@ -5400,6 +5437,23 @@ unsafe fn fit_rendered_body_for_height(
   (rendered, measured)
 }
 
+/// Natural height of an NSTextView's current text wrapped to `width`, including the
+/// vertical text-container inset. Used to size the scrolling reply region.
+unsafe fn measure_textview_height(text: id, width: f64) -> f64 {
+  let container: id = msg_send![text, textContainer];
+  if container == nil {
+    return OVERLAY_TEXT_LINE_HEIGHT;
+  }
+  let _: () = msg_send![container, setContainerSize: NSSize::new(width.max(1.0), 10_000_000.0)];
+  let lm: id = msg_send![text, layoutManager];
+  if lm == nil {
+    return OVERLAY_TEXT_LINE_HEIGHT;
+  }
+  let _: () = msg_send![lm, ensureLayoutForTextContainer: container];
+  let used: NSRect = msg_send![lm, usedRectForTextContainer: container];
+  (used.size.height + 4.0).max(OVERLAY_TEXT_LINE_HEIGHT)
+}
+
 unsafe fn measure_label_height(label: id, text: &str, width: f64) -> f64 {
   let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
   let cell: id = msg_send![label, cell];
@@ -6446,21 +6500,6 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![conv_divider, setHidden: YES];
   let _: () = msg_send![card_view, addSubview: conv_divider];
 
-  let conv_reply_label: id = msg_send![class!(NSTextField), alloc];
-  let conv_reply_label: id = msg_send![conv_reply_label, initWithFrame: NSRect::new(
-      NSPoint::new(0.0, 0.0),
-      NSSize::new(1.0, OVERLAY_TEXT_LINE_HEIGHT)
-  )];
-  let _: () = msg_send![conv_reply_label, setStringValue: NSString::alloc(nil).init_str("")];
-  let _: () = msg_send![conv_reply_label, setBezeled: NO];
-  let _: () = msg_send![conv_reply_label, setDrawsBackground: NO];
-  let _: () = msg_send![conv_reply_label, setEditable: NO];
-  let _: () = msg_send![conv_reply_label, setSelectable: NO];
-  let _: () = msg_send![conv_reply_label, setAlignment: 0isize];
-  let _: () = msg_send![conv_reply_label, setLineBreakMode: 0isize];
-  let _: () = msg_send![conv_reply_label, setUsesSingleLineMode: NO];
-  let _: () = msg_send![conv_reply_label, setMaximumNumberOfLines: 0isize];
-  let _: () = msg_send![conv_reply_label, setFont: conv_body_font];
   let conv_reply_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
     nil,
     CLAUDE_BRAND_R,
@@ -6468,9 +6507,42 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     CLAUDE_BRAND_B,
     1.0,
   );
-  let _: () = msg_send![conv_reply_label, setTextColor: conv_reply_color];
-  let _: () = msg_send![conv_reply_label, setHidden: YES];
-  let _: () = msg_send![card_view, addSubview: conv_reply_label];
+  let conv_reply_scroll: id = msg_send![class!(NSScrollView), alloc];
+  let conv_reply_scroll: id = msg_send![conv_reply_scroll, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(1.0, OVERLAY_TEXT_LINE_HEIGHT)
+  )];
+  let _: () = msg_send![conv_reply_scroll, setDrawsBackground: NO];
+  let _: () = msg_send![conv_reply_scroll, setBorderType: 0isize]; // NSNoBorder
+  let _: () = msg_send![conv_reply_scroll, setHasVerticalScroller: YES];
+  let _: () = msg_send![conv_reply_scroll, setHasHorizontalScroller: NO];
+  let _: () = msg_send![conv_reply_scroll, setAutohidesScrollers: YES];
+  let _: () = msg_send![conv_reply_scroll, setScrollerStyle: 1isize]; // NSScrollerStyleOverlay
+  let _: () = msg_send![conv_reply_scroll, setHidden: YES];
+
+  let conv_reply_text: id = msg_send![class!(NSTextView), alloc];
+  let conv_reply_text: id = msg_send![conv_reply_text, initWithFrame: NSRect::new(
+      NSPoint::new(0.0, 0.0),
+      NSSize::new(1.0, OVERLAY_TEXT_LINE_HEIGHT)
+  )];
+  let _: () = msg_send![conv_reply_text, setEditable: NO];
+  let _: () = msg_send![conv_reply_text, setSelectable: NO];
+  let _: () = msg_send![conv_reply_text, setRichText: NO];
+  let _: () = msg_send![conv_reply_text, setDrawsBackground: NO];
+  let _: () = msg_send![conv_reply_text, setFont: conv_body_font];
+  let _: () = msg_send![conv_reply_text, setTextColor: conv_reply_color];
+  let _: () = msg_send![conv_reply_text, setTextContainerInset: NSSize::new(0.0, 2.0)];
+  let _: () = msg_send![conv_reply_text, setVerticallyResizable: YES];
+  let _: () = msg_send![conv_reply_text, setHorizontallyResizable: NO];
+  let _: () = msg_send![conv_reply_text, setMinSize: NSSize::new(0.0, 0.0)];
+  let _: () = msg_send![conv_reply_text, setMaxSize: NSSize::new(10_000_000.0, 10_000_000.0)];
+  let reply_container: id = msg_send![conv_reply_text, textContainer];
+  if reply_container != nil {
+    let _: () = msg_send![reply_container, setLineFragmentPadding: 0.0f64];
+    let _: () = msg_send![reply_container, setWidthTracksTextView: NO];
+  }
+  let _: () = msg_send![conv_reply_scroll, setDocumentView: conv_reply_text];
+  let _: () = msg_send![card_view, addSubview: conv_reply_scroll];
 
   let conv_status_label: id = msg_send![class!(NSTextField), alloc];
   let conv_status_label: id = msg_send![conv_status_label, initWithFrame: NSRect::new(
@@ -6876,7 +6948,8 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
     connector_chip_icon,
     conv_query_label,
     conv_divider,
-    conv_reply_label,
+    conv_reply_scroll,
+    conv_reply_text,
     conv_status_label,
     meter_view,
     wave_bars,
