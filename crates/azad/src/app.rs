@@ -332,6 +332,9 @@ struct AppController {
   // utterance is a follow-up in the same thread until Escape/close clears it.
   gateway_conn: GatewayConnState,
   gateway_conv: Option<GatewayConversation>,
+  // Set from `server.ready` when the daemon announces a protocol this build wasn't written
+  // against (e.g. a stale daemon binary). Holds the user-facing error; submits fail closed.
+  gateway_protocol_mismatch: Option<String>,
 }
 
 /// The connector latched for the current turn. `clean_query` is the transcription
@@ -748,6 +751,9 @@ fn friendly_gateway_error(raw: &str) -> String {
 fn gateway_event_summary(event: &GatewayEvent) -> String {
   match event {
     GatewayEvent::Connected => "connected".to_string(),
+    GatewayEvent::ServerReady { protocol, version } => {
+      format!("server_ready protocol={protocol:?} version={version:?}")
+    }
     GatewayEvent::Disconnected { reason } => format!("disconnected reason={reason:?}"),
     GatewayEvent::RunAccepted { thread_id, run_id } => {
       format!("run_accepted thread_id={thread_id:?} run_id={run_id:?}")
@@ -1035,6 +1041,7 @@ impl AppController {
       active_connector: None,
       gateway_conn: GatewayConnState::Disconnected,
       gateway_conv: None,
+      gateway_protocol_mismatch: None,
     }
   }
 
@@ -3194,6 +3201,9 @@ impl AppController {
     }
     gateway::ensure_worker();
     let (tag_label, tag_icon) = self.gateway_connector_tags();
+    // A daemon that already announced an incompatible protocol can't service the run; show
+    // the error in the user's query bubble instead of sending into a void.
+    let protocol_error = self.gateway_protocol_mismatch.clone();
     {
       let conv = self
         .gateway_conv
@@ -3214,19 +3224,25 @@ impl AppController {
         query.chars().count(),
         query
       );
-      match conv.thread_id.clone() {
-        None => {
-          let req_id = gateway::make_request_id();
-          if self.gateway_conn == GatewayConnState::Connected {
-            gateway::send_command(GatewayCommand::SendNewThread { req_id, query });
-          } else {
-            // Finalize beat the connect; the query is flushed when `Connected` arrives.
-            conv.pending_query_until_thread = Some(query);
+      if let Some(message) = protocol_error {
+        conv.status = ConvStatus::Error;
+        conv.error_msg = message;
+        conv.last_activity = None;
+      } else {
+        match conv.thread_id.clone() {
+          None => {
+            let req_id = gateway::make_request_id();
+            if self.gateway_conn == GatewayConnState::Connected {
+              gateway::send_command(GatewayCommand::SendNewThread { req_id, query });
+            } else {
+              // Finalize beat the connect; the query is flushed when `Connected` arrives.
+              conv.pending_query_until_thread = Some(query);
+            }
           }
-        }
-        Some(thread_id) => {
-          let req_id = gateway::make_request_id();
-          gateway::send_command(GatewayCommand::SendFollowup { req_id, thread_id, query });
+          Some(thread_id) => {
+            let req_id = gateway::make_request_id();
+            gateway::send_command(GatewayCommand::SendFollowup { req_id, thread_id, query });
+          }
         }
       }
     }
@@ -3302,6 +3318,8 @@ impl AppController {
     match event {
       GatewayEvent::Connected => {
         self.gateway_conn = GatewayConnState::Connected;
+        // A fresh socket's protocol verdict is unknown until its `server.ready` arrives.
+        self.gateway_protocol_mismatch = None;
         // Flush a query that finalized before the socket was ready.
         if let Some(conv) = self.gateway_conv.as_mut() {
           if conv.thread_id.is_none() {
@@ -3310,6 +3328,30 @@ impl AppController {
               gateway::send_command(GatewayCommand::SendNewThread { req_id, query });
             }
           }
+        }
+      }
+      GatewayEvent::ServerReady { protocol, version } => {
+        if protocol == gateway::GATEWAY_PROTOCOL {
+          self.gateway_protocol_mismatch = None;
+        } else {
+          let message = format!(
+            "Gateway speaks {protocol:?} (need {:?}) — daemon may be out of date. Press Esc.",
+            gateway::GATEWAY_PROTOCOL
+          );
+          eprintln!(
+            "AZAD_GATEWAY protocol_mismatch got={protocol:?} want={:?} version={version:?}",
+            gateway::GATEWAY_PROTOCOL
+          );
+          self.gateway_protocol_mismatch = Some(message.clone());
+          // Fail any in-flight run immediately rather than waiting for the ack timeout.
+          if let Some(conv) = self.gateway_conv.as_mut() {
+            if matches!(conv.status, ConvStatus::Thinking | ConvStatus::Streaming) {
+              conv.status = ConvStatus::Error;
+              conv.error_msg = message;
+              conv.last_activity = None;
+            }
+          }
+          self.show_conversation_overlay();
         }
       }
       GatewayEvent::Disconnected { reason } => {

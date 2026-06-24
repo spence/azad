@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use tungstenite::stream::MaybeTlsStream;
@@ -26,9 +26,17 @@ use crate::app::{AppEvent, send_event};
 pub const GATEWAY_AGENT: &str = "claude";
 pub const GATEWAY_MODEL_ID: &str = "opus-4.8";
 pub const GATEWAY_MODEL_EFFORT: &str = "high";
+/// Protocol the integration is written against; `server.ready` must announce this or the
+/// daemon is the wrong version (e.g. a stale binary that predates the public API).
+pub const GATEWAY_PROTOCOL: &str = "local-agent-gateway.v1";
 
 const DEFAULT_PORT: u16 = 8787;
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// Application-level heartbeat: ping this often, and treat a pong that doesn't return within
+/// `PONG_TIMEOUT` as a wedged router (TCP-alive but logic-dead) — the failure mode that
+/// previously hung the overlay forever.
+const PING_INTERVAL: Duration = Duration::from_secs(5);
+const PONG_TIMEOUT: Duration = Duration::from_millis(2000);
 
 static GATEWAY_TX: OnceLock<Mutex<Option<Sender<GatewayCommand>>>> = OnceLock::new();
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -68,13 +76,39 @@ pub enum GatewayCommand {
 #[derive(Debug, Clone)]
 pub enum GatewayEvent {
   Connected,
-  Disconnected { reason: String },
-  RunAccepted { thread_id: String, run_id: String },
-  Delta { thread_id: String, content: Option<String>, delta: Option<String>, replace: bool },
-  Completed { thread_id: String, content: String },
-  Activity { phase: ConvPhase, label: Option<String> },
-  Failed { error: String },
-  RequestError { error: String },
+  /// `server.ready`, pushed by the daemon right after the handshake. Carries the protocol
+  /// id and build so the client can reject a version-skewed/stale daemon up front.
+  ServerReady {
+    protocol: String,
+    version: String,
+  },
+  Disconnected {
+    reason: String,
+  },
+  RunAccepted {
+    thread_id: String,
+    run_id: String,
+  },
+  Delta {
+    thread_id: String,
+    content: Option<String>,
+    delta: Option<String>,
+    replace: bool,
+  },
+  Completed {
+    thread_id: String,
+    content: String,
+  },
+  Activity {
+    phase: ConvPhase,
+    label: Option<String>,
+  },
+  Failed {
+    error: String,
+  },
+  RequestError {
+    error: String,
+  },
 }
 
 /// A monotonically increasing request id, e.g. `azad-42`. Deterministic (no wall clock).
@@ -165,6 +199,8 @@ fn worker_main(rx: Receiver<GatewayCommand>) {
 }
 
 fn run_loop(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, rx: &Receiver<GatewayCommand>) {
+  let mut last_ping = Instant::now();
+  let mut pong_deadline: Option<Instant> = None;
   loop {
     loop {
       match rx.try_recv() {
@@ -183,10 +219,31 @@ fn run_loop(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, rx: &Receiver<Gat
       }
     }
 
+    // Application-level heartbeat: a wedged router answers neither requests nor pongs while
+    // the TCP socket stays open. A missed pong is the only way to detect that and fail.
+    if pong_deadline.is_none() && last_ping.elapsed() >= PING_INTERVAL {
+      let ping = json!({ "type": "ping", "ts": now_ms() }).to_string();
+      if socket.send(Message::text(ping)).is_err() {
+        post_disconnect("send failed");
+        return;
+      }
+      last_ping = Instant::now();
+      pong_deadline = Some(last_ping + PONG_TIMEOUT);
+    }
+    if pong_deadline.is_some_and(|d| Instant::now() >= d) {
+      post_disconnect("router unhealthy: heartbeat pong timed out");
+      return;
+    }
+
     match socket.read() {
       Ok(Message::Text(t)) => {
         eprintln!("AZAD_GATEWAY worker recv {}", truncate_frame(t.as_str()));
-        handle_inbound(t.as_str());
+        // Any inbound frame proves the router is alive; the explicit pong only matters when
+        // the connection is otherwise idle, so don't let a busy stream trip the heartbeat.
+        pong_deadline = None;
+        if !frame_is_pong(t.as_str()) {
+          handle_inbound(t.as_str());
+        }
       }
       Ok(Message::Close(_)) => {
         post_disconnect("server closed");
@@ -205,6 +262,21 @@ fn run_loop(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, rx: &Receiver<Gat
       }
     }
   }
+}
+
+/// Milliseconds since the Unix epoch for the heartbeat `ts` the daemon echoes back.
+fn now_ms() -> u64 {
+  SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_millis() as u64)
+    .unwrap_or(0)
+}
+
+fn frame_is_pong(text: &str) -> bool {
+  serde_json::from_str::<Value>(text)
+    .ok()
+    .and_then(|v| v.get("type").and_then(Value::as_str).map(|t| t == "pong"))
+    .unwrap_or(false)
 }
 
 fn post_disconnect(reason: &str) {
@@ -295,6 +367,12 @@ fn handle_inbound(text: &str) {
 }
 
 fn handle_event_frame(name: &str, data: &Value) {
+  if name == "server.ready" {
+    let protocol = data.get("protocol").and_then(Value::as_str).unwrap_or("").to_string();
+    let version = data.get("version").and_then(Value::as_str).unwrap_or("").to_string();
+    send_event(AppEvent::Gateway(GatewayEvent::ServerReady { protocol, version }));
+    return;
+  }
   let thread_id = data.get("thread_id").and_then(Value::as_str).unwrap_or("").to_string();
   match name {
     "message.delta" => {
@@ -405,5 +483,12 @@ mod tests {
     let mut buf = "stale".to_string();
     apply_delta(&mut buf, None, Some("fresh"), true);
     assert_eq!(buf, "fresh");
+  }
+
+  #[test]
+  fn pong_frame_is_recognized() {
+    assert!(frame_is_pong(r#"{"type":"pong","ts":123,"echo":456}"#));
+    assert!(!frame_is_pong(r#"{"type":"response","id":"x","ok":true}"#));
+    assert!(!frame_is_pong("not json"));
   }
 }
