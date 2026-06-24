@@ -141,8 +141,12 @@ fn worker_main(rx: Receiver<GatewayCommand>) {
   let url = format!("ws://127.0.0.1:{port}");
 
   let mut socket = match connect(url.as_str()) {
-    Ok((socket, _resp)) => socket,
+    Ok((socket, _resp)) => {
+      eprintln!("AZAD_GATEWAY worker connect url={url} result=connected");
+      socket
+    }
     Err(e) => {
+      eprintln!("AZAD_GATEWAY worker connect url={url} result=error reason={e}");
       send_event(AppEvent::Gateway(GatewayEvent::Disconnected { reason: e.to_string() }));
       clear_worker();
       return;
@@ -167,6 +171,7 @@ fn run_loop(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, rx: &Receiver<Gat
         Ok(GatewayCommand::Shutdown) => return,
         Ok(cmd) => {
           if let Some(text) = command_to_json(&cmd) {
+            eprintln!("AZAD_GATEWAY worker send {text}");
             if socket.send(Message::text(text)).is_err() {
               post_disconnect("send failed");
               return;
@@ -179,7 +184,10 @@ fn run_loop(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, rx: &Receiver<Gat
     }
 
     match socket.read() {
-      Ok(Message::Text(t)) => handle_inbound(t.as_str()),
+      Ok(Message::Text(t)) => {
+        eprintln!("AZAD_GATEWAY worker recv {}", truncate_frame(t.as_str()));
+        handle_inbound(t.as_str());
+      }
       Ok(Message::Close(_)) => {
         post_disconnect("server closed");
         return;
@@ -200,7 +208,19 @@ fn run_loop(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, rx: &Receiver<Gat
 }
 
 fn post_disconnect(reason: &str) {
+  eprintln!("AZAD_GATEWAY worker disconnect reason={reason}");
   send_event(AppEvent::Gateway(GatewayEvent::Disconnected { reason: reason.to_string() }));
+}
+
+/// Cap a logged frame so a long streamed reply doesn't flood the log; keeps the head, which
+/// carries the type/name and enough payload to diagnose shape mismatches.
+fn truncate_frame(text: &str) -> String {
+  const MAX: usize = 600;
+  if text.chars().count() <= MAX {
+    return text.to_string();
+  }
+  let head: String = text.chars().take(MAX).collect();
+  format!("{head}… (+{} chars)", text.chars().count() - MAX)
 }
 
 fn command_to_json(cmd: &GatewayCommand) -> Option<String> {

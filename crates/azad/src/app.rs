@@ -40,6 +40,12 @@ const CANCEL_VAD_SHOW_SUPPRESSION_MS: u64 = 500;
 const SESSION_FAULT_WINDOW_MS: u64 = 30_000;
 const SESSION_IMMEDIATE_RETRY_LIMIT: usize = 2;
 const SESSION_DEGRADED_THRESHOLD: usize = 3;
+/// Fail a gateway run that produces no sign of life (no accept/activity/delta/completion)
+/// within this window, so a wedged or offline daemon shows an error instead of an endless
+/// "Thinking…". Any inbound event refreshes the deadline, so a slow-but-live run is safe.
+const GATEWAY_RUN_TIMEOUT: Duration = Duration::from_secs(60);
+const GATEWAY_TIMEOUT_MESSAGE: &str =
+  "Claude didn't respond. The gateway may be busy or offline — press Esc to dismiss.";
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -364,6 +370,9 @@ struct GatewayConversation {
   /// finalizes. When set, the overlay shows it as the forming query with an empty reply so
   /// the new utterance gets its own space instead of cramping under the prior reply.
   composing_query: Option<String>,
+  /// Time of the last sign of life (query sent or any inbound event). Drives the
+  /// no-response timeout in `on_tick`; `None` while idle/done.
+  last_activity: Option<Instant>,
 }
 
 impl GatewayConversation {
@@ -380,6 +389,7 @@ impl GatewayConversation {
       awaiting_run_id: None,
       pending_query_until_thread: None,
       composing_query: None,
+      last_activity: None,
     }
   }
 }
@@ -722,6 +732,28 @@ fn friendly_gateway_error(raw: &str) -> String {
     "Gateway rejected the request (approval required).".to_string()
   } else {
     format!("Gateway error: {raw}")
+  }
+}
+
+/// One-line description of a gateway event for the `AZAD_GATEWAY event=` log.
+fn gateway_event_summary(event: &GatewayEvent) -> String {
+  match event {
+    GatewayEvent::Connected => "connected".to_string(),
+    GatewayEvent::Disconnected { reason } => format!("disconnected reason={reason:?}"),
+    GatewayEvent::RunAccepted { thread_id, run_id } => {
+      format!("run_accepted thread_id={thread_id:?} run_id={run_id:?}")
+    }
+    GatewayEvent::Delta { content, delta, replace, .. } => format!(
+      "delta content_chars={} delta_chars={} replace={replace}",
+      content.as_ref().map_or(0, |s| s.chars().count()),
+      delta.as_ref().map_or(0, |s| s.chars().count()),
+    ),
+    GatewayEvent::Completed { content, .. } => {
+      format!("completed reply_chars={}", content.chars().count())
+    }
+    GatewayEvent::Activity { phase, label } => format!("activity phase={phase:?} label={label:?}"),
+    GatewayEvent::Failed { error } => format!("failed error={error:?}"),
+    GatewayEvent::RequestError { error } => format!("request_error error={error:?}"),
   }
 }
 
@@ -2688,24 +2720,30 @@ impl AppController {
           );
         }
         self.engine_state = EngineState::Idle;
-        if !self.cancelled
-          && self.latest_seen_turn_id > 0
-          && self.last_pasted_turn_id != Some(self.latest_seen_turn_id)
-        {
-          // Paste-then-hide: the overlay's "still working" state stays on screen until the
-          // paste actually lands, so dismissal and paste appear on the same frame.
-          if let Some(final_text) = self.latest_final.as_ref() {
-            let cleaned = final_text.trim().to_string();
-            if !cleaned.is_empty() {
-              if self.try_paste(self.latest_seen_turn_id, TranscriptMode::Normal, &cleaned) {
-                self.last_pasted_turn_id = Some(self.latest_seen_turn_id);
+        // A live gateway conversation owns the overlay across session recycles — never hide
+        // it here, or the streaming reply (or the "Thinking…"/error state) vanishes the
+        // instant the engine session ends, which is exactly the "it said Thinking then
+        // disappeared" report. The conversation is torn down only by Escape/close/fatal error.
+        if self.gateway_conv.is_none() {
+          if !self.cancelled
+            && self.latest_seen_turn_id > 0
+            && self.last_pasted_turn_id != Some(self.latest_seen_turn_id)
+          {
+            // Paste-then-hide: the overlay's "still working" state stays on screen until the
+            // paste actually lands, so dismissal and paste appear on the same frame.
+            if let Some(final_text) = self.latest_final.as_ref() {
+              let cleaned = final_text.trim().to_string();
+              if !cleaned.is_empty() {
+                if self.try_paste(self.latest_seen_turn_id, TranscriptMode::Normal, &cleaned) {
+                  self.last_pasted_turn_id = Some(self.latest_seen_turn_id);
+                }
               }
             }
+            self.hide_overlay();
           }
+
           self.hide_overlay();
         }
-
-        self.hide_overlay();
         self.session = None;
         self.latest_draft.clear();
         self.finalizing_draft.clear();
@@ -2814,6 +2852,33 @@ impl AppController {
 
     self.advance_activity_timeline();
     self.maybe_apply_pending_always_listening_toggle();
+
+    // A live gateway run animates its own busy glow (its turn has finalized, so the
+    // finalize-spinner branch below no longer ticks the phase) and fails closed to an
+    // error if the daemon goes silent — otherwise a wedged/offline gateway leaves the
+    // overlay stuck on "Thinking…" forever. The conversation re-renders in the overlay
+    // block below.
+    let conv_busy = self
+      .gateway_conv
+      .as_ref()
+      .is_some_and(|c| matches!(c.status, ConvStatus::Thinking | ConvStatus::Streaming));
+    if conv_busy {
+      self.busy_border_phase =
+        (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP).rem_euclid(std::f32::consts::TAU);
+      let timed_out = self
+        .gateway_conv
+        .as_ref()
+        .and_then(|c| c.last_activity)
+        .is_some_and(|t| t.elapsed() >= GATEWAY_RUN_TIMEOUT);
+      if timed_out {
+        eprintln!("AZAD_GATEWAY event=timeout secs={}", GATEWAY_RUN_TIMEOUT.as_secs());
+        if let Some(conv) = self.gateway_conv.as_mut() {
+          conv.status = ConvStatus::Error;
+          conv.error_msg = GATEWAY_TIMEOUT_MESSAGE.to_string();
+          conv.last_activity = None;
+        }
+      }
+    }
 
     if let Some(deadline) = self.pending_device_switch_deadline {
       if Instant::now() >= deadline {
@@ -3124,6 +3189,15 @@ impl AppController {
       conv.activity_label = None;
       conv.composing_query = None;
       conv.status = ConvStatus::Thinking;
+      conv.last_activity = Some(Instant::now());
+      let kind = if conv.thread_id.is_none() { "new_thread" } else { "followup" };
+      eprintln!(
+        "AZAD_GATEWAY submit turn_id={turn_id} kind={kind} conn={:?} thread_id={:?} chars={} query={:?}",
+        self.gateway_conn,
+        conv.thread_id,
+        query.chars().count(),
+        query
+      );
       match conv.thread_id.clone() {
         None => {
           let req_id = gateway::make_request_id();
@@ -3192,6 +3266,11 @@ impl AppController {
   }
 
   fn handle_gateway_event(&mut self, event: GatewayEvent) {
+    eprintln!("AZAD_GATEWAY event={}", gateway_event_summary(&event));
+    // Any inbound frame is a sign of life; refresh the no-response deadline.
+    if let Some(conv) = self.gateway_conv.as_mut() {
+      conv.last_activity = Some(Instant::now());
+    }
     match event {
       GatewayEvent::Connected => {
         self.gateway_conn = GatewayConnState::Connected;
