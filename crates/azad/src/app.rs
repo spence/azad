@@ -40,12 +40,17 @@ const CANCEL_VAD_SHOW_SUPPRESSION_MS: u64 = 500;
 const SESSION_FAULT_WINDOW_MS: u64 = 30_000;
 const SESSION_IMMEDIATE_RETRY_LIMIT: usize = 2;
 const SESSION_DEGRADED_THRESHOLD: usize = 3;
-/// Fail a gateway run that produces no sign of life (no accept/activity/delta/completion)
-/// within this window, so a wedged or offline daemon shows an error instead of an endless
-/// "Thinking…". Any inbound event refreshes the deadline, so a slow-but-live run is safe.
-const GATEWAY_RUN_TIMEOUT: Duration = Duration::from_secs(60);
-const GATEWAY_TIMEOUT_MESSAGE: &str =
-  "Claude didn't respond. The gateway may be busy or offline — press Esc to dismiss.";
+/// Fast fail: a `runs.create` that the daemon never acknowledges (no response/event of any
+/// kind) within this window means the gateway is wedged, offline, or speaking a protocol it
+/// can't parse — fail immediately rather than leaving the overlay on "Thinking…".
+const GATEWAY_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+/// Once acknowledged, the run may legitimately think for a while; only give up if it then
+/// goes fully silent (no delta/activity/completion) for this much longer window. Any inbound
+/// event refreshes the deadline, so a live-but-slow answer is never killed.
+const GATEWAY_STREAM_TIMEOUT: Duration = Duration::from_secs(25);
+const GATEWAY_NO_ACK_MESSAGE: &str =
+  "Gateway didn't respond. Is local-agent-gatewayd running and current? — press Esc.";
+const GATEWAY_STALL_MESSAGE: &str = "Claude stopped responding — press Esc to dismiss.";
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -373,6 +378,9 @@ struct GatewayConversation {
   /// Time of the last sign of life (query sent or any inbound event). Drives the
   /// no-response timeout in `on_tick`; `None` while idle/done.
   last_activity: Option<Instant>,
+  /// True once the daemon has acknowledged the current run (any run-level event). Selects
+  /// the fast ack deadline vs. the longer post-ack stall deadline; reset on each submit.
+  acknowledged: bool,
 }
 
 impl GatewayConversation {
@@ -390,6 +398,7 @@ impl GatewayConversation {
       pending_query_until_thread: None,
       composing_query: None,
       last_activity: None,
+      acknowledged: false,
     }
   }
 }
@@ -2865,17 +2874,23 @@ impl AppController {
     if conv_busy {
       self.busy_border_phase =
         (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP).rem_euclid(std::f32::consts::TAU);
-      let timed_out = self
-        .gateway_conv
-        .as_ref()
-        .and_then(|c| c.last_activity)
-        .is_some_and(|t| t.elapsed() >= GATEWAY_RUN_TIMEOUT);
-      if timed_out {
-        eprintln!("AZAD_GATEWAY event=timeout secs={}", GATEWAY_RUN_TIMEOUT.as_secs());
-        if let Some(conv) = self.gateway_conv.as_mut() {
-          conv.status = ConvStatus::Error;
-          conv.error_msg = GATEWAY_TIMEOUT_MESSAGE.to_string();
-          conv.last_activity = None;
+      // Fast fail on a daemon that never acknowledges the run; a longer window only after
+      // it has, so a legitimately slow answer isn't killed mid-think.
+      if let Some((acknowledged, Some(last))) =
+        self.gateway_conv.as_ref().map(|c| (c.acknowledged, c.last_activity))
+      {
+        let window = if acknowledged { GATEWAY_STREAM_TIMEOUT } else { GATEWAY_ACK_TIMEOUT };
+        if last.elapsed() >= window {
+          let message = if acknowledged { GATEWAY_STALL_MESSAGE } else { GATEWAY_NO_ACK_MESSAGE };
+          eprintln!(
+            "AZAD_GATEWAY event=timeout acknowledged={acknowledged} secs={}",
+            window.as_secs()
+          );
+          if let Some(conv) = self.gateway_conv.as_mut() {
+            conv.status = ConvStatus::Error;
+            conv.error_msg = message.to_string();
+            conv.last_activity = None;
+          }
         }
       }
     }
@@ -3190,6 +3205,7 @@ impl AppController {
       conv.composing_query = None;
       conv.status = ConvStatus::Thinking;
       conv.last_activity = Some(Instant::now());
+      conv.acknowledged = false;
       let kind = if conv.thread_id.is_none() { "new_thread" } else { "followup" };
       eprintln!(
         "AZAD_GATEWAY submit turn_id={turn_id} kind={kind} conn={:?} thread_id={:?} chars={} query={:?}",
@@ -3267,9 +3283,21 @@ impl AppController {
 
   fn handle_gateway_event(&mut self, event: GatewayEvent) {
     eprintln!("AZAD_GATEWAY event={}", gateway_event_summary(&event));
-    // Any inbound frame is a sign of life; refresh the no-response deadline.
+    // Any inbound frame is a sign of life; refresh the no-response deadline. A run-level
+    // event additionally marks the run acknowledged, switching the timeout from the fast ack
+    // window to the longer post-ack stall window.
+    let run_acknowledged = matches!(
+      event,
+      GatewayEvent::RunAccepted { .. }
+        | GatewayEvent::Delta { .. }
+        | GatewayEvent::Completed { .. }
+        | GatewayEvent::Activity { .. }
+    );
     if let Some(conv) = self.gateway_conv.as_mut() {
       conv.last_activity = Some(Instant::now());
+      if run_acknowledged {
+        conv.acknowledged = true;
+      }
     }
     match event {
       GatewayEvent::Connected => {
