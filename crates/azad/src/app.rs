@@ -372,8 +372,6 @@ struct GatewayConversation {
   error_msg: String,
   activity_label: Option<String>,
   awaiting_run_id: Option<String>,
-  /// A query that finalized before the socket finished connecting; flushed on `Connected`.
-  pending_query_until_thread: Option<String>,
   /// The live (stripped) draft of a follow-up the user is currently speaking, before it
   /// finalizes. When set, the overlay shows it as the forming query with an empty reply so
   /// the new utterance gets its own space instead of cramping under the prior reply.
@@ -398,7 +396,6 @@ impl GatewayConversation {
       error_msg: String::new(),
       activity_label: None,
       awaiting_run_id: None,
-      pending_query_until_thread: None,
       composing_query: None,
       last_activity: None,
       acknowledged: false,
@@ -3184,7 +3181,11 @@ impl AppController {
     if self.gateway_conv.is_some() {
       return;
     }
-    self.gateway_conn = GatewayConnState::Connecting;
+    // Don't downgrade an already-warm socket to `Connecting` — the worker stays alive
+    // between turns and won't re-emit `Connected`, which would leave the state stuck.
+    if self.gateway_conn == GatewayConnState::Disconnected {
+      self.gateway_conn = GatewayConnState::Connecting;
+    }
     gateway::ensure_worker();
   }
 
@@ -3229,21 +3230,17 @@ impl AppController {
         conv.error_msg = message;
         conv.last_activity = None;
       } else {
+        // Send unconditionally: the worker's command channel buffers until the socket is
+        // connected, so the send never depends on `gateway_conn` (which could be stale, e.g.
+        // a warm socket the controller still thinks is "Connecting"). If the connect fails,
+        // the buffered command is dropped and a `Disconnected` error surfaces instead.
+        let req_id = gateway::make_request_id();
         match conv.thread_id.clone() {
-          None => {
-            let req_id = gateway::make_request_id();
-            if self.gateway_conn == GatewayConnState::Connected {
-              gateway::send_command(GatewayCommand::SendNewThread { req_id, query });
-            } else {
-              // Finalize beat the connect; the query is flushed when `Connected` arrives.
-              conv.pending_query_until_thread = Some(query);
-            }
-          }
+          None => gateway::send_command(GatewayCommand::SendNewThread { req_id, query }),
           Some(thread_id) => {
-            let req_id = gateway::make_request_id();
-            gateway::send_command(GatewayCommand::SendFollowup { req_id, thread_id, query });
+            gateway::send_command(GatewayCommand::SendFollowup { req_id, thread_id, query })
           }
-        }
+        };
       }
     }
     // Never paste the query, and stop the SessionEnded fallback from re-pasting it.
@@ -3320,15 +3317,6 @@ impl AppController {
         self.gateway_conn = GatewayConnState::Connected;
         // A fresh socket's protocol verdict is unknown until its `server.ready` arrives.
         self.gateway_protocol_mismatch = None;
-        // Flush a query that finalized before the socket was ready.
-        if let Some(conv) = self.gateway_conv.as_mut() {
-          if conv.thread_id.is_none() {
-            if let Some(query) = conv.pending_query_until_thread.take() {
-              let req_id = gateway::make_request_id();
-              gateway::send_command(GatewayCommand::SendNewThread { req_id, query });
-            }
-          }
-        }
       }
       GatewayEvent::ServerReady { protocol, version } => {
         if protocol == gateway::GATEWAY_PROTOCOL {
@@ -3621,6 +3609,14 @@ impl AppController {
 
   #[track_caller]
   fn hide_overlay(&mut self) {
+    // A live gateway conversation owns the overlay: it stays visible — including its error
+    // state — until the user dismisses it with Esc, which tears the conversation down first
+    // (`handle_overlay_cancel` takes `gateway_conv` before calling here). Every other hide
+    // path (manual-hold release, session recycle, finalize cleanup) is a no-op while a
+    // conversation is open, so a failed run can never make the card silently disappear.
+    if self.gateway_conv.is_some() {
+      return;
+    }
     self.clear_overlay_pending();
     self.clear_held_top_overlay();
     self.listen_toggle_notice = None;
