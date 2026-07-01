@@ -1,0 +1,5828 @@
+use crate::audio::{AudioHealth, AudioInput, AudioSpec};
+use crate::render::{RenderEvent, Renderer, TurnStartedReason};
+use crate::stability::StabilityTracker;
+use crate::thread_qos;
+use anyhow::{Context, Result, anyhow};
+use parakeet_rs::{ExecutionConfig, ParakeetEOU, ParakeetTDT, Transcriber as _};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use whisper_cpp_plus::WhisperVadProcessor;
+
+const TARGET_SR: u32 = 16_000;
+const CHUNK_SAMPLES: usize = 2_560; // 160ms @ 16kHz
+const NO_SPECULATIVE_JOB_ID: u64 = 0;
+const SPECULATIVE_FINAL_WAIT_MS: u64 = 220;
+const INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS: usize = 256;
+const INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS: usize = 2;
+const INCREMENTAL_STITCH_MAX_TAIL_DROP_TOKENS: usize = 24;
+const INCREMENTAL_STITCH_MAX_SHRINK_TOKENS: usize = 2;
+const INCREMENTAL_STITCH_STRONG_OVERLAP_TOKENS: usize = 3;
+const INCREMENTAL_STITCH_SAMPLES_PER_WORD_MAX: usize = 4_000;
+const INCREMENTAL_STITCH_RIGHT_START_SLACK_TOKENS: usize = 2;
+const INCREMENTAL_TAIL_MAX_WAIT_FACTOR: u32 = 60;
+const INCREMENTAL_LIVE_TAIL_WAIT_FACTOR: u32 = 8;
+const INCREMENTAL_MAX_SEGMENT_MS: u32 = 8_000;
+
+/// When an incremental partial returns empty text in an EOU-confirmed-speech
+/// range, retry once with the start shifted back this many ms. The TDT joint's
+/// LSTM cold-start trap (see crates/azad-asr/INVESTIGATIONS/tdt-empty-partial.md)
+/// is exquisitely start-sample-specific — a ~100 ms shift recovers; left-
+/// extension reliably recovers even at +100 ms. 500 ms is a conservative margin.
+const EMPTY_PARTIAL_RETRY_LEFT_SHIFT_MS: u32 = 500;
+
+/// Floor on EOU char count before we bother retrying. Without this we'd retry
+/// for ranges where EOU produced just a stray char (well below the silence-
+/// corroboration threshold but technically non-zero). 2 chars is enough to
+/// signal speech-shaped audio worth a second model pass.
+const EMPTY_PARTIAL_RETRY_MIN_EOU_CHARS: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyPartialAction {
+  /// EOU corroborates silence. Push an empty-text partial entry so the
+  /// coverage map covers the range and `middle_coverage_is_incomplete`
+  /// doesn't bail. This is the original behaviour for the silence case.
+  PushSilenceMarker,
+  /// EOU saw speech and we haven't yet retried this range. Schedule a
+  /// retry incremental slice with start shifted back by
+  /// `EMPTY_PARTIAL_RETRY_LEFT_SHIFT_MS` to dodge the cold-LSTM trap.
+  ScheduleRetry,
+  /// EOU saw speech but a retry already ran (or this result IS the retry
+  /// returning empty, or EOU output was below the retry-worth-it floor).
+  /// Drop the range — coverage gap will fire the bailout, current behaviour.
+  Drop,
+}
+
+/// Decides what to do when an incremental TDT partial returns empty text.
+/// See `INVESTIGATIONS/tdt-empty-partial.md` for the underlying cold-LSTM
+/// trap analysis that motivates the retry path. Pure function so the
+/// dispatch logic is testable without spinning up the full pipeline.
+fn empty_partial_action(
+  eou_chars: usize,
+  corroborated: bool,
+  is_retry_result: bool,
+  already_retried_range: bool,
+  min_eou_chars: usize,
+) -> EmptyPartialAction {
+  if corroborated {
+    return EmptyPartialAction::PushSilenceMarker;
+  }
+  if !is_retry_result && !already_retried_range && eou_chars >= min_eou_chars {
+    return EmptyPartialAction::ScheduleRetry;
+  }
+  EmptyPartialAction::Drop
+}
+
+fn incremental_tail_wait_ms(base_wait_ms: u64, live_session: bool) -> u64 {
+  let factor =
+    if live_session { INCREMENTAL_LIVE_TAIL_WAIT_FACTOR } else { INCREMENTAL_TAIL_MAX_WAIT_FACTOR };
+  base_wait_ms.saturating_mul(u64::from(factor.max(1)))
+}
+
+fn cap_segment_start(start: usize, end: usize, max_window_samples: usize) -> usize {
+  if max_window_samples == 0 {
+    return start.min(end);
+  }
+  let min_start = end.saturating_sub(max_window_samples);
+  start.max(min_start).min(end)
+}
+
+fn overlap_merge_is_safe(
+  original_left_len: usize,
+  merged_len: usize,
+  overlap: usize,
+  match_start: usize,
+) -> bool {
+  if merged_len >= original_left_len {
+    return true;
+  }
+  let shrink = original_left_len - merged_len;
+  if shrink <= INCREMENTAL_STITCH_MAX_SHRINK_TOKENS {
+    return true;
+  }
+
+  // Large shrink is acceptable only when overlap is strong and anchored at the beginning of
+  // the new segment, which indicates true continuation rather than an incidental phrase match.
+  overlap >= INCREMENTAL_STITCH_STRONG_OVERLAP_TOKENS && match_start == 0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalizeTailPlan {
+  RunTail,
+  SkipTailSafe,
+}
+
+fn finalize_tail_plan(
+  has_refined_text: bool,
+  audio_len: usize,
+  last_refined_audio_end_samples: usize,
+  last_completed_segment_was_tail: bool,
+) -> FinalizeTailPlan {
+  // Safe skip requires: existing refined text covers current audio and the latest completed
+  // segment was already a tail pass. Otherwise, run an explicit tail pass for finalize.
+  if has_refined_text
+    && audio_len <= last_refined_audio_end_samples
+    && last_completed_segment_was_tail
+  {
+    FinalizeTailPlan::SkipTailSafe
+  } else {
+    FinalizeTailPlan::RunTail
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineState {
+  Idle,
+  Speech,
+}
+
+#[derive(Debug, Clone)]
+pub enum DebugStatsEvent {
+  PartialFinalizeOutcome {
+    turn_id: u64,
+    outcome: String,
+    reason: String,
+  },
+  PartialAuditResult {
+    turn_id: u64,
+    emitted_kind: String,
+    exact: bool,
+    partial_count: usize,
+    emitted_tokens: usize,
+    full_tokens: usize,
+    edit_distance: usize,
+    wer_like: f64,
+    lcp_tokens: usize,
+    lcp_pct: f64,
+  },
+  PartialAuditError {
+    turn_id: u64,
+    emitted_kind: String,
+    partial_count: usize,
+    message: String,
+  },
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusView {
+  pub state: EngineState,
+  pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MeterView {
+  pub peak_db: f32,
+  pub vad_speech: bool,
+  pub vad_prob: f32,
+  pub vad_thold: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AudioHealthView {
+  pub gap_ms: u64,
+  pub worst_gap_ms: u64,
+  pub dropped_ms: u64,
+  pub backlog_ms: u64,
+  pub worst_backlog_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PipelineConfig {
+  pub vad_model_path: PathBuf,
+  pub vad_thold: f32,
+  pub vad_start_chunks: usize,
+  pub pre_roll_ms: u32,
+
+  pub eou_min_silence_ms: u32,
+  pub eou_max_silence_ms: u32,
+
+  /// VAD probability floor while a turn is in progress. Audio chunks with
+  /// `vad_prob` below this value count as silence and accumulate against
+  /// `eou_max_silence_ms`. Distinct from `vad_thold` (the turn-START threshold) —
+  /// the in-speech floor is set much lower so soft continuation, trailing-off
+  /// speech, and quieter passages keep the turn alive instead of being misread
+  /// as silence. Starting a turn requires confidence; continuing one should
+  /// require very little.
+  ///
+  /// Was implicitly `(vad_thold - 0.15).max(0.15) = 0.30` for years. Production
+  /// turn 252 (2026-05-01) showed sustained `vad_prob` of 0.01-0.24 during
+  /// continuous user speech that was sub-0.30; the engine accumulated 1.12 s of
+  /// "silence" and force-ended mid-clause. 0.10 keeps any non-trivial voice
+  /// activity above the floor while staying above typical mic / room noise
+  /// floor (< 0.05 in tests). The `eou_max_silence_ms = 1000 ms` ceiling is
+  /// still the ultimate backstop — turns can't run forever even if the floor
+  /// is breached by a noisy environment.
+  pub vad_in_speech_thold: f32,
+
+  /// Tentative-finalize recovery window. After EOU latches and `eou_min_silence_ms`
+  /// has been satisfied, the pipeline waits this long before actually committing
+  /// the turn. During the window, audio keeps appending and EOU keeps being fed;
+  /// if VAD picks up speech AND EOU produces meaningful text, the latch is undone
+  /// and the turn continues. Set to 0 to disable (commit immediately, today's
+  /// behaviour).
+  pub recovery_window_ms: u32,
+  /// VAD probability threshold for "user is still talking" during the recovery
+  /// window. Should be lower than `vad_thold` (the turn-start threshold) — false-
+  /// positive recovery only costs latency, false-negative cuts the user off.
+  pub recovery_vad_thold: f32,
+
+  pub stable_k: usize,
+  pub stable_h: usize,
+
+  pub enable_tdt_final_pass: bool,
+  pub incremental_finalization_enabled: bool,
+  pub incremental_slice_ms: u32,
+  pub incremental_overlap_ms: u32,
+  pub incremental_left_context_ms: u32,
+  pub incremental_min_new_audio_ms: u32,
+  pub incremental_wait_tail_result_ms: u32,
+  pub parakeet_tdt_dir: PathBuf,
+  pub parakeet_eou_dir: PathBuf,
+}
+
+impl PipelineConfig {
+  pub fn model_label(&self) -> String {
+    let tdt = self.parakeet_tdt_dir.file_name().and_then(|s| s.to_str()).unwrap_or("tdt");
+    format!("parakeet+eou ({tdt})")
+  }
+}
+
+#[derive(Debug)]
+pub struct PipelineControls {
+  manual_hold_active: AtomicBool,
+  auto_vad_enabled: AtomicBool,
+  capture_enabled: AtomicBool,
+  debug_stats_enabled: AtomicBool,
+  force_start_requested: AtomicBool,
+  force_finish_requested: AtomicBool,
+  cancel_turn_requested: AtomicBool,
+  /// Wall-clock instant of the latest false→true `capture_enabled`
+  /// transition. Used as the t=0 reference for the cold-start observability
+  /// logs (`AZAD_AUDIO_FIRST_NONZERO`, `AZAD_VAD_COLDSTART`,
+  /// `AZAD_VAD_START_LATENCY`). `None` until the first enable.
+  last_capture_enable_at: std::sync::Mutex<Option<Instant>>,
+}
+
+impl PipelineControls {
+  pub fn set_manual_hold_active(&self, active: bool) {
+    self.manual_hold_active.store(active, Ordering::Relaxed);
+  }
+
+  pub fn manual_hold_active(&self) -> bool {
+    self.manual_hold_active.load(Ordering::Relaxed)
+  }
+
+  pub fn set_auto_vad_enabled(&self, enabled: bool) {
+    self.auto_vad_enabled.store(enabled, Ordering::Relaxed);
+  }
+
+  pub fn auto_vad_enabled(&self) -> bool {
+    self.auto_vad_enabled.load(Ordering::Relaxed)
+  }
+
+  #[track_caller]
+  pub fn set_capture_enabled(&self, enabled: bool) {
+    let prev = self.capture_enabled.swap(enabled, Ordering::Relaxed);
+    if prev != enabled {
+      // Record the wake instant on a fresh enable; clear it on disable so
+      // post-resume diagnostics never see a stale t=0.
+      let now = if enabled { Some(Instant::now()) } else { None };
+      if let Ok(mut slot) = self.last_capture_enable_at.lock() {
+        *slot = now;
+      }
+      if self.debug_stats_enabled() {
+        let loc = std::panic::Location::caller();
+        eprintln!(
+          "AZAD_CAPTURE ts_ms={} capture_enabled {} -> {} at {}:{}",
+          now_ms(),
+          prev,
+          enabled,
+          loc.file(),
+          loc.line()
+        );
+      }
+    }
+  }
+
+  pub fn capture_enabled(&self) -> bool {
+    self.capture_enabled.load(Ordering::Relaxed)
+  }
+
+  /// Returns the [`Instant`] of the most recent false→true `capture_enabled`
+  /// transition, or [`None`] if capture has never been enabled (or is
+  /// currently disabled). Used as the t=0 reference for the cold-start
+  /// observability logs.
+  pub fn capture_enabled_since(&self) -> Option<Instant> {
+    self.last_capture_enable_at.lock().ok().and_then(|slot| *slot)
+  }
+
+  pub fn set_debug_stats_enabled(&self, enabled: bool) {
+    self.debug_stats_enabled.store(enabled, Ordering::Relaxed);
+  }
+
+  pub fn debug_stats_enabled(&self) -> bool {
+    self.debug_stats_enabled.load(Ordering::Relaxed)
+  }
+
+  pub fn request_force_start(&self) {
+    self.force_start_requested.store(true, Ordering::Relaxed);
+  }
+
+  pub fn take_force_start(&self) -> bool {
+    self
+      .force_start_requested
+      .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+      .is_ok()
+  }
+
+  pub fn request_force_finish(&self) {
+    self.force_finish_requested.store(true, Ordering::Relaxed);
+  }
+
+  pub fn force_finish_requested(&self) -> bool {
+    self.force_finish_requested.load(Ordering::Relaxed)
+  }
+
+  pub fn take_force_finish(&self) -> bool {
+    self
+      .force_finish_requested
+      .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+      .is_ok()
+  }
+
+  pub fn request_cancel_turn(&self) {
+    self.cancel_turn_requested.store(true, Ordering::Relaxed);
+  }
+
+  pub fn take_cancel_turn(&self) -> bool {
+    self
+      .cancel_turn_requested
+      .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+      .is_ok()
+  }
+}
+
+impl Default for PipelineControls {
+  fn default() -> Self {
+    Self {
+      manual_hold_active: AtomicBool::new(false),
+      auto_vad_enabled: AtomicBool::new(true),
+      capture_enabled: AtomicBool::new(true),
+      debug_stats_enabled: AtomicBool::new(false),
+      force_start_requested: AtomicBool::new(false),
+      force_finish_requested: AtomicBool::new(false),
+      cancel_turn_requested: AtomicBool::new(false),
+      last_capture_enable_at: std::sync::Mutex::new(None),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PipelineRunOptions {
+  pub controls: Option<Arc<PipelineControls>>,
+  pub stop_after_turn: bool,
+}
+
+pub fn run_pipeline(
+  input: &mut dyn AudioInput,
+  renderer: Arc<dyn Renderer>,
+  cfg: PipelineConfig,
+  shutdown: Arc<AtomicBool>,
+) -> Result<()> {
+  run_pipeline_with_options(input, renderer, cfg, shutdown, PipelineRunOptions::default())
+}
+
+pub fn run_pipeline_with_options(
+  input: &mut dyn AudioInput,
+  renderer: Arc<dyn Renderer>,
+  cfg: PipelineConfig,
+  shutdown: Arc<AtomicBool>,
+  options: PipelineRunOptions,
+) -> Result<()> {
+  // Capture + VAD + EOU are "live" workloads. Keep this thread responsive.
+  thread_qos::user_interactive();
+
+  renderer.emit(RenderEvent::Status(StatusView {
+    state: EngineState::Idle,
+    detail: "starting".to_string(),
+  }));
+  renderer.emit(RenderEvent::Status(StatusView {
+    state: EngineState::Idle,
+    detail: "loading models".to_string(),
+  }));
+
+  let input_spec = input.spec();
+
+  let vad = WhisperVadProcessor::new(&cfg.vad_model_path).with_context(|| {
+    format!("failed to load Silero VAD model at {}", cfg.vad_model_path.display())
+  })?;
+
+  // EOU runs on the main pipeline thread: keep it lightweight.
+  let eou_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
+  let eou = ParakeetEOU::from_pretrained(&cfg.parakeet_eou_dir, Some(eou_cfg)).map_err(|e| {
+    anyhow!("failed to load Parakeet EOU model at {}: {e}", cfg.parakeet_eou_dir.display())
+  })?;
+
+  // Heavy final pass runs in worker thread so we never block capture.
+  let latest_speculative_job_id = Arc::new(AtomicU64::new(NO_SPECULATIVE_JOB_ID));
+  let (tdt_tx, async_rx, tdt_handle) = spawn_tdt_worker(
+    cfg.parakeet_tdt_dir.clone(),
+    Arc::clone(&renderer),
+    Arc::clone(&latest_speculative_job_id),
+  );
+  let worker_controls = options.controls.as_ref().map(Arc::clone);
+  let (partial_audit_tx, partial_audit_handle) = spawn_partial_audit_worker(
+    cfg.parakeet_tdt_dir.clone(),
+    Arc::clone(&renderer),
+    worker_controls,
+  );
+
+  renderer
+    .emit(RenderEvent::Status(StatusView { state: EngineState::Idle, detail: "idle".to_string() }));
+
+  let mut runner = Runner::new(
+    input_spec,
+    renderer,
+    cfg,
+    vad,
+    eou,
+    tdt_tx,
+    partial_audit_tx,
+    async_rx,
+    latest_speculative_job_id,
+    options.controls,
+    options.stop_after_turn,
+  );
+
+  let mut aborted = false;
+  loop {
+    if shutdown.load(Ordering::Relaxed) {
+      aborted = true;
+      break;
+    }
+
+    let Some(chunk) = input.read_chunk()? else {
+      if shutdown.load(Ordering::Relaxed) {
+        aborted = true;
+      }
+      break;
+    };
+
+    runner.push_interleaved(&chunk.frames);
+    runner.drain_ready(input.health(), &shutdown)?;
+    if runner.is_complete() {
+      break;
+    }
+  }
+
+  if aborted {
+    // Fast shutdown: drop capture + pipeline state and let the process exit without waiting
+    // for any remaining buffered audio or the TDT refinement worker.
+    drop(runner);
+    return Ok(());
+  }
+
+  runner.flush_end(input.health())?;
+
+  // Close worker channels (drops senders) then wait for pending work.
+  drop(runner);
+  let _ = tdt_handle.join();
+  let _ = partial_audit_handle.join();
+  Ok(())
+}
+
+struct Runner {
+  prep: AudioPrep,
+  q: SampleQueue,
+  core: PipelineCore,
+}
+
+impl Runner {
+  fn new(
+    input_spec: AudioSpec,
+    renderer: Arc<dyn Renderer>,
+    cfg: PipelineConfig,
+    vad: WhisperVadProcessor,
+    eou: ParakeetEOU,
+    tdt_tx: crossbeam_channel::Sender<TdtJob>,
+    partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
+    async_rx: crossbeam_channel::Receiver<TdtResult>,
+    latest_speculative_job_id: Arc<AtomicU64>,
+    controls: Option<Arc<PipelineControls>>,
+    stop_after_turn: bool,
+  ) -> Self {
+    let prep = AudioPrep::new(input_spec, TARGET_SR);
+    let q = SampleQueue::default();
+    let core = PipelineCore::new(
+      input_spec,
+      renderer,
+      cfg,
+      vad,
+      eou,
+      tdt_tx,
+      partial_audit_tx,
+      async_rx,
+      latest_speculative_job_id,
+      controls,
+      stop_after_turn,
+    );
+    Self { prep, q, core }
+  }
+
+  fn is_complete(&self) -> bool {
+    self.core.session_complete
+  }
+
+  fn push_interleaved(&mut self, interleaved: &[f32]) {
+    self.prep.process_interleaved_into(interleaved, &mut self.q);
+  }
+
+  fn drain_ready(&mut self, health: AudioHealth, shutdown: &AtomicBool) -> Result<()> {
+    while self.q.available() >= CHUNK_SAMPLES {
+      if shutdown.load(Ordering::Relaxed) {
+        break;
+      }
+      let chunk16 = self.q.peek(CHUNK_SAMPLES);
+      self.core.on_chunk(chunk16, health)?;
+      self.q.pop(CHUNK_SAMPLES);
+    }
+    Ok(())
+  }
+
+  fn flush_end(&mut self, health: AudioHealth) -> Result<()> {
+    // Pad any remaining audio so we can process the final partial chunk via the same path.
+    let rem = self.q.available();
+    if rem > 0 {
+      let need = CHUNK_SAMPLES.saturating_sub(rem.min(CHUNK_SAMPLES));
+      if need > 0 {
+        self.q.push_zeros(need);
+      }
+      while self.q.available() >= CHUNK_SAMPLES {
+        let chunk16 = self.q.peek(CHUNK_SAMPLES);
+        self.core.on_chunk(chunk16, health)?;
+        self.q.pop(CHUNK_SAMPLES);
+      }
+    }
+
+    self.core.on_end(health)
+  }
+}
+
+struct PipelineCore {
+  cfg: PipelineConfig,
+  renderer: Arc<dyn Renderer>,
+  input_spec: AudioSpec,
+
+  vad: WhisperVadProcessor,
+  eou: ParakeetEOU,
+  tdt_tx: crossbeam_channel::Sender<TdtJob>,
+  partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
+  async_rx: crossbeam_channel::Receiver<TdtResult>,
+  latest_speculative_job_id: Arc<AtomicU64>,
+  controls: Option<Arc<PipelineControls>>,
+  stop_after_turn: bool,
+  session_complete: bool,
+
+  pre_roll_samples: usize,
+  pre_roll: Vec<f32>,
+
+  in_speech: bool,
+  silence_samples: usize,
+  vad_avg_ema: f32,
+  start_run: usize,
+  idle_vad_cadence: usize,
+  start_confirm_chunks: usize,
+  /// Cold-start observability: cached `capture_enabled_since` value so we
+  /// can detect a fresh wake (false→true) inside `on_chunk` and (a) emit
+  /// `AZAD_VAD_RESUME` once, and (b) start the per-chunk `AZAD_VAD_COLDSTART`
+  /// log window. Reset to `None` whenever capture goes false.
+  prev_capture_enable_at: Option<Instant>,
+  /// Until this instant, every chunk emits a per-chunk
+  /// `AZAD_VAD_COLDSTART` line for diagnosing slow-start. Updated to
+  /// `now + 10s` on every fresh wake. `None` outside that window.
+  cold_start_log_until: Option<Instant>,
+  /// Counter of chunks observed since the latest wake — used as
+  /// `chunk_idx` in the cold-start logs.
+  cold_start_chunk_idx: u32,
+  /// Number of chunks remaining in the post-wake VAD seed-grace window.
+  /// While > 0, the EMA update path skips its self-seed branch so a
+  /// near-silent first chunk after wake can't lock in a low EMA floor.
+  /// Set to ~10 (≈ 200 ms at 20 ms/chunk) on every fresh wake.
+  vad_seed_grace_chunks: u32,
+
+  tracker: StabilityTracker,
+  turn_id: u64,
+  turn_audio: Vec<f32>,
+  turn_started_at: Instant,
+  turn_started_by_vad: bool,
+
+  eou_draft: String,
+  prev_silence_ms: u32,
+  seen_eou_since_speech: bool,
+
+  // Tentative-finalize state. When the end-condition fires, instead of calling
+  // `finish_turn` immediately we enter `tentative_active`. Audio keeps appending,
+  // EOU keeps being fed, VAD keeps being scored. If recovery evidence accrues
+  // (VAD above `recovery_vad_thold` AND EOU produced meaningful text), we exit
+  // tentative and continue the turn. If `recovery_window_ms` elapses without
+  // recovery, we commit (the deferred `finish_turn` finally runs).
+  tentative_active: bool,
+  tentative_latched_at_audio_samples: usize,
+  tentative_latch_reason: &'static str,
+  tentative_recovery_eou_text_seen: bool,
+  tentative_recovery_vad_above_thr: bool,
+  // Diagnostic counters — surface as TOON_TENTATIVE log fields on commit so
+  // we can spot the EOU-stall fingerprint (chunks > 0 with text_chunks == 0
+  // means EOU produced no text during the entire window, which is the
+  // failure mode the `eou.reset_turn()` call in `enter_tentative_finalize`
+  // is meant to prevent).
+  tentative_active_chunks: u32,
+  tentative_active_with_text: u32,
+
+  next_speculative_job_id: u64,
+  active_speculation: Option<SpeculationMeta>,
+  cached_speculation: Option<SpeculativeResult>,
+  pending_spec_finalize: Option<PendingSpecFinalize>,
+  incremental: IncrementalRefineState,
+
+  // Don't clear "Active" immediately at turn end; short turns may only produce
+  // a draft right before finalization, and clearing in the same cycle makes it
+  // effectively invisible in the TUI.
+  pending_active_clear_chunks: usize,
+
+  last_health_emit: Instant,
+  health_interval: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnStartReason {
+  Vad,
+  ManualOverride,
+}
+
+impl PipelineCore {
+  fn new(
+    input_spec: AudioSpec,
+    renderer: Arc<dyn Renderer>,
+    cfg: PipelineConfig,
+    vad: WhisperVadProcessor,
+    eou: ParakeetEOU,
+    tdt_tx: crossbeam_channel::Sender<TdtJob>,
+    partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
+    async_rx: crossbeam_channel::Receiver<TdtResult>,
+    latest_speculative_job_id: Arc<AtomicU64>,
+    controls: Option<Arc<PipelineControls>>,
+    stop_after_turn: bool,
+  ) -> Self {
+    let pre_roll_samples = round_up_to_chunk(
+      ((TARGET_SR as u64) * (cfg.pre_roll_ms as u64) / 1000) as usize,
+      CHUNK_SAMPLES,
+    );
+
+    Self {
+      start_confirm_chunks: cfg.vad_start_chunks.max(1),
+      tracker: StabilityTracker::new(cfg.stable_k, cfg.stable_h),
+      pre_roll: Vec::with_capacity(pre_roll_samples),
+      pre_roll_samples,
+      cfg,
+      renderer,
+      input_spec,
+      vad,
+      eou,
+      tdt_tx,
+      partial_audit_tx,
+      async_rx,
+      latest_speculative_job_id,
+      controls,
+      stop_after_turn,
+      session_complete: false,
+      in_speech: false,
+      silence_samples: 0,
+      vad_avg_ema: 0.0,
+      start_run: 0,
+      idle_vad_cadence: 0,
+      prev_capture_enable_at: None,
+      cold_start_log_until: None,
+      cold_start_chunk_idx: 0,
+      vad_seed_grace_chunks: 0,
+      turn_id: 0,
+      turn_audio: Vec::new(),
+      turn_started_at: Instant::now(),
+      turn_started_by_vad: false,
+      eou_draft: String::new(),
+      prev_silence_ms: 0,
+      seen_eou_since_speech: false,
+      tentative_active: false,
+      tentative_latched_at_audio_samples: 0,
+      tentative_latch_reason: "",
+      tentative_recovery_eou_text_seen: false,
+      tentative_recovery_vad_above_thr: false,
+      tentative_active_chunks: 0,
+      tentative_active_with_text: 0,
+      next_speculative_job_id: 1,
+      active_speculation: None,
+      cached_speculation: None,
+      pending_spec_finalize: None,
+      incremental: IncrementalRefineState::new(Instant::now()),
+      pending_active_clear_chunks: 0,
+      last_health_emit: Instant::now(),
+      health_interval: Duration::from_millis(200),
+    }
+  }
+
+  fn debug_stats_enabled(&self) -> bool {
+    self
+      .controls
+      .as_ref()
+      .map(|ctrl| ctrl.debug_stats_enabled())
+      .unwrap_or_else(partials_debug_env_enabled)
+  }
+
+  fn emit_partial_finalize_outcome(&self, turn_id: u64, outcome: PartialFinalizeOutcome) {
+    if !self.debug_stats_enabled() {
+      return;
+    }
+    let event = log_partial_finalize_outcome(turn_id, outcome);
+    self.renderer.emit(RenderEvent::DebugStats(event));
+  }
+
+  fn on_chunk(&mut self, chunk16: &[f32], health: AudioHealth) -> Result<()> {
+    debug_assert_eq!(chunk16.len(), CHUNK_SAMPLES);
+    self.drain_async_results();
+    if !self.cfg.incremental_finalization_enabled {
+      self.maybe_timeout_pending_spec_finalize();
+    }
+
+    let (rms_db, peak_db) = levels_dbfs(chunk16);
+
+    // Cold-start wake detection. The pipeline thread doesn't otherwise see
+    // capture-enable transitions, so we compare against the controls'
+    // `capture_enabled_since`. On a fresh wake: emit `AZAD_VAD_RESUME` once
+    // and arm the 10 s `AZAD_VAD_COLDSTART` window.
+    let cur_enable_at = self.controls.as_ref().and_then(|c| c.capture_enabled_since());
+    if cur_enable_at != self.prev_capture_enable_at {
+      if let Some(at) = cur_enable_at {
+        self.cold_start_log_until = Some(at + Duration::from_secs(10));
+        self.cold_start_chunk_idx = 0;
+        // Reset VAD smoothing state and arm the seed-grace window so a
+        // near-silent first chunk after wake can't lock in a low EMA
+        // floor. Without this, the EMA self-seed branch below would set
+        // `vad_avg_ema = vad_avg_of_first_chunk`; if that chunk is
+        // near-silent (mic still warming up), the EMA crawls upward over
+        // many windows even once real speech arrives.
+        if self.debug_stats_enabled() {
+          eprintln!(
+            "AZAD_VAD_RESUME ts_ms={} ms_since_enable=0 prev_ema={:.3}",
+            now_ms(),
+            self.vad_avg_ema
+          );
+        }
+        self.vad_avg_ema = 0.0;
+        self.start_run = 0;
+        self.vad_seed_grace_chunks = 10;
+      } else {
+        self.cold_start_log_until = None;
+      }
+      self.prev_capture_enable_at = cur_enable_at;
+    }
+
+    // Pre-roll ring buffer: only while idle.
+    if !self.in_speech && self.pre_roll_samples > 0 {
+      self.pre_roll.extend_from_slice(chunk16);
+      if self.pre_roll.len() > self.pre_roll_samples {
+        let excess = self.pre_roll.len() - self.pre_roll_samples;
+        self.pre_roll.drain(..excess);
+      }
+    }
+
+    // VAD threshold with hysteresis. Asymmetric on purpose: starting a turn
+    // requires `vad_on` confidence (avoid false starts on background noise);
+    // continuing one only needs `vad_in_speech_thold` (a much lower floor) so
+    // soft / trailing speech doesn't accumulate as silence and force-end the
+    // turn mid-utterance.
+    let vad_on = self.cfg.vad_thold;
+    let effective_thold = if self.in_speech { self.cfg.vad_in_speech_thold } else { vad_on };
+
+    // While idle, we already hard-gate very low-energy chunks as non-speech.
+    // Skip VAD inference for those chunks to avoid paying model compute cost in silence.
+    const HARD_SILENCE_RMS_DB: f32 = -60.0;
+    const IDLE_VAD_INTERVAL_CHUNKS: usize = 2;
+    let deep_silence_idle = !self.in_speech && rms_db < HARD_SILENCE_RMS_DB;
+    let cadence_skip_idle = if !self.in_speech && self.start_run == 0 {
+      self.idle_vad_cadence = (self.idle_vad_cadence + 1) % IDLE_VAD_INTERVAL_CHUNKS;
+      self.idle_vad_cadence != 0
+    } else {
+      self.idle_vad_cadence = 0;
+      false
+    };
+
+    // Silero can occasionally fail to produce output for a chunk; treat it as decay.
+    let alpha = 0.20;
+    let mut vad_avg = 0.0f32;
+    if deep_silence_idle {
+      self.vad_avg_ema = 0.0;
+    } else if cadence_skip_idle {
+      self.vad_avg_ema = (1.0 - alpha) * self.vad_avg_ema;
+    } else if self.vad.detect_speech(chunk16) {
+      let probs = self.vad.get_probs();
+      vad_avg = if probs.is_empty() { 0.0 } else { probs.iter().sum::<f32>() / probs.len() as f32 };
+
+      if self.vad_seed_grace_chunks > 0 {
+        // Post-wake: skip the self-seed branch. Always mix; a near-silent
+        // first chunk just nudges the EMA from 0 toward `vad_avg` at
+        // `alpha`, instead of locking it in.
+        self.vad_seed_grace_chunks -= 1;
+        self.vad_avg_ema = alpha * vad_avg + (1.0 - alpha) * self.vad_avg_ema;
+      } else if self.vad_avg_ema == 0.0 {
+        self.vad_avg_ema = vad_avg;
+      } else {
+        self.vad_avg_ema = alpha * vad_avg + (1.0 - alpha) * self.vad_avg_ema;
+      }
+    } else {
+      self.vad_avg_ema = (1.0 - alpha) * self.vad_avg_ema;
+    }
+
+    let score = vad_avg.max(self.vad_avg_ema);
+    let mut is_speech = score >= effective_thold;
+
+    // Cold-start observability: per-chunk diagnostics for the first 10 s
+    // after a wake. Reveals whether the slow-start signature comes from
+    // (a) literal silent audio (low rms_db), (b) the EMA seed lock-in
+    // (vad_avg high but vad_ema crawling), or (c) something else.
+    if let Some(until) = self.cold_start_log_until {
+      let now = Instant::now();
+      if now >= until {
+        self.cold_start_log_until = None;
+      } else if self.debug_stats_enabled() {
+        let ms = self.prev_capture_enable_at.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+        eprintln!(
+          "AZAD_VAD_COLDSTART ms_since_enable={} rms_db={:.1} peak_db={:.1} \
+           vad_prob={:.3} vad_ema={:.3} thold={:.3} chunk_idx={}",
+          ms,
+          rms_db,
+          peak_db,
+          vad_avg,
+          self.vad_avg_ema,
+          effective_thold,
+          self.cold_start_chunk_idx,
+        );
+        self.cold_start_chunk_idx = self.cold_start_chunk_idx.saturating_add(1);
+      }
+    }
+
+    // Hard override for start-gating only: treat very low energy as non-speech while idle.
+    // Do not apply this during an active turn, or quiet speech can be cut off early.
+    if deep_silence_idle || cadence_skip_idle {
+      is_speech = false;
+    }
+
+    if !self.in_speech && self.vad_avg_ema < 0.05 {
+      self.vad_avg_ema = 0.0;
+    }
+
+    self.renderer.emit(RenderEvent::Meter(MeterView {
+      peak_db,
+      vad_speech: is_speech,
+      vad_prob: vad_avg,
+      vad_thold: effective_thold,
+    }));
+
+    // Capture health (mic only): surfaced even while idle so loss is obvious.
+    let now = Instant::now();
+    if now.duration_since(self.last_health_emit) >= self.health_interval {
+      self.last_health_emit = now;
+      self
+        .renderer
+        .emit(RenderEvent::CaptureHealth(health_to_view(health, self.input_spec)));
+    }
+
+    if !self.in_speech {
+      if let Some(ctrl) = &self.controls {
+        // Clear stale manual-finish signals while idle.
+        let _ = ctrl.take_force_finish();
+        let _ = ctrl.take_cancel_turn();
+      }
+
+      // If we just ended a turn, keep the final "Active" draft visible briefly
+      // (one processing chunk) before clearing.
+      if self.pending_active_clear_chunks > 0 {
+        self.pending_active_clear_chunks = self.pending_active_clear_chunks.saturating_sub(1);
+        if self.pending_active_clear_chunks == 0 {
+          self.renderer.emit(RenderEvent::Active {
+            id: self.turn_id,
+            committed: String::new(),
+            live: String::new(),
+          });
+        }
+      }
+
+      if self.controls.as_ref().map(|c| c.take_force_start()).unwrap_or(false) {
+        self.start_turn(chunk16, TurnStartReason::ManualOverride)?;
+        return Ok(());
+      }
+
+      let auto_vad_enabled = self.controls.as_ref().map(|c| c.auto_vad_enabled()).unwrap_or(true);
+      if !auto_vad_enabled {
+        self.start_run = 0;
+        return Ok(());
+      }
+
+      // Require consecutive VAD speech hits to start.
+      if is_speech {
+        self.start_run = self.start_run.saturating_add(1);
+      } else {
+        self.start_run = 0;
+      }
+
+      // If very confident, start immediately.
+      if vad_avg >= (vad_on + 0.15) {
+        self.start_run = self.start_confirm_chunks;
+      }
+
+      if self.start_run < self.start_confirm_chunks {
+        return Ok(());
+      }
+
+      self.start_turn(chunk16, TurnStartReason::Vad)?;
+      return Ok(());
+    }
+
+    // in_speech == true
+    self.start_run = 0;
+
+    let cancel_turn_requested =
+      self.controls.as_ref().map(|c| c.take_cancel_turn()).unwrap_or(false);
+    if cancel_turn_requested {
+      self.abort_turn();
+      return Ok(());
+    }
+
+    // Guard against false-positive VAD starts that produce no draft text and never
+    // naturally transition back to idle (e.g. noisy environments hovering near threshold).
+    if self.should_timeout_empty_vad_turn() {
+      if self.tentative_active {
+        self.commit_finalize_from_tentative()?;
+      } else {
+        self.finish_turn(false)?;
+        self.complete_turn_after_finish();
+      }
+      return Ok(());
+    }
+
+    let silence_ms: u32;
+    if is_speech {
+      self.silence_samples = 0;
+      silence_ms = 0;
+    } else {
+      self.silence_samples = self.silence_samples.saturating_add(chunk16.len());
+      silence_ms = ((self.silence_samples as u64) * 1000 / (TARGET_SR as u64)) as u32;
+    }
+    let speech_resumed = silence_ms == 0 && self.prev_silence_ms > 0;
+    let silence_started = silence_ms > 0 && self.prev_silence_ms == 0;
+    let debug_enabled = self.debug_stats_enabled();
+
+    // Track silence-run boundaries and keep EOU latching independent of the exact
+    // frame where silence first appears.
+    if speech_resumed {
+      if debug_enabled && self.seen_eou_since_speech {
+        eprintln!(
+          "TOON_EOU_LATCH turn_id={} action=clear reason=speech_resumed audio_samples={} \
+           prev_silence_ms={}",
+          self.turn_id,
+          self.turn_audio.len(),
+          self.prev_silence_ms
+        );
+      }
+      self.seen_eou_since_speech = false;
+      self.invalidate_speculation();
+      // Strong tentative recovery: VAD cleared the speech threshold during the
+      // window. Un-latch and continue the turn.
+      if self.tentative_active {
+        self.exit_tentative_finalize_recover("speech_resumed");
+      }
+    }
+    if debug_enabled && silence_started {
+      eprintln!(
+        "TOON_VAD_SILENCE ts_ms={} turn_id={} action=start vad_prob={:.3} thold={:.3} \
+         audio_samples={} eou_latched={}",
+        now_ms(),
+        self.turn_id,
+        vad_avg,
+        vad_on,
+        self.turn_audio.len(),
+        self.seen_eou_since_speech
+      );
+    }
+    self.prev_silence_ms = silence_ms;
+
+    self.turn_audio.extend_from_slice(chunk16);
+
+    let eou_draft_len_before = self.eou_draft.len();
+    let saw_eou = self.feed_eou(chunk16)?;
+    let eou_added_alpha_text = self.eou_draft.len() > eou_draft_len_before
+      && self.eou_draft[eou_draft_len_before..].chars().any(|c| c.is_alphabetic());
+    if saw_eou && !self.seen_eou_since_speech && debug_enabled {
+      eprintln!(
+        "TOON_EOU_LATCH turn_id={} action=fire audio_samples={} silence_ms={} is_speech={}",
+        self.turn_id,
+        self.turn_audio.len(),
+        silence_ms,
+        is_speech
+      );
+    }
+    if saw_eou {
+      let was_latched = self.seen_eou_since_speech;
+      self.seen_eou_since_speech = true;
+      // First EOU latch in this speech run: kick the next partial slice
+      // immediately so the bulk of the just-finished clause is in flight by
+      // the time the silence-end commit fires. The forced flag bypasses the
+      // `incremental_slice_ms` cooldown but still respects the
+      // `incremental_min_new_audio_samples` threshold and the inflight-slice
+      // guard, so it no-ops on rapid-fire turns. If the user keeps talking,
+      // the existing `speech_resumed` branch (above) clears
+      // `seen_eou_since_speech` and `invalidate_speculation` drops the
+      // in-flight result.
+      if !was_latched && self.cfg.incremental_finalization_enabled {
+        if self.debug_stats_enabled() {
+          let inflight = self.incremental.inflight_segment.is_some();
+          let last_refined = self.incremental.last_refined_audio_end_samples;
+          let new_audio = self.turn_audio.len().saturating_sub(last_refined);
+          let min_new = self.incremental_min_new_audio_samples();
+          eprintln!(
+            "TOON_FORCE_SLICE turn_id={} action=request audio_samples={} \
+             last_refined={} new_audio={} min_new={} inflight={} has_draft={}",
+            self.turn_id,
+            self.turn_audio.len(),
+            last_refined,
+            new_audio,
+            min_new,
+            inflight,
+            self.has_draft_text(),
+          );
+        }
+        self.maybe_schedule_incremental_slice(true);
+      }
+    }
+
+    // Weak tentative recovery: VAD didn't cross the turn-start threshold (so the
+    // strong-recovery branch above didn't fire), but the soft attack of a new word
+    // is bumping VAD probability AND EOU is decoding it as text. Together these
+    // are strong evidence the user is still speaking — un-latch.
+    if self.tentative_active {
+      self.tentative_active_chunks = self.tentative_active_chunks.saturating_add(1);
+      if eou_added_alpha_text {
+        self.tentative_active_with_text = self.tentative_active_with_text.saturating_add(1);
+      }
+      if score >= self.cfg.recovery_vad_thold {
+        self.tentative_recovery_vad_above_thr = true;
+      }
+      if eou_added_alpha_text {
+        self.tentative_recovery_eou_text_seen = true;
+      }
+      if self.tentative_recovery_vad_above_thr && self.tentative_recovery_eou_text_seen {
+        self.exit_tentative_finalize_recover("vad_plus_eou");
+        // Also clear the EOU latch so subsequent silence doesn't immediately
+        // re-trigger an end-condition.
+        self.seen_eou_since_speech = false;
+        self.silence_samples = 0;
+      }
+    }
+
+    if self.cfg.incremental_finalization_enabled {
+      self.maybe_schedule_incremental_slice(false);
+    } else if silence_started {
+      self.start_speculative_finalize();
+    }
+
+    let force_finish_requested =
+      self.controls.as_ref().map(|c| c.force_finish_requested()).unwrap_or(false);
+    if force_finish_requested {
+      if let Some(ctrl) = &self.controls {
+        let _ = ctrl.take_force_finish();
+      }
+      if self.tentative_active {
+        self.commit_finalize_from_tentative()?;
+      } else {
+        self.finish_turn(false)?;
+        self.complete_turn_after_finish();
+      }
+      return Ok(());
+    }
+
+    // Never end while VAD says speech.
+    if is_speech {
+      return Ok(());
+    }
+
+    let suppress_auto_end = self.controls.as_ref().map(|c| c.manual_hold_active()).unwrap_or(false);
+    if suppress_auto_end {
+      return Ok(());
+    }
+
+    // If we're already in tentative-finalize, manage the recovery window: commit
+    // when it elapses (or on max-silence), otherwise stay tentative for another
+    // chunk. Recovery itself was already evaluated above (strong + weak paths).
+    if self.tentative_active {
+      let elapsed_ms = self.tentative_window_elapsed_ms();
+      let must_commit =
+        silence_ms >= self.cfg.eou_max_silence_ms || elapsed_ms >= self.cfg.recovery_window_ms;
+      if must_commit {
+        self.commit_finalize_from_tentative()?;
+      }
+      return Ok(());
+    }
+
+    // In silence: decide whether to end the utterance.
+    let (end_now, reason) = if silence_ms < self.cfg.eou_min_silence_ms {
+      (false, "silence_below_min")
+    } else if self.seen_eou_since_speech {
+      (true, "eou_latched_and_min_silence_met")
+    } else if silence_ms >= self.cfg.eou_max_silence_ms {
+      (true, "max_silence_reached")
+    } else {
+      (false, "waiting_for_eou_or_max_silence")
+    };
+
+    if !end_now {
+      return Ok(());
+    }
+
+    if debug_enabled {
+      eprintln!(
+        "TOON_END_TURN ts_ms={} turn_id={} reason={} silence_ms={} eou_min_ms={} eou_max_ms={} \
+         eou_latched={} audio_samples={} vad_prob={:.3} thold={:.3}",
+        now_ms(),
+        self.turn_id,
+        reason,
+        silence_ms,
+        self.cfg.eou_min_silence_ms,
+        self.cfg.eou_max_silence_ms,
+        self.seen_eou_since_speech,
+        self.turn_audio.len(),
+        vad_avg,
+        vad_on
+      );
+    }
+
+    // If recovery is disabled (recovery_window_ms == 0), commit immediately —
+    // matches the pre-tentative-finalize behaviour exactly.
+    if self.cfg.recovery_window_ms == 0 {
+      self.finish_turn(false)?;
+      self.complete_turn_after_finish();
+      return Ok(());
+    }
+
+    // Otherwise enter the tentative window. Audio keeps appending, EOU keeps
+    // being fed, VAD keeps being scored. Strong/weak recovery branches above
+    // can un-latch us; otherwise this very block re-fires next chunk and
+    // commits when the window elapses.
+    self.enter_tentative_finalize(reason, vad_avg);
+    Ok(())
+  }
+
+  fn on_end(&mut self, _health: AudioHealth) -> Result<()> {
+    self.drain_async_results();
+    if self.in_speech {
+      if self.tentative_active {
+        // Stream ended mid-tentative; commit through the same path so flags
+        // clear and `complete_turn_after_finish` runs.
+        self.commit_finalize_from_tentative()?;
+      } else {
+        self.finish_turn(false)?;
+      }
+    }
+    self.drain_async_results();
+    self.flush_pending_spec_finalize();
+    Ok(())
+  }
+
+  fn start_turn(&mut self, current_chunk: &[f32], reason: TurnStartReason) -> Result<()> {
+    self.flush_pending_spec_finalize();
+    self.invalidate_speculation();
+    self.start_run = 0;
+    self.in_speech = true;
+    self.silence_samples = 0;
+    self.tracker.reset();
+    self.pending_active_clear_chunks = 0;
+    self.turn_started_at = Instant::now();
+    self.turn_started_by_vad = reason == TurnStartReason::Vad;
+
+    self.eou.reset_turn();
+    self.eou_draft.clear();
+    self.prev_silence_ms = 0;
+    self.seen_eou_since_speech = false;
+    self.tentative_active = false;
+    self.tentative_recovery_eou_text_seen = false;
+    self.tentative_recovery_vad_above_thr = false;
+    self.incremental.reset(Instant::now());
+
+    self.turn_audio.clear();
+    self.turn_id = self.turn_id.wrapping_add(1);
+
+    // Single source of truth for "turn started, by what mechanism." VAD-driven
+    // starts already log `AZAD_VAD_START_LATENCY` below; non-VAD starts
+    // (`ManualOverride` from `force_start`, e.g. push-to-talk) had no
+    // observable log line — they only became visible via downstream
+    // `TOON_VAD_SILENCE turn_id=N action=start` events from the new turn id.
+    // That made it impossible to tell whether a turn was created via VAD or
+    // force-start when post-mortem-debugging an "overlay never showed up" turn.
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_TURN_START ts_ms={} turn_id={} reason={:?} audio_samples={}",
+        now_ms(),
+        self.turn_id,
+        reason,
+        self.turn_audio.len(),
+      );
+    }
+
+    self.renderer.emit(RenderEvent::Status(StatusView {
+      state: EngineState::Speech,
+      detail: "speech".to_string(),
+    }));
+    // Unified turn-start signal. Fires for every start_turn regardless of
+    // reason so the renderer can arm overlay state for `ManualOverride`
+    // turns that have no other engine-side cue. `SpeechStartedByVad` below
+    // remains the VAD-specific event (load-bearing for status text and
+    // SpeechEvent consumers); both fire on Vad starts (idempotent).
+    self.renderer.emit(RenderEvent::TurnStarted {
+      reason: match reason {
+        TurnStartReason::Vad => TurnStartedReason::Vad,
+        TurnStartReason::ManualOverride => TurnStartedReason::Manual,
+      },
+    });
+    if reason == TurnStartReason::Vad {
+      self.renderer.emit(RenderEvent::SpeechStartedByVad);
+      // Cold-start observability: how long after the latest wake did the
+      // VAD finally confirm speech-start? This is the single number that
+      // proves "fixed". Only meaningful for the first VAD start after a
+      // wake; subsequent starts will have large values, easy to filter.
+      if self.debug_stats_enabled() {
+        if let Some(at) = self.controls.as_ref().and_then(|c| c.capture_enabled_since()) {
+          eprintln!(
+            "AZAD_VAD_START_LATENCY ts_ms={} ms_since_enable={} reason=vad",
+            now_ms(),
+            at.elapsed().as_millis()
+          );
+        }
+      }
+    }
+    self.renderer.emit(RenderEvent::Active {
+      id: self.turn_id,
+      committed: String::new(),
+      live: String::new(),
+    });
+
+    // Feed pre-roll if available; it already includes the current chunk.
+    if self.pre_roll_samples > 0 && !self.pre_roll.is_empty() {
+      let pre = std::mem::take(&mut self.pre_roll);
+      self.turn_audio.extend_from_slice(&pre);
+      for piece in pre.chunks_exact(CHUNK_SAMPLES) {
+        let _ = self.feed_eou(piece)?;
+      }
+    } else {
+      self.turn_audio.extend_from_slice(current_chunk);
+      let _ = self.feed_eou(current_chunk)?;
+    }
+    self.pre_roll.clear();
+
+    Ok(())
+  }
+
+  fn feed_eou(&mut self, piece: &[f32]) -> Result<bool> {
+    let (out, saw_eou) = self
+      .eou
+      .transcribe_with_eou(piece, false)
+      .map_err(|e| anyhow!("Parakeet EOU transcribe failed: {e}"))?;
+
+    if !out.is_empty() {
+      let was_empty = self.eou_draft.is_empty();
+      let cleaned = out.replace('▁', " ");
+      let cleaned = normalize_chunk_case(&self.eou_draft, cleaned);
+      let delta_chars = cleaned.chars().count();
+      self.eou_draft.push_str(&cleaned);
+
+      // Record per-emission timing and the surface form so the empty-TDT
+      // branch in `handle_incremental_result` can ask "did EOU emit text
+      // during this slice's audio span?" AND the debug-recording sidecar
+      // can record what EOU heard for that span. The audio_samples value
+      // matches the TOON_EOU_TEXT log line below so log fixtures and
+      // runtime data line up exactly.
+      self.incremental.eou_emissions.push(EouEmission {
+        audio_samples: self.turn_audio.len(),
+        delta_chars,
+        text: cleaned.clone(),
+      });
+
+      // Stability tracker expects "full hypothesis"; EOU produces incremental tokens.
+      // Using the cumulative draft keeps the UI "stable prefix + live suffix" behavior.
+      let (committed, live) = self.tracker.update(&self.eou_draft);
+      self.renderer.emit(RenderEvent::Active { id: self.turn_id, committed, live });
+
+      // Diagnostic: capture per-emission timing so we can correlate the renderer's
+      // overlay-show gate (`overlay_pending_vad_text` cleared by the first non-empty
+      // DraftUpdated) against EOU's actual text-emission cadence. `first=true` marks
+      // the very first non-empty emission of this turn — i.e. the moment the renderer
+      // is finally allowed to show the listening overlay. Pairs with TOON_EOU_LATCH
+      // (which fires on `<EOU>` token detection regardless of whether `out` was empty)
+      // to disambiguate "model fired EOU but produced no text" from "model emitted
+      // text". Per-chunk overhead is one eprintln, fires only with debug stats on.
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_EOU_TEXT turn_id={} audio_samples={} first={} delta_chars={} \
+           draft_chars={}",
+          self.turn_id,
+          self.turn_audio.len(),
+          was_empty,
+          delta_chars,
+          self.eou_draft.chars().count(),
+        );
+      }
+    }
+
+    Ok(saw_eou)
+  }
+
+  fn enter_tentative_finalize(&mut self, reason: &'static str, vad_prob: f32) {
+    self.tentative_active = true;
+    self.tentative_latched_at_audio_samples = self.turn_audio.len();
+    self.tentative_latch_reason = reason;
+    self.tentative_recovery_eou_text_seen = false;
+    self.tentative_recovery_vad_above_thr = false;
+    self.tentative_active_chunks = 0;
+    self.tentative_active_with_text = 0;
+    // Fire the Finalizing pulse immediately so the overlay's pulsing border
+    // is visible during the entire recovery window plus the TDT pass — without
+    // this, the deferred emission collapsed the visible window to ~100 ms when
+    // TDT returns quickly. Recovery emits `FinalizingCancelled` to undo this.
+    self.emit_finalizing_pulse();
+    // Reset the EOU decoder so it doesn't stay biased toward re-firing the
+    // `<EOU>` token on every subsequent chunk. Without this, the decoder's
+    // post-utterance state suppresses text output for the entire tentative
+    // window, which (a) makes the overlay appear frozen and (b) prevents
+    // the weak-recovery branch (which requires `feed_eou` to add alphabetic
+    // text) from ever firing. Cost: we lose inter-chunk RNN context for the
+    // recovery audio, which is acceptable since the user has just finished
+    // a clause.
+    self.eou.reset_turn();
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_TENTATIVE turn_id={} action=enter reason={} audio_samples={} vad_prob={:.3}",
+        self.turn_id,
+        reason,
+        self.turn_audio.len(),
+        vad_prob
+      );
+    }
+  }
+
+  fn exit_tentative_finalize_recover(&mut self, signal: &'static str) {
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_TENTATIVE turn_id={} action=recover signal={} latch_reason={} \
+         audio_samples={} elapsed_samples={} chunks={} text_chunks={} \
+         vad_evidence={} eou_evidence={}",
+        self.turn_id,
+        signal,
+        self.tentative_latch_reason,
+        self.turn_audio.len(),
+        self.turn_audio.len().saturating_sub(self.tentative_latched_at_audio_samples),
+        self.tentative_active_chunks,
+        self.tentative_active_with_text,
+        self.tentative_recovery_vad_above_thr,
+        self.tentative_recovery_eou_text_seen,
+      );
+    }
+    self.tentative_active = false;
+    self.tentative_recovery_eou_text_seen = false;
+    self.tentative_recovery_vad_above_thr = false;
+    // Tell the renderer the finalize state we entered at tentative-entry is
+    // off — clears the pulsing border, returns the overlay to live state.
+    self.renderer.emit(RenderEvent::FinalizingCancelled { id: self.turn_id });
+    // The existing `speech_resumed` path (or weak-recovery branch) already cleared
+    // `seen_eou_since_speech`; no need to repeat here.
+  }
+
+  fn commit_finalize_from_tentative(&mut self) -> Result<()> {
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_TENTATIVE turn_id={} action=commit latch_reason={} audio_samples={} \
+         elapsed_samples={} chunks={} text_chunks={} vad_evidence={} eou_evidence={}",
+        self.turn_id,
+        self.tentative_latch_reason,
+        self.turn_audio.len(),
+        self.turn_audio.len().saturating_sub(self.tentative_latched_at_audio_samples),
+        self.tentative_active_chunks,
+        self.tentative_active_with_text,
+        self.tentative_recovery_vad_above_thr,
+        self.tentative_recovery_eou_text_seen,
+      );
+    }
+    self.tentative_active = false;
+    self.tentative_recovery_eou_text_seen = false;
+    self.tentative_recovery_vad_above_thr = false;
+    // The tentative-entry path already emitted Finalizing; pass `already_pulsed`
+    // so finish_turn doesn't fire it a second time.
+    self.finish_turn(true)?;
+    self.complete_turn_after_finish();
+    Ok(())
+  }
+
+  fn tentative_window_elapsed_ms(&self) -> u32 {
+    samples_to_ms_at_target_sr(
+      self.turn_audio.len().saturating_sub(self.tentative_latched_at_audio_samples),
+    )
+  }
+
+  /// Compose the draft text used for both the in-flight `Finalizing` pulse and
+  /// the eventual `FinalLine` emission. Falls back to raw EOU draft text when
+  /// the stability tracker hasn't committed yet — same priority as `finish_turn`.
+  fn current_finalize_draft(&self) -> String {
+    let mut draft = self.tracker.full_text().trim().to_string();
+    if draft.is_empty() {
+      draft = self.eou_draft.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    draft
+  }
+
+  /// Emit `RenderEvent::Finalizing` for the current turn. Used by
+  /// `enter_tentative_finalize` so the pulsing border becomes visible
+  /// immediately at EOU latch — the recovery window keeps it on screen
+  /// even when TDT returns quickly. Skipped when there's nothing to
+  /// pulse: no TDT-final-pass mode, no audio yet, or no draft text.
+  fn emit_finalizing_pulse(&self) {
+    if !self.cfg.enable_tdt_final_pass || self.turn_audio.is_empty() {
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_FINALIZE_PULSE turn_id={} action=skip reason={} \
+           enable_tdt={} audio_empty={}",
+          self.turn_id,
+          if !self.cfg.enable_tdt_final_pass { "tdt_disabled" } else { "audio_empty" },
+          self.cfg.enable_tdt_final_pass,
+          self.turn_audio.is_empty(),
+        );
+      }
+      return;
+    }
+    let draft = self.current_finalize_draft();
+    if draft.is_empty() {
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_FINALIZE_PULSE turn_id={} action=skip reason=empty_draft tracker_len={} \
+           eou_draft_len={}",
+          self.turn_id,
+          self.tracker.full_text().len(),
+          self.eou_draft.len(),
+        );
+      }
+      return;
+    }
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_FINALIZE_PULSE turn_id={} action=emit audio_samples={} draft_chars={}",
+        self.turn_id,
+        self.turn_audio.len(),
+        draft.chars().count(),
+      );
+    }
+    self.renderer.emit(RenderEvent::Finalizing { id: self.turn_id, text: draft });
+  }
+
+  fn finish_turn(&mut self, already_pulsed: bool) -> Result<()> {
+    let draft = self.current_finalize_draft();
+    let audio_snapshot: Vec<f32> = std::mem::take(&mut self.turn_audio);
+    if !draft.is_empty() {
+      if self.cfg.enable_tdt_final_pass {
+        self
+          .renderer
+          .emit(RenderEvent::FinalLine { id: self.turn_id, text: draft.clone() });
+        // If no pre-final text was produced, skip expensive final-pass ASR.
+        // This avoids running a refinement pass on silent/no-content turns.
+        if !audio_snapshot.is_empty() {
+          if !already_pulsed {
+            self
+              .renderer
+              .emit(RenderEvent::Finalizing { id: self.turn_id, text: draft.clone() });
+          }
+          if self.cfg.incremental_finalization_enabled {
+            self.submit_incremental_final_pass(audio_snapshot, &draft);
+          } else {
+            self.submit_final_pass(audio_snapshot);
+          }
+        }
+      } else {
+        // EOU-only mode: finalize immediately without a TDT refinement pass.
+        self.renderer.emit(RenderEvent::ReplaceLine { id: self.turn_id, text: draft });
+      }
+    }
+
+    self.tracker.reset();
+    self.eou_draft.clear();
+    self.turn_started_by_vad = false;
+    Ok(())
+  }
+
+  fn abort_turn(&mut self) {
+    self.in_speech = false;
+    self.start_run = 0;
+    self.silence_samples = 0;
+    self.pre_roll.clear();
+    self.turn_audio.clear();
+    self.prev_silence_ms = 0;
+    self.seen_eou_since_speech = false;
+    self.tentative_active = false;
+    self.tentative_recovery_eou_text_seen = false;
+    self.tentative_recovery_vad_above_thr = false;
+    self.turn_started_by_vad = false;
+    self.invalidate_speculation();
+    self.pending_active_clear_chunks = 0;
+    self.tracker.reset();
+    self.eou_draft.clear();
+    self.eou.reset_turn();
+    self.incremental.reset(Instant::now());
+
+    self.renderer.emit(RenderEvent::Active {
+      id: self.turn_id,
+      committed: String::new(),
+      live: String::new(),
+    });
+    self.renderer.emit(RenderEvent::Status(StatusView {
+      state: EngineState::Idle,
+      detail: "idle".to_string(),
+    }));
+  }
+
+  fn should_timeout_empty_vad_turn(&self) -> bool {
+    if !self.turn_started_by_vad {
+      return false;
+    }
+
+    let manual_hold_active =
+      self.controls.as_ref().map(|c| c.manual_hold_active()).unwrap_or(false);
+    if manual_hold_active {
+      return false;
+    }
+
+    let has_text = !self.tracker.full_text().trim().is_empty() || !self.eou_draft.trim().is_empty();
+    if has_text {
+      return false;
+    }
+
+    let timeout_ms = u64::from(self.cfg.eou_max_silence_ms.max(1)).saturating_mul(3);
+    self.turn_started_at.elapsed().as_millis() >= u128::from(timeout_ms)
+  }
+
+  fn complete_turn_after_finish(&mut self) {
+    if self.stop_after_turn {
+      self.session_complete = true;
+      self.in_speech = false;
+      self.silence_samples = 0;
+      self.pre_roll.clear();
+      return;
+    }
+
+    self.in_speech = false;
+    self.silence_samples = 0;
+    self.pre_roll.clear();
+
+    // Delay clearing "Active" so short-turn drafts don't get instantly erased before the TUI
+    // has a chance to render them.
+    self.pending_active_clear_chunks = 1;
+    self.renderer.emit(RenderEvent::Status(StatusView {
+      state: EngineState::Idle,
+      detail: "idle".to_string(),
+    }));
+  }
+
+  fn has_draft_text(&self) -> bool {
+    !self.tracker.full_text().trim().is_empty() || !self.eou_draft.trim().is_empty()
+  }
+
+  fn incremental_slice_interval(&self) -> Duration {
+    Duration::from_millis(u64::from(self.cfg.incremental_slice_ms.max(1)))
+  }
+
+  fn incremental_overlap_samples(&self) -> usize {
+    ms_to_samples(self.cfg.incremental_overlap_ms)
+  }
+
+  fn incremental_left_context_samples(&self) -> usize {
+    ms_to_samples(self.cfg.incremental_left_context_ms)
+  }
+
+  fn incremental_max_segment_samples(&self) -> usize {
+    ms_to_samples(INCREMENTAL_MAX_SEGMENT_MS)
+  }
+
+  fn incremental_min_new_audio_samples(&self) -> usize {
+    ms_to_samples(self.cfg.incremental_min_new_audio_ms)
+  }
+
+  fn maybe_schedule_incremental_slice(&mut self, force_interval: bool) {
+    if !self.cfg.enable_tdt_final_pass || !self.cfg.incremental_finalization_enabled {
+      return;
+    }
+    if !self.in_speech || self.turn_audio.is_empty() || !self.has_draft_text() {
+      return;
+    }
+
+    let now = Instant::now();
+    let due = force_interval
+      || now.duration_since(self.incremental.last_slice_emitted_at)
+        >= self.incremental_slice_interval();
+    if self.incremental.inflight_segment.is_some() {
+      if due {
+        self.incremental.pending_reschedule = true;
+      }
+      return;
+    }
+    if !due {
+      return;
+    }
+
+    let end = self.turn_audio.len();
+    let new_audio = end.saturating_sub(self.incremental.last_refined_audio_end_samples);
+    if new_audio < self.incremental_min_new_audio_samples() {
+      return;
+    }
+
+    let start = self
+      .incremental
+      .last_refined_audio_end_samples
+      .saturating_sub(self.incremental_overlap_samples())
+      .saturating_sub(self.incremental_left_context_samples())
+      .min(end);
+    let start = cap_segment_start(start, end, self.incremental_max_segment_samples());
+    if end <= start {
+      return;
+    }
+
+    let audio = self.turn_audio[start..end].to_vec();
+    if self.enqueue_incremental_slice(start, end, false, audio) {
+      self.incremental.last_slice_emitted_at = now;
+      self.incremental.pending_reschedule = false;
+    }
+  }
+
+  fn enqueue_incremental_slice(
+    &mut self,
+    start_sample: usize,
+    end_sample: usize,
+    is_tail: bool,
+    audio: Vec<f32>,
+  ) -> bool {
+    if end_sample <= start_sample || audio.is_empty() {
+      return false;
+    }
+
+    let segment_id = next_job_id(&mut self.incremental.next_segment_id);
+    self.incremental.inflight_segment = Some(IncrementalSegmentMeta {
+      segment_id,
+      turn_id: self.turn_id,
+      start_sample,
+      end_sample,
+      is_tail,
+      enqueued_at: Instant::now(),
+      tail_wait_budget_ms: None,
+    });
+    if self
+      .tdt_tx
+      .send(TdtJob {
+        turn_id: self.turn_id,
+        audio,
+        kind: TdtJobKind::Incremental { segment_id, start_sample, end_sample, is_tail },
+      })
+      .is_err()
+    {
+      self.incremental.inflight_segment = None;
+      return false;
+    }
+    true
+  }
+
+  fn wait_for_inflight_incremental(&mut self, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while self.incremental.inflight_segment.is_some() {
+      let now = Instant::now();
+      if now >= deadline {
+        return false;
+      }
+      let remaining = deadline.saturating_duration_since(now);
+      match self.async_rx.recv_timeout(remaining) {
+        Ok(TdtResult::Speculative(result)) => self.handle_speculative_result(result),
+        Ok(TdtResult::Incremental(result)) => self.handle_incremental_result(result),
+        Err(crossbeam_channel::RecvTimeoutError::Timeout) => return false,
+        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return false,
+      }
+    }
+    true
+  }
+
+  fn submit_incremental_final_pass(&mut self, audio: Vec<f32>, draft_text: &str) {
+    let debug_enabled = self.debug_stats_enabled();
+    let live_session = self.controls.is_some();
+    let wait_ms = u64::from(self.cfg.incremental_wait_tail_result_ms.max(1));
+    let tail_wait_ms = incremental_tail_wait_ms(wait_ms, live_session);
+    if self.incremental.inflight_segment.is_some() {
+      if !self.wait_for_inflight_incremental(Duration::from_millis(tail_wait_ms)) {
+        // Avoid racing a just-completed inflight result.
+        self.drain_async_results();
+        if self.incremental.inflight_segment.is_some() {
+          if debug_enabled {
+            eprintln!(
+              "TOON_PARTIAL_FINAL turn_id={} action=preexisting_inflight_timeout_abandon",
+              self.turn_id
+            );
+          }
+          // A stale in-flight live segment can be superseded by a fresh tail request.
+          // Clearing here prevents an immediate full-pass bailout under normal load.
+          self.incremental.inflight_segment = None;
+          self.incremental.pending_reschedule = false;
+        }
+      }
+    }
+
+    let audio_len = audio.len();
+    let tail_plan = finalize_tail_plan(
+      self.incremental.has_refined_text,
+      audio_len,
+      self.incremental.last_refined_audio_end_samples,
+      self.incremental.last_completed_segment_was_tail,
+    );
+    if tail_plan == FinalizeTailPlan::RunTail {
+      let start = self
+        .incremental
+        .last_refined_audio_end_samples
+        .saturating_sub(self.incremental_overlap_samples())
+        .saturating_sub(self.incremental_left_context_samples())
+        .min(audio_len);
+      let start = cap_segment_start(start, audio_len, self.incremental_max_segment_samples());
+      if audio_len > start {
+        let tail_audio = audio[start..audio_len].to_vec();
+        if !self.enqueue_incremental_slice(start, audio_len, true, tail_audio) {
+          if debug_enabled {
+            eprintln!(
+              "TOON_PARTIAL_FINAL turn_id={} action=full_pass_bailout reason=tail_enqueue_failed",
+              self.turn_id
+            );
+          }
+          self.emit_partial_finalize_outcome(
+            self.turn_id,
+            PartialFinalizeOutcome::FullPassBailout("tail_enqueue_failed"),
+          );
+          if self.debug_stats_enabled() {
+            self.enqueue_bailout_audit(self.turn_id, audio.clone(), "tail_enqueue_failed");
+          }
+          self.submit_final_pass(audio);
+          return;
+        }
+        if let Some(inflight) = self.incremental.inflight_segment.as_mut() {
+          inflight.tail_wait_budget_ms = Some(tail_wait_ms);
+          if debug_enabled {
+            eprintln!(
+              "TOON_PARTIAL_TAIL turn_id={} action=enqueue segment_id={} range=[{}, {}) wait_budget_ms={}",
+              self.turn_id,
+              inflight.segment_id,
+              inflight.start_sample,
+              inflight.end_sample,
+              tail_wait_ms
+            );
+          }
+        }
+
+        if !self.wait_for_inflight_incremental(Duration::from_millis(tail_wait_ms)) {
+          // Avoid racing a just-completed tail result.
+          self.drain_async_results();
+          if let Some(inflight) = self.incremental.inflight_segment.take() {
+            if live_session {
+              if debug_enabled {
+                let waited_ms = elapsed_ms_since(inflight.enqueued_at);
+                eprintln!(
+                  "TOON_PARTIAL_FINAL turn_id={} action=tail_timeout_best_effort segment_id={} waited_ms={} wait_budget_ms={}",
+                  self.turn_id, inflight.segment_id, waited_ms, tail_wait_ms
+                );
+              }
+              if inflight.is_tail {
+                self.incremental.timed_out_tail_segments.push(inflight);
+              }
+              self.incremental.pending_reschedule = false;
+            } else {
+              if debug_enabled {
+                eprintln!(
+                  "TOON_PARTIAL_FINAL turn_id={} action=full_pass_bailout reason=tail_timeout",
+                  self.turn_id
+                );
+              }
+              self.emit_partial_finalize_outcome(
+                self.turn_id,
+                PartialFinalizeOutcome::FullPassBailout("tail_timeout"),
+              );
+              if self.debug_stats_enabled() {
+                self.enqueue_bailout_audit(self.turn_id, audio.clone(), "tail_timeout");
+              }
+              self.submit_final_pass(audio);
+              return;
+            }
+          } else if debug_enabled {
+            eprintln!("TOON_PARTIAL_FINAL turn_id={} action=tail_timeout_recovered", self.turn_id);
+          }
+        }
+      }
+    } else {
+      debug_assert!(
+        self.incremental.last_completed_segment_was_tail,
+        "tail finalize skipped without a tail-completed segment"
+      );
+    }
+
+    // If the tail result came back with empty text (Parakeet TDT can silently decode a tail
+    // slice to `""` when its start boundary lands mid-phrase), partial_segments never grew for
+    // that range and assembled_text ends mid-sentence. Emitting that truncated text is
+    // strictly worse than running a full-pass TDT over the whole turn audio — the full-pass
+    // sees enough context to decode the tail correctly.
+    // Only guard against tail-coverage gaps when at least one non-empty partial actually
+    // landed. If `partial_segments` is empty, `assembled_end=0` would always look like a
+    // maximal gap and we'd fire `tail_coverage_gap` for every short turn — punting to the
+    // async full-pass path, which has left the overlay stuck spinning with no FinalText
+    // emitted. The downstream empty-incremental handlers (draft_emit / full_pass_bailout
+    // for no_incremental_or_draft_text) already know what to do when there are no partials,
+    // so let them run.
+    let assembled_end = self
+      .incremental
+      .partial_segments
+      .iter()
+      .map(|p| p.end_sample)
+      .max()
+      .unwrap_or(0);
+    let has_any_partial = !self.incremental.partial_segments.is_empty();
+    if has_any_partial
+      && tail_coverage_is_incomplete(assembled_end, audio_len, TAIL_COVERAGE_TOLERANCE_SAMPLES)
+    {
+      if debug_enabled {
+        eprintln!(
+          "TOON_PARTIAL_FINAL turn_id={} action=full_pass_bailout reason=tail_coverage_gap \
+           assembled_end={} audio_len={}",
+          self.turn_id, assembled_end, audio_len
+        );
+      }
+      self.emit_partial_finalize_outcome(
+        self.turn_id,
+        PartialFinalizeOutcome::FullPassBailout("tail_coverage_gap"),
+      );
+      if self.debug_stats_enabled() {
+        self.enqueue_bailout_audit(self.turn_id, audio.clone(), "tail_coverage_gap");
+      }
+      self.submit_final_pass(audio);
+      return;
+    }
+
+    // Mirror the tail-coverage check at the leading edge: if the earliest non-empty partial
+    // starts meaningfully after 0, an earlier incremental slice silently decoded to empty
+    // text and the audio before the next slice's start is uncovered. Full-pass TDT sees the
+    // whole turn and recovers the lost prefix.
+    let leading_start = self
+      .incremental
+      .partial_segments
+      .iter()
+      .map(|p| p.start_sample)
+      .min()
+      .unwrap_or(0);
+    if has_any_partial
+      && leading_coverage_is_incomplete(leading_start, TAIL_COVERAGE_TOLERANCE_SAMPLES)
+    {
+      if debug_enabled {
+        eprintln!(
+          "TOON_PARTIAL_FINAL turn_id={} action=full_pass_bailout reason=leading_coverage_gap \
+           leading_start={} audio_len={}",
+          self.turn_id, leading_start, audio_len
+        );
+      }
+      self.emit_partial_finalize_outcome(
+        self.turn_id,
+        PartialFinalizeOutcome::FullPassBailout("leading_coverage_gap"),
+      );
+      if self.debug_stats_enabled() {
+        self.enqueue_bailout_audit(self.turn_id, audio.clone(), "leading_coverage_gap");
+      }
+      self.submit_final_pass(audio);
+      return;
+    }
+
+    // Detect interior coverage gaps. `partial_segments` includes EOU-corroborated
+    // empty-text entries from `handle_incremental_result` — they have valid
+    // `(start_sample, end_sample)` ranges so they fill coverage holes the
+    // surrounding non-empty partials don't reach. A surviving gap here means
+    // TDT decoded a slice to empty AND EOU was emitting at speech rates over
+    // that span — i.e. real-but-missed-speech where the stitcher would silently
+    // join across the missing audio. Full-pass TDT recovers what was lost.
+    let partial_ranges: Vec<(usize, usize)> = self
+      .incremental
+      .partial_segments
+      .iter()
+      .map(|p| (p.start_sample, p.end_sample))
+      .collect();
+    if let Some((prev_end, next_start)) =
+      middle_coverage_is_incomplete(&partial_ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES)
+    {
+      if debug_enabled {
+        eprintln!(
+          "TOON_PARTIAL_FINAL turn_id={} action=full_pass_bailout reason=middle_coverage_gap \
+           prev_end={} next_start={} audio_len={}",
+          self.turn_id, prev_end, next_start, audio_len
+        );
+      }
+      self.emit_partial_finalize_outcome(
+        self.turn_id,
+        PartialFinalizeOutcome::FullPassBailout("middle_coverage_gap"),
+      );
+      if self.debug_stats_enabled() {
+        self.enqueue_bailout_audit(self.turn_id, audio.clone(), "middle_coverage_gap");
+      }
+      self.submit_final_pass(audio);
+      return;
+    }
+
+    let final_text = self.incremental.assembled_text.trim().to_string();
+    if !final_text.is_empty() {
+      if debug_enabled {
+        // Filter EOU-corroborated empty entries before handing to the audit
+        // worker — they exist only to fill the coverage map, not as real
+        // partials. partial_count downstream means "real partials emitted."
+        let partial_segments = non_empty_partials(&self.incremental.partial_segments);
+        let partial_count = partial_segments.len();
+        if !self.enqueue_partial_audit(
+          self.turn_id,
+          audio.clone(),
+          final_text.clone(),
+          AuditEmittedKind::Assembled,
+          partial_segments,
+        ) {
+          let event = log_partial_audit_enqueue_error(
+            self.turn_id,
+            AuditEmittedKind::Assembled,
+            partial_count,
+            "audit worker unavailable (queue send failed)",
+          );
+          self.renderer.emit(RenderEvent::DebugStats(event));
+        }
+        eprintln!(
+          "TOON_PARTIAL_FINAL turn_id={} action=emit_assembled text={:?}",
+          self.turn_id, final_text
+        );
+      }
+      let final_text = normalize_chunk_case("", final_text);
+      self
+        .renderer
+        .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text });
+      self.emit_partial_finalize_outcome(self.turn_id, PartialFinalizeOutcome::Assembled);
+      return;
+    }
+
+    let draft_text = draft_text.trim().to_string();
+    if !draft_text.is_empty() {
+      if debug_enabled {
+        let partial_segments = non_empty_partials(&self.incremental.partial_segments);
+        let partial_count = partial_segments.len();
+        if !self.enqueue_partial_audit(
+          self.turn_id,
+          audio.clone(),
+          draft_text.clone(),
+          AuditEmittedKind::DraftEmit,
+          partial_segments,
+        ) {
+          let event = log_partial_audit_enqueue_error(
+            self.turn_id,
+            AuditEmittedKind::DraftEmit,
+            partial_count,
+            "audit worker unavailable (queue send failed)",
+          );
+          self.renderer.emit(RenderEvent::DebugStats(event));
+        }
+        eprintln!(
+          "TOON_PARTIAL_FINAL turn_id={} action=emit_draft text={:?}",
+          self.turn_id, draft_text
+        );
+      }
+      self
+        .renderer
+        .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: draft_text });
+      self.emit_partial_finalize_outcome(self.turn_id, PartialFinalizeOutcome::DraftEmit);
+      return;
+    }
+
+    self.emit_partial_finalize_outcome(
+      self.turn_id,
+      PartialFinalizeOutcome::FullPassBailout("no_incremental_or_draft_text"),
+    );
+    if self.debug_stats_enabled() {
+      self.enqueue_bailout_audit(self.turn_id, audio.clone(), "no_incremental_or_draft_text");
+    }
+    self.submit_final_pass(audio);
+  }
+
+  fn start_speculative_finalize(&mut self) {
+    if !self.cfg.enable_tdt_final_pass {
+      return;
+    }
+    if self.turn_audio.is_empty() || !self.has_draft_text() {
+      return;
+    }
+
+    let job_id = next_job_id(&mut self.next_speculative_job_id);
+    let audio_len = self.turn_audio.len();
+    self.active_speculation = Some(SpeculationMeta { job_id, turn_id: self.turn_id, audio_len });
+    self.cached_speculation = None;
+    self.latest_speculative_job_id.store(job_id, Ordering::Relaxed);
+    let _ = self.tdt_tx.send(TdtJob {
+      turn_id: self.turn_id,
+      audio: self.turn_audio.clone(),
+      kind: TdtJobKind::Speculative { job_id, audio_len },
+    });
+  }
+
+  fn submit_final_pass(&mut self, audio: Vec<f32>) {
+    if !self.cfg.enable_tdt_final_pass {
+      return;
+    }
+    // Keep only one pending speculative final at a time.
+    self.flush_pending_spec_finalize();
+    self.drain_async_results();
+
+    let turn_id = self.turn_id;
+    let audio_len = audio.len();
+    if let Some(spec) = self.cached_speculation.take() {
+      if spec.turn_id == turn_id && spec.audio_len == audio_len {
+        self.invalidate_speculation();
+        if let Some(message) = spec.error {
+          self.renderer.emit(RenderEvent::Error { message });
+        } else if !spec.text.trim().is_empty() {
+          let text = normalize_chunk_case("", spec.text);
+          self.renderer.emit(RenderEvent::ReplaceLine { id: turn_id, text });
+          return;
+        }
+        self.enqueue_final_pass(turn_id, audio);
+        return;
+      }
+    }
+
+    if !self.stop_after_turn
+      && self
+        .active_speculation
+        .as_ref()
+        .is_some_and(|s| s.turn_id == turn_id && s.audio_len == audio_len)
+    {
+      let spec_job_id = self
+        .active_speculation
+        .as_ref()
+        .map(|s| s.job_id)
+        .unwrap_or(NO_SPECULATIVE_JOB_ID);
+      self.pending_spec_finalize =
+        Some(PendingSpecFinalize { spec_job_id, turn_id, audio, waiting_since: Instant::now() });
+      return;
+    }
+
+    self.invalidate_speculation();
+    self.enqueue_final_pass(turn_id, audio);
+  }
+
+  fn enqueue_final_pass(&mut self, turn_id: u64, audio: Vec<f32>) {
+    let _ = self.tdt_tx.send(TdtJob { turn_id, audio, kind: TdtJobKind::Final });
+  }
+
+  fn enqueue_partial_audit(
+    &mut self,
+    turn_id: u64,
+    audio: Vec<f32>,
+    emitted_text: String,
+    emitted_kind: AuditEmittedKind,
+    partial_segments: Vec<IncrementalPartialSegment>,
+  ) -> bool {
+    let eou_emissions = self.incremental.eou_emissions.clone();
+    self
+      .partial_audit_tx
+      .send(PartialAuditJob {
+        turn_id,
+        audio,
+        emitted_kind,
+        emitted_text,
+        partial_segments,
+        eou_emissions,
+        bailout_reason: None,
+      })
+      .is_ok()
+  }
+
+  /// Save a debug recording for a turn that bailed to full-pass, so the wav +
+  /// sidecar are preserved for post-hoc investigation. Skips the audit-worker's
+  /// comparison full-pass TDT call (the bailout site already submitted one)
+  /// and uses a `-bailout` filename suffix that the pruner treats as a
+  /// separate, longer-retention tier.
+  fn enqueue_bailout_audit(&mut self, turn_id: u64, audio: Vec<f32>, reason: &'static str) {
+    if !self.debug_stats_enabled() {
+      return;
+    }
+    let partial_segments = self.incremental.partial_segments.clone();
+    let eou_emissions = self.incremental.eou_emissions.clone();
+    if self
+      .partial_audit_tx
+      .send(PartialAuditJob {
+        turn_id,
+        audio,
+        emitted_kind: AuditEmittedKind::Assembled,
+        emitted_text: String::new(),
+        partial_segments,
+        eou_emissions,
+        bailout_reason: Some(reason.to_string()),
+      })
+      .is_err()
+    {
+      eprintln!("Azad: bailout audit enqueue failed for turn {turn_id}");
+    }
+  }
+
+  fn flush_pending_spec_finalize(&mut self) {
+    if let Some(pending) = self.pending_spec_finalize.take() {
+      self.invalidate_speculation();
+      self.enqueue_final_pass(pending.turn_id, pending.audio);
+    }
+  }
+
+  fn maybe_timeout_pending_spec_finalize(&mut self) {
+    let timed_out = self.pending_spec_finalize.as_ref().is_some_and(|pending| {
+      pending.waiting_since.elapsed() >= Duration::from_millis(SPECULATIVE_FINAL_WAIT_MS)
+    });
+    if timed_out {
+      self.flush_pending_spec_finalize();
+    }
+  }
+
+  fn drain_async_results(&mut self) {
+    while let Ok(result) = self.async_rx.try_recv() {
+      match result {
+        TdtResult::Speculative(spec) => self.handle_speculative_result(spec),
+        TdtResult::Incremental(incremental) => self.handle_incremental_result(incremental),
+      }
+    }
+  }
+
+  fn handle_speculative_result(&mut self, result: SpeculativeResult) {
+    if self.pending_spec_finalize.as_ref().is_some_and(|pending| {
+      pending.spec_job_id == result.job_id && pending.turn_id == result.turn_id
+    }) {
+      if let Some(pending) = self.pending_spec_finalize.take() {
+        self.invalidate_speculation();
+        if let Some(message) = result.error {
+          self.renderer.emit(RenderEvent::Error { message });
+          self.enqueue_final_pass(pending.turn_id, pending.audio);
+          return;
+        }
+        if !result.text.trim().is_empty() {
+          let text = normalize_chunk_case("", result.text);
+          self.renderer.emit(RenderEvent::ReplaceLine { id: pending.turn_id, text });
+          return;
+        }
+        self.enqueue_final_pass(pending.turn_id, pending.audio);
+      }
+      return;
+    }
+
+    if self.active_speculation.as_ref().is_some_and(|active| {
+      active.job_id == result.job_id
+        && active.turn_id == result.turn_id
+        && active.audio_len == result.audio_len
+    }) {
+      self.cached_speculation = Some(result);
+    }
+  }
+
+  fn handle_incremental_result(&mut self, result: IncrementalSegmentResult) {
+    if !self.cfg.incremental_finalization_enabled || result.turn_id != self.turn_id {
+      return;
+    }
+    let debug_enabled = self.debug_stats_enabled();
+    let inflight_meta = if self
+      .incremental
+      .inflight_segment
+      .as_ref()
+      .is_some_and(|inflight| incremental_meta_matches(inflight, &result))
+    {
+      self.incremental.inflight_segment.take()
+    } else {
+      None
+    };
+    let Some(inflight_meta) = inflight_meta else {
+      if result.is_tail {
+        if let Some(idx) = self
+          .incremental
+          .timed_out_tail_segments
+          .iter()
+          .position(|meta| incremental_meta_matches(meta, &result))
+        {
+          let timed_out = self.incremental.timed_out_tail_segments.remove(idx);
+          if debug_enabled {
+            eprintln!(
+              "TOON_PARTIAL_TAIL turn_id={} action=late_result_dropped segment_id={} range=[{}, {}) latency_ms={} wait_budget_ms={}",
+              result.turn_id,
+              result.segment_id,
+              result.start_sample,
+              result.end_sample,
+              elapsed_ms_since(timed_out.enqueued_at),
+              timed_out.tail_wait_budget_ms.unwrap_or(0)
+            );
+          }
+        }
+      }
+      return;
+    };
+
+    if debug_enabled && result.is_tail {
+      eprintln!(
+        "TOON_PARTIAL_TAIL turn_id={} action=result_received segment_id={} range=[{}, {}) latency_ms={} wait_budget_ms={} had_error={} chars={}",
+        result.turn_id,
+        result.segment_id,
+        result.start_sample,
+        result.end_sample,
+        elapsed_ms_since(inflight_meta.enqueued_at),
+        inflight_meta.tail_wait_budget_ms.unwrap_or(0),
+        result.error.is_some(),
+        result.text.trim().chars().count()
+      );
+    }
+
+    let prev_refined_end = self.incremental.last_refined_audio_end_samples;
+    self.incremental.last_refined_audio_end_samples =
+      self.incremental.last_refined_audio_end_samples.max(result.end_sample);
+    self.incremental.last_completed_segment_was_tail = result.is_tail;
+
+    if let Some(message) = result.error {
+      self.renderer.emit(RenderEvent::Error { message });
+    } else {
+      let text = result.text.trim();
+      let is_retry_result = self.incremental.retry_segment_ids.contains(&result.segment_id);
+      if !text.is_empty() {
+        if is_retry_result {
+          partial_finalize_counters()
+            .empty_retry_recovered
+            .fetch_add(1, Ordering::Relaxed);
+          if debug_enabled {
+            eprintln!(
+              "TOON_PARTIAL_EMPTY_RETRY turn_id={} retry_segment_id={} action=recovered \
+               range=[{}, {}) chars={}",
+              result.turn_id,
+              result.segment_id,
+              result.start_sample,
+              result.end_sample,
+              text.chars().count(),
+            );
+          }
+        }
+        self.incremental.partial_segments.push(IncrementalPartialSegment {
+          segment_id: result.segment_id,
+          start_sample: result.start_sample,
+          end_sample: result.end_sample,
+          is_tail: result.is_tail,
+          text: text.to_string(),
+        });
+        if debug_enabled {
+          eprintln!(
+            "TOON_PARTIAL turn_id={} segment_id={} is_tail={} range=[{}, {}) text={:?}",
+            result.turn_id,
+            result.segment_id,
+            result.is_tail,
+            result.start_sample,
+            result.end_sample,
+            text
+          );
+        }
+        let audio_overlap_samples = prev_refined_end.saturating_sub(result.start_sample);
+        let max_right_start = stitch_right_start_cap_from_overlap(audio_overlap_samples);
+        let stitched = stitch_incremental_text(
+          &self.incremental.assembled_text,
+          text,
+          INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
+          INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
+          Some(max_right_start),
+          audio_overlap_samples,
+        );
+        self.incremental.assembled_text = stitched;
+        self.incremental.has_refined_text = true;
+        if debug_enabled {
+          eprintln!(
+            "TOON_PARTIAL_ASSEMBLED turn_id={} text={:?}",
+            result.turn_id, self.incremental.assembled_text
+          );
+        }
+      } else {
+        // Parakeet-TDT decoded this slice to empty text. Three cases:
+        //
+        // 1. EOU corroborates silence (both models agree it was non-speech /
+        //    hesitation / breath). Record the range in `partial_segments` with
+        //    empty text so the coverage map stays continuous and
+        //    `middle_coverage_is_incomplete` doesn't bail to a full-pass.
+        //
+        // 2. EOU shows speech and we haven't retried this range yet. The TDT
+        //    joint network's LSTM is start-sample-sensitive (cold-LSTM trap;
+        //    see INVESTIGATIONS/tdt-empty-partial.md). Retry once with start
+        //    shifted back ~500 ms; the retry result will arrive as a fresh
+        //    incremental result and land in the non-empty / case-3 path below.
+        //
+        // 3. EOU shows speech and we've already retried, or this result IS
+        //    the retry returning empty. Fall through to drop-the-range — the
+        //    coverage check fires the bailout, current behaviour.
+        let eou_chars = eou_chars_in_range(
+          &self.incremental.eou_emissions,
+          result.start_sample,
+          result.end_sample,
+        );
+        let corroborated = eou_corroborates_silence(
+          &self.incremental.eou_emissions,
+          result.start_sample,
+          result.end_sample,
+        );
+        let original_range = (result.start_sample, result.end_sample);
+        let already_retried_range = self.incremental.retried_empty_ranges.contains(&original_range);
+        let action = empty_partial_action(
+          eou_chars,
+          corroborated,
+          is_retry_result,
+          already_retried_range,
+          EMPTY_PARTIAL_RETRY_MIN_EOU_CHARS,
+        );
+
+        if matches!(action, EmptyPartialAction::PushSilenceMarker) {
+          self.incremental.partial_segments.push(IncrementalPartialSegment {
+            segment_id: result.segment_id,
+            start_sample: result.start_sample,
+            end_sample: result.end_sample,
+            is_tail: result.is_tail,
+            text: String::new(),
+          });
+        }
+        if debug_enabled {
+          eprintln!(
+            "TOON_PARTIAL_EMPTY turn_id={} segment_id={} is_tail={} \
+             range=[{}, {}) audio_samples={} eou_chars={} corroborated={} \
+             is_retry_result={} action={}",
+            result.turn_id,
+            result.segment_id,
+            result.is_tail,
+            result.start_sample,
+            result.end_sample,
+            result.end_sample.saturating_sub(result.start_sample),
+            eou_chars,
+            corroborated,
+            is_retry_result,
+            match action {
+              EmptyPartialAction::PushSilenceMarker => "push_silence",
+              EmptyPartialAction::ScheduleRetry => "schedule_retry",
+              EmptyPartialAction::Drop => "drop",
+            },
+          );
+        }
+        if is_retry_result && debug_enabled {
+          eprintln!(
+            "TOON_PARTIAL_EMPTY_RETRY turn_id={} retry_segment_id={} action=still_empty \
+             range=[{}, {})",
+            result.turn_id, result.segment_id, result.start_sample, result.end_sample,
+          );
+        }
+        if matches!(action, EmptyPartialAction::ScheduleRetry) {
+          let shift_samples = ms_to_samples(EMPTY_PARTIAL_RETRY_LEFT_SHIFT_MS);
+          let retry_start = result.start_sample.saturating_sub(shift_samples);
+          let retry_end = result.end_sample;
+          let audio_available = self.turn_audio.len();
+          let retry_end_clamped = retry_end.min(audio_available);
+          if retry_end_clamped > retry_start {
+            let retry_audio = self.turn_audio[retry_start..retry_end_clamped].to_vec();
+            if self.enqueue_incremental_slice(
+              retry_start,
+              retry_end_clamped,
+              result.is_tail,
+              retry_audio,
+            ) {
+              // enqueue_incremental_slice populated inflight_segment with the
+              // freshly-allocated id; read it back to register the retry id.
+              let retry_segment_id =
+                self.incremental.inflight_segment.as_ref().map(|m| m.segment_id).unwrap_or(0);
+              self.incremental.retried_empty_ranges.insert(original_range);
+              self.incremental.retry_segment_ids.insert(retry_segment_id);
+              partial_finalize_counters()
+                .empty_retry_attempted
+                .fetch_add(1, Ordering::Relaxed);
+              if debug_enabled {
+                eprintln!(
+                  "TOON_PARTIAL_EMPTY_RETRY turn_id={} original_segment_id={} \
+                   retry_segment_id={} action=scheduled original_range=[{}, {}) \
+                   retry_range=[{}, {}) eou_chars={}",
+                  result.turn_id,
+                  result.segment_id,
+                  retry_segment_id,
+                  result.start_sample,
+                  result.end_sample,
+                  retry_start,
+                  retry_end_clamped,
+                  eou_chars,
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if self.incremental.pending_reschedule {
+      self.maybe_schedule_incremental_slice(true);
+    }
+  }
+
+  fn invalidate_speculation(&mut self) {
+    self.latest_speculative_job_id.store(NO_SPECULATIVE_JOB_ID, Ordering::Relaxed);
+    self.active_speculation = None;
+    self.cached_speculation = None;
+  }
+}
+
+fn spawn_tdt_worker(
+  tdt_dir: PathBuf,
+  renderer: Arc<dyn Renderer>,
+  latest_speculative_job_id: Arc<AtomicU64>,
+) -> (
+  crossbeam_channel::Sender<TdtJob>,
+  crossbeam_channel::Receiver<TdtResult>,
+  std::thread::JoinHandle<()>,
+) {
+  let (tx, rx) = crossbeam_channel::unbounded::<TdtJob>();
+  let (async_tx, async_rx) = crossbeam_channel::unbounded::<TdtResult>();
+  let handle = std::thread::spawn(move || {
+    // Final-pass latency is user-visible (paste waits on it), so prioritize this worker.
+    thread_qos::user_initiated();
+
+    let tdt_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
+    let mut tdt = match ParakeetTDT::from_pretrained(&tdt_dir, Some(tdt_cfg)) {
+      Ok(m) => Some(m),
+      Err(e) => {
+        renderer.emit(RenderEvent::Error {
+          message: format!("failed to load Parakeet TDT model at {}: {e}", tdt_dir.display()),
+        });
+        None
+      }
+    };
+
+    while let Ok(job) = rx.recv() {
+      let Some(ref mut tdt) = tdt else {
+        renderer.emit(RenderEvent::Error {
+          message: "Parakeet TDT unavailable (failed to load)".to_string(),
+        });
+        continue;
+      };
+
+      match job.kind {
+        TdtJobKind::Final => match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
+          Ok(out) => {
+            let text = normalize_chunk_case("", out.text.trim().to_string());
+            if !text.is_empty() {
+              renderer.emit(RenderEvent::ReplaceLine { id: job.turn_id, text });
+            }
+          }
+          Err(e) => {
+            renderer
+              .emit(RenderEvent::Error { message: format!("Parakeet TDT transcribe failed: {e}") });
+          }
+        },
+        TdtJobKind::Speculative { job_id, audio_len } => {
+          // Skip queued stale speculation before doing heavy inference.
+          if latest_speculative_job_id.load(Ordering::Relaxed) != job_id {
+            continue;
+          }
+          let mut result = SpeculativeResult {
+            job_id,
+            turn_id: job.turn_id,
+            audio_len,
+            text: String::new(),
+            error: None,
+          };
+          match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
+            Ok(out) => {
+              result.text = out.text.trim().to_string();
+            }
+            Err(e) => {
+              result.error = Some(format!("Parakeet TDT transcribe failed: {e}"));
+            }
+          }
+          let _ = async_tx.send(TdtResult::Speculative(result));
+        }
+        TdtJobKind::Incremental { segment_id, start_sample, end_sample, is_tail } => {
+          let mut result = IncrementalSegmentResult {
+            turn_id: job.turn_id,
+            segment_id,
+            start_sample,
+            end_sample,
+            is_tail,
+            text: String::new(),
+            error: None,
+          };
+          match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
+            Ok(out) => {
+              result.text = out.text.trim().to_string();
+            }
+            Err(e) => {
+              result.error = Some(format!("Parakeet TDT transcribe failed: {e}"));
+            }
+          }
+          let _ = async_tx.send(TdtResult::Incremental(result));
+        }
+      }
+    }
+  });
+
+  (tx, async_rx, handle)
+}
+
+fn spawn_partial_audit_worker(
+  tdt_dir: PathBuf,
+  renderer: Arc<dyn Renderer>,
+  _controls: Option<Arc<PipelineControls>>,
+) -> (crossbeam_channel::Sender<PartialAuditJob>, std::thread::JoinHandle<()>) {
+  let (tx, rx) = crossbeam_channel::unbounded::<PartialAuditJob>();
+  let handle = std::thread::spawn(move || {
+    // Audit quality metrics should remain timely for recent rows in debug views without
+    // competing with user-interactive work.
+    thread_qos::utility();
+
+    let mut tdt: Option<ParakeetTDT> = None;
+
+    while let Ok(job) = rx.recv() {
+      // Bailout jobs short-circuit the TDT comparison path: the bailout site
+      // already submitted a full-pass and there's no emitted_text to audit.
+      // We still want the wav + sidecar on disk so an investigator can replay
+      // the failing window through parakeet-rs offline.
+      if let Some(bailout_reason) = job.bailout_reason.as_deref() {
+        let auditable_partials = non_empty_partials(&job.partial_segments);
+        if let Err(e) = save_debug_recording(
+          job.turn_id,
+          &job.audio,
+          job.emitted_kind,
+          &job.emitted_text,
+          "",
+          &auditable_partials,
+          &job.eou_emissions,
+          Some(bailout_reason),
+        ) {
+          eprintln!("Azad: failed to save bailout debug recording for turn {}: {e}", job.turn_id);
+        }
+        continue;
+      }
+
+      if tdt.is_none() {
+        let tdt_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
+        tdt = match ParakeetTDT::from_pretrained(&tdt_dir, Some(tdt_cfg)) {
+          Ok(model) => Some(model),
+          Err(e) => {
+            let auditable = non_empty_partials(&job.partial_segments);
+            let event = log_partial_audit_result(
+              job.turn_id,
+              job.emitted_kind,
+              &auditable,
+              &job.emitted_text,
+              "",
+              Some(&format!(
+                "audit worker failed to load Parakeet TDT model at {}: {e}",
+                tdt_dir.display()
+              )),
+            );
+            renderer.emit(RenderEvent::DebugStats(event));
+            continue;
+          }
+        };
+      }
+
+      let Some(ref mut tdt) = tdt else {
+        let auditable = non_empty_partials(&job.partial_segments);
+        let event = log_partial_audit_result(
+          job.turn_id,
+          job.emitted_kind,
+          &auditable,
+          &job.emitted_text,
+          "",
+          Some("audit worker unavailable (model failed to load)"),
+        );
+        renderer.emit(RenderEvent::DebugStats(event));
+        continue;
+      };
+
+      // Clone the audio before moving it into the TDT call so we can dump it to disk for
+      // offline replay/regression testing. Only done when debug stats are enabled (which is
+      // the only path that reaches this worker at all).
+      let audio_for_disk = job.audio.clone();
+
+      let mut full_text = String::new();
+      let mut error: Option<String> = None;
+      match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
+        Ok(out) => {
+          full_text = out.text.trim().to_string();
+        }
+        Err(e) => {
+          error = Some(format!("Parakeet TDT transcribe failed: {e}"));
+        }
+      }
+      // `partial_segments` may now contain empty-text entries (EOU-corroborated
+      // silence slices recorded purely to fill the coverage map). Audit logs
+      // and the debug recording dump report only real partials, so filter once.
+      let auditable_partials = non_empty_partials(&job.partial_segments);
+      let event = log_partial_audit_result(
+        job.turn_id,
+        job.emitted_kind,
+        &auditable_partials,
+        &job.emitted_text,
+        &full_text,
+        error.as_deref(),
+      );
+      renderer.emit(RenderEvent::DebugStats(event));
+
+      if let Err(e) = save_debug_recording(
+        job.turn_id,
+        &audio_for_disk,
+        job.emitted_kind,
+        &job.emitted_text,
+        &full_text,
+        &auditable_partials,
+        &job.eou_emissions,
+        None,
+      ) {
+        eprintln!("Azad: failed to save debug recording for turn {}: {e}", job.turn_id);
+      }
+    }
+  });
+
+  (tx, handle)
+}
+
+/// Rolling capacity for `save_debug_recording` — non-bailout pairs (wav + json sidecar) kept on disk.
+const DEBUG_RECORDING_MAX_FILES: usize = 10;
+
+/// Rolling capacity for `save_debug_recording` — bailout pairs (turns whose
+/// filename ends in `-bailout`) kept on disk. Larger than the normal cap
+/// because bailouts are rare (~3% of turns) and high-value-to-keep for
+/// post-hoc investigation; the wav for the failing window must survive
+/// the surrounding noise of normal turns landing on top.
+const DEBUG_RECORDING_BAILOUT_MAX_FILES: usize = 20;
+
+/// Threshold for the leading-edge and tail-edge coverage checks. Stitcher cannot recover
+/// content the leading or tail partial dropped (no surrounding partials to anchor against),
+/// so any gap at the edges must bail out to full-pass — but only if the gap is large
+/// enough to be more than the typical EOU+scheduling jitter at the end of a speech run.
+///
+/// Aligned with `MIDDLE_COVERAGE_TOLERANCE_SAMPLES` at 1.5 s. Stderr 2026-04-25..-05-01
+/// recorded 18 tail firings; 9 of them clustered at 0.64-1.92 s — typically the EOU
+/// firing right after speech ends and the scheduled tail partial returning empty (or
+/// the tail of trailing silence being scheduled but not run). At sub-2 s scale the
+/// "lost" content is at most 2-3 words of end-of-utterance trailing content; paying
+/// ~7 s of full-pass latency to recover them is the wrong tradeoff. Catastrophic tail
+/// gaps (≥ 1.5 s, e.g. turns 17 / 22 / 28 / 64 in stderr at 2.2-5.1 s) still bail out.
+const TAIL_COVERAGE_TOLERANCE_SAMPLES: usize = 24_000;
+
+/// Threshold for `middle_coverage_is_incomplete`. Looser than the leading/tail tolerance:
+/// (a) interior gaps overlap with the stitcher's token-level alignment, which already
+/// handles small mis-alignments via the audio-overlap cap; (b) sub-second interior gaps
+/// are more often partial-scheduler jitter than real lost segments. Catastrophic gaps —
+/// like turns 5 / 16 / 28 in stderr 2026-04-30 (3+ s each) — still bail to full-pass and
+/// recover the lost words. The borderline shape (turn 10, 0.8 s @ 2026-04-30) used to
+/// over-trigger when this shared the 0.5 s tail tolerance, paying ~7 s of full-pass
+/// latency on long turns for at most 2-3 mis-stitched words. 24_000 @ 16 kHz = 1.5 s.
+const MIDDLE_COVERAGE_TOLERANCE_SAMPLES: usize = 24_000;
+
+/// EOU-corroboration floor for treating a TDT-empty incremental slice as covered.
+/// When Parakeet-TDT returns empty for a slice AND Parakeet-EOU emitted text at a
+/// rate strictly below this threshold during the same audio span, both models
+/// agree the audio was non-speech and we record the range as covered with empty
+/// text — keeping `middle_coverage_is_incomplete` quiet and avoiding a full-pass
+/// bailout. Calibrated against turn 33 (2026-05-07): segment 3's slice averaged
+/// 2.0 chars/s (16 chars over 8.0 s), neighbouring segments 2 and 4 ran
+/// 10.25 and 6.5 chars/s respectively. 3.0 chars/s sits comfortably between
+/// the two regimes (margin > 2× the silence value, < ½ of the lowest neighbouring
+/// speech value), so turn 33's slice corroborates while real speech doesn't.
+const EOU_SILENCE_CHARS_PER_SECOND: f64 = 3.0;
+
+/// Pure predicate for the tail-coverage-gap check. Extracted so it's trivial to test against
+/// the exact audio-sample ranges that regressed the live pipeline.
+fn tail_coverage_is_incomplete(
+  assembled_end: usize,
+  audio_len: usize,
+  tolerance_samples: usize,
+) -> bool {
+  audio_len.saturating_sub(assembled_end) > tolerance_samples
+}
+
+/// Same idea as `tail_coverage_is_incomplete` but for the *leading* edge. If the earliest
+/// `start_sample` across non-empty partials is meaningfully > 0, Parakeet decoded the first
+/// incremental slice to empty text — the handler's `if !text.is_empty()` guard dropped it
+/// silently and the audio before the next scheduled slice has no coverage. Real case from
+/// turn 80: segment 1 `[0, 110080)` returned "", segment 2 `[79360, 207360)` carried text,
+/// and the stitched output lost the first ~5 s of speech ("We have the core runtime
+/// harness, which is like the the…"). Full-pass TDT decodes the whole audio correctly so
+/// bailing out at finalize is the right recovery. Uses the same 0.5 s tolerance as the tail
+/// check — a handful of samples of pre-speech silence is harmless.
+fn leading_coverage_is_incomplete(leading_start: usize, tolerance_samples: usize) -> bool {
+  leading_start > tolerance_samples
+}
+
+/// Mirror of the leading/tail coverage checks but for *interior* gaps: when an
+/// inner incremental segment decodes to empty text, Parakeet's non-empty guard
+/// silently drops it and the surviving partials surround a stretch of audio that
+/// no partial covered. The stitcher has no overlap to anchor on and joins the
+/// surrounding partials directly, losing whatever speech was in the gap.
+///
+/// Real case from turn 11 (2026-04-29, 86.7% accuracy): segment 2 returned "",
+/// leaving a 4.16 s window between partial 1's end (sample 110_080) and partial
+/// 3's start (sample 176_640). The stitched output dropped ~10 tokens of speech
+/// from the middle. Full-pass TDT decodes the whole audio correctly, so bailing
+/// out at finalize is the right recovery — same shape as the existing
+/// leading/tail bailouts.
+///
+/// Walks consecutive ranges in start-sample order. Returns `Some((prev_end,
+/// next_start))` for the first gap exceeding `tolerance_samples`, `None` if every
+/// pair is within tolerance (or there are fewer than two partials to compare).
+/// Tolerance matches the leading/tail check (0.5 s) — it absorbs the same
+/// scheduling jitter without being so loose that a real lost segment slips
+/// through.
+fn middle_coverage_is_incomplete(
+  ranges: &[(usize, usize)],
+  tolerance_samples: usize,
+) -> Option<(usize, usize)> {
+  if ranges.len() < 2 {
+    return None;
+  }
+  let mut sorted: Vec<(usize, usize)> = ranges.to_vec();
+  sorted.sort_by_key(|(start, _)| *start);
+  let mut max_end = sorted[0].1;
+  for &(start, end) in &sorted[1..] {
+    if start > max_end + tolerance_samples {
+      return Some((max_end, start));
+    }
+    if end > max_end {
+      max_end = end;
+    }
+  }
+  None
+}
+
+/// Sum of `delta_chars` for EOU emissions whose `audio_samples` lies
+/// inside `[start, end)`. Half-open on the right so a slice's `end_sample` and
+/// the next slice's `start_sample` (which are typically equal at the boundary)
+/// are not double-counted across queries.
+fn eou_chars_in_range(emissions: &[EouEmission], start: usize, end: usize) -> usize {
+  emissions
+    .iter()
+    .filter(|e| e.audio_samples >= start && e.audio_samples < end)
+    .map(|e| e.delta_chars)
+    .sum()
+}
+
+/// Wall-clock Unix timestamp in milliseconds. Used as a `ts_ms=…` prefix on
+/// state-transition log lines so post-hoc analysis can correlate events whose
+/// adjacency in the log file does NOT imply adjacency in time (the engine emits
+/// no diagnostic output during long idle windows, so two adjacent
+/// `AZAD_CAPTURE` lines could be hours apart).
+fn now_ms() -> u64 {
+  std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_millis() as u64)
+    .unwrap_or(0)
+}
+
+/// Drops empty-text entries from `partial_segments`. Empty entries exist purely
+/// to fill the audio-coverage map (see the EOU-corroborated push in
+/// `handle_incremental_result`); they're not real partials and would confuse
+/// audit-log consumers that count partials and dump per-partial text.
+fn non_empty_partials(partials: &[IncrementalPartialSegment]) -> Vec<IncrementalPartialSegment> {
+  partials.iter().filter(|p| !p.text.trim().is_empty()).cloned().collect()
+}
+
+/// Returns true when EOU's emission rate over `[start, end)` is strictly below
+/// `EOU_SILENCE_CHARS_PER_SECOND` — i.e. EOU corroborates that the audio in this
+/// span was non-speech. Empty / inverted ranges return false so a degenerate
+/// slice can never wrongly suppress the bailout.
+fn eou_corroborates_silence(emissions: &[EouEmission], start: usize, end: usize) -> bool {
+  if end <= start {
+    return false;
+  }
+  let chars = eou_chars_in_range(emissions, start, end) as f64;
+  let seconds = (end - start) as f64 / TARGET_SR as f64;
+  if seconds <= 0.0 {
+    return false;
+  }
+  chars / seconds < EOU_SILENCE_CHARS_PER_SECOND
+}
+
+/// Where `save_debug_recording` writes. `None` when `$HOME` isn't set (headless tests etc.).
+fn debug_recordings_dir() -> Option<PathBuf> {
+  let home = std::env::var("HOME").ok()?;
+  Some(
+    PathBuf::from(home)
+      .join("Library")
+      .join("Application Support")
+      .join("Azad")
+      .join("debug-recordings"),
+  )
+}
+
+/// Persist a turn's raw audio + metadata to `~/Library/Application Support/Azad/debug-recordings/`
+/// so a replay tool can feed the exact same samples back through the pipeline during validation.
+/// Rolling buffer of the most recent [`DEBUG_RECORDING_MAX_FILES`] turns; older pairs are pruned.
+/// Bailout jobs (`bailout_reason.is_some()`) get a `-bailout` filename suffix that puts them in
+/// a separate, longer-retention pruning tier (`DEBUG_RECORDING_BAILOUT_MAX_FILES`) so the rare
+/// failing turns aren't overwritten by the much more common successful ones.
+///
+/// Called from the audit worker, which only runs when debug-stats is enabled — so no extra
+/// opt-in check is needed here. The audio is mono float32 @ 16 kHz, matching the pipeline's
+/// internal format so a replay can skip resampling.
+#[allow(clippy::too_many_arguments)]
+fn save_debug_recording(
+  turn_id: u64,
+  audio: &[f32],
+  emitted_kind: AuditEmittedKind,
+  emitted_text: &str,
+  full_text: &str,
+  partial_segments: &[IncrementalPartialSegment],
+  eou_emissions: &[EouEmission],
+  bailout_reason: Option<&str>,
+) -> std::io::Result<()> {
+  let Some(dir) = debug_recordings_dir() else {
+    return Ok(());
+  };
+  std::fs::create_dir_all(&dir)?;
+
+  let ts_ms = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_millis() as u64)
+    .unwrap_or(0);
+  let base = debug_recording_stem(ts_ms, turn_id, bailout_reason.is_some());
+  let wav_path = dir.join(format!("{base}.wav"));
+  let json_path = dir.join(format!("{base}.json"));
+
+  let spec = hound::WavSpec {
+    channels: 1,
+    sample_rate: TARGET_SR,
+    bits_per_sample: 32,
+    sample_format: hound::SampleFormat::Float,
+  };
+  let mut writer = hound::WavWriter::create(&wav_path, spec)
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+  for &sample in audio {
+    writer
+      .write_sample(sample)
+      .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+  }
+  writer
+    .finalize()
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+
+  let partials_json: Vec<serde_json::Value> = partial_segments
+    .iter()
+    .map(|p| {
+      serde_json::json!({
+        "segment_id": p.segment_id,
+        "start_sample": p.start_sample,
+        "end_sample": p.end_sample,
+        "is_tail": p.is_tail,
+        "text": p.text,
+      })
+    })
+    .collect();
+  let eou_json: Vec<serde_json::Value> = eou_emissions
+    .iter()
+    .map(|e| {
+      serde_json::json!({
+        "audio_samples": e.audio_samples,
+        "delta_chars": e.delta_chars,
+        "text": e.text,
+      })
+    })
+    .collect();
+  let payload = serde_json::json!({
+    "turn_id": turn_id,
+    "ts_ms": ts_ms,
+    "sample_rate": TARGET_SR,
+    "num_samples": audio.len(),
+    "emitted_kind": audit_kind_label(emitted_kind),
+    "emitted_text": emitted_text,
+    "full_text": full_text,
+    "partials": partials_json,
+    "eou_emissions": eou_json,
+    "bailout_reason": bailout_reason,
+  });
+  std::fs::write(&json_path, serde_json::to_string_pretty(&payload)?)?;
+
+  prune_debug_recordings(&dir);
+  Ok(())
+}
+
+/// Filename stem for the wav + json sidecar pair. The zero-padded `ts_ms`
+/// prefix makes lexicographic sort match chronological order, which the
+/// pruner depends on for cheap "newest-N" selection. Bailout turns get an
+/// extra `-bailout` suffix so the pruner can partition the two tiers.
+fn debug_recording_stem(ts_ms: u64, turn_id: u64, is_bailout: bool) -> String {
+  if is_bailout {
+    format!("{ts_ms:013}-turn-{turn_id:06}-bailout")
+  } else {
+    format!("{ts_ms:013}-turn-{turn_id:06}")
+  }
+}
+
+/// Trim `dir` down to the most recent [`DEBUG_RECORDING_MAX_FILES`] regular `.wav` files
+/// and the most recent [`DEBUG_RECORDING_BAILOUT_MAX_FILES`] bailout `.wav` files (and their
+/// matching `.json` sidecars). The two tiers are pruned independently so a busy stretch of
+/// successful turns can't evict a rare bailout's wav before we have a chance to inspect it.
+/// Errors are swallowed intentionally — a failed prune leaves stale files behind but doesn't
+/// block the next turn's capture.
+fn prune_debug_recordings(dir: &Path) {
+  let Ok(entries) = std::fs::read_dir(dir) else {
+    return;
+  };
+  let (mut bailout, mut regular): (Vec<String>, Vec<String>) = entries
+    .filter_map(|e| e.ok())
+    .filter_map(|e| {
+      let path = e.path();
+      if path.extension().and_then(|s| s.to_str()) != Some("wav") {
+        return None;
+      }
+      path.file_stem().and_then(|s| s.to_str()).map(ToOwned::to_owned)
+    })
+    .partition(|stem| stem.ends_with("-bailout"));
+  bailout.sort();
+  regular.sort();
+
+  let regular_excess = regular.len().saturating_sub(DEBUG_RECORDING_MAX_FILES);
+  for stale in &regular[..regular_excess] {
+    let _ = std::fs::remove_file(dir.join(format!("{stale}.wav")));
+    let _ = std::fs::remove_file(dir.join(format!("{stale}.json")));
+  }
+  let bailout_excess = bailout.len().saturating_sub(DEBUG_RECORDING_BAILOUT_MAX_FILES);
+  for stale in &bailout[..bailout_excess] {
+    let _ = std::fs::remove_file(dir.join(format!("{stale}.wav")));
+    let _ = std::fs::remove_file(dir.join(format!("{stale}.json")));
+  }
+}
+
+struct TdtJob {
+  turn_id: u64,
+  audio: Vec<f32>,
+  kind: TdtJobKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditEmittedKind {
+  Assembled,
+  DraftEmit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TdtJobKind {
+  Final,
+  Speculative { job_id: u64, audio_len: usize },
+  Incremental { segment_id: u64, start_sample: usize, end_sample: usize, is_tail: bool },
+}
+
+struct PartialAuditJob {
+  turn_id: u64,
+  audio: Vec<f32>,
+  emitted_kind: AuditEmittedKind,
+  emitted_text: String,
+  partial_segments: Vec<IncrementalPartialSegment>,
+  eou_emissions: Vec<EouEmission>,
+  /// When `Some`, this job represents a full-pass bailout: no `emitted_text`
+  /// was sent to the renderer, so the audit worker skips the comparison
+  /// full-pass TDT call and just saves the recording. The reason string
+  /// matches the `reason=…` in the `TOON_PARTIAL_FINAL action=full_pass_bailout`
+  /// log line that fired at the same site.
+  bailout_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IncrementalPartialSegment {
+  segment_id: u64,
+  start_sample: usize,
+  end_sample: usize,
+  is_tail: bool,
+  text: String,
+}
+
+/// One non-empty Parakeet-EOU emission within the current turn. Stored verbatim
+/// so the debug-recording sidecar can record *what* EOU heard for each span,
+/// not just *how much* (the count-only form was insufficient when investigating
+/// partial-empty bailouts — we couldn't tell whether EOU agreed with a TDT miss
+/// or transcribed a specific phrase).
+#[derive(Debug, Clone)]
+struct EouEmission {
+  audio_samples: usize,
+  delta_chars: usize,
+  text: String,
+}
+
+struct IncrementalSegmentMeta {
+  segment_id: u64,
+  turn_id: u64,
+  start_sample: usize,
+  end_sample: usize,
+  is_tail: bool,
+  enqueued_at: Instant,
+  tail_wait_budget_ms: Option<u64>,
+}
+
+struct IncrementalRefineState {
+  next_segment_id: u64,
+  last_slice_emitted_at: Instant,
+  last_refined_audio_end_samples: usize,
+  last_completed_segment_was_tail: bool,
+  assembled_text: String,
+  partial_segments: Vec<IncrementalPartialSegment>,
+  inflight_segment: Option<IncrementalSegmentMeta>,
+  timed_out_tail_segments: Vec<IncrementalSegmentMeta>,
+  pending_reschedule: bool,
+  has_refined_text: bool,
+  /// Per-emission Parakeet-EOU history within the current turn. Drives the
+  /// EOU-corroboration check on TDT-empty incremental slices — when both
+  /// models go quiet on the same audio span, we record the slice as
+  /// covered (with empty text) instead of bailing to full-pass. The `text`
+  /// field is also written to the debug-recording sidecar so post-hoc
+  /// inspection can read what EOU decoded for a partial-empty range.
+  eou_emissions: Vec<EouEmission>,
+  /// Original `[start_sample, end_sample)` ranges of partials that already
+  /// triggered an empty-result retry this turn. Drives the at-most-one-retry-
+  /// per-range invariant for the cold-LSTM-trap recovery path.
+  retried_empty_ranges: HashSet<(usize, usize)>,
+  /// Segment IDs that *are* retries (not originals). Lets `handle_incremental_result`
+  /// suppress a recursive retry if the retry itself returns empty, and
+  /// recognise a recovered retry's result for telemetry.
+  retry_segment_ids: HashSet<u64>,
+}
+
+impl IncrementalRefineState {
+  fn new(now: Instant) -> Self {
+    Self {
+      next_segment_id: 1,
+      last_slice_emitted_at: now,
+      last_refined_audio_end_samples: 0,
+      last_completed_segment_was_tail: false,
+      assembled_text: String::new(),
+      partial_segments: Vec::new(),
+      inflight_segment: None,
+      timed_out_tail_segments: Vec::new(),
+      pending_reschedule: false,
+      has_refined_text: false,
+      eou_emissions: Vec::new(),
+      retried_empty_ranges: HashSet::new(),
+      retry_segment_ids: HashSet::new(),
+    }
+  }
+
+  fn reset(&mut self, now: Instant) {
+    self.next_segment_id = 1;
+    self.last_slice_emitted_at = now;
+    self.last_refined_audio_end_samples = 0;
+    self.last_completed_segment_was_tail = false;
+    self.assembled_text.clear();
+    self.partial_segments.clear();
+    self.inflight_segment = None;
+    self.timed_out_tail_segments.clear();
+    self.pending_reschedule = false;
+    self.has_refined_text = false;
+    self.eou_emissions.clear();
+    self.retried_empty_ranges.clear();
+    self.retry_segment_ids.clear();
+  }
+}
+
+struct SpeculationMeta {
+  job_id: u64,
+  turn_id: u64,
+  audio_len: usize,
+}
+
+struct PendingSpecFinalize {
+  spec_job_id: u64,
+  turn_id: u64,
+  audio: Vec<f32>,
+  waiting_since: Instant,
+}
+
+struct SpeculativeResult {
+  job_id: u64,
+  turn_id: u64,
+  audio_len: usize,
+  text: String,
+  error: Option<String>,
+}
+
+struct IncrementalSegmentResult {
+  turn_id: u64,
+  segment_id: u64,
+  start_sample: usize,
+  end_sample: usize,
+  is_tail: bool,
+  text: String,
+  error: Option<String>,
+}
+
+enum TdtResult {
+  Speculative(SpeculativeResult),
+  Incremental(IncrementalSegmentResult),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PartialFinalizeOutcome {
+  Assembled,
+  DraftEmit,
+  FullPassBailout(&'static str),
+}
+
+#[derive(Default)]
+struct PartialFinalizeCounters {
+  attempts: AtomicU64,
+  assembled: AtomicU64,
+  draft_emit: AtomicU64,
+  full_pass_bailout: AtomicU64,
+  /// Cumulative count of empty-partial retries scheduled this session.
+  /// Incremented at retry-schedule time in `handle_incremental_result`.
+  empty_retry_attempted: AtomicU64,
+  /// Of those retries, how many returned non-empty text. Recovery rate
+  /// = `empty_retry_recovered / empty_retry_attempted`. If <50 % over a
+  /// few days of use, the +500 ms left-shift heuristic needs revisiting.
+  empty_retry_recovered: AtomicU64,
+}
+
+fn next_job_id(next: &mut u64) -> u64 {
+  let id = *next;
+  *next = next.wrapping_add(1);
+  if *next == NO_SPECULATIVE_JOB_ID {
+    *next = 1;
+  }
+  if id == NO_SPECULATIVE_JOB_ID { 1 } else { id }
+}
+
+fn incremental_meta_matches(
+  meta: &IncrementalSegmentMeta,
+  result: &IncrementalSegmentResult,
+) -> bool {
+  meta.segment_id == result.segment_id
+    && meta.turn_id == result.turn_id
+    && meta.start_sample == result.start_sample
+    && meta.end_sample == result.end_sample
+    && meta.is_tail == result.is_tail
+}
+
+fn elapsed_ms_since(instant: Instant) -> u64 {
+  u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn partials_debug_env_enabled() -> bool {
+  static ENABLED: OnceLock<bool> = OnceLock::new();
+  *ENABLED.get_or_init(|| {
+    std::env::var("TOON_SHOW_PARTIALS")
+      .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+      .unwrap_or(false)
+  })
+}
+
+fn audit_kind_label(kind: AuditEmittedKind) -> &'static str {
+  match kind {
+    AuditEmittedKind::Assembled => "assembled",
+    AuditEmittedKind::DraftEmit => "draft_emit",
+  }
+}
+
+fn audit_tokens(text: &str) -> Vec<String> {
+  text
+    .split_whitespace()
+    .map(normalize_stitch_token)
+    .filter(|t| !t.is_empty())
+    .collect()
+}
+
+fn token_edit_distance(left: &[String], right: &[String]) -> usize {
+  if left.is_empty() {
+    return right.len();
+  }
+  if right.is_empty() {
+    return left.len();
+  }
+
+  let mut prev = (0..=right.len()).collect::<Vec<_>>();
+  let mut curr = vec![0usize; right.len() + 1];
+
+  for (i, ltok) in left.iter().enumerate() {
+    curr[0] = i + 1;
+    for (j, rtok) in right.iter().enumerate() {
+      let cost = if ltok == rtok { 0 } else { 1 };
+      let deletion = prev[j + 1] + 1;
+      let insertion = curr[j] + 1;
+      let substitution = prev[j] + cost;
+      curr[j + 1] = deletion.min(insertion).min(substitution);
+    }
+    std::mem::swap(&mut prev, &mut curr);
+  }
+
+  prev[right.len()]
+}
+
+fn longest_common_prefix_tokens(left: &[String], right: &[String]) -> usize {
+  left.iter().zip(right.iter()).take_while(|(l, r)| l == r).count()
+}
+
+fn truncate_for_log(text: &str, max_chars: usize) -> String {
+  let mut out = String::new();
+  for ch in text.chars().take(max_chars) {
+    out.push(ch);
+  }
+  if text.chars().count() > max_chars {
+    out.push_str("...");
+  }
+  out
+}
+
+fn log_partial_audit_texts(
+  turn_id: u64,
+  emitted_kind: AuditEmittedKind,
+  partial_segments: &[IncrementalPartialSegment],
+  stitched_text: &str,
+  full_text: &str,
+) {
+  eprintln!(
+    "TOON_PARTIAL_AUDIT_PARTIALS turn_id={} emitted_kind={} partial_count={}",
+    turn_id,
+    audit_kind_label(emitted_kind),
+    partial_segments.len()
+  );
+
+  for (partial_idx, partial) in partial_segments.iter().enumerate() {
+    eprintln!(
+      "TOON_PARTIAL_AUDIT_PART turn_id={} emitted_kind={} partial_idx={} segment_id={} is_tail={} range=[{}, {}) text={:?}",
+      turn_id,
+      audit_kind_label(emitted_kind),
+      partial_idx + 1,
+      partial.segment_id,
+      partial.is_tail,
+      partial.start_sample,
+      partial.end_sample,
+      partial.text.trim()
+    );
+  }
+
+  eprintln!(
+    "TOON_PARTIAL_AUDIT_COMPARE turn_id={} emitted_kind={} stitched_text={:?} actual_text={:?}",
+    turn_id,
+    audit_kind_label(emitted_kind),
+    stitched_text.trim(),
+    full_text.trim()
+  );
+}
+
+fn log_partial_audit_result(
+  turn_id: u64,
+  emitted_kind: AuditEmittedKind,
+  partial_segments: &[IncrementalPartialSegment],
+  emitted_text: &str,
+  full_text: &str,
+  error: Option<&str>,
+) -> DebugStatsEvent {
+  log_partial_audit_texts(turn_id, emitted_kind, partial_segments, emitted_text, full_text);
+
+  if let Some(message) = error {
+    eprintln!(
+      "TOON_PARTIAL_AUDIT turn_id={} emitted_kind={} status=error partial_count={} message={:?}",
+      turn_id,
+      audit_kind_label(emitted_kind),
+      partial_segments.len(),
+      message
+    );
+    return DebugStatsEvent::PartialAuditError {
+      turn_id,
+      emitted_kind: audit_kind_label(emitted_kind).to_string(),
+      partial_count: partial_segments.len(),
+      message: message.to_string(),
+    };
+  }
+
+  let emitted = emitted_text.trim();
+  let full = full_text.trim();
+  let emitted_tokens = audit_tokens(emitted);
+  let full_tokens = audit_tokens(full);
+  let edit_distance = token_edit_distance(&emitted_tokens, &full_tokens);
+  let full_len = full_tokens.len();
+  let emitted_len = emitted_tokens.len();
+  let denom = full_len.max(1) as f64;
+  let wer_like = (edit_distance as f64) / denom;
+  let lcp_tokens = longest_common_prefix_tokens(&emitted_tokens, &full_tokens);
+  let lcp_pct = (lcp_tokens as f64 * 100.0) / denom;
+  let exact = emitted == full;
+
+  eprintln!(
+    "TOON_PARTIAL_AUDIT turn_id={} emitted_kind={} status=ok exact={} partial_count={} emitted_tokens={} full_tokens={} edit_distance={} wer_like={:.3} lcp_tokens={} lcp_pct={:.1} emitted_text={:?} full_text={:?}",
+    turn_id,
+    audit_kind_label(emitted_kind),
+    exact,
+    partial_segments.len(),
+    emitted_len,
+    full_len,
+    edit_distance,
+    wer_like,
+    lcp_tokens,
+    lcp_pct,
+    truncate_for_log(emitted, 220),
+    truncate_for_log(full, 220)
+  );
+
+  DebugStatsEvent::PartialAuditResult {
+    turn_id,
+    emitted_kind: audit_kind_label(emitted_kind).to_string(),
+    exact,
+    partial_count: partial_segments.len(),
+    emitted_tokens: emitted_len,
+    full_tokens: full_len,
+    edit_distance,
+    wer_like,
+    lcp_tokens,
+    lcp_pct,
+  }
+}
+
+fn log_partial_audit_enqueue_error(
+  turn_id: u64,
+  emitted_kind: AuditEmittedKind,
+  partial_count: usize,
+  message: &str,
+) -> DebugStatsEvent {
+  eprintln!(
+    "TOON_PARTIAL_AUDIT turn_id={} emitted_kind={} status=error partial_count={} message={:?}",
+    turn_id,
+    audit_kind_label(emitted_kind),
+    partial_count,
+    message
+  );
+  DebugStatsEvent::PartialAuditError {
+    turn_id,
+    emitted_kind: audit_kind_label(emitted_kind).to_string(),
+    partial_count,
+    message: message.to_string(),
+  }
+}
+
+fn partial_finalize_counters() -> &'static PartialFinalizeCounters {
+  static COUNTERS: OnceLock<PartialFinalizeCounters> = OnceLock::new();
+  COUNTERS.get_or_init(PartialFinalizeCounters::default)
+}
+
+fn log_partial_finalize_outcome(turn_id: u64, outcome: PartialFinalizeOutcome) -> DebugStatsEvent {
+  let counters = partial_finalize_counters();
+  let attempts = counters.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+
+  let (outcome_label, reason) = match outcome {
+    PartialFinalizeOutcome::Assembled => {
+      counters.assembled.fetch_add(1, Ordering::Relaxed);
+      ("assembled", "na")
+    }
+    PartialFinalizeOutcome::DraftEmit => {
+      counters.draft_emit.fetch_add(1, Ordering::Relaxed);
+      ("draft_emit", "na")
+    }
+    PartialFinalizeOutcome::FullPassBailout(reason) => {
+      counters.full_pass_bailout.fetch_add(1, Ordering::Relaxed);
+      ("full_pass_bailout", reason)
+    }
+  };
+
+  let assembled = counters.assembled.load(Ordering::Relaxed);
+  let draft_emit = counters.draft_emit.load(Ordering::Relaxed);
+  let full_pass_bailout = counters.full_pass_bailout.load(Ordering::Relaxed);
+  let empty_retry_attempted = counters.empty_retry_attempted.load(Ordering::Relaxed);
+  let empty_retry_recovered = counters.empty_retry_recovered.load(Ordering::Relaxed);
+  let non_bailout = assembled.saturating_add(draft_emit);
+
+  let attempts_f = attempts as f64;
+  let assembled_rate_pct =
+    if attempts == 0 { 0.0 } else { (assembled as f64 * 100.0) / attempts_f };
+  let non_bailout_rate_pct =
+    if attempts == 0 { 0.0 } else { (non_bailout as f64 * 100.0) / attempts_f };
+  let full_pass_bailout_rate_pct =
+    if attempts == 0 { 0.0 } else { (full_pass_bailout as f64 * 100.0) / attempts_f };
+  let empty_retry_recovery_pct = if empty_retry_attempted == 0 {
+    0.0
+  } else {
+    (empty_retry_recovered as f64 * 100.0) / (empty_retry_attempted as f64)
+  };
+
+  if matches!(outcome, PartialFinalizeOutcome::FullPassBailout(_)) {
+    eprintln!(
+      "TOON_PARTIAL_BAILOUT turn_id={} reason={} attempts={} full_pass_bailout={} full_pass_bailout_rate_pct={:.1}",
+      turn_id, reason, attempts, full_pass_bailout, full_pass_bailout_rate_pct
+    );
+  };
+
+  eprintln!(
+    "TOON_PARTIAL_STATS turn_id={} outcome={} reason={} attempts={} assembled={} draft_emit={} full_pass_bailout={} non_bailout={} assembled_rate_pct={:.1} non_bailout_rate_pct={:.1} full_pass_bailout_rate_pct={:.1} empty_retry_attempted={} empty_retry_recovered={} empty_retry_recovery_pct={:.1}",
+    turn_id,
+    outcome_label,
+    reason,
+    attempts,
+    assembled,
+    draft_emit,
+    full_pass_bailout,
+    non_bailout,
+    assembled_rate_pct,
+    non_bailout_rate_pct,
+    full_pass_bailout_rate_pct,
+    empty_retry_attempted,
+    empty_retry_recovered,
+    empty_retry_recovery_pct,
+  );
+
+  DebugStatsEvent::PartialFinalizeOutcome {
+    turn_id,
+    outcome: outcome_label.to_string(),
+    reason: reason.to_string(),
+  }
+}
+
+fn ms_to_samples(ms: u32) -> usize {
+  ((TARGET_SR as u64) * (ms as u64) / 1000) as usize
+}
+
+fn samples_to_ms_at_target_sr(samples: usize) -> u32 {
+  ((samples as u64) * 1000 / (TARGET_SR as u64)) as u32
+}
+
+// Convert the audio-sample overlap between the previously-seen partials and the incoming one into
+// an upper bound on how far into the new segment the stitch can anchor. The false-overlap bug
+// happens when phrases like `[if, we, have]` recur deep in the new segment and outscore the true
+// overlap near the start. Audio alignment tells us the real overlap can only be a few seconds
+// long, which bounds how many tokens the true anchor could be past `right[0]`.
+fn stitch_right_start_cap_from_overlap(overlap_samples: usize) -> usize {
+  overlap_samples
+    .saturating_div(INCREMENTAL_STITCH_SAMPLES_PER_WORD_MAX)
+    .saturating_add(INCREMENTAL_STITCH_RIGHT_START_SLACK_TOKENS)
+}
+
+fn stitch_incremental_text(
+  assembled: &str,
+  next_text: &str,
+  tail_window_tokens: usize,
+  min_overlap_tokens: usize,
+  max_right_start: Option<usize>,
+  audio_overlap_samples: usize,
+) -> String {
+  let assembled = assembled.trim();
+  let next_text = next_text.trim();
+  if assembled.is_empty() {
+    return next_text.to_string();
+  }
+  if next_text.is_empty() {
+    return assembled.to_string();
+  }
+
+  let left = tokenize_for_stitch(assembled);
+  let right = tokenize_for_stitch(next_text);
+  if left.is_empty() {
+    return next_text.to_string();
+  }
+  if right.is_empty() {
+    return join_with_single_space(assembled, next_text);
+  }
+
+  let max_tail_drop = left
+    .len()
+    .saturating_sub(min_overlap_tokens)
+    .min(INCREMENTAL_STITCH_MAX_TAIL_DROP_TOKENS);
+  let right_end = right.len().min(tail_window_tokens);
+  let right_keys = right[..right_end].iter().map(|t| t.match_key.as_str()).collect::<Vec<_>>();
+
+  let mut best_match: Option<(usize, usize, usize)> = None; // (tail_drop, match_start, overlap)
+  for tail_drop in 0..=max_tail_drop {
+    let left_len = left.len().saturating_sub(tail_drop);
+    if left_len == 0 {
+      continue;
+    }
+    // Audio-range cap applies to the SUM of tail_drop and match_start, not to each in
+    // isolation. A genuine overlap has left's tail matching right's head with near-zero
+    // slack on both sides; a real audio-overlap window of N tokens can't plausibly need
+    // both to be non-trivial simultaneously. Without this, e.g. turn 8 slipped through with
+    // tail_drop=6 + match_start=7 (combined slack 13 on a 9-token budget) — left's first 4
+    // tokens `[it's, not, clear, to]` matched right's middle 4 tokens of the same phrase
+    // and the stitcher used left's prefix as pseudo-suffix, dropping ~10 tokens of real
+    // speech.
+    let adjusted_right_cap = max_right_start.map(|c| c.saturating_sub(tail_drop));
+    let left_start = left_len.saturating_sub(tail_window_tokens);
+    let left_keys = left[left_start..left_len]
+      .iter()
+      .map(|t| t.match_key.as_str())
+      .collect::<Vec<_>>();
+    // Audio-cutoff truncation recovery is only safe at the literal end of the prior
+    // partial (`tail_drop == 0`) and only when the next partial's audio actually extends
+    // past the cutoff (`audio_overlap_samples > 0`). Both conditions together mean the
+    // last token of left was clipped mid-word and the next partial covers that word's
+    // full audio. Without those signals the recovery would just be loose prefix-matching
+    // and would weaken the existing anchor strictness.
+    let boundary_recovery_eligible = tail_drop == 0 && audio_overlap_samples > 0;
+    if let Some((match_start, overlap)) = best_suffix_overlap(
+      &left_keys,
+      &right_keys,
+      min_overlap_tokens,
+      adjusted_right_cap,
+      boundary_recovery_eligible,
+    ) {
+      // Reject pseudo-suffix anchors. Two related shapes:
+      //
+      // 1. "Overlap covers all of truncated-left + matched in right's middle" (turn 8):
+      //    `overlap_start == 0` after the truncation means the whole remaining left is the
+      //    "overlap region" — left's prefix being used as a pseudo-suffix.
+      //
+      // 2. "Combined slack exceeds the matched length" (turn 667): both `tail_drop` and
+      //    `match_start` non-zero, and their sum exceeds `overlap`. Stretching the anchor
+      //    wider than the actual match length means we're displacing both sides to find a
+      //    duplicate phrase rather than a genuine overlap. Turn 667 hit this at
+      //    `(tail_drop=6, match_start=3, overlap=3)`: 6+3=9 just equaled the audio-derived
+      //    cap so the per-axis cap allowed it, but the slack was 3× the matched length.
+      //
+      // Genuine end-aligned overlaps have either tail_drop=0, match_start=0, or both
+      // small — never both substantially larger than the overlap itself.
+      let would_be_overlap_start = left_len.saturating_sub(overlap);
+      let is_pseudo_suffix_full = tail_drop > 0 && would_be_overlap_start == 0 && match_start > 0;
+      let is_pseudo_suffix_stretched =
+        tail_drop > 0 && match_start > 0 && tail_drop + match_start > overlap;
+      if is_pseudo_suffix_full || is_pseudo_suffix_stretched {
+        continue;
+      }
+      let replace = best_match
+        .map(|(best_drop, best_start, best_overlap)| {
+          overlap > best_overlap
+            || (overlap == best_overlap && tail_drop < best_drop)
+            || (overlap == best_overlap && tail_drop == best_drop && match_start > best_start)
+        })
+        .unwrap_or(true);
+      if replace {
+        best_match = Some((tail_drop, match_start, overlap));
+      }
+    }
+  }
+
+  if let Some((tail_drop, match_start, overlap)) = best_match {
+    let left_len = left.len().saturating_sub(tail_drop);
+    let overlap_start = left_len.saturating_sub(overlap);
+
+    let mut merged_tokens = Vec::new();
+    merged_tokens.extend(left[..overlap_start].iter().map(|t| t.original.as_str().to_string()));
+
+    // Preserve lexical stability from the assembled stream when overlap is fuzzy,
+    // but prefer the latest segment's exact-token punctuation/casing.
+    for i in 0..overlap {
+      let left_tok = &left[overlap_start + i];
+      let right_tok = &right[match_start + i];
+      if left_tok.match_key == right_tok.match_key {
+        merged_tokens.push(right_tok.original.clone());
+      } else if tokens_differ_only_in_non_alpha(&left_tok.match_key, &right_tok.match_key) {
+        // Per-slot fallback: alignment already located this pair as a fuzzy
+        // match, and the only diff is a non-alphabetic glyph (apostrophe,
+        // hyphen, period). Both partials saw the same audio span; right is
+        // the later partial with more context. Prefer its surface form
+        // (e.g. `"lets"` over `"let's"` from production turn 28). Distinct
+        // from the alphabetic-edit-distance default below where left's
+        // longer word is preserved against chunk-boundary letter loss.
+        merged_tokens.push(right_tok.original.clone());
+      } else if tail_drop == 0
+        && i == overlap - 1
+        && audio_overlap_samples > 0
+        && is_one_char_audio_cutoff_truncation(&left_tok.match_key, &right_tok.match_key)
+      {
+        // Audio chunk that produced left ended mid-word; right covered audio past the
+        // cutoff and emitted the full token. Use right's word, not left's truncated stub.
+        merged_tokens.push(right_tok.original.clone());
+      } else {
+        merged_tokens.push(left_tok.original.clone());
+      }
+    }
+
+    merged_tokens.extend(right.iter().skip(match_start + overlap).map(|t| t.original.clone()));
+
+    if overlap_merge_is_safe(left.len(), merged_tokens.len(), overlap, match_start) {
+      return merged_tokens.join(" ");
+    }
+  }
+
+  // If the new segment is already fully contained in the assembled tail, ignore it.
+  let left_start = left.len().saturating_sub(tail_window_tokens);
+  let left_keys = left[left_start..].iter().map(|t| t.match_key.as_str()).collect::<Vec<_>>();
+  if let Some((_, overlap)) = best_suffix_overlap(&left_keys, &right_keys, 1, None, false) {
+    if overlap == right_keys.len() {
+      return assembled.to_string();
+    }
+  }
+
+  let mut appended_tokens = right.iter().map(|t| t.original.as_str()).collect::<Vec<_>>();
+  if appended_tokens.is_empty() {
+    return assembled.to_string();
+  }
+
+  // Seam-dedup: when the multi-token anchor search and the post-loop k=1
+  // boundary anchor both fail, control falls through here and we append the
+  // new partial verbatim. If `assembled` ends with token X and `right[0]`
+  // is also X (case-insensitive, alphabetic, len >= 2, no trailing punct
+  // on the assembled tail), the join produces "X X" at the seam — exactly
+  // the 255-turn population the 2026-05-08 stderr.log analysis flagged
+  // (turn 62 "...swoop" + "swoop and...", turn 37 "...the" + "the model...",
+  // etc.). Drop the leading duplicate so the seam comes through clean.
+  if let Some(first) = appended_tokens.first().copied() {
+    if is_consecutive_duplicate_at_seam(assembled, first) {
+      appended_tokens.remove(0);
+      if appended_tokens.is_empty() {
+        return assembled.to_string();
+      }
+    }
+  }
+
+  join_with_single_space(assembled, &appended_tokens.join(" "))
+}
+
+/// Returns true when `next` is a consecutive duplicate of the last
+/// whitespace-tokenized word in `assembled`, per the same four rules used by
+/// the post-paste `collapse_consecutive_duplicates` in `crates/azad/src/app.rs`:
+///
+/// 1. Trailing punctuation on `assembled`'s last token is a hard break
+///    (sentence boundaries, comma-separated letter-spellings, etc.).
+/// 2. Both the assembled-tail word and `next` must be alphabetic-only
+///    (after stripping leading/trailing punctuation). Protects digits and
+///    mixed-form tokens (`M3`, `1st`, `2288`).
+/// 3. The shared alpha key must be at least 2 chars. Protects single-letter
+///    spellings (`M M`, `S S`).
+/// 4. Comparison is case-insensitive on the alpha key.
+fn is_consecutive_duplicate_at_seam(assembled: &str, next: &str) -> bool {
+  let Some(prev) = assembled.split_whitespace().next_back() else {
+    return false;
+  };
+  // Rule 1.
+  if prev.chars().last().map(|c| !c.is_alphanumeric()).unwrap_or(true) {
+    return false;
+  }
+  // Rule 2.
+  if !is_alpha_word_seam(prev) || !is_alpha_word_seam(next) {
+    return false;
+  }
+  let prev_alpha = alpha_key_seam(prev);
+  let next_alpha = alpha_key_seam(next);
+  // Rule 3.
+  if prev_alpha.chars().count() < 2 {
+    return false;
+  }
+  // Rule 4.
+  prev_alpha == next_alpha
+}
+
+fn alpha_key_seam(s: &str) -> String {
+  s.chars().filter(|c| c.is_alphabetic()).flat_map(|c| c.to_lowercase()).collect()
+}
+
+fn is_alpha_word_seam(s: &str) -> bool {
+  let core = s.trim_matches(|c: char| !c.is_alphanumeric());
+  !core.is_empty() && core.chars().all(|c| c.is_alphabetic())
+}
+
+fn best_suffix_overlap(
+  left_tail_keys: &[&str],
+  right_keys: &[&str],
+  min_overlap_tokens: usize,
+  max_right_start: Option<usize>,
+  boundary_recovery_eligible: bool,
+) -> Option<(usize, usize)> {
+  if left_tail_keys.is_empty() || right_keys.is_empty() {
+    return None;
+  }
+
+  let max_overlap = left_tail_keys.len().min(right_keys.len());
+  // Run the standard k>=min_overlap_tokens search whenever the configured floor is
+  // achievable. When it isn't (tiny windows where max_overlap < min) we skip the
+  // loop and fall through to the post-loop k=1 boundary anchor below.
+  if max_overlap >= min_overlap_tokens {
+    for k in (min_overlap_tokens..=max_overlap).rev() {
+      let left_suffix = &left_tail_keys[left_tail_keys.len() - k..];
+      let last_possible_start = right_keys.len() - k;
+      let start_cap = max_right_start
+        .map(|c| c.min(last_possible_start))
+        .unwrap_or(last_possible_start);
+      // Prefer later matches in the right segment so we drop as much repeated prefix as possible.
+      for start in (0..=start_cap).rev() {
+        if slice_tokens_match(left_suffix, &right_keys[start..start + k]) {
+          return Some((start, k));
+        }
+        // Audio-chunk-boundary truncation recovery: same slice except the last position
+        // differs by a 1-character extension on right's side (e.g. `"ur"` vs `"url"`).
+        // The leading k-1 positions still must match by ordinary `slice_tokens_match`
+        // rules, so we never fire on a single-token "overlap" without surrounding
+        // context. Caller guarantees `boundary_recovery_eligible` is only set at the
+        // literal end of the prior partial AND when the next partial's audio extends
+        // past the cutoff.
+        if boundary_recovery_eligible
+          && k >= 2
+          && slice_tokens_match(&left_suffix[..k - 1], &right_keys[start..start + k - 1])
+          && is_one_char_audio_cutoff_truncation(left_suffix[k - 1], right_keys[start + k - 1])
+        {
+          return Some((start, k));
+        }
+      }
+    }
+  }
+
+  // Single-token seam anchor. When the standard k>=min search finds nothing AND
+  // boundary recovery is eligible, fire iff left's literal LAST token equals
+  // right's literal FIRST token AND the matched key is substantive (>= 3 chars).
+  // Captures the "same word at the seam, both partials saw it" pattern from
+  // production turn 23 (2026-04-30): partial 1 ended `"...outcome."` and partial
+  // 2 started `"outcome uh ..."`; the audio overlap was 30_720 samples (~1.92 s)
+  // and both decoders independently transcribed the same `"outcome"`. Without
+  // this branch the `min_overlap_tokens=2` floor rejected the seam and the
+  // stitcher emitted `"outcome. outcome uh"` — a duplicated word.
+  //
+  // Strictness preserved: requires literal key equality, never widens to fuzzy
+  // match. The substantive-length filter keeps short particles (`"of"`, `"is"`,
+  // `"i"`) from anchoring on coincidence; the `boundary_recovery_eligible` gate
+  // (caller-side: `tail_drop == 0 && audio_overlap_samples > 0`) keeps it tied
+  // to the actual end-of-prior-partial seam.
+  if boundary_recovery_eligible {
+    if let (Some(&last), Some(&first)) = (left_tail_keys.last(), right_keys.first()) {
+      if tokens_match_substantive_boundary(last, first) {
+        return Some((0, 1));
+      }
+    }
+  }
+
+  None
+}
+
+fn slice_tokens_match(left: &[&str], right: &[&str]) -> bool {
+  if left.len() != right.len() {
+    return false;
+  }
+  left.iter().zip(right.iter()).all(|(a, b)| tokens_equivalent(a, b))
+}
+
+/// Boundary-only recovery: returns true when `left` is a strict 1-character-shorter prefix
+/// of `right` (`"ur"` of `"url"`, `"thi"` of `"this"`). NEVER call this from
+/// `tokens_equivalent` or anywhere outside the narrow "actual end of prior partial, next
+/// partial covers audio past the cutoff" branch — the whole point is that the audio cut
+/// off mid-word, so the model emitted one phoneme short of the full token. Generalising
+/// would weaken the stitcher's anchor strictness and re-open the pseudo-suffix and
+/// combined-slack regressions (turns 16, 80, 667, 8, 237).
+///
+/// `left.len() >= 2` rejects single-character noise like `"a"` or `"i"`. The strict 1-char
+/// extension (rather than `≤ N`) keeps the rule tied to the "one phoneme of audio missing"
+/// shape; if future audio cutoffs need 2-char tolerance we revisit with fresh evidence.
+fn is_one_char_audio_cutoff_truncation(left: &str, right: &str) -> bool {
+  left.len() >= 2 && right.len() == left.len() + 1 && right.starts_with(left)
+}
+
+/// Per-slot merge-time fallback: returns true when `left` and `right` are equal
+/// once non-alphabetic characters are filtered out — i.e. the only diff is a
+/// punctuation glyph (apostrophe, hyphen, period, …) somewhere in the token.
+///
+/// Used by the `stitch_incremental_text` merge loop to decide which side's
+/// `original` to write into the merged output for a token slot whose alignment
+/// is already locked in but whose `match_key`s differ. When the disagreement is
+/// purely punctuation, right (the later, higher-context partial) is preferred;
+/// when the disagreement is alphabetic (e.g. `"caused"` vs `"cause"`) the
+/// existing "left wins" default applies and preserves the longer/older form
+/// against chunk-boundary letter loss.
+///
+/// Does NOT participate in tokenization, key normalization, or anchor search:
+/// punctuation remains significant everywhere alignment is decided. Two
+/// distinct tokens `"let's"` and `"lets"` keep distinct keys and never collapse
+/// at search time; this check only fires after the slot-to-slot mapping is
+/// fixed, so it cannot fold separate words together.
+fn tokens_differ_only_in_non_alpha(left: &str, right: &str) -> bool {
+  if left == right {
+    return false;
+  }
+  let left_alpha: String = left.chars().filter(|c| c.is_alphabetic()).collect();
+  let right_alpha: String = right.chars().filter(|c| c.is_alphabetic()).collect();
+  !left_alpha.is_empty() && left_alpha == right_alpha
+}
+
+/// Single-token boundary anchor: returns true when `left` and `right` are the SAME
+/// normalized match-key AND the token is substantive enough that anchoring at the
+/// seam is structurally informative — not a coincidence on a 1-2 char particle.
+///
+/// Used solely from the post-loop branch in `best_suffix_overlap` when boundary
+/// recovery is eligible (`tail_drop == 0 && audio_overlap_samples > 0`). Never call
+/// from `tokens_equivalent` or any general-purpose comparison — the whole point is
+/// that this is a structural exception (the same word reappears at the audio seam
+/// because both partials transcribed the same overlapping audio), not a generic
+/// equivalence rule.
+///
+/// `len >= 3` mirrors the short-token rejection in `tokens_equivalent` and rules
+/// out 1-2 char particles (`"i"`, `"a"`, `"of"`, `"to"`, `"is"`, `"at"`) where the
+/// false-anchor risk dominates. 3-char common words (`"the"`, `"and"`, `"for"`,
+/// etc.) are safe because the structural gate — audio overlap exists AND
+/// `tail_drop == 0` — means partial 2's first token covers the same audio span
+/// as partial 1's last token; same-token-at-seam is genuine evidence of overlap.
+fn tokens_match_substantive_boundary(left: &str, right: &str) -> bool {
+  left == right && left.len() >= 3
+}
+
+fn tokens_equivalent(a: &str, b: &str) -> bool {
+  if a == b {
+    return true;
+  }
+  if a.is_empty() || b.is_empty() {
+    return false;
+  }
+  if a.len().abs_diff(b.len()) > 1 {
+    return false;
+  }
+  // Edit-distance-1 is only meaningful as a typo signal when both tokens are long enough that
+  // one differing character leaves most of the token intact. Short tokens like `I` vs `s`,
+  // `at` vs `it`, or `of` vs `if` are distinct words, not typos — allowing them to match
+  // fuzzily produces false overlaps that anchor the stitcher several tokens into the new
+  // segment and drop real content. Require both sides to be ≥3 chars before fuzzing.
+  if a.len() < 3 || b.len() < 3 {
+    return false;
+  }
+  edit_distance_at_most_one(a, b)
+}
+
+fn edit_distance_at_most_one(a: &str, b: &str) -> bool {
+  let a = a.as_bytes();
+  let b = b.as_bytes();
+  let mut i = 0usize;
+  let mut j = 0usize;
+  let mut edits = 0usize;
+  while i < a.len() && j < b.len() {
+    if a[i] == b[j] {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    edits += 1;
+    if edits > 1 {
+      return false;
+    }
+    if a.len() == b.len() {
+      i += 1;
+      j += 1;
+    } else if a.len() > b.len() {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  edits += (a.len() - i) + (b.len() - j);
+  edits <= 1
+}
+
+fn tokenize_for_stitch(text: &str) -> Vec<StitchToken> {
+  let raw: Vec<&str> = text.split_whitespace().collect();
+  let mut tokens = Vec::new();
+  let mut i = 0;
+  while i < raw.len() {
+    if let Some((consumed, digits)) = try_consume_number_run(&raw, i) {
+      let original = raw[i..i + consumed].join(" ");
+      tokens.push(StitchToken { original, match_key: digits });
+      i += consumed;
+      continue;
+    }
+    let word = raw[i];
+    let key = normalize_stitch_token(word);
+    if !key.is_empty() {
+      tokens.push(StitchToken { original: word.to_string(), match_key: key });
+    }
+    i += 1;
+  }
+  tokens
+}
+
+fn normalize_stitch_token(token: &str) -> String {
+  token.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
+/// Number-form classification for the cardinal-run grouper. Returns the canonical
+/// digit-string per token (`"eighteen"` → `"18"`) plus the structural role used to
+/// decide between the tens-rule and the concat-rule when several words form a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumberWord {
+  /// A bare digit string in the input, e.g. `"318"` → `Digit("318")`.
+  Digit,
+  /// `zero`–`nine` (cardinal). Held as decimal "0".."9".
+  Ones,
+  /// `ten`–`nineteen`. Held as decimal "10".."19".
+  Teen,
+  /// `twenty`,`thirty`,…,`ninety`. Held as decimal "20","30",…,"90".
+  Tens,
+  /// The literal word `"hundred"`. Multiplier with a prior `Ones` (`one hundred` = 100).
+  Hundred,
+}
+
+/// Classify a normalized cardinal word for number-run grouping. Returns `None` for
+/// ordinals (`"third"`, `"eighteenth"` — they refer to position, not value), thousands
+/// or higher (out of scope), and any non-cardinal token. The `digits` return is the
+/// per-word decimal string the grouper concatenates under the concat-rule.
+fn classify_number_word(token: &str) -> Option<(NumberWord, String)> {
+  if token.is_empty() {
+    return None;
+  }
+  if token.bytes().all(|b| b.is_ascii_digit()) {
+    return Some((NumberWord::Digit, token.to_string()));
+  }
+  match token {
+    "zero" => Some((NumberWord::Ones, "0".into())),
+    "one" => Some((NumberWord::Ones, "1".into())),
+    "two" => Some((NumberWord::Ones, "2".into())),
+    "three" => Some((NumberWord::Ones, "3".into())),
+    "four" => Some((NumberWord::Ones, "4".into())),
+    "five" => Some((NumberWord::Ones, "5".into())),
+    "six" => Some((NumberWord::Ones, "6".into())),
+    "seven" => Some((NumberWord::Ones, "7".into())),
+    "eight" => Some((NumberWord::Ones, "8".into())),
+    "nine" => Some((NumberWord::Ones, "9".into())),
+    "ten" => Some((NumberWord::Teen, "10".into())),
+    "eleven" => Some((NumberWord::Teen, "11".into())),
+    "twelve" => Some((NumberWord::Teen, "12".into())),
+    "thirteen" => Some((NumberWord::Teen, "13".into())),
+    "fourteen" => Some((NumberWord::Teen, "14".into())),
+    "fifteen" => Some((NumberWord::Teen, "15".into())),
+    "sixteen" => Some((NumberWord::Teen, "16".into())),
+    "seventeen" => Some((NumberWord::Teen, "17".into())),
+    "eighteen" => Some((NumberWord::Teen, "18".into())),
+    "nineteen" => Some((NumberWord::Teen, "19".into())),
+    "twenty" => Some((NumberWord::Tens, "20".into())),
+    "thirty" => Some((NumberWord::Tens, "30".into())),
+    "forty" => Some((NumberWord::Tens, "40".into())),
+    "fifty" => Some((NumberWord::Tens, "50".into())),
+    "sixty" => Some((NumberWord::Tens, "60".into())),
+    "seventy" => Some((NumberWord::Tens, "70".into())),
+    "eighty" => Some((NumberWord::Tens, "80".into())),
+    "ninety" => Some((NumberWord::Tens, "90".into())),
+    "hundred" => Some((NumberWord::Hundred, "100".into())),
+    _ => None,
+  }
+}
+
+fn raw_token_ends_run(raw: &str) -> bool {
+  let trimmed = raw.trim_end_matches(|c: char| c.is_whitespace());
+  matches!(trimmed.chars().last(), Some('.') | Some('!') | Some('?'))
+}
+
+/// Greedily consume a run of number-form tokens starting at `raw[start]`. Returns
+/// `Some((consumed, canonical_digits))` where `consumed` is the number of input tokens
+/// absorbed and `canonical_digits` is the resulting `match_key` (digit-only string).
+/// Returns `None` if the token at `start` isn't a recognised number word.
+///
+/// Resolution order:
+/// - **Tens-rule** when the run reads as a normal English cardinal expression:
+///   `[Ones]`, `[Teen]`, `[Tens]`, `[Tens, Ones]`, `[Ones, Hundred]`,
+///   `[Ones, Hundred, And, <tail>]`, `[Ones, Hundred, <tail>]`. Decimal value.
+/// - **Concat-rule fallback** when every consumed token is a digit-bearing cardinal
+///   (no `Hundred`, no `And`) and the tens-rule didn't apply. Concatenates per-token
+///   digit strings: `[Ones("3"), Teen("18")]` → `"318"`. Captures the flight-number /
+///   phone-number / room-number reading common in ASR.
+///
+/// A token whose ORIGINAL surface form ends with `.`, `!`, or `?` terminates the run
+/// after being consumed (the next iteration starts a fresh run).
+///
+/// Out of scope: ordinals, thousands+, decimals, and the indefinite-article `"a"` =
+/// `"one"` reading (`"a hundred"`). Add grammar arms when real recordings need them.
+fn try_consume_number_run(raw: &[&str], start: usize) -> Option<(usize, String)> {
+  if start >= raw.len() {
+    return None;
+  }
+  // Greedy phase: consume cardinals + at most one valid `and` connector.
+  // `classified` only stores cardinals; the `and` token is tracked separately because
+  // it's a connector, not a value-carrying word.
+  let mut classified: Vec<(NumberWord, String)> = Vec::new();
+  let mut and_position: Option<usize> = None;
+  while start + classified.len() + and_position.map_or(0, |_| 1) < raw.len() {
+    let pos = start + classified.len() + and_position.map_or(0, |_| 1);
+    let raw_word = raw[pos];
+    let normalized = normalize_stitch_token(raw_word);
+    if normalized == "and" {
+      // Only valid AFTER a `Hundred` and only once per run.
+      let prior_hundred = classified
+        .last()
+        .map(|(w, _)| matches!(w, NumberWord::Hundred))
+        .unwrap_or(false);
+      if !prior_hundred || and_position.is_some() {
+        break;
+      }
+      and_position = Some(classified.len());
+      if raw_token_ends_run(raw_word) {
+        break;
+      }
+      continue;
+    }
+    let Some(class) = classify_number_word(&normalized) else {
+      break;
+    };
+    classified.push(class);
+    if raw_token_ends_run(raw_word) {
+      break;
+    }
+  }
+  // Retract a dangling `and` (no cardinal followed it).
+  if let Some(and_idx) = and_position {
+    if classified.len() == and_idx {
+      and_position = None;
+    }
+  }
+  if classified.is_empty() {
+    return None;
+  }
+  // Resolution: prefer the longest prefix that resolves cleanly via tens-rule, then
+  // fall back to concat-rule on shorter prefixes if needed. Single-cardinal runs
+  // resolve via tens-rule (`[Ones]`, `[Teen]`, `[Tens]`, `[Digit]`), so a chain like
+  // `"one two three"` collapses position-by-position into individual digit-keyed
+  // tokens (`"1"`, `"2"`, `"3"`), preserving the existing token-by-token anchoring
+  // behaviour for those cases.
+  for k in (1..=classified.len()).rev() {
+    let prefix = &classified[..k];
+    let has_and_in_prefix = and_position.map(|p| p < k).unwrap_or(false);
+    let consumed_at_k = if has_and_in_prefix { k + 1 } else { k };
+    if let Some(value) = resolve_tens_rule(prefix, has_and_in_prefix) {
+      return Some((consumed_at_k, value.to_string()));
+    }
+    // Concat-rule: only for runs of 2+ cardinals, no `Hundred`, no `and`, and at
+    // least one Teen/Tens/multi-digit Digit (so we don't over-group chains of
+    // single-digit cardinals like `"one two three"` into a phantom `"123"` — those
+    // should remain individual tokens so left and right anchor position-by-position
+    // when both partials use the same form).
+    if k >= 2
+      && !prefix.iter().any(|(w, _)| matches!(w, NumberWord::Hundred))
+      && !has_and_in_prefix
+      && prefix.iter().any(|(w, d)| {
+        matches!(w, NumberWord::Teen | NumberWord::Tens)
+          || (matches!(w, NumberWord::Digit) && d.len() >= 2)
+      })
+    {
+      let mut digits = String::new();
+      for (_, d) in prefix {
+        digits.push_str(d);
+      }
+      if !digits.is_empty() {
+        return Some((consumed_at_k, digits));
+      }
+    }
+  }
+  None
+}
+
+/// Try to read `classified` as a normal English cardinal expression. Returns the
+/// decimal value when the shape matches, `None` otherwise. `has_and` reports whether
+/// an `"and"` connector appeared between `Hundred` and the tail.
+fn resolve_tens_rule(classified: &[(NumberWord, String)], has_and: bool) -> Option<u64> {
+  use NumberWord::*;
+  let words: Vec<NumberWord> = classified.iter().map(|(w, _)| *w).collect();
+  let value_at = |i: usize| -> u64 { classified[i].1.parse::<u64>().unwrap_or(0) };
+  match words.as_slice() {
+    [Ones] | [Teen] | [Tens] | [Digit] => {
+      if has_and {
+        return None;
+      }
+      Some(value_at(0))
+    }
+    [Tens, Ones] => {
+      if has_and {
+        return None;
+      }
+      Some(value_at(0) + value_at(1))
+    }
+    [Ones, Hundred] => {
+      if has_and {
+        return None;
+      }
+      Some(value_at(0) * 100)
+    }
+    [Ones, Hundred, Ones]
+    | [Ones, Hundred, Teen]
+    | [Ones, Hundred, Tens]
+    | [Ones, Hundred, Tens, Ones] => {
+      let head = value_at(0) * 100;
+      let tail: u64 = classified[2..].iter().map(|(_, d)| d.parse::<u64>().unwrap_or(0)).sum();
+      Some(head + tail)
+    }
+    _ => None,
+  }
+}
+
+// Parakeet's tokenizer emits capitalized word tokens (e.g. `That`) when it treats a brief audio
+// pause as a sentence boundary. A single EOU chunk can contain many such words. At every word
+// boundary inside the chunk, lower the leading ASCII capital unless (a) the last non-whitespace
+// char across prior+chunk is terminal punctuation, or (b) the word looks like an acronym or a
+// single-letter word. Acronyms are detected by peeking at the next char: if it's another
+// uppercase ASCII letter, preserve (CPU, NASA, USA, I'd). A single-letter word (`I`) is
+// preserved because lowercasing it mangles the pronoun. Non-ASCII uppercase passes through so
+// non-Latin scripts aren't touched.
+fn normalize_chunk_case(prior: &str, chunk: String) -> String {
+  let mut last_non_ws: Option<char> = prior.trim_end().chars().last();
+  let mut prev_alpha = last_non_ws.map(|c| c.is_alphabetic()).unwrap_or(false);
+  let chars: Vec<char> = chunk.chars().collect();
+  let mut out = String::with_capacity(chunk.len());
+
+  for (i, &c) in chars.iter().enumerate() {
+    let at_word_start = c.is_alphabetic() && !prev_alpha;
+    let pushed = if at_word_start && c.is_ascii_uppercase() {
+      let at_sentence_start = match last_non_ws {
+        None => true,
+        Some(x) => matches!(x, '.' | '!' | '?'),
+      };
+      let next = chars.get(i + 1).copied();
+      let preserve_acronym_or_single = match next {
+        None => true,
+        Some(n) if !n.is_alphabetic() => true,
+        Some(n) if n.is_ascii_uppercase() => true,
+        _ => false,
+      };
+      if at_sentence_start || preserve_acronym_or_single { c } else { c.to_ascii_lowercase() }
+    } else {
+      c
+    };
+    out.push(pushed);
+    if !pushed.is_whitespace() {
+      last_non_ws = Some(pushed);
+    }
+    prev_alpha = pushed.is_alphabetic();
+  }
+  out
+}
+
+fn join_with_single_space(left: &str, right: &str) -> String {
+  let left = left.trim();
+  let right = right.trim();
+  if left.is_empty() {
+    return right.to_string();
+  }
+  if right.is_empty() {
+    return left.to_string();
+  }
+  format!("{left} {right}")
+}
+
+struct StitchToken {
+  original: String,
+  match_key: String,
+}
+
+fn levels_dbfs(samples: &[f32]) -> (f32, f32) {
+  if samples.is_empty() {
+    return (-120.0, -120.0);
+  }
+
+  let mut sum_sq = 0.0f64;
+  let mut peak = 0.0f32;
+  for &s in samples {
+    let v = if s.is_finite() { s } else { 0.0 };
+    let a = v.abs();
+    if a > peak {
+      peak = a;
+    }
+    sum_sq += (v as f64) * (v as f64);
+  }
+  let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+
+  let rms_db = if rms <= 0.0 { -120.0 } else { 20.0 * rms.log10() };
+  let peak_db = if peak <= 0.0 { -120.0 } else { 20.0 * peak.log10() };
+
+  (rms_db, peak_db)
+}
+
+fn health_to_view(h: AudioHealth, spec: AudioSpec) -> AudioHealthView {
+  let sr = spec.sample_rate.max(1) as u64;
+  AudioHealthView {
+    gap_ms: (h.wallclock_gap_frames * 1000) / sr,
+    worst_gap_ms: (h.worst_wallclock_gap_frames * 1000) / sr,
+    dropped_ms: (h.dropped_frames * 1000) / sr,
+    backlog_ms: (h.backlog_frames * 1000) / sr,
+    worst_backlog_ms: (h.worst_backlog_frames * 1000) / sr,
+  }
+}
+
+fn round_up_to_chunk(n: usize, chunk: usize) -> usize {
+  if chunk == 0 {
+    return n;
+  }
+  if n % chunk == 0 { n } else { n + (chunk - (n % chunk)) }
+}
+
+#[derive(Default)]
+struct SampleQueue {
+  buf: Vec<f32>,
+  off: usize,
+}
+
+impl SampleQueue {
+  fn available(&self) -> usize {
+    self.buf.len().saturating_sub(self.off)
+  }
+
+  fn push(&mut self, xs: &[f32]) {
+    self.buf.extend_from_slice(xs);
+  }
+
+  fn push_zeros(&mut self, n: usize) {
+    if n == 0 {
+      return;
+    }
+    self.buf.extend(std::iter::repeat_n(0.0f32, n));
+  }
+
+  fn peek(&self, n: usize) -> &[f32] {
+    let n = n.min(self.available());
+    &self.buf[self.off..self.off + n]
+  }
+
+  fn pop(&mut self, n: usize) {
+    let n = n.min(self.available());
+    self.off += n;
+    if self.off > 32_768 {
+      self.compact();
+    }
+  }
+
+  fn compact(&mut self) {
+    if self.off == 0 {
+      return;
+    }
+    self.buf.copy_within(self.off.., 0);
+    let new_len = self.buf.len().saturating_sub(self.off);
+    self.buf.truncate(new_len);
+    self.off = 0;
+  }
+}
+
+struct AudioPrep {
+  in_spec: AudioSpec,
+  out_sr: u32,
+
+  // Scratch buffer for downmix (mono at in_sr).
+  mono: Vec<f32>,
+  resampler: LinearResampler,
+}
+
+impl AudioPrep {
+  fn new(in_spec: AudioSpec, out_sr: u32) -> Self {
+    let resampler = LinearResampler::new(in_spec.sample_rate, out_sr);
+    Self { in_spec, out_sr, mono: Vec::new(), resampler }
+  }
+
+  fn process_interleaved_into(&mut self, interleaved: &[f32], out: &mut SampleQueue) {
+    let ch = self.in_spec.channels.max(1) as usize;
+
+    self.mono.clear();
+    self.mono.reserve(interleaved.len() / ch);
+
+    if ch == 1 {
+      for &s in interleaved {
+        self.mono.push(if s.is_finite() { s } else { 0.0 });
+      }
+    } else {
+      for frame in interleaved.chunks_exact(ch) {
+        let mut sum = 0.0f32;
+        for &s in frame {
+          sum += if s.is_finite() { s } else { 0.0 };
+        }
+        self.mono.push(sum / (ch as f32));
+      }
+    }
+
+    if self.in_spec.sample_rate == self.out_sr {
+      out.push(&self.mono);
+      return;
+    }
+
+    self.resampler.push(&self.mono);
+    self.resampler.pull_into(out);
+  }
+}
+
+struct LinearResampler {
+  step: f64, // input samples per output sample
+  pos: f64,  // position (in input samples) relative to `off`
+  buf: Vec<f32>,
+  off: usize,
+  tmp: Vec<f32>,
+}
+
+impl LinearResampler {
+  fn new(in_sr: u32, out_sr: u32) -> Self {
+    let in_sr = in_sr.max(1);
+    let out_sr = out_sr.max(1);
+    Self { step: in_sr as f64 / out_sr as f64, pos: 0.0, buf: Vec::new(), off: 0, tmp: Vec::new() }
+  }
+
+  fn push(&mut self, xs: &[f32]) {
+    self.buf.extend_from_slice(xs);
+  }
+
+  fn pull_into(&mut self, out: &mut SampleQueue) {
+    let avail = self.buf.len().saturating_sub(self.off);
+    if avail < 2 {
+      return;
+    }
+
+    self.tmp.clear();
+    // Upper bound: in worst case we output about `avail / step` samples.
+    let est = ((avail as f64) / self.step).ceil() as usize;
+    self.tmp.reserve(est.min(16_384));
+
+    while self.pos + 1.0 < (avail as f64) {
+      let i0 = self.pos.floor() as usize;
+      let frac = self.pos - (i0 as f64);
+      let a = self.buf[self.off + i0];
+      let b = self.buf[self.off + i0 + 1];
+      let y = a as f64 + (b as f64 - a as f64) * frac;
+      self.tmp.push(y as f32);
+      self.pos += self.step;
+    }
+
+    out.push(&self.tmp);
+
+    let drop = self.pos.floor() as usize;
+    self.off = self.off.saturating_add(drop);
+    self.pos -= drop as f64;
+
+    self.compact();
+  }
+
+  fn compact(&mut self) {
+    if self.off == 0 {
+      return;
+    }
+    if self.off > 16_384 {
+      self.buf.copy_within(self.off.., 0);
+      let new_len = self.buf.len().saturating_sub(self.off);
+      self.buf.truncate(new_len);
+      self.off = 0;
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{
+    DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES, EmptyPartialAction, EouEmission,
+    FinalizeTailPlan, INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_TAIL_MAX_WAIT_FACTOR,
+    IncrementalPartialSegment, MIDDLE_COVERAGE_TOLERANCE_SAMPLES, TAIL_COVERAGE_TOLERANCE_SAMPLES,
+    cap_segment_start, debug_recording_stem, empty_partial_action, eou_chars_in_range,
+    eou_corroborates_silence, finalize_tail_plan, incremental_tail_wait_ms,
+    is_one_char_audio_cutoff_truncation, leading_coverage_is_incomplete,
+    middle_coverage_is_incomplete, non_empty_partials, normalize_chunk_case,
+    prune_debug_recordings, samples_to_ms_at_target_sr, stitch_incremental_text,
+    stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete, tokenize_for_stitch,
+    tokens_differ_only_in_non_alpha, tokens_equivalent, tokens_match_substantive_boundary,
+    try_consume_number_run,
+  };
+
+  #[test]
+  fn samples_to_ms_at_16k_zero_is_zero() {
+    assert_eq!(samples_to_ms_at_target_sr(0), 0);
+  }
+
+  #[test]
+  fn samples_to_ms_at_16k_one_chunk_is_10ms() {
+    // 160 samples at 16 kHz = 10 ms (one CHUNK_SAMPLES).
+    assert_eq!(samples_to_ms_at_target_sr(160), 10);
+  }
+
+  #[test]
+  fn samples_to_ms_at_16k_recovery_window_default_500ms() {
+    // 8000 samples at 16 kHz = 500 ms = the default `recovery_window_ms`.
+    assert_eq!(samples_to_ms_at_target_sr(8_000), 500);
+  }
+
+  #[test]
+  fn samples_to_ms_at_16k_truncates_sub_millisecond() {
+    // 5 samples / 16 = 0.3125 ms → truncates to 0.
+    assert_eq!(samples_to_ms_at_target_sr(5), 0);
+    // 16 samples = exactly 1 ms.
+    assert_eq!(samples_to_ms_at_target_sr(16), 1);
+    // 31 samples = 1.9375 ms → truncates to 1.
+    assert_eq!(samples_to_ms_at_target_sr(31), 1);
+  }
+
+  #[test]
+  fn normalize_chunk_case_empty_prior_keeps_capital() {
+    assert_eq!(normalize_chunk_case("", "That simplifies".to_string()), "That simplifies");
+  }
+
+  #[test]
+  fn normalize_chunk_case_mid_sentence_lowers_capital() {
+    assert_eq!(
+      normalize_chunk_case("we schedule the worker itself", " That simplifies".to_string()),
+      " that simplifies",
+    );
+  }
+
+  #[test]
+  fn normalize_chunk_case_after_terminal_punct_keeps_capital() {
+    assert_eq!(normalize_chunk_case("done.", " That is next".to_string()), " That is next",);
+    assert_eq!(normalize_chunk_case("really?", " Yes".to_string()), " Yes");
+    assert_eq!(normalize_chunk_case("stop!", " Go".to_string()), " Go");
+  }
+
+  #[test]
+  fn normalize_chunk_case_after_comma_lowers_capital() {
+    assert_eq!(normalize_chunk_case("first clause,", " Then second".to_string()), " then second",);
+  }
+
+  #[test]
+  fn normalize_chunk_case_lowercase_leading_is_noop() {
+    assert_eq!(
+      normalize_chunk_case("mid sentence", " and continues".to_string()),
+      " and continues",
+    );
+  }
+
+  #[test]
+  fn normalize_chunk_case_non_ascii_upper_untouched() {
+    assert_eq!(normalize_chunk_case("hola", " Árbol".to_string()), " Árbol",);
+  }
+
+  #[test]
+  fn normalize_chunk_case_no_alpha_chunk_unchanged() {
+    assert_eq!(normalize_chunk_case("prior", " , ".to_string()), " , ");
+  }
+
+  #[test]
+  fn normalize_chunk_case_preserves_all_caps_word() {
+    assert_eq!(
+      normalize_chunk_case("prior text", " SOMETHING loud".to_string()),
+      " SOMETHING loud",
+    );
+  }
+
+  #[test]
+  fn normalize_chunk_case_preserves_cpu_acronym_mid_sentence() {
+    assert_eq!(normalize_chunk_case("on the", " CPU for a while".to_string()), " CPU for a while",);
+  }
+
+  #[test]
+  fn normalize_chunk_case_preserves_short_acronyms() {
+    assert_eq!(normalize_chunk_case("the", " CFS scheduler".to_string()), " CFS scheduler");
+    assert_eq!(normalize_chunk_case("in the", " USA today".to_string()), " USA today");
+    assert_eq!(normalize_chunk_case("met", " NASA yesterday".to_string()), " NASA yesterday");
+  }
+
+  #[test]
+  fn normalize_chunk_case_preserves_single_letter_pronoun_i() {
+    assert_eq!(normalize_chunk_case("said", " I think".to_string()), " I think");
+    assert_eq!(normalize_chunk_case("then", " I'm done".to_string()), " I'm done");
+  }
+
+  #[test]
+  fn normalize_chunk_case_lowers_normal_word_after_acronym_test() {
+    // Ensure the acronym check doesn't accidentally save `That` when next letter is lowercase.
+    assert_eq!(
+      normalize_chunk_case("the worker itself", " That simplifies".to_string()),
+      " that simplifies",
+    );
+  }
+
+  #[test]
+  fn normalize_chunk_case_lowers_every_mid_chunk_word_start() {
+    assert_eq!(
+      normalize_chunk_case(
+        "engines",
+        " Which Kinda means we pre-warm At a Lower priority".to_string(),
+      ),
+      " which kinda means we pre-warm at a lower priority",
+    );
+  }
+
+  #[test]
+  fn normalize_chunk_case_mixed_period_inside_chunk() {
+    assert_eq!(
+      normalize_chunk_case("a sentence", " ending here. Next sentence And after".to_string()),
+      " ending here. Next sentence and after",
+    );
+  }
+
+  #[test]
+  fn normalize_chunk_case_chunk_starts_with_period_then_capital() {
+    assert_eq!(normalize_chunk_case("some text", ". Then more".to_string()), ". Then more",);
+  }
+
+  #[test]
+  fn normalize_chunk_case_empty_prior_then_mid_chunk_capital() {
+    assert_eq!(
+      normalize_chunk_case("", "Start of turn And more".to_string()),
+      "Start of turn and more",
+    );
+  }
+
+  #[test]
+  fn normalize_chunk_case_tdt_full_text_regression() {
+    let tdt_output = "The ideal is that we use excess capacity to use as the s compute for \
+      pre-warming engines. Which Kinda means that we pre-warm At a Lower priority than \
+      Executors would have Is the right way to do this would be to spin up a separate thread \
+      that would listen on a queue for For requests from Groups to pre warm workers and And \
+      just reduce the priority given to that thread.";
+    let normalized = normalize_chunk_case("", tdt_output.to_string());
+    let expected = "The ideal is that we use excess capacity to use as the s compute for \
+      pre-warming engines. Which kinda means that we pre-warm at a lower priority than \
+      executors would have is the right way to do this would be to spin up a separate thread \
+      that would listen on a queue for for requests from groups to pre warm workers and and \
+      just reduce the priority given to that thread.";
+    assert_eq!(normalized, expected);
+  }
+
+  #[test]
+  fn normalize_chunk_case_hyphenated_compound_stays_untouched() {
+    // pre-warm has hyphen; alphabetic `w` follows non-alpha `-`, so `w` is a word start.
+    // If lowercase already, nothing happens.
+    assert_eq!(normalize_chunk_case("we", " pre-warm".to_string()), " pre-warm",);
+  }
+
+  #[test]
+  fn stitch_exact_overlap() {
+    let left = "we are going to test overlap now";
+    let right = "overlap now with one more clause";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "we are going to test overlap now with one more clause");
+  }
+
+  #[test]
+  fn stitch_case_and_punctuation_overlap() {
+    let left = "This is the boundary. Next segment starts";
+    let right = "boundary, next segment starts right here";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "This is the boundary, next segment starts right here");
+  }
+
+  #[test]
+  fn stitch_no_overlap_appends_raw() {
+    let left = "first part ends here";
+    let right = "completely different opening text";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "first part ends here completely different opening text");
+  }
+
+  /// Production turn 62 shape (2026-05-08 stderr.log analysis):
+  /// partial K ends with `"swoop"`, partial K+1 starts with `"swoop"`.
+  /// The multi-token anchor search fails (no audio overlap in this test
+  /// shape), so control reaches the no-anchor append path. The new seam-dedup
+  /// drops the leading duplicate.
+  #[test]
+  fn stitch_seam_dedup_drops_repeated_word_when_no_anchor() {
+    let left = "for the most part I think we can make all of these changes in one big swoop";
+    let right = "swoop and then we can run benchmarks";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(
+      stitched,
+      "for the most part I think we can make all of these changes in one big swoop and then \
+       we can run benchmarks",
+    );
+  }
+
+  /// Trailing punctuation on the assembled tail is a hard break — sentence
+  /// boundaries, parenthetical groups, and explicit comma pauses must not
+  /// be collapsed even when the alpha keys match.
+  #[test]
+  fn stitch_seam_dedup_respects_punctuation_barrier() {
+    let left = "the cat sat on the mat.";
+    let right = "the dog watched";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "the cat sat on the mat. the dog watched");
+  }
+
+  /// Single-letter spellings ("S, P, E, N, C, E, R" and the like) must
+  /// survive seam dedup even if a letter happens to repeat at the boundary.
+  /// The len-≥-2 alpha-key rule catches this case.
+  #[test]
+  fn stitch_seam_dedup_skips_single_letter_seam() {
+    let left = "spelling out my name S P E N C E R";
+    let right = "R is the last letter";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "spelling out my name S P E N C E R R is the last letter");
+  }
+
+  /// Numeric codes ("2288 2288" as a phone number being read aloud) must
+  /// survive seam dedup. The `is_alpha_word_seam` predicate rejects
+  /// digit-only tokens.
+  #[test]
+  fn stitch_seam_dedup_skips_digit_seam() {
+    let left = "the access code is 2288";
+    let right = "2288 again for verification";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "the access code is 2288 2288 again for verification");
+  }
+
+  /// When the multi-token anchor search succeeds (normal happy path), the
+  /// seam-dedup branch is unreachable — control returns from the anchored
+  /// merge before reaching the no-anchor append path. This pins that
+  /// orthogonality: a normal-overlap shape with a duplicate seam token
+  /// must still produce the anchor-driven merge, not the seam-dedup path.
+  #[test]
+  fn stitch_seam_dedup_does_not_disturb_anchored_merge() {
+    let left = "we are going to test overlap now";
+    let right = "overlap now with one more clause";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "we are going to test overlap now with one more clause");
+  }
+
+  #[test]
+  fn stitch_drops_repeated_prefix_when_overlap_is_not_at_start() {
+    let left = "one two three four five six";
+    let right = "zero one two three four five six seven eight";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "one two three four five six seven eight");
+  }
+
+  #[test]
+  fn stitch_tolerates_minor_spelling_drift() {
+    let left = "instruction blades were originally caused";
+    let right = "blades were originally cause using one on a mind";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "instruction blades were originally caused using one on a mind");
+  }
+
+  #[test]
+  fn stitch_can_replace_unstable_tail_word_without_duplication() {
+    let left = "the instruction blades were originally COS";
+    let right = "the instruction blades were originally cause using one";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "the instruction blades were originally cause using one");
+  }
+
+  #[test]
+  fn stitch_updates_punctuation_even_without_new_tail_tokens() {
+    let left = "we should not stop. here";
+    let right = "we should not stop, here";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert_eq!(stitched, "we should not stop, here");
+  }
+
+  /// Production turn 28 (2026-04-28). Partial 1 emitted `"let's"`; partial 2,
+  /// covering the same audio span plus more right-context, emitted `"lets"`.
+  /// The stitcher's strict-equality merge falls through to "left wins" on
+  /// fuzzy diffs — wrong for this case because the only diff is an apostrophe
+  /// and right is the higher-context decode. Pin right's `"lets"` so the
+  /// punctuation-only fallback keeps firing here.
+  #[test]
+  fn stitch_regression_turn28_prefers_right_on_apostrophe_diff() {
+    let left = "What fundamentally changed that let's that that makes us think that the results";
+    let right = "What fundamentally changed that lets that that makes us think that the results \
+                 are going to be different?";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(27), 102_400);
+    assert!(!stitched.contains("let's"), "kept the apostrophe form: {stitched}");
+    assert!(
+      stitched.contains(" lets "),
+      "expected punctuation-only merge to pick right's `lets`: {stitched}"
+    );
+    assert!(stitched.contains("are going to be different"), "tail merge dropped: {stitched}");
+  }
+
+  #[test]
+  fn tokens_differ_only_in_non_alpha_handles_each_shape() {
+    assert!(tokens_differ_only_in_non_alpha("let's", "lets"));
+    assert!(tokens_differ_only_in_non_alpha("don't", "dont"));
+    assert!(tokens_differ_only_in_non_alpha("well-defined", "welldefined"));
+    assert!(tokens_differ_only_in_non_alpha("mr.", "mr"));
+    assert!(tokens_differ_only_in_non_alpha("co-op", "coop"));
+
+    // Alphabetic-letter diffs reject — alphabetic-edit-distance branch handles them.
+    assert!(!tokens_differ_only_in_non_alpha("caused", "cause"));
+    assert!(!tokens_differ_only_in_non_alpha("ur", "url"));
+    assert!(!tokens_differ_only_in_non_alpha("the", "their"));
+
+    // Strict equality is the keys-equal upstream branch's job, not this one.
+    assert!(!tokens_differ_only_in_non_alpha("lets", "lets"));
+
+    // No-alphabetic-content tokens reject (would otherwise spuriously merge punctuation runs).
+    assert!(!tokens_differ_only_in_non_alpha("''", "'"));
+    assert!(!tokens_differ_only_in_non_alpha("--", "-"));
+  }
+
+  /// The new punctuation-only branch must not steal slots from the alphabetic-
+  /// drift default. Construct an overlap with one apostrophe-only diff (`let's`
+  /// vs `lets`) AND one alphabetic-letter diff (`caused` vs `cause`) in the
+  /// same merge: the punctuation slot picks right, the alphabetic slot picks
+  /// left, so the merged output has `lets` (right) AND `caused` (left).
+  #[test]
+  fn stitch_punctuation_only_merge_does_not_disturb_alphabetic_drift() {
+    let left = "we said let's go and that caused";
+    let right = "let's go and that cause some stir";
+    // No audio-overlap context: this is the same shape as
+    // `stitch_tolerates_minor_spelling_drift` — pure assembled-vs-segment.
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert!(stitched.contains("caused"), "alphabetic drift stole left's `caused`: {stitched}");
+    assert!(!stitched.contains(" cause "), "right's shorter `cause` leaked through: {stitched}");
+    assert!(stitched.contains("some stir"), "tail merge dropped: {stitched}");
+  }
+
+  #[test]
+  fn live_tail_wait_uses_live_factor() {
+    assert_eq!(
+      incremental_tail_wait_ms(220, true),
+      220 * u64::from(INCREMENTAL_LIVE_TAIL_WAIT_FACTOR)
+    );
+  }
+
+  #[test]
+  fn non_live_tail_wait_uses_batch_wait_factor() {
+    assert_eq!(
+      incremental_tail_wait_ms(220, false),
+      220 * u64::from(INCREMENTAL_TAIL_MAX_WAIT_FACTOR)
+    );
+  }
+
+  #[test]
+  fn cap_segment_start_limits_window_from_end() {
+    // end=300k, max window=128k => minimum start allowed is 172k
+    assert_eq!(cap_segment_start(80_000, 300_000, 128_000), 172_000);
+  }
+
+  #[test]
+  fn cap_segment_start_keeps_existing_start_when_within_window() {
+    assert_eq!(cap_segment_start(220_000, 300_000, 128_000), 220_000);
+  }
+
+  #[test]
+  fn finalize_tail_plan_requires_tail_when_last_segment_was_not_tail() {
+    let plan = finalize_tail_plan(true, 302_080, 302_080, false);
+    assert_eq!(plan, FinalizeTailPlan::RunTail);
+  }
+
+  #[test]
+  fn finalize_tail_plan_skips_only_when_tail_already_covers_audio_end() {
+    let plan = finalize_tail_plan(true, 302_080, 302_080, true);
+    assert_eq!(plan, FinalizeTailPlan::SkipTailSafe);
+  }
+
+  #[test]
+  fn finalize_tail_plan_runs_when_audio_extends_past_refined_end() {
+    let plan = finalize_tail_plan(true, 320_000, 302_080, true);
+    assert_eq!(plan, FinalizeTailPlan::RunTail);
+  }
+
+  #[test]
+  fn finalize_tail_plan_runs_without_refined_text() {
+    let plan = finalize_tail_plan(false, 302_080, 0, false);
+    assert_eq!(plan, FinalizeTailPlan::RunTail);
+  }
+
+  #[test]
+  fn stitch_regression_turn62_sequence_preserves_early_context() {
+    let segments = [
+      "Instead of the existing work view when creating",
+      "when creating a workblock. I'd like to remove the",
+      "Move the hour minute display and add to the right of the",
+      "add to the right of the time the few different bases",
+      "the few different b presets for a countdown.",
+    ];
+
+    let mut stitched = String::new();
+    for segment in segments {
+      stitched = stitch_incremental_text(&stitched, segment, 64, 2, None, 0);
+    }
+
+    assert!(stitched.contains("workblock"));
+    assert!(stitched.contains("countdown"));
+  }
+
+  #[test]
+  fn stitch_rejects_destructive_shrink_on_weak_overlap() {
+    let left = "Instead of the existing work view when creating a workblock I'd like to remove the";
+    let right = "Move the hour minute display and add to the right of the";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+
+    assert!(stitched.split_whitespace().count() >= 10);
+    assert!(stitched.contains("workblock"));
+    assert!(stitched.contains("display"));
+  }
+
+  #[test]
+  fn stitch_regression_turn16_preserves_middle_via_audio_range_cap() {
+    // Real data from a truncation incident: `[if, we, have]` recurs at right[10..13] and
+    // previously outscored the true overlap at right[0..2] (`[fast, work]`), causing 17 tokens
+    // of speech to vanish between "executors that handle" and "fast work, then we can all put
+    // them together. And if we have".
+    //
+    // (As of the turn 667 fix, the uncapped path also rejects this via the pseudo-suffix-
+    // stretched check — `tail_drop=7 + match_start=10 = 17 > overlap=3` — so the cap is no
+    // longer the only line of defense. Test still verifies the with-cap path produces the
+    // correct output for the real incident inputs.)
+    let left = "My hunch is that over time we will want to distribute work uh into schedulers \
+      that have similarly shaped work so that if we have you know executors that handle fast \
+      work";
+    let right = "fast work, then we can all put them together. And if we have executors that \
+      are all slow";
+
+    // Partial 3 ended at sample 302080; partial 4 started at 271360.
+    // overlap = 30720 samples → cap = 30720/4000 + 2 = 9 tokens. match_start=10 gets rejected,
+    // forcing the stitcher to find the correct 2-token overlap at match_start=0.
+    let overlap_samples = 302_080usize - 271_360usize;
+    let cap = stitch_right_start_cap_from_overlap(overlap_samples);
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(cap), overlap_samples);
+
+    assert!(
+      stitched.contains("then we can all put them together"),
+      "middle content must survive the stitch, got: {stitched:?}",
+    );
+    assert!(stitched.contains("executors that handle fast work"));
+    assert!(stitched.ends_with("executors that are all slow"));
+  }
+
+  #[test]
+  fn stitch_right_start_cap_scales_with_audio_overlap() {
+    assert_eq!(stitch_right_start_cap_from_overlap(0), 2);
+    assert_eq!(stitch_right_start_cap_from_overlap(16_000), 6);
+    assert_eq!(stitch_right_start_cap_from_overlap(30_720), 9);
+    assert_eq!(stitch_right_start_cap_from_overlap(32_000), 10);
+  }
+
+  #[test]
+  fn tokens_equivalent_rejects_fuzzy_match_on_short_tokens() {
+    // Exact equality always wins, regardless of length.
+    assert!(tokens_equivalent("i", "i"));
+    assert!(tokens_equivalent("a", "a"));
+
+    // Single-char pairs that differ are NOT equivalent — they're distinct words, not typos.
+    assert!(!tokens_equivalent("i", "s"));
+    assert!(!tokens_equivalent("a", "i"));
+    assert!(!tokens_equivalent("s", "a"));
+
+    // Two-char pairs that differ are not equivalent either.
+    assert!(!tokens_equivalent("at", "it"));
+    assert!(!tokens_equivalent("of", "if"));
+    assert!(!tokens_equivalent("is", "it"));
+
+    // 3+ char pairs with one edit distance ARE equivalent — these are plausible typos.
+    assert!(tokens_equivalent("cause", "caused"));
+    assert!(tokens_equivalent("what", "that"));
+    assert!(tokens_equivalent("worker", "workers"));
+
+    // 3+ char pairs with >1 edit distance are still rejected.
+    assert!(!tokens_equivalent("cos", "cause"));
+    assert!(!tokens_equivalent("foo", "bar"));
+  }
+
+  fn unique_tmp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+      "azad-{tag}-{}",
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+  }
+
+  fn write_pair(dir: &std::path::Path, stem: &str) {
+    std::fs::write(dir.join(format!("{stem}.wav")), b"RIFF").unwrap();
+    std::fs::write(dir.join(format!("{stem}.json")), b"{}").unwrap();
+  }
+
+  #[test]
+  fn prune_debug_recordings_keeps_newest_regular_pairs_and_deletes_older() {
+    let tmp = unique_tmp_dir("prune-test");
+
+    let extras = 3;
+    let total = DEBUG_RECORDING_MAX_FILES + extras;
+    let stems: Vec<String> = (0..total)
+      .map(|i| format!("{:013}-turn-{:06}", 1_700_000_000_000u64 + i as u64, i))
+      .collect();
+    for stem in &stems {
+      write_pair(&tmp, stem);
+    }
+
+    prune_debug_recordings(&tmp);
+
+    for stem in &stems[..extras] {
+      assert!(!tmp.join(format!("{stem}.wav")).exists(), "stale wav was not pruned: {stem}");
+      assert!(!tmp.join(format!("{stem}.json")).exists(), "stale json was not pruned: {stem}");
+    }
+    for stem in &stems[extras..] {
+      assert!(tmp.join(format!("{stem}.wav")).exists(), "newer wav was incorrectly pruned: {stem}");
+      assert!(
+        tmp.join(format!("{stem}.json")).exists(),
+        "newer json was incorrectly pruned: {stem}"
+      );
+    }
+
+    prune_debug_recordings(&tmp);
+    let remaining = std::fs::read_dir(&tmp).unwrap().count();
+    assert_eq!(remaining, DEBUG_RECORDING_MAX_FILES * 2);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+  }
+
+  #[test]
+  fn prune_debug_recordings_partitions_bailout_and_regular_tiers() {
+    let tmp = unique_tmp_dir("prune-tiers");
+
+    let regular_extras = 4;
+    let bailout_extras = 5;
+    let regular_total = DEBUG_RECORDING_MAX_FILES + regular_extras;
+    let bailout_total = DEBUG_RECORDING_BAILOUT_MAX_FILES + bailout_extras;
+
+    let regular_stems: Vec<String> = (0..regular_total)
+      .map(|i| format!("{:013}-turn-{:06}", 1_700_000_000_000u64 + i as u64, i))
+      .collect();
+    let bailout_stems: Vec<String> = (0..bailout_total)
+      .map(|i| format!("{:013}-turn-{:06}-bailout", 1_700_000_500_000u64 + i as u64, 1000 + i))
+      .collect();
+    for stem in regular_stems.iter().chain(bailout_stems.iter()) {
+      write_pair(&tmp, stem);
+    }
+
+    prune_debug_recordings(&tmp);
+
+    for stem in &regular_stems[..regular_extras] {
+      assert!(!tmp.join(format!("{stem}.wav")).exists(), "regular wav not pruned: {stem}");
+      assert!(!tmp.join(format!("{stem}.json")).exists(), "regular json not pruned: {stem}");
+    }
+    for stem in &regular_stems[regular_extras..] {
+      assert!(tmp.join(format!("{stem}.wav")).exists(), "regular wav over-pruned: {stem}");
+      assert!(tmp.join(format!("{stem}.json")).exists(), "regular json over-pruned: {stem}");
+    }
+    for stem in &bailout_stems[..bailout_extras] {
+      assert!(!tmp.join(format!("{stem}.wav")).exists(), "bailout wav not pruned: {stem}");
+      assert!(!tmp.join(format!("{stem}.json")).exists(), "bailout json not pruned: {stem}");
+    }
+    for stem in &bailout_stems[bailout_extras..] {
+      assert!(tmp.join(format!("{stem}.wav")).exists(), "bailout wav over-pruned: {stem}");
+      assert!(tmp.join(format!("{stem}.json")).exists(), "bailout json over-pruned: {stem}");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+  }
+
+  #[test]
+  fn prune_debug_recordings_keeps_all_when_under_caps() {
+    let tmp = unique_tmp_dir("prune-under-cap");
+
+    for i in 0..3 {
+      write_pair(&tmp, &format!("{:013}-turn-{:06}", 1_700_000_000_000u64 + i as u64, i));
+    }
+    for i in 0..5 {
+      write_pair(&tmp, &format!("{:013}-turn-{:06}-bailout", 1_700_000_500_000u64 + i as u64, i));
+    }
+
+    prune_debug_recordings(&tmp);
+
+    let remaining = std::fs::read_dir(&tmp).unwrap().count();
+    // (3 regular + 5 bailout) pairs × 2 files each.
+    assert_eq!(remaining, (3 + 5) * 2);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+  }
+
+  #[test]
+  fn debug_recording_stem_handles_bailout_suffix() {
+    assert_eq!(debug_recording_stem(1_700_000_000_000, 42, false), "1700000000000-turn-000042");
+    assert_eq!(
+      debug_recording_stem(1_700_000_000_000, 42, true),
+      "1700000000000-turn-000042-bailout"
+    );
+  }
+
+  #[test]
+  fn prune_debug_recordings_ignores_non_wav_and_orphan_json() {
+    let tmp = std::env::temp_dir().join(format!(
+      "azad-prune-orphans-{}",
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    // Populate one full pair plus some noise the pruner must not touch.
+    std::fs::write(tmp.join("1700000000000-turn-000001.wav"), b"RIFF").unwrap();
+    std::fs::write(tmp.join("1700000000000-turn-000001.json"), b"{}").unwrap();
+    std::fs::write(tmp.join("README.md"), b"notes").unwrap();
+    // Orphan json with no matching wav — pruner only acts off .wav listing, so this stays.
+    std::fs::write(tmp.join("orphan.json"), b"{}").unwrap();
+
+    prune_debug_recordings(&tmp);
+
+    assert!(tmp.join("1700000000000-turn-000001.wav").exists());
+    assert!(tmp.join("1700000000000-turn-000001.json").exists());
+    assert!(tmp.join("README.md").exists());
+    assert!(tmp.join("orphan.json").exists());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+  }
+
+  #[test]
+  fn tail_coverage_gap_detected_when_tail_segment_returned_empty() {
+    // Real data from turn 17 (92.0% accuracy). The audio was 757_760 samples (47.36 s); the
+    // last non-empty partial ended at 693_760 (43.36 s). The scheduled tail segment covering
+    // [629_760, 757_760) came back with empty text, so partial_segments never grew past
+    // end_sample=693_760 — leaving ~4 s of real speech ("might be or probably is the cause")
+    // unrepresented in the stitched output. The gap far exceeds the tolerance.
+    let assembled_end = 693_760;
+    let audio_len = 757_760;
+    assert!(tail_coverage_is_incomplete(assembled_end, audio_len, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn tail_coverage_complete_when_last_partial_reaches_audio_end() {
+    // The expected healthy case: the tail (or the last regular partial) transcribed the whole
+    // audio, so partial_segments.max(end_sample) equals audio_len.
+    assert!(!tail_coverage_is_incomplete(757_760, 757_760, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn tail_coverage_complete_when_trailing_silence_within_tolerance() {
+    // A real-world turn often ends 1-2 s short of `audio_len` — the EOU fires right
+    // after speech ends and the scheduled tail partial either returns empty or hasn't
+    // run yet. Stderr 2026-04-25..-05-01 recorded 9 such firings clustered at
+    // 0.64-1.92 s. At sub-1.5 s scale that's at most 2-3 words of trailing content;
+    // paying full-pass latency to recover them is the wrong tradeoff.
+    assert!(!tail_coverage_is_incomplete(757_276, 757_760, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+    assert!(!tail_coverage_is_incomplete(737_760, 757_760, TAIL_COVERAGE_TOLERANCE_SAMPLES)); // 1.25 s
+    assert!(!tail_coverage_is_incomplete(733_761, 757_760, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+    // 1.5 s - ε
+  }
+
+  #[test]
+  fn tail_coverage_gap_detected_just_past_tolerance() {
+    // 24_001 samples over (~1.5 s + ε): the gap is large enough to be real speech.
+    assert!(tail_coverage_is_incomplete(733_759, 757_760, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn tail_coverage_with_zero_assembled_end_reports_gap_but_caller_must_guard() {
+    // The pure predicate itself still reports a gap when no partials landed (assembled_end=0
+    // vs any nonzero audio_len). The caller at submit_incremental_final_pass is responsible
+    // for NOT invoking this path when partial_segments is empty — otherwise every short turn
+    // where VAD finalized before a partial produced text would incorrectly trigger a
+    // `tail_coverage_gap` full-pass bailout, and the overlay would hang waiting for a
+    // FinalText that never came. Regression lock for that caller invariant.
+    assert!(tail_coverage_is_incomplete(0, 80_000, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+    assert!(tail_coverage_is_incomplete(0, 25_000, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+    // Audio within the new 1.5 s tolerance reports no gap.
+    assert!(!tail_coverage_is_incomplete(0, 24_000, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+    assert!(!tail_coverage_is_incomplete(0, 8_000, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn middle_coverage_gap_detected_when_inner_segment_returned_empty() {
+    // Real data from turn 11 (2026-04-29, 86.7% accuracy). Segment IDs jumped 1 → 3
+    // in the saved partials, meaning segment 2 came back with empty text and was
+    // silently dropped by the non-empty guard. Result: a 4.16 s audio gap between
+    // partial 1's end (110_080) and partial 3's start (176_640), and the stitcher
+    // joined them with no overlap so ~10 tokens of real speech ("It is a generic
+    // crate that we can use and") were lost from the middle. The leading and tail
+    // coverage checks both pass for this turn — they only see the outer envelope.
+    // We need a check on each consecutive pair of non-empty partials.
+    let ranges: Vec<(usize, usize)> = vec![
+      (0, 110_080),
+      (176_640, 304_640),
+      (273_920, 401_920),
+      (371_200, 499_200),
+      (468_480, 596_480),
+      (550_400, 678_400),
+    ];
+    let gap = middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES);
+    assert_eq!(
+      gap,
+      Some((110_080, 176_640)),
+      "must detect the segment-2-was-empty gap between partial 1 and partial 3",
+    );
+  }
+
+  #[test]
+  fn middle_coverage_gap_detected_for_turn5_2026_04_30_shape() {
+    // stderr 2026-04-30: TOON_PARTIAL_FINAL turn_id=5
+    // action=full_pass_bailout reason=middle_coverage_gap
+    // prev_end=885_760 next_start=939_520 audio_len=1_067_520. Gap is
+    // 53_760 samples ≈ 3.36 s — well above the loosened threshold; the
+    // bailout still fires for catastrophic mid-turn lost segments.
+    let ranges: Vec<(usize, usize)> = vec![(0, 885_760), (939_520, 1_067_520)];
+    assert_eq!(
+      middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES),
+      Some((885_760, 939_520)),
+    );
+  }
+
+  #[test]
+  fn middle_coverage_complete_for_normal_sliding_partials() {
+    // Healthy stream: each partial's start_sample lies strictly INSIDE the prior
+    // partial's [start, end) window, so consecutive pairs always overlap. No middle
+    // gap → no bailout.
+    let ranges: Vec<(usize, usize)> =
+      vec![(0, 110_080), (79_360, 207_360), (176_640, 304_640), (273_920, 401_920)];
+    assert_eq!(middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES), None);
+  }
+
+  #[test]
+  fn middle_coverage_complete_within_tolerance() {
+    // A 1.5 s gap should NOT bail out — interior gaps overlap with the
+    // stitcher's token-level alignment, so sub-1.5 s scheduler jitter is
+    // not worth the full-pass latency cost.
+    let ranges: Vec<(usize, usize)> = vec![(0, 100_000), (123_500, 200_000)];
+    assert_eq!(middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES), None);
+  }
+
+  #[test]
+  fn middle_coverage_complete_for_sub_one_point_five_second_gap() {
+    // Real data from turn 10 stderr 2026-04-30: prev_end=455_680
+    // next_start=468_480 (gap = 12_800 samples = 0.8 s). Under the prior
+    // 0.5 s tolerance this fired a full-pass bailout that cost ~7 s of
+    // latency for at most 2-3 mis-stitched words. Under the new 1.5 s
+    // threshold the borderline jitter no longer triggers.
+    let ranges: Vec<(usize, usize)> = vec![(0, 455_680), (468_480, 1_817_600)];
+    assert_eq!(middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES), None);
+  }
+
+  #[test]
+  fn middle_coverage_gap_detected_just_past_tolerance() {
+    // 24_001-sample gap (~1.5 s + ε): bail out under the new threshold.
+    let ranges: Vec<(usize, usize)> = vec![(0, 100_000), (124_001, 200_000)];
+    let gap = middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES);
+    assert_eq!(gap, Some((100_000, 124_001)));
+  }
+
+  #[test]
+  fn middle_coverage_handles_unsorted_ranges() {
+    // Defensive: callers may pass partials in scheduler order rather than start_sample
+    // order. The check sorts internally by start_sample so the gap detection is order-
+    // independent.
+    let ranges: Vec<(usize, usize)> = vec![(176_640, 304_640), (0, 110_080), (273_920, 401_920)];
+    let gap = middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES);
+    assert_eq!(gap, Some((110_080, 176_640)));
+  }
+
+  #[test]
+  fn middle_coverage_complete_for_zero_or_one_partial() {
+    // Empty: nothing to compare.
+    assert_eq!(middle_coverage_is_incomplete(&[], MIDDLE_COVERAGE_TOLERANCE_SAMPLES), None);
+    // Single partial: no consecutive pair to check.
+    assert_eq!(
+      middle_coverage_is_incomplete(&[(0, 110_080)], MIDDLE_COVERAGE_TOLERANCE_SAMPLES),
+      None,
+    );
+  }
+
+  fn eou(audio_samples: usize, delta_chars: usize) -> EouEmission {
+    EouEmission { audio_samples, delta_chars, text: "x".repeat(delta_chars) }
+  }
+
+  #[test]
+  fn eou_chars_in_range_sums_only_in_window() {
+    let emissions: Vec<EouEmission> = vec![
+      eou(50_000, 5),
+      eou(190_000, 1),
+      eou(250_000, 1),
+      eou(290_000, 1),
+      eou(317_440, 12),
+      eou(350_000, 4),
+    ];
+    // turn 33 corroborated-silent window: 3 chars in [189_440, 317_440)
+    assert_eq!(eou_chars_in_range(&emissions, 189_440, 317_440), 3);
+    // Strictly before the window.
+    assert_eq!(eou_chars_in_range(&emissions, 0, 100_000), 5);
+    // Half-open right edge: emission AT end_sample is excluded.
+    assert_eq!(eou_chars_in_range(&emissions, 200_000, 317_440), 2);
+    // Including the boundary: shifting end past it picks up the 12-char emission.
+    assert_eq!(eou_chars_in_range(&emissions, 200_000, 317_441), 14);
+    // Inverted / empty ranges return 0.
+    assert_eq!(eou_chars_in_range(&emissions, 500, 100), 0);
+    assert_eq!(eou_chars_in_range(&emissions, 100, 100), 0);
+  }
+
+  #[test]
+  fn eou_corroborates_silence_threshold_boundary() {
+    // Range = 16_000 samples (1.0 s) — threshold compares chars/sec strictly < 3.0.
+    let one_char: Vec<EouEmission> = vec![eou(500, 1)];
+    assert!(eou_corroborates_silence(&one_char, 0, 16_000), "1 char/s < 3.0 → corroborate");
+    let two_chars: Vec<EouEmission> = vec![eou(500, 2)];
+    assert!(eou_corroborates_silence(&two_chars, 0, 16_000), "2 chars/s < 3.0 → corroborate");
+    let three_chars: Vec<EouEmission> = vec![eou(500, 3)];
+    assert!(
+      !eou_corroborates_silence(&three_chars, 0, 16_000),
+      "3.0 chars/s is the floor; strict `<` excludes it"
+    );
+    let four_chars: Vec<EouEmission> = vec![eou(500, 4)];
+    assert!(
+      !eou_corroborates_silence(&four_chars, 0, 16_000),
+      "4 chars/s plainly above the silence floor"
+    );
+    // Degenerate ranges never corroborate — a 0-sample slice can't be silence.
+    assert!(!eou_corroborates_silence(&one_char, 100, 100));
+    assert!(!eou_corroborates_silence(&one_char, 100, 50));
+  }
+
+  #[test]
+  fn empty_partial_action_pushes_silence_when_eou_corroborates() {
+    // Corroborated silence wins regardless of retry state — we always push
+    // the empty-text coverage marker so middle_coverage_is_incomplete stays
+    // quiet for the range.
+    let min = 2;
+    assert_eq!(
+      empty_partial_action(0, true, false, false, min),
+      EmptyPartialAction::PushSilenceMarker,
+    );
+    assert_eq!(
+      empty_partial_action(50, true, false, true, min),
+      EmptyPartialAction::PushSilenceMarker,
+    );
+    assert_eq!(
+      empty_partial_action(50, true, true, true, min),
+      EmptyPartialAction::PushSilenceMarker,
+    );
+  }
+
+  #[test]
+  fn empty_partial_action_schedules_retry_when_eou_speech_and_unretried() {
+    // First failure of a speech-shaped range: retry once.
+    assert_eq!(empty_partial_action(10, false, false, false, 2), EmptyPartialAction::ScheduleRetry,);
+    // Exactly at the floor still retries.
+    assert_eq!(empty_partial_action(2, false, false, false, 2), EmptyPartialAction::ScheduleRetry,);
+  }
+
+  #[test]
+  fn empty_partial_action_drops_when_already_retried_or_is_retry() {
+    // Second-time-around for the same range: give up.
+    assert_eq!(empty_partial_action(10, false, false, true, 2), EmptyPartialAction::Drop,);
+    // The retry itself returned empty: don't recurse.
+    assert_eq!(empty_partial_action(10, false, true, false, 2), EmptyPartialAction::Drop,);
+    // Both flags set (e.g., retry of a retry — shouldn't happen but
+    // defensively still drops).
+    assert_eq!(empty_partial_action(10, false, true, true, 2), EmptyPartialAction::Drop,);
+  }
+
+  #[test]
+  fn empty_partial_action_drops_when_eou_below_floor() {
+    // EOU produced a stray char or two — not enough to suggest the model
+    // really missed speech. Don't pay a retry. Falls through to the
+    // bailout coverage check (the prior behaviour for this case).
+    assert_eq!(empty_partial_action(0, false, false, false, 2), EmptyPartialAction::Drop,);
+    assert_eq!(empty_partial_action(1, false, false, false, 2), EmptyPartialAction::Drop,);
+  }
+
+  #[test]
+  fn eou_emission_text_is_preserved() {
+    let emissions = vec![
+      EouEmission { audio_samples: 1_000, delta_chars: 3, text: " on".into() },
+      EouEmission { audio_samples: 2_000, delta_chars: 9, text: " AWS Nitro".into() },
+      EouEmission { audio_samples: 3_000, delta_chars: 5, text: ", uh".into() },
+    ];
+    let in_range: Vec<&str> = emissions
+      .iter()
+      .filter(|e| e.audio_samples >= 1_000 && e.audio_samples < 3_000)
+      .map(|e| e.text.as_str())
+      .collect();
+    assert_eq!(in_range, vec![" on", " AWS Nitro"]);
+    // Counts still match — the struct change is additive.
+    assert_eq!(eou_chars_in_range(&emissions, 1_000, 3_000), 12);
+  }
+
+  #[test]
+  fn eou_corroborates_silence_for_turn33_quiet_window_but_not_speech() {
+    // Production turn 33 (2026-05-07) shape. TDT-empty slice [189_440, 317_440)
+    // = 8.0 s. EOU emitted ~16 chars over that window (2.0 chars/s) while
+    // neighbouring speech segments ran 6.5–10.25 chars/s. With the 3.0 chars/s
+    // floor, turn 33's slice corroborates without falsely corroborating speech.
+    //
+    // Light fixture (3 chars over 8 s = 0.38 chars/s): solidly silent.
+    let quiet = vec![eou(190_000, 1), eou(250_000, 1), eou(290_000, 1)];
+    assert!(eou_corroborates_silence(&quiet, 189_440, 317_440));
+
+    // Turn 33's actual rate (16 chars over 8 s = 2.0 chars/s): corroborates
+    // under the 3.0 floor. This is the regression we fixed.
+    let turn33_actual =
+      vec![eou(192_000, 3), eou(284_160, 3), eou(286_720, 2), eou(289_280, 3), eou(302_080, 5)];
+    assert!(eou_corroborates_silence(&turn33_actual, 189_440, 317_440));
+
+    // Speech window: 60 chars over 8 s = 7.5 chars/s. Do NOT corroborate;
+    // today's bailout-via-coverage-gap path stays so full-pass can recover.
+    let talking = vec![eou(200_000, 30), eou(250_000, 30)];
+    assert!(!eou_corroborates_silence(&talking, 189_440, 317_440));
+
+    // Boundary: 3.0 chars/s × 8.0 s window = 24 chars exactly hits the floor.
+    // 23 chars in window → corroborate; 24 chars → not (strict `<`).
+    let just_below = vec![eou(200_000, 23)];
+    assert!(eou_corroborates_silence(&just_below, 189_440, 317_440));
+    let exactly_at = vec![eou(200_000, 24)];
+    assert!(!eou_corroborates_silence(&exactly_at, 189_440, 317_440));
+  }
+
+  #[test]
+  fn non_empty_partials_filters_silence_marker_entries() {
+    let entries = vec![
+      IncrementalPartialSegment {
+        segment_id: 1,
+        start_sample: 0,
+        end_sample: 100_000,
+        is_tail: false,
+        text: "first".to_string(),
+      },
+      // EOU-corroborated silence marker: pushed to fill the coverage map only.
+      IncrementalPartialSegment {
+        segment_id: 2,
+        start_sample: 100_000,
+        end_sample: 200_000,
+        is_tail: false,
+        text: String::new(),
+      },
+      IncrementalPartialSegment {
+        segment_id: 3,
+        start_sample: 200_000,
+        end_sample: 300_000,
+        is_tail: true,
+        text: "third".to_string(),
+      },
+      // Whitespace-only also drops — `text.trim().is_empty()` catches it.
+      IncrementalPartialSegment {
+        segment_id: 4,
+        start_sample: 300_000,
+        end_sample: 400_000,
+        is_tail: false,
+        text: "   ".to_string(),
+      },
+    ];
+    let kept = non_empty_partials(&entries);
+    assert_eq!(kept.len(), 2);
+    assert_eq!(kept[0].segment_id, 1);
+    assert_eq!(kept[1].segment_id, 3);
+  }
+
+  #[test]
+  fn middle_coverage_complete_when_eou_corroborated_empty_fills_gap() {
+    // Turn 33 shape after the fix: TDT-empty slice [189_440, 317_440) was
+    // pushed to `partial_segments` with empty text because EOU corroborated
+    // silence over the same window. The coverage union is now continuous —
+    // `middle_coverage_is_incomplete` returns None instead of bailing.
+    let ranges: Vec<(usize, usize)> = vec![
+      (0, 122_880),
+      (92_160, 220_160),
+      (189_440, 317_440), // formerly missing — now filled by EOU-corroborated empty
+      (286_720, 414_720),
+      (358_400, 486_400),
+    ];
+    assert_eq!(middle_coverage_is_incomplete(&ranges, MIDDLE_COVERAGE_TOLERANCE_SAMPLES), None);
+  }
+
+  #[test]
+  fn leading_coverage_gap_detected_when_first_partial_decoded_to_empty() {
+    // Real data from turn 80 (58.3% token-count accuracy). The full audio had "We have the
+    // core runtime harness, which is like the the constraints, the flow, …" but segment 1
+    // covering [0, 110080) returned "" from Parakeet and was silently dropped by the
+    // non-empty guard. Segment 2 at [79360, 207360) was the first non-empty partial, so
+    // `min(partial_segments.start_sample) = 79360`. Audio before sample 79360 (~5 s) is
+    // uncovered by any non-empty partial — ~10 tokens of speech lost from the front.
+    let leading_start = 79_360;
+    assert!(leading_coverage_is_incomplete(leading_start, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn leading_coverage_complete_when_first_partial_starts_near_zero() {
+    // The expected healthy case: segment 1 produced text so the earliest start_sample is 0.
+    assert!(!leading_coverage_is_incomplete(0, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn leading_coverage_complete_with_sub_tolerance_head_silence() {
+    // Pre-speech silence and scheduler left-context gather occasionally push the first
+    // partial's `start_sample` off zero by up to ~1 s. Stderr 2026-04-25..-05-01 had one
+    // borderline 0.96 s leading firing that paid full-pass latency for at most one
+    // missing leading word. Up to the new 1.5 s tolerance should not trigger a bailout.
+    assert!(!leading_coverage_is_incomplete(484, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+    assert!(!leading_coverage_is_incomplete(15_360, TAIL_COVERAGE_TOLERANCE_SAMPLES)); // 0.96 s
+    assert!(!leading_coverage_is_incomplete(23_999, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+    // 1.5 s - ε
+  }
+
+  #[test]
+  fn leading_coverage_gap_detected_just_past_tolerance() {
+    // 24_001 samples (~1.5 s + ε): a gap large enough to contain real speech, bail out.
+    assert!(leading_coverage_is_incomplete(24_001, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn tail_coverage_saturates_when_assembled_end_exceeds_audio_len() {
+    // Paranoid case — if a partial somehow reports end_sample > audio_len (shouldn't happen
+    // but we don't want to panic or emit a negative gap), saturation should keep us safely in
+    // the "coverage is complete" branch.
+    assert!(!tail_coverage_is_incomplete(900_000, 757_760, TAIL_COVERAGE_TOLERANCE_SAMPLES));
+  }
+
+  #[test]
+  fn stitch_regression_turn667_rejects_anchored_pseudo_suffix() {
+    // Real data from turn 667 (66.7% token-count accuracy, 10 tokens dropped from middle).
+    // The user said "So it seems like…" twice — first "for the stress micro-tasks scenario
+    // that", then restarted "it's running fine and that we don't need to address it…".
+    //
+    // partial 1 audio [0, 110080):  "So it seems like for the stress micro-tasks scenario that"
+    // partial 2 audio [79360, 207360): "scenario that uh it seems like it's running fine and
+    //                                   that we don't need to address it."
+    //
+    // Genuine overlap: [scenario, that] at left[8..10] vs right[0..2] (overlap=2,
+    // tail_drop=0, match_start=0). Total slack=0.
+    //
+    // False overlap: [it, seems, like] at left[1..4] vs right[3..6] (overlap=3,
+    // tail_drop=6, match_start=3). Total slack=9 — exactly hits the audio-overlap cap of
+    // 9 derived from the 30720-sample range overlap, so the prior `tail_drop + match_start
+    // <= cap` check let it through. But `slack=9 > overlap=3` means the anchor is being
+    // stretched ~3× wider than its own matched length, and the "suffix" it's matching
+    // against is actually left's *prefix* — pseudo-suffix territory even though
+    // `overlap_start=1` (so the existing overlap_start==0 guard doesn't catch it).
+    //
+    // overlap=3 outranked the genuine overlap=2 at scoring time → wrong anchor wins →
+    // ~10 tokens of real speech ("for the stress micro-tasks scenario that uh") dropped
+    // from the middle.
+    let left = "So it seems like for the stress micro-tasks scenario that";
+    let right = "scenario that uh it seems like it's running fine and that we don't need to \
+                 address it.";
+    // Audio overlap: prev_end=110080, partial_2_start=79360 → 30720 samples → cap=9.
+    let cap = stitch_right_start_cap_from_overlap(30_720);
+    let stitched = stitch_incremental_text(left, right, 256, 2, Some(cap), 30_720);
+
+    assert!(
+      stitched.contains("for the stress micro-tasks scenario"),
+      "lost middle content: {stitched:?}",
+    );
+    assert!(
+      stitched.contains("running fine and that we don't need to address"),
+      "lost right content: {stitched:?}",
+    );
+  }
+
+  #[test]
+  fn stitch_regression_turn8_rejects_combined_slack_false_overlap() {
+    // Real data from turn 8 (48.1% token-count accuracy). The user said "It's not clear to me
+    // how interwoven the…" *twice* in the same sentence ("…the scheduler is with the harness,
+    // and it's not clear to me how interwoven the control…"). Stitching partial 2 into the
+    // assembled partial-1 text, the stitcher found a 4-token *exact* match `[it's, not, clear,
+    // to]` at (tail_drop=6, match_start=7) which outranks the correct 3-token
+    // `[the, scheduler, is]` match at (tail_drop=0, match_start=0). High tail_drop pushed the
+    // "suffix" all the way back to left's *beginning*, using left's prefix as a pseudo-suffix.
+    //
+    // The earlier `max_right_start` cap bounds match_start alone (9 for this 30720-sample
+    // audio overlap); match_start=7 passes that. The fix: cap `tail_drop + match_start <=
+    // max_right_start` — genuine overlaps can't have both slack dimensions non-trivial at
+    // once.
+    let left = "It's not clear to me how interwoven the scheduler is.";
+    let right =
+      "the scheduler is with the harness, and it's not clear to me how interwoven the control.";
+    let cap = stitch_right_start_cap_from_overlap(30_720); // partial 1 end 110080, partial 2 start 79360
+    let stitched = stitch_incremental_text(left, right, 256, 2, Some(cap), 30_720);
+
+    assert!(
+      stitched.contains("the scheduler is with the harness"),
+      "lost middle content: {stitched:?}",
+    );
+    assert!(
+      stitched.contains("and it's not clear to me how interwoven the control"),
+      "lost right content: {stitched:?}",
+    );
+  }
+
+  #[test]
+  fn stitch_regression_turn237_rejects_short_token_fuzzy_false_overlap() {
+    // Real data from a 63.9%-accurate transcription. Without the short-token guard in
+    // `tokens_equivalent`, the stitcher's fuzzy-match path lets `[what, s, should]` from
+    // left's tail look "equivalent" to `[that, i, should]` at right[3..6] — `what`≈`that`
+    // and `s`≈`i` both pass the 1-edit test. That 3-token false overlap outscores the real
+    // 2-token `[is, the]` overlap at right[0..2] and drops `"I tell the other agents? What
+    // is the text that"` from the middle of the turn.
+    let left = "What s should I tell the other agents? What is the";
+    let right = "is the text that I should include along with this uh zip file and";
+
+    // Audio-overlap cap for this partial pair: prev_end=110080, cur_start=79360 → 30720
+    // samples → cap=9 tokens. Far more permissive than needed to let the real start=0 match
+    // through, so the fix has to live at the token-equivalence layer, not the cap layer.
+    let overlap_samples = 110_080usize - 79_360usize;
+    let cap = stitch_right_start_cap_from_overlap(overlap_samples);
+
+    let stitched = stitch_incremental_text(left, right, 256, 2, Some(cap), overlap_samples);
+
+    // Middle content must survive the stitch.
+    assert!(stitched.contains("I tell the other agents"), "lost middle content: {stitched:?}",);
+    assert!(stitched.contains("the text that"), "lost right-prefix content: {stitched:?}",);
+    assert!(stitched.contains("zip file and"), "lost right-suffix content: {stitched:?}");
+
+    // Full expected shape: true 2-token overlap `[is, the]` joins left and right cleanly.
+    assert_eq!(
+      stitched,
+      "What s should I tell the other agents? What is the text that I should include along \
+       with this uh zip file and",
+    );
+  }
+
+  #[test]
+  fn stitch_regression_turn11_recovers_truncated_tail_at_partial_boundary() {
+    // Turn 11 (2026-04-28). Partial 1's audio chunk ended at sample 110_080 mid-utterance,
+    // so Parakeet emitted `"...the UR"` instead of `"...the URL"`. Partial 2 covered samples
+    // 79_360..207_360 — its audio extends past the cutoff, so it emitted `"the URL ..."`
+    // cleanly. Without the boundary-recovery branch the stitcher couldn't anchor (the k=2
+    // slice `["the","ur"]` vs `["the","url"]` fails because `tokens_equivalent` rejects
+    // edit-distance-1 fuzzy on tokens <3 chars) and the result was the buggy
+    // `"...the UR the URL..."`. With the fix, anchored at (tail_drop=0, match_start=0,
+    // overlap=2) and the merge picks right's `"URL"`.
+    let left = "Isn't the normal way that this works is that the UR";
+    let right = "the URL that we would provide to share get redirected to a";
+    // Live call passed audio_overlap_samples=30_720 → max_right_start=9.
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(9), 30_720);
+    assert!(!stitched.contains("UR the URL"), "stitcher kept the truncated tail: {stitched}");
+    assert!(stitched.contains("the URL"), "lost the URL after merge: {stitched}");
+    assert!(stitched.starts_with("Isn't the normal way"), "dropped prefix: {stitched}");
+    // Stitch partial 3 onto the result. Should remain clean.
+    let final_text = stitch_incremental_text(
+      &stitched,
+      "get redirected to a registered iOS redirect path.",
+      64,
+      2,
+      Some(10),
+      33_280,
+    );
+    assert!(
+      final_text.contains("registered iOS redirect path"),
+      "lost the tail after second stitch: {final_text}",
+    );
+    assert!(!final_text.contains("UR the URL"), "regressed: {final_text}");
+  }
+
+  #[test]
+  fn boundary_recovery_does_not_fire_without_audio_overlap() {
+    // Same shape as the turn-11 case, but with audio_overlap_samples=0 — i.e. no
+    // structural evidence that left's tail was clipped mid-word. The recovery branch
+    // must NOT fire; the stitcher falls back to its existing "no anchor, append right"
+    // behaviour. Pins the gate so a future refactor doesn't widen it accidentally.
+    let left = "Isn't the normal way that this works is that the UR";
+    let right = "the URL that we would provide";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    // Without recovery the stitcher appends right whole.
+    assert!(stitched.contains("UR the URL"), "recovery widened past gate: {stitched}");
+  }
+
+  #[test]
+  fn boundary_recovery_does_not_fire_at_non_terminal_position() {
+    // Recovery is allowed only at the LAST position of the overlap slice (i.e. the actual
+    // end of the prior partial). A 1-char-shorter token earlier in the overlap window
+    // should NOT match — that's a typo or a different word, not an audio-chunk-boundary
+    // truncation. left ends with "the foo", right starts with "fool the foo bar baz" so
+    // the genuine 3-token overlap "the foo bar" is found at right[1..4] by the regular
+    // path; the leading-position prefix-extension "foo" → "fool" never kicks in.
+    let left = "alpha beta gamma the foo";
+    let right = "fool the foo bar baz";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(8), 16_000);
+    assert!(!stitched.contains("fool the foo"), "recovery fired mid-slice: {stitched}");
+    assert!(stitched.contains("the foo bar baz"), "lost legitimate overlap: {stitched}");
+  }
+
+  #[test]
+  fn one_char_audio_cutoff_truncation_helper_is_strict() {
+    assert!(is_one_char_audio_cutoff_truncation("ur", "url"));
+    assert!(is_one_char_audio_cutoff_truncation("thi", "this"));
+    assert!(is_one_char_audio_cutoff_truncation("ban", "band"));
+    // Single-char left rejected (avoids `"i"` → `"in"`).
+    assert!(!is_one_char_audio_cutoff_truncation("i", "in"));
+    // Multi-char extension rejected (avoids `"to"` → `"tomato"`).
+    assert!(!is_one_char_audio_cutoff_truncation("to", "tomato"));
+    assert!(!is_one_char_audio_cutoff_truncation("th", "this"));
+    // Not a strict prefix.
+    assert!(!is_one_char_audio_cutoff_truncation("top", "stop"));
+    // Right shorter or equal — directional only.
+    assert!(!is_one_char_audio_cutoff_truncation("url", "ur"));
+    assert!(!is_one_char_audio_cutoff_truncation("the", "the"));
+  }
+
+  #[test]
+  fn stitch_regression_turn41_anchors_across_spelled_vs_digit_number_form() {
+    // Turn 41 (2026-04-28). Partial 1 ended `"...the three eighteen from"` (3 tokens for
+    // the number span); partial 2 covered the same audio and emitted `"318 from..."` (1
+    // digit token). Without span-grouping the stitcher couldn't anchor (cardinality
+    // mismatch in slice_tokens_match) and emitted
+    // `"...three eighteen from 318 from Air Canada..."`. With grouping, both sides
+    // produce a single `match_key="318"` token and anchor cleanly.
+    let left = "He said that he was going to be here at three. Is the three eighteen from";
+    let right = "318 from Air Canada the only flight that he could have taken if that were true?";
+    // Audio overlap: 107_520 - 69_120 = 38_400 samples → cap = 11 tokens.
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(11), 38_400);
+    assert!(!stitched.contains("from 318 from"), "duplicated number form: {stitched}");
+    assert!(!stitched.contains("eighteen from 318"), "duplicated number form: {stitched}",);
+    assert!(stitched.contains("Air Canada"), "lost right content: {stitched}");
+    assert!(stitched.contains("if that were true"), "lost right tail: {stitched}");
+    assert!(stitched.starts_with("He said that he was going to be here at three."));
+  }
+
+  #[test]
+  fn stitch_regression_turn23_anchors_on_single_word_seam() {
+    // Production turn 23 (2026-04-30, 91.7% accuracy). Partial 1 ended at sample
+    // 107_520 with `"...outcome."`; partial 2 started at sample 76_800 with
+    // `"outcome uh and determine ..."`. Audio overlap was 30_720 samples (~1.92s)
+    // — both decoders heard the same `"outcome"` at the seam. The standard k>=2
+    // search found no anchor (`"scenario's outcome"` didn't equal
+    // `"outcome uh"`), so the stitcher fell through to `join_with_single_space`
+    // and emitted `"outcome. outcome uh ..."` — a duplicated word.
+    //
+    // With the new k=1 boundary anchor (substantive 7-char `"outcome"` keys
+    // matching exactly at left's last + right's first), the stitcher anchors at
+    // (tail_drop=0, match_start=0, overlap=1) and the merge picks right's
+    // `"outcome"` (no trailing period — latest evidence wins per the existing
+    // punctuation/casing rule).
+    let left = "I want you to evaluate each scenario's outcome.";
+    let right = "outcome uh and determine what would be the point at which this";
+    // Audio overlap 30_720 samples → cap = 9 tokens.
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(9), 30_720);
+    assert!(!stitched.contains("outcome. outcome"), "duplicate at seam: {stitched}",);
+    assert!(!stitched.contains("outcome outcome"), "duplicate at seam: {stitched}",);
+    assert!(stitched.contains("outcome uh and determine"), "lost right content: {stitched}",);
+    assert!(
+      stitched.starts_with("I want you to evaluate each scenario's"),
+      "dropped prefix: {stitched}",
+    );
+  }
+
+  #[test]
+  fn boundary_recovery_does_not_anchor_on_short_common_word_seam_dedup_cleans() {
+    // 2-char `"of"` fails the boundary-recovery `tokens_match_substantive_boundary`
+    // len-≥-3 filter — control falls through to the no-anchor append path where
+    // the new seam-dedup (len-≥-2 alpha key, no trailing-punct on prev) catches
+    // the duplicated `"of"` and drops it. Result: clean stitch, no `"of of"`
+    // artifact, no false anchor consuming downstream content. The earlier
+    // pinned trade-off ("of of is acceptable to avoid false anchoring") no
+    // longer applies — both halves of the boundary are now well-handled.
+    let left = "this is a kind of";
+    let right = "of course we can";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(9), 30_720);
+    assert_eq!(stitched, "this is a kind of course we can");
+  }
+
+  #[test]
+  fn boundary_recovery_k1_does_not_anchor_without_audio_overlap() {
+    // Same shape as turn 23 but with `audio_overlap_samples == 0`. Without the
+    // structural evidence of overlapping audio, the new branch must NOT fire —
+    // the seam-share could be coincidence rather than the same-audio reading.
+    let left = "I want you to evaluate each scenario's outcome.";
+    let right = "outcome uh and determine what would be";
+    let stitched = stitch_incremental_text(left, right, 64, 2, None, 0);
+    assert!(stitched.contains("outcome. outcome"), "anchored without audio overlap: {stitched}",);
+  }
+
+  #[test]
+  fn boundary_recovery_k1_anchors_on_three_char_word() {
+    // Smallest accepted token length. `"the"` at the seam with audio overlap
+    // anchors the merge cleanly.
+    let left = "I went to the";
+    let right = "the store today";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(9), 30_720);
+    assert_eq!(stitched, "I went to the store today");
+  }
+
+  #[test]
+  fn boundary_recovery_k1_loses_to_higher_k_match() {
+    // When a k>=2 match exists, it wins over the k=1 fallback — the new branch
+    // only fires when the standard search returned None.
+    let left = "alpha beta the cat";
+    let right = "the cat sat down";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(9), 30_720);
+    // k=2 anchor on ["the","cat"] wins; no double anchor.
+    assert_eq!(stitched, "alpha beta the cat sat down");
+  }
+
+  #[test]
+  fn tokens_match_substantive_boundary_filters_short_tokens() {
+    // Substantive 3+ char keys anchor.
+    assert!(tokens_match_substantive_boundary("outcome", "outcome"));
+    assert!(tokens_match_substantive_boundary("the", "the"));
+    assert!(tokens_match_substantive_boundary("318", "318"));
+    // 1-2 char tokens reject — particles like `"of"`/`"is"`/`"i"` carry too
+    // much false-match risk to anchor on.
+    assert!(!tokens_match_substantive_boundary("of", "of"));
+    assert!(!tokens_match_substantive_boundary("is", "is"));
+    assert!(!tokens_match_substantive_boundary("i", "i"));
+    assert!(!tokens_match_substantive_boundary("a", "a"));
+    // Inequality always rejects — this never widens to fuzzy match.
+    assert!(!tokens_match_substantive_boundary("outcome", "outcomes"));
+    assert!(!tokens_match_substantive_boundary("the", "thee"));
+    assert!(!tokens_match_substantive_boundary("318", "319"));
+  }
+
+  #[test]
+  fn stitch_anchors_on_single_cardinal_to_digit() {
+    // Turn 50 single-token shape: each cardinal-to-digit pair is matched via the
+    // tens-rule single-token path, so no concat-rule needed.
+    let left = "more than like 30, 40 minutes maybe an hour";
+    let right = "thirty, forty minutes maybe an hour or longer";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(9), 30_720);
+    assert!(stitched.contains("or longer"), "lost right tail: {stitched}");
+    // No duplicated number form.
+    assert!(!stitched.contains("hour thirty"), "duplicated: {stitched}");
+    assert!(!stitched.contains("an hour an hour"), "duplicated: {stitched}");
+  }
+
+  #[test]
+  fn stitch_anchors_on_tens_rule_spell_out() {
+    // 2-token overlap: the number group + the trailing word "Maple".
+    let left = "see you at twenty three Maple";
+    let right = "23 Maple Street";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(6), 12_000);
+    assert!(stitched.contains("Street"), "lost right tail: {stitched}");
+    assert!(!stitched.contains("twenty three 23"), "duplicated: {stitched}");
+    assert!(!stitched.contains("23 23"), "duplicated: {stitched}");
+  }
+
+  #[test]
+  fn stitch_anchors_on_hundreds_with_and() {
+    // 2-token overlap: the number group + the trailing word "to".
+    let left = "flight one hundred and three to";
+    let right = "103 to Boston";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(6), 12_000);
+    assert!(stitched.contains("Boston"), "lost right tail: {stitched}");
+    assert!(!stitched.contains("hundred and three 103"), "duplicated: {stitched}");
+    assert!(!stitched.contains("103 103"), "duplicated: {stitched}");
+  }
+
+  #[test]
+  fn stitch_period_breaks_number_run() {
+    // The period after "three" must end the run there — not join with "Eighteen"
+    // into key "318". If it joined, the assembled would phantom-anchor.
+    let left = "give me three. Eighteen of them";
+    let right = "Eighteen of them are red";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(6), 12_000);
+    assert!(stitched.contains("are red"), "lost right tail: {stitched}");
+    assert!(!stitched.contains("Eighteen of them Eighteen"), "duplicated: {stitched}",);
+  }
+
+  #[test]
+  fn stitch_does_not_anchor_on_different_numbers() {
+    let left = "the 318 flight";
+    let right = "320 flight from Air Canada";
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(6), 12_000);
+    assert!(stitched.contains("318"), "lost left number: {stitched}");
+    assert!(stitched.contains("320"), "lost right number: {stitched}");
+  }
+
+  #[test]
+  fn tokenize_for_stitch_groups_number_runs() {
+    let toks = tokenize_for_stitch("the three eighteen from");
+    let pairs: Vec<(String, String)> =
+      toks.into_iter().map(|t| (t.original, t.match_key)).collect();
+    assert_eq!(
+      pairs,
+      vec![
+        ("the".to_string(), "the".to_string()),
+        ("three eighteen".to_string(), "318".to_string()),
+        ("from".to_string(), "from".to_string()),
+      ],
+    );
+  }
+
+  #[test]
+  fn tokenize_for_stitch_period_ends_run() {
+    let toks = tokenize_for_stitch("give me three. Eighteen of them");
+    let keys: Vec<String> = toks.iter().map(|t| t.match_key.clone()).collect();
+    // Period after "three" terminates the run — no phantom "318" group.
+    assert!(keys.contains(&"3".to_string()), "missing `3`: {keys:?}");
+    assert!(keys.contains(&"18".to_string()), "missing `18`: {keys:?}");
+    assert!(!keys.contains(&"318".to_string()), "phantom `318` formed: {keys:?}");
+  }
+
+  #[test]
+  fn tokenize_for_stitch_does_not_overgroup_pure_ones_chain() {
+    // Existing test data: "one two three four five six" was a sequence of arbitrary
+    // ordered labels in the stitcher's regression suite. The number-run grouper must
+    // emit each as its own digit-keyed token, NOT a single concat group "123456".
+    let toks = tokenize_for_stitch("one two three four five six");
+    let keys: Vec<String> = toks.iter().map(|t| t.match_key.clone()).collect();
+    assert_eq!(keys, vec!["1", "2", "3", "4", "5", "6"]);
+    assert!(!keys.contains(&"123456".to_string()), "over-grouped chain: {keys:?}");
+  }
+
+  #[test]
+  fn try_consume_number_run_handles_grammar() {
+    // Ones, teens, tens — single tokens via tens-rule.
+    assert_eq!(try_consume_number_run(&["five"], 0), Some((1, "5".into())));
+    assert_eq!(try_consume_number_run(&["eighteen"], 0), Some((1, "18".into())));
+    assert_eq!(try_consume_number_run(&["ninety"], 0), Some((1, "90".into())));
+    // Tens-rule: twenty + three = 23.
+    assert_eq!(try_consume_number_run(&["twenty", "three"], 0), Some((2, "23".into())));
+    // Concat-rule: ones + teen = 318 (no tens-rule combination, has Teen).
+    assert_eq!(try_consume_number_run(&["three", "eighteen"], 0), Some((2, "318".into())));
+    // Hundreds.
+    assert_eq!(try_consume_number_run(&["one", "hundred"], 0), Some((2, "100".into())));
+    assert_eq!(
+      try_consume_number_run(&["one", "hundred", "and", "three"], 0),
+      Some((4, "103".into())),
+    );
+    assert_eq!(try_consume_number_run(&["one", "hundred", "three"], 0), Some((3, "103".into())),);
+    // Ordinals reject.
+    assert_eq!(try_consume_number_run(&["third"], 0), None);
+    assert_eq!(try_consume_number_run(&["eighteenth"], 0), None);
+    // Non-number rejects.
+    assert_eq!(try_consume_number_run(&["apple"], 0), None);
+    // Bare digit string passes through.
+    assert_eq!(try_consume_number_run(&["318"], 0), Some((1, "318".into())));
+    // Mixed digit + cardinal under concat-rule (digit "18" is multi-digit).
+    assert_eq!(try_consume_number_run(&["three", "18"], 0), Some((2, "318".into())));
+    // Pure-Ones chain longer than 1 is NOT concat-grouped (no Teen/Tens/multi-digit).
+    // Resolves to single token "1" and the caller advances.
+    assert_eq!(try_consume_number_run(&["one", "two", "three"], 0), Some((1, "1".into())),);
+    // Dangling `and` retracts.
+    assert_eq!(
+      try_consume_number_run(&["one", "hundred", "and", "apples"], 0),
+      Some((2, "100".into())),
+    );
+  }
+}

@@ -1,22 +1,20 @@
 [workspace]
 members = [
     "crates/azad",
-    "crates/asr-rs",
-    "crates/parakeet-rs",
+    "crates/azad-asr",
 ]
 default-members = ["crates/azad"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.1"
-edition = "2021"
-rust-version = "1.70.0"
-authors = []
-license = ""
-repository = ""
-keywords = []
-categories = []
+edition = "2024"
+rust-version = "1.85.0"
+repository = "https://github.com/spence/azad"
+license = "MIT"
 
 [workspace.dependencies]
 thiserror = "1.0"
 num_cpus = "1.16"
+parakeet-rs = { git = "https://github.com/spence/parakeet-rs.git", rev = "7b6208699f094575df1d81ee210c5a3987b639e6" }
+whisper-cpp-plus = "=0.1.5"

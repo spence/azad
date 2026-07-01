@@ -3,6 +3,53 @@ set -euo pipefail
 
 CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$(cd "${CRATE_DIR}/../.." && pwd)"
+
+capture_env_var() {
+  local name="$1"
+  local has_var="AZAD_ENV_HAS_${name}"
+  local value_var="AZAD_ENV_VALUE_${name}"
+  if [[ "${!name+x}" == "x" ]]; then
+    printf -v "$has_var" '%s' "1"
+    printf -v "$value_var" '%s' "${!name}"
+  else
+    printf -v "$has_var" '%s' "0"
+    printf -v "$value_var" '%s' ""
+  fi
+}
+
+restore_env_var() {
+  local name="$1"
+  local has_var="AZAD_ENV_HAS_${name}"
+  local value_var="AZAD_ENV_VALUE_${name}"
+  if [[ "${!has_var}" == "1" ]]; then
+    printf -v "$name" '%s' "${!value_var}"
+  fi
+}
+
+for var in \
+  AZAD_APP_DIR \
+  AZAD_BUILD_PROFILE \
+  AZAD_TOON_SHOW_PARTIALS \
+  AZAD_NATIVE_ENGINE_LOGS \
+  AZAD_CODESIGN_IDENTITY; do
+  capture_env_var "$var"
+done
+
+CONFIG_FILE="${AZAD_CONFIG:-$ROOT_DIR/.codesign.env}"
+if [[ -f "$CONFIG_FILE" ]]; then
+  # Local, ignored shell assignments for developer-specific install settings.
+  source "$CONFIG_FILE"
+fi
+
+for var in \
+  AZAD_APP_DIR \
+  AZAD_BUILD_PROFILE \
+  AZAD_TOON_SHOW_PARTIALS \
+    AZAD_NATIVE_ENGINE_LOGS \
+  AZAD_CODESIGN_IDENTITY; do
+  restore_env_var "$var"
+done
+
 LABEL="ai.azad"
 LEGACY_LABEL="com.spence.azad"
 DOMAIN="gui/$(id -u)"
@@ -23,41 +70,10 @@ STDOUT_LOG="${LOG_DIR}/stdout.log"
 STDERR_LOG="${LOG_DIR}/stderr.log"
 
 BUILD_PROFILE="${AZAD_BUILD_PROFILE:-release}"
-if [[ "$BUILD_PROFILE" == "release" ]]; then
-  BIN_SOURCE="${ROOT_DIR}/target/release/azad"
-else
-  BIN_SOURCE="${ROOT_DIR}/target/debug/azad"
-fi
-
 TOON_SHOW_PARTIALS="${AZAD_TOON_SHOW_PARTIALS:-0}"
 AZAD_NATIVE_ENGINE_LOGS="${AZAD_NATIVE_ENGINE_LOGS:-0}"
-
-CODESIGN_IDENTITY="${AZAD_CODESIGN_IDENTITY:-}"
-if [[ -z "$CODESIGN_IDENTITY" ]] && [[ -x /usr/bin/security ]]; then
-  # TCC (Accessibility/Microphone/Input Monitoring) keys permission grants off the
-  # app's code-signing identity. An ad-hoc signature has no stable identity, so TCC
-  # falls back to the binary's cdhash — which changes on every rebuild, forcing the
-  # user to re-grant permissions after each `just install`. Sign with a stable
-  # identity so the designated requirement (and thus the grants) persist across builds.
-  #
-  # Preference order: an explicit Azad dev root (purpose-made), then the longer-lived
-  # Developer ID, then Apple Development. Falls through to ad-hoc only if none exist.
-  #
-  # We capture the 40-hex SHA-1 hash (field 2 of `1) <hash> "<name>"`), not the name,
-  # and sign with that. A machine that imported an exported identity AND has its own
-  # cert from the same team ends up with multiple certs sharing one common name, and
-  # `codesign --sign "<name>"` then fails as "ambiguous". The hash is unique per cert.
-  IDENTITY_LIST="$(/usr/bin/security find-identity -v -p codesigning \
-    "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null)"
-  for pattern in "Azad Dev Code Signing Root" "Developer ID Application" "Apple Development"; do
-    DETECTED_IDENTITY="$(printf '%s\n' "$IDENTITY_LIST" \
-      | awk -v p="$pattern" 'index($0, p){print $2; exit}')"
-    if [[ -n "${DETECTED_IDENTITY:-}" ]]; then
-      CODESIGN_IDENTITY="$DETECTED_IDENTITY"
-      break
-    fi
-  done
-fi
+APP_SIGNED=0
+APP_STABLE_SIGNED=0
 
 usage() {
   cat <<'USAGE'
@@ -84,6 +100,19 @@ build_binary() {
   fi
   popd >/dev/null
 
+  local target_dir="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
+  if [[ -n "${CARGO_TARGET_DIR:-}" && "$target_dir" != /* ]]; then
+    target_dir="${CRATE_DIR}/${target_dir}"
+  fi
+
+  local profile_dir
+  if [[ "$BUILD_PROFILE" == "release" ]]; then
+    profile_dir="release"
+  else
+    profile_dir="debug"
+  fi
+
+  BIN_SOURCE="${target_dir}/${profile_dir}/azad"
   if [[ ! -x "$BIN_SOURCE" ]]; then
     echo "error: built binary missing at $BIN_SOURCE" >&2
     exit 1
@@ -91,24 +120,38 @@ build_binary() {
 }
 
 codesign_app_if_configured() {
-  if [[ -z "$CODESIGN_IDENTITY" ]]; then
-    echo "Note: AZAD_CODESIGN_IDENTITY is not set; Accessibility permission may need re-approval after updates."
+  if [[ -z "${AZAD_CODESIGN_IDENTITY:-}" ]]; then
+    rm -rf "${APP_CONTENTS_DIR}/_CodeSignature"
+    echo "Code signing: disabled (no AZAD_CODESIGN_IDENTITY in ${CONFIG_FILE})"
     return
   fi
 
   if [[ ! -x /usr/bin/codesign ]]; then
-    echo "warning: /usr/bin/codesign not available; skipping app signing" >&2
+    echo "error: /usr/bin/codesign not available; cannot sign with AZAD_CODESIGN_IDENTITY" >&2
+    exit 1
+  fi
+
+  local err_file
+  err_file="$(mktemp "${TMPDIR:-/tmp}/azad-codesign.XXXXXX")"
+  if /usr/bin/codesign \
+    --force \
+    --deep \
+    --sign "$AZAD_CODESIGN_IDENTITY" \
+    --entitlements "$CRATE_DIR/Azad.entitlements" \
+    "$APP_DIR" 2>"$err_file"; then
+    rm -f "$err_file"
+    APP_SIGNED=1
+    if [[ "$AZAD_CODESIGN_IDENTITY" != "-" ]]; then
+      APP_STABLE_SIGNED=1
+    fi
+    echo "Signed Azad.app with identity: $AZAD_CODESIGN_IDENTITY"
     return
   fi
 
-  /usr/bin/codesign \
-    --force \
-    --deep \
-    --sign "$CODESIGN_IDENTITY" \
-    --entitlements "$CRATE_DIR/Azad.entitlements" \
-    "$APP_DIR"
-
-  echo "Signed Azad.app with identity: $CODESIGN_IDENTITY"
+  echo "error: codesign failed with identity: $AZAD_CODESIGN_IDENTITY" >&2
+  sed 's/^/  /' "$err_file" >&2
+  rm -f "$err_file"
+  exit 1
 }
 
 write_info_plist() {
@@ -261,7 +304,13 @@ cmd_install() {
 
   echo "Installed Azad app bundle at: $APP_DIR"
   echo "Installed LaunchAgent plist at: $PLIST_PATH"
-  echo "Permissions are preserved across install/restart unless you run: just reset-permissions"
+  if [[ "$APP_STABLE_SIGNED" == "1" ]]; then
+    echo "Permissions are preserved across install/restart unless you run: just reset-permissions"
+  elif [[ "$APP_SIGNED" == "1" ]]; then
+    echo "Installed ad-hoc signed development build. Stable local signing is optional; see .codesign.env.example."
+  else
+    echo "Installed unsigned development build. Local signing is optional; see .codesign.env.example."
+  fi
   echo "Next: just start"
 }
 

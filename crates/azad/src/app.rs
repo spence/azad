@@ -17,12 +17,7 @@ use crate::model_download::{self, DownloadHandle};
 use crate::models::{self, PackStatus};
 use crate::platform;
 use crate::platform::{
-  ConnectorRowVM,
-  DeviceMenuModel,
-  DeviceMenuRow,
-  PasteResult,
-  SettingsTab,
-  SettingsViewModel,
+  ConnectorRowVM, DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsTab, SettingsViewModel,
 };
 use crate::preferred_store;
 use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
@@ -845,7 +840,7 @@ fn strip_removed_words(text: &str, removed_words: &[String]) -> String {
 /// `strip_removed_words` on the paste path; together they shape the final
 /// emitted text before `platform::insert_text` fires.
 ///
-/// Safety net for duplicate-word artifacts the asr-rs stitcher's seam-dedup
+/// Safety net for duplicate-word artifacts the azad-asr stitcher's seam-dedup
 /// can't see: model-induced doubles inside a single Parakeet partial (203 of
 /// 617 dup-bearing turns in the 2026-05-08 stderr.log analysis) and stable
 /// user/model duplicates the full-pass also produces (159 turns).
@@ -4255,37 +4250,18 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use super::{
-    AppController,
-    AzadConfig,
-    DraftOverlayAction,
-    EngineState,
-    HotkeyEffect,
-    ManualHoldReleaseAction,
-    ManualHoldReleasePlan,
-    RawFinalizeUiPlan,
-    SessionRecoveryState,
-    allow_immediate_restart_for_fault_count,
-    build_paste_text,
-    collapse_consecutive_duplicates,
-    draft_matches_finalized_text,
-    draft_update_overlay_action,
-    has_actionable_turn_context_for_snapshot,
-    has_started_turn_for_snapshot,
-    has_turn_context_for_snapshot,
-    is_stream_fault_message,
-    listen_toggle_notice,
-    manual_hold_release_plan,
-    next_current_turn_id,
-    raw_finalize_target_turn_id_for_state,
-    raw_finalize_ui_plan,
-    recovery_state_for_fault_count,
-    should_ignore_finalizing_event,
-    split_overlay_active_for_turns,
-    split_overlay_visible_for_state,
+    AppController, AzadConfig, DraftOverlayAction, EngineState, HotkeyEffect,
+    ManualHoldReleaseAction, ManualHoldReleasePlan, RawFinalizeUiPlan, SessionRecoveryState,
+    allow_immediate_restart_for_fault_count, build_paste_text, collapse_consecutive_duplicates,
+    draft_matches_finalized_text, draft_update_overlay_action,
+    has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
+    has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
+    manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
+    raw_finalize_ui_plan, recovery_state_for_fault_count, should_ignore_finalizing_event,
+    split_overlay_active_for_turns, split_overlay_visible_for_state,
     split_overlay_visible_with_hold_for_state,
     split_overlay_visible_with_live_divergence_for_state,
-    split_overlay_visible_with_vad_hint_for_state,
-    split_top_completion_for_state,
+    split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
     turn_started_should_arm_pending,
   };
   use super::{LISTEN_TOGGLE_NOTICE_DURATION_MS, ListenToggleNotice};
@@ -4317,28 +4293,31 @@ mod tests {
   #[test]
   fn manual_hold_release_plan_disables_capture_when_listen_is_off() {
     let plan = manual_hold_release_plan(false, true, true);
-    assert_eq!(plan, ManualHoldReleasePlan {
-      capture_enabled: false,
-      action: ManualHoldReleaseAction::FinalizeTurn,
-    });
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan {
+        capture_enabled: false,
+        action: ManualHoldReleaseAction::FinalizeTurn,
+      }
+    );
   }
 
   #[test]
   fn manual_hold_release_plan_keeps_capture_when_listen_is_on() {
     let plan = manual_hold_release_plan(true, true, false);
-    assert_eq!(plan, ManualHoldReleasePlan {
-      capture_enabled: true,
-      action: ManualHoldReleaseAction::HideOverlay
-    });
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan { capture_enabled: true, action: ManualHoldReleaseAction::HideOverlay }
+    );
   }
 
   #[test]
   fn manual_hold_release_plan_keeps_live_when_not_finalizing() {
     let plan = manual_hold_release_plan(false, false, true);
-    assert_eq!(plan, ManualHoldReleasePlan {
-      capture_enabled: false,
-      action: ManualHoldReleaseAction::KeepLive
-    });
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan { capture_enabled: false, action: ManualHoldReleaseAction::KeepLive }
+    );
   }
 
   #[test]

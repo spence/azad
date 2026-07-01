@@ -1,0 +1,445 @@
+use anyhow::{Context, Result, anyhow};
+use clap::{Args, Parser, Subcommand};
+use cpal::traits::{DeviceTrait, HostTrait};
+use crossbeam_channel as chan;
+use std::collections::BTreeMap;
+use std::io::{self, Write as _};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use asr::audio::AudioInput;
+use asr::audio::cpal_input::{CpalInput, CpalInputConfig};
+use asr::audio::decoded_input::DecodedInput;
+use asr::audio::wav_input::WavInput;
+use asr::logging;
+use asr::pipeline::{PipelineConfig, run_pipeline};
+use asr::render::{RenderEvent, Renderer};
+use asr::ui;
+
+#[derive(Parser)]
+#[command(name = "asr")]
+#[command(about = "Terminal live speech-to-text (English) via Parakeet (cpal capture)", long_about = None)]
+#[command(version)]
+struct Cli {
+  #[command(subcommand)]
+  command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+  /// List microphone capture devices.
+  Devices,
+
+  /// Listen on the microphone, detect utterances, and stream text into the terminal.
+  Listen(ListenArgs),
+
+  /// Transcribe a WAV file through the exact same pipeline as `listen`.
+  TranscribeFile(TranscribeFileArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct CommonArgs {
+  /// Path to a Silero VAD ggml model (from whisper.cpp).
+  #[arg(long = "vad-model")]
+  vad_model: Option<PathBuf>,
+
+  /// VAD speech threshold (Silero avg prob).
+  #[arg(long, default_value_t = 0.45)]
+  vad_thold: f32,
+
+  /// Require N consecutive VAD "speech" detections to enter speech state.
+  #[arg(long, default_value_t = 1)]
+  vad_start_chunks: usize,
+
+  /// Audio prepended when speech starts (ms).
+  #[arg(long, default_value_t = 800)]
+  pre_roll_ms: u32,
+
+  /// Minimum silence (ms) before we trust EOU to end the turn.
+  #[arg(long, default_value_t = 240)]
+  eou_min_silence_ms: u32,
+
+  /// Fallback: force end if silence exceeds this (ms), even if EOU didn't fire.
+  #[arg(long, default_value_t = 1000)]
+  eou_max_silence_ms: u32,
+
+  /// VAD probability floor while a turn is in progress. Sub-floor chunks
+  /// accumulate against `eou_max_silence_ms`. Lower than `vad_thold` so soft
+  /// continuation keeps the turn alive (see PipelineConfig::vad_in_speech_thold).
+  #[arg(long, default_value_t = 0.10)]
+  vad_in_speech_thold: f32,
+
+  /// Tentative-finalize recovery window (ms). 0 disables (commit immediately).
+  #[arg(long, default_value_t = 500)]
+  recovery_window_ms: u32,
+
+  /// VAD probability above which "still talking" recovery counts during the window.
+  #[arg(long, default_value_t = 0.30)]
+  recovery_vad_thold: f32,
+
+  /// Stable prefix requires agreement across the last K hypotheses.
+  #[arg(long, default_value_t = 3)]
+  stable_k: usize,
+
+  /// Max hypotheses stored (H).
+  #[arg(long, default_value_t = 5)]
+  stable_h: usize,
+
+  /// Enable incremental partial TDT refinement during an active turn.
+  #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        value_parser = clap::value_parser!(bool)
+    )]
+  incremental_finalization_enabled: bool,
+
+  /// Cadence for incremental refinement slices while speaking (ms).
+  #[arg(long, default_value_t = 6_000)]
+  incremental_slice_ms: u32,
+
+  /// Overlap from previous refined slice when creating a new slice (ms).
+  #[arg(long, default_value_t = 3_000)]
+  incremental_overlap_ms: u32,
+
+  /// Extra left-context to include for each incremental slice to improve boundary quality (ms).
+  #[arg(long, default_value_t = 10_000)]
+  incremental_left_context_ms: u32,
+
+  /// Minimum new audio required before scheduling the next incremental slice (ms).
+  #[arg(long, default_value_t = 1_200)]
+  incremental_min_new_audio_ms: u32,
+
+  /// Wait time before forcing tail refinement when a background slice is still running (ms).
+  #[arg(long, default_value_t = 220)]
+  incremental_wait_tail_result_ms: u32,
+
+  /// Parakeet TDT model directory (contains encoder-model.onnx, encoder-model.onnx.data, decoder_joint-model.onnx, vocab.txt).
+  #[arg(long)]
+  parakeet_tdt: Option<PathBuf>,
+
+  /// Parakeet EOU model directory (contains encoder.onnx, decoder_joint.onnx, tokenizer.json).
+  #[arg(long)]
+  parakeet_eou: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ListenArgs {
+  #[command(flatten)]
+  common: CommonArgs,
+
+  /// Input device index (see `asr devices`).
+  #[arg(long)]
+  device: Option<usize>,
+
+  /// Prompt to select an audio device before starting.
+  #[arg(long)]
+  select_device: bool,
+
+  /// Capture chunk size (ms).
+  #[arg(long, default_value_t = 20)]
+  chunk_ms: u32,
+
+  /// Capture ring buffer size (ms).
+  #[arg(long, default_value_t = 120_000)]
+  buffer_ms: u32,
+}
+
+#[derive(Args, Debug, Clone)]
+struct TranscribeFileArgs {
+  #[command(flatten)]
+  common: CommonArgs,
+
+  /// Input WAV path.
+  #[arg(value_name = "WAV_PATH")]
+  path: PathBuf,
+
+  /// File read chunk size (ms).
+  #[arg(long, default_value_t = 20)]
+  chunk_ms: u32,
+}
+
+#[derive(Clone)]
+struct ChanRenderer {
+  tx: chan::Sender<RenderEvent>,
+}
+
+impl Renderer for ChanRenderer {
+  fn emit(&self, ev: RenderEvent) {
+    let _ = self.tx.send(ev);
+  }
+}
+
+struct CollectingRenderer {
+  lines: Mutex<BTreeMap<u64, String>>,
+  errors: Mutex<Vec<String>>,
+}
+
+impl CollectingRenderer {
+  fn new() -> Self {
+    Self { lines: Mutex::new(BTreeMap::new()), errors: Mutex::new(Vec::new()) }
+  }
+
+  fn snapshot_lines(&self) -> Vec<String> {
+    let lines = self.lines.lock().unwrap();
+    lines
+      .iter()
+      .filter_map(|(id, text)| if *id == 0 { None } else { Some(text.clone()) })
+      .collect()
+  }
+}
+
+impl Renderer for CollectingRenderer {
+  fn emit(&self, ev: RenderEvent) {
+    match ev {
+      RenderEvent::Active { .. }
+      | RenderEvent::Finalizing { .. }
+      | RenderEvent::FinalizingCancelled { .. } => {}
+      RenderEvent::FinalLine { id, text } => {
+        let mut lines = self.lines.lock().unwrap();
+        lines.insert(id, text);
+      }
+      RenderEvent::ReplaceLine { id, text } => {
+        let mut lines = self.lines.lock().unwrap();
+        lines.insert(id, text);
+      }
+      RenderEvent::Error { message } => {
+        self.errors.lock().unwrap().push(message);
+      }
+      RenderEvent::Status(_)
+      | RenderEvent::SpeechStartedByVad
+      | RenderEvent::TurnStarted { .. }
+      | RenderEvent::CaptureHealth(_)
+      | RenderEvent::Meter(_)
+      | RenderEvent::DebugStats(_) => {}
+    }
+  }
+}
+
+fn main() -> Result<()> {
+  logging::init_quiet();
+
+  let cli = Cli::parse();
+  match cli.command {
+    Commands::Devices => cmd_devices(),
+    Commands::Listen(args) => cmd_listen(args),
+    Commands::TranscribeFile(args) => cmd_transcribe_file(args),
+  }
+}
+
+fn cmd_devices() -> Result<()> {
+  let host = cpal::default_host();
+  let default = host.default_input_device().and_then(|d| device_id_string(&d));
+
+  let devs = CpalInput::list_input_devices()?;
+  if devs.is_empty() {
+    return Err(anyhow!("no input devices found"));
+  }
+
+  for (i, dev) in devs.into_iter().enumerate() {
+    let name = device_name(&dev).unwrap_or_else(|| "<unknown>".to_string());
+    let dev_id = device_id_string(&dev).unwrap_or_default();
+    let mark = default.as_ref().map(|d| if d == &dev_id { "*" } else { " " }).unwrap_or(" ");
+    println!("{mark} {i}: {name}");
+  }
+  Ok(())
+}
+
+fn cmd_listen(args: ListenArgs) -> Result<()> {
+  let (device_index, device_label) = choose_input_device(args.select_device, args.device)?;
+
+  let cfg = pipeline_config_from_common(&args.common)?;
+  let model_label = cfg.model_label();
+
+  let shutdown = Arc::new(AtomicBool::new(false));
+  let (tx, rx) = chan::unbounded::<RenderEvent>();
+  let renderer: Arc<dyn Renderer> = Arc::new(ChanRenderer { tx });
+
+  let shutdown_engine = Arc::clone(&shutdown);
+  let renderer_engine = Arc::clone(&renderer);
+  let cfg_engine = cfg.clone();
+  let chunk_ms = args.chunk_ms;
+  let buffer_ms = args.buffer_ms;
+  let engine_handle = std::thread::spawn(move || {
+    let res: Result<()> = (|| {
+      let device = open_device_by_index(device_index)?;
+      let input_shutdown = Arc::clone(&shutdown_engine);
+      let mut input = CpalInput::open_with_device(
+        device,
+        CpalInputConfig {
+          chunk_ms,
+          buffer_ms,
+          capture_enabled: None,
+          shutdown: Some(input_shutdown),
+        },
+      )
+      .context("failed to open microphone capture")?;
+      run_pipeline(&mut input, renderer_engine, cfg_engine, shutdown_engine)
+    })();
+
+    if let Err(e) = res {
+      // Best-effort: surface pipeline errors in the UI.
+      renderer.emit(RenderEvent::Error { message: e.to_string() });
+    };
+  });
+
+  let ui_res = ui::run_ui(rx, shutdown.clone(), model_label, device_label);
+
+  shutdown.store(true, Ordering::Relaxed);
+  let _ = engine_handle.join();
+
+  ui_res
+}
+
+fn cmd_transcribe_file(args: TranscribeFileArgs) -> Result<()> {
+  let cfg = pipeline_config_from_common(&args.common)?;
+
+  let mut input: Box<dyn AudioInput> = if is_wav(&args.path) {
+    Box::new(WavInput::open(&args.path, args.chunk_ms)?)
+  } else {
+    Box::new(DecodedInput::decode(&args.path, args.chunk_ms)?)
+  };
+
+  let renderer = Arc::new(CollectingRenderer::new());
+  let shutdown = Arc::new(AtomicBool::new(false));
+  run_pipeline(&mut *input, renderer.clone(), cfg, shutdown)?;
+
+  for line in renderer.snapshot_lines() {
+    println!("{}", line.trim());
+  }
+
+  Ok(())
+}
+
+fn choose_input_device(select: bool, device_index: Option<usize>) -> Result<(usize, String)> {
+  let devs = CpalInput::list_input_devices()?;
+  if devs.is_empty() {
+    return Err(anyhow!("no input devices found"));
+  }
+
+  if select {
+    eprintln!("Select input device:");
+    for (i, dev) in devs.iter().enumerate() {
+      let name = device_name(dev).unwrap_or_else(|| "<unknown>".to_string());
+      eprintln!("  {i}: {name}");
+    }
+    eprint!("> ");
+    io::stderr().flush().ok();
+    let mut s = String::new();
+    io::stdin().read_line(&mut s).context("failed to read selection")?;
+    let idx: usize = s.trim().parse().context("invalid device index")?;
+    let label = devs.get(idx).and_then(device_name).unwrap_or_else(|| format!("#{idx}"));
+    return Ok((idx, label));
+  }
+
+  if let Some(idx) = device_index {
+    let label = devs.get(idx).and_then(device_name).unwrap_or_else(|| format!("#{idx}"));
+    return Ok((idx, label));
+  }
+
+  let host = cpal::default_host();
+  if let Some(def) = host.default_input_device() {
+    let def_id = device_id_string(&def);
+    if let Some(def_id) = def_id {
+      let def_name = device_name(&def).unwrap_or_else(|| "default input".to_string());
+      if let Some((i, _)) = devs
+        .iter()
+        .enumerate()
+        .find(|(_i, d)| device_id_string(d).as_deref() == Some(def_id.as_str()))
+      {
+        return Ok((i, def_name));
+      }
+    }
+  }
+
+  // Fallback: first enumerated device.
+  let label = devs.get(0).and_then(device_name).unwrap_or_else(|| "#0".to_string());
+  Ok((0, label))
+}
+
+fn open_device_by_index(idx: usize) -> Result<cpal::Device> {
+  let devs = CpalInput::list_input_devices()?;
+  devs.into_iter().nth(idx).ok_or_else(|| anyhow!("device index out of range"))
+}
+
+fn device_name(device: &cpal::Device) -> Option<String> {
+  device.description().ok().map(|d| d.name().to_string())
+}
+
+fn device_id_string(device: &cpal::Device) -> Option<String> {
+  device.id().ok().map(|id| id.to_string())
+}
+
+fn workspace_root() -> PathBuf {
+  // <repo>/crates/azad-asr -> <repo>
+  Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .and_then(Path::parent)
+    .unwrap_or_else(|| Path::new("."))
+    .to_path_buf()
+}
+
+fn default_parakeet_dir() -> PathBuf {
+  workspace_root().join("models").join("parakeet")
+}
+
+fn default_vad_model_path() -> PathBuf {
+  workspace_root().join("models").join("vad").join("ggml-silero-v6.2.0.bin")
+}
+
+fn is_wav(path: &Path) -> bool {
+  path
+    .extension()
+    .and_then(|e| e.to_str())
+    .map(|e| e.eq_ignore_ascii_case("wav"))
+    .unwrap_or(false)
+}
+
+fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
+  let parakeet_root = default_parakeet_dir();
+  let parakeet_tdt = args.parakeet_tdt.clone().unwrap_or_else(|| parakeet_root.join("tdt"));
+  let parakeet_eou = args.parakeet_eou.clone().unwrap_or_else(|| parakeet_root.join("eou"));
+
+  let vad_model_path = args.vad_model.clone().unwrap_or_else(default_vad_model_path);
+
+  // Friendlier errors: validate that required model files exist up-front.
+  ensure_file(&vad_model_path, "VAD model")?;
+  ensure_file(&parakeet_eou.join("encoder.onnx"), "Parakeet EOU encoder")?;
+  ensure_file(&parakeet_eou.join("decoder_joint.onnx"), "Parakeet EOU decoder_joint")?;
+  ensure_file(&parakeet_eou.join("tokenizer.json"), "Parakeet EOU tokenizer")?;
+  ensure_file(&parakeet_tdt.join("encoder-model.onnx"), "Parakeet TDT encoder")?;
+  ensure_file(&parakeet_tdt.join("encoder-model.onnx.data"), "Parakeet TDT encoder weights")?;
+  ensure_file(&parakeet_tdt.join("decoder_joint-model.onnx"), "Parakeet TDT decoder_joint")?;
+  ensure_file(&parakeet_tdt.join("vocab.txt"), "Parakeet TDT vocab")?;
+
+  Ok(PipelineConfig {
+    vad_model_path,
+    vad_thold: args.vad_thold,
+    vad_start_chunks: args.vad_start_chunks,
+    pre_roll_ms: args.pre_roll_ms,
+    eou_min_silence_ms: args.eou_min_silence_ms,
+    eou_max_silence_ms: args.eou_max_silence_ms,
+    vad_in_speech_thold: args.vad_in_speech_thold,
+    recovery_window_ms: args.recovery_window_ms,
+    recovery_vad_thold: args.recovery_vad_thold,
+    stable_k: args.stable_k,
+    stable_h: args.stable_h,
+    enable_tdt_final_pass: true,
+    incremental_finalization_enabled: args.incremental_finalization_enabled,
+    incremental_slice_ms: args.incremental_slice_ms,
+    incremental_overlap_ms: args.incremental_overlap_ms,
+    incremental_left_context_ms: args.incremental_left_context_ms,
+    incremental_min_new_audio_ms: args.incremental_min_new_audio_ms,
+    incremental_wait_tail_result_ms: args.incremental_wait_tail_result_ms,
+    parakeet_tdt_dir: parakeet_tdt,
+    parakeet_eou_dir: parakeet_eou,
+  })
+}
+
+fn ensure_file(path: &Path, label: &str) -> Result<()> {
+  if path.is_file() {
+    return Ok(());
+  }
+  Err(anyhow!("{label} missing: {}", path.display()))
+}

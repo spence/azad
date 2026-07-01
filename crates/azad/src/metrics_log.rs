@@ -180,12 +180,16 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
   lines.push(format!("Transcriptions normal: {}", summary.normal_transcriptions));
   lines.push(String::new());
   lines.push("Latency (ms)".to_string());
-  lines.extend(render_table(&["scope", "n", "avg", "p50", "p95", "max"], &[8, 5, 8, 6, 6, 6], &[
-    duration_row("all", &summary.transcription_all),
-    duration_row("raw", &summary.transcription_raw),
-    duration_row("normal", &summary.transcription_normal),
-    duration_row("paste", &summary.paste),
-  ]));
+  lines.extend(render_table(
+    &["scope", "n", "avg", "p50", "p95", "max"],
+    &[8, 5, 8, 6, 6, 6],
+    &[
+      duration_row("all", &summary.transcription_all),
+      duration_row("raw", &summary.transcription_raw),
+      duration_row("normal", &summary.transcription_normal),
+      duration_row("paste", &summary.paste),
+    ],
+  ));
   lines.push(String::new());
   let fast_count = summary.fallback_attempts.saturating_sub(summary.fallback_count);
   let fast_rate_pct = if summary.fallback_attempts == 0 {
@@ -337,17 +341,20 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
         fallback_reason: _,
         text_preview,
       } => {
-        recent_snapshots.push((record.ts_ms, RecentTranscriptSummary {
-          turn_id: *turn_id,
-          mode: *mode,
-          transcription_duration_ms: *transcription_duration_ms,
-          partial_count: None,
-          quality_score_pct: None,
-          quality_pending: false,
-          quality_error: false,
-          fallback: *fallback,
-          text_preview: text_preview.clone(),
-        }));
+        recent_snapshots.push((
+          record.ts_ms,
+          RecentTranscriptSummary {
+            turn_id: *turn_id,
+            mode: *mode,
+            transcription_duration_ms: *transcription_duration_ms,
+            partial_count: None,
+            quality_score_pct: None,
+            quality_pending: false,
+            quality_error: false,
+            fallback: *fallback,
+            text_preview: text_preview.clone(),
+          },
+        ));
       }
     }
   }
@@ -570,13 +577,8 @@ fn metrics_log_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
   use super::{
-    MetricsLogEvent,
-    MetricsLogRecord,
-    TranscriptMode,
-    duration_stats,
-    percentile,
-    quality_score_pct,
-    summarize,
+    MetricsLogEvent, MetricsLogRecord, TranscriptMode, duration_stats, percentile,
+    quality_score_pct, summarize,
   };
 
   #[test]

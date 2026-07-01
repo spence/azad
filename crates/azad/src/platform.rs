@@ -8,23 +8,9 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize,
 use std::time::{Duration, Instant};
 
 use cocoa::appkit::{
-  NSApp,
-  NSApplication,
-  NSApplicationActivationPolicy,
-  NSBackingStoreType,
-  NSColor,
-  NSImage,
-  NSMainMenuWindowLevel,
-  NSMenu,
-  NSMenuItem,
-  NSPasteboard,
-  NSScreen,
-  NSStatusBar,
-  NSStatusItem,
-  NSVariableStatusItemLength,
-  NSWindow,
-  NSWindowCollectionBehavior,
-  NSWindowStyleMask,
+  NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSImage,
+  NSMainMenuWindowLevel, NSMenu, NSMenuItem, NSPasteboard, NSScreen, NSStatusBar, NSStatusItem,
+  NSVariableStatusItemLength, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
@@ -1505,10 +1491,11 @@ pub fn set_overlay_listen_toggle_notice_content(
   enabled: bool,
   progress: f32,
 ) {
-  set_overlay_notice_content_styled(title, body_segments, OverlayNoticeStyle::ListenToggle {
-    enabled,
-    progress: progress.clamp(0.0, 1.0),
-  });
+  set_overlay_notice_content_styled(
+    title,
+    body_segments,
+    OverlayNoticeStyle::ListenToggle { enabled, progress: progress.clamp(0.0, 1.0) },
+  );
 }
 
 fn render_overlay_notice_body(segments: &[OverlayNoticeSegment]) -> String {

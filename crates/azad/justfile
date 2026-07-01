@@ -7,16 +7,23 @@ help:
     @echo "Azad development commands:"
     @just --list
     @echo ""
-    @echo "Environment overrides:"
+    @echo "Local config:"
+    @echo "  .codesign.env"
+    @echo "  AZAD_CONFIG=/path/to/local.env"
+    @echo ""
+    @echo "Supported settings:"
     @echo "  AZAD_APP_DIR=/path/to/Azad.app"
     @echo "  AZAD_BUILD_PROFILE=debug|release"
-    @echo "  AZAD_CODESIGN_IDENTITY='Signing Identity Name'"
+    @echo "  AZAD_CODESIGN_IDENTITY='Signing Identity Hash'"
 
 build:
     cargo build
 
 build-release:
     cargo build --release
+
+dist:
+    ./scripts/azad-dist.sh
 
 install:
     ./scripts/azad-dev.sh install

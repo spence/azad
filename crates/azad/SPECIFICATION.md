@@ -10,7 +10,7 @@ Azad is a macOS menu bar app that orchestrates real-time speech transcription wi
 - finalization and paste/typing output,
 - settings and debug metrics.
 
-It is the interaction and UI layer over `asr-rs` runtime sessions.
+It is the interaction and UI layer over `azad-asr` runtime sessions.
 
 ## 2. Architectural Boundary
 
@@ -28,7 +28,7 @@ Azad does not own:
 - VAD model execution internals,
 - EOU/TDT stitching internals.
 
-Those are in `asr-rs`.
+Those are in `azad-asr`.
 
 ## 3. Repository Layout
 
@@ -37,9 +37,9 @@ Those are in `asr-rs`.
 - `src/interaction_sm.rs`: pure interaction reducer (hotkeys/menu -> effects).
 - `src/hotkey_sm.rs`: compatibility re-exports for interaction reducer types.
 - `src/platform.rs`: macOS/AppKit integration (menus, windows, overlay, global hotkeys, paste).
-- `src/speech.rs`: bridge from `asr-rs` session events/controls to Azad events.
-- `src/device.rs`: bridge for `asr-rs` device controller.
-- `src/config.rs`: Azad defaults + `asr-rs` pipeline defaults.
+- `src/speech.rs`: bridge from `azad-asr` session events/controls to Azad events.
+- `src/device.rs`: bridge for `azad-asr` device controller.
+- `src/config.rs`: Azad defaults + `azad-asr` pipeline defaults.
 - `src/preferred_store.rs`: NSUserDefaults persistence.
 - `src/settings.rs`: user-facing setting enums (`PasteMethod`, `AutoSubmitMode`).
 - `src/metrics_log.rs`: append/read/summarize debug metrics from logs.
@@ -206,7 +206,7 @@ Design choice:
 
 Device flow:
 
-- `device.rs` bridges `asr-rs` device controller to Azad events.
+- `device.rs` bridges `azad-asr` device controller to Azad events.
 - device changes debounce before session restart.
 
 Recovery flow:
@@ -298,9 +298,9 @@ When regressions occur:
 - fix implementation second,
 - verify both unit and live runtime behavior.
 
-## 17. Relationship to ASR-RS
+## 17. Relationship to Azad ASR
 
-ASR spec: `../asr-rs/SPECIFICATION.md`
+ASR spec: `../azad-asr/SPECIFICATION.md`
 
 Integration contract summary:
 

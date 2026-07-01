@@ -6,9 +6,8 @@ You are the owner of this project. Think like a product owner, not a task execut
 
 When asked to add a feature or make a change, go end to end:
 - Build the project (`cargo build -p azad`) and fix any errors or warnings
-- Run `cargo fmt -p azad` (or `-p asr` when editing asr-rs) to ensure formatting is correct.
-  Never run bare `cargo fmt` — it walks into path-dep submodules we don't own (parakeet-rs,
-  whisper-cpp-plus-rs) and rewrites their files.
+- Run `cargo fmt -p azad` (or `-p azad-asr` when editing the ASR engine) to ensure formatting is correct.
+  Bare `cargo fmt` is safe for the owned workspace crates.
 - Verify the change works — restart the app if needed (`just install && just restart`)
 - If a change touches config, persistence, or UI: confirm the full flow works, not just compilation
 - If something breaks downstream of your change, that's your problem — fix it
@@ -30,9 +29,9 @@ can describe in a conventional-commits subject line.
 - **Default to committing before reporting back.** If you end a turn with "the fix is
   shipped, try it now," the commit should already exist before that message — checking
   in with `git status` afterwards should show a clean tree (other than pre-existing
-  dirty submodules you didn't touch).
-- The asr-rs submodule and the azad parent repo are separate workstreams: commit each
-  in its own repo, then commit the submodule-pointer bump in the parent.
+  local legacy checkouts you didn't touch).
+- The ASR engine now lives in `crates/azad-asr` as an owned workspace crate.
+  Third-party forks are Cargo dependencies and should not be edited in this repository.
 - Verification is on you. "Verified" means the build passes, relevant tests pass, and
   you've checked the behaviour end-to-end (per the Ownership rules above) — not just
   that the compiler is happy. For UI/UX fixes that the user has to try by hand, "build

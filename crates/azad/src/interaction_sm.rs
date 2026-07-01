@@ -147,10 +147,7 @@ impl InteractionState {
 #[cfg(test)]
 mod tests {
   use super::{
-    DEFAULT_DOUBLE_TAP_WINDOW_MS,
-    InteractionEffect,
-    InteractionInput,
-    InteractionState,
+    DEFAULT_DOUBLE_TAP_WINDOW_MS, InteractionEffect, InteractionInput, InteractionState,
     RuntimeSnapshot,
   };
 
@@ -190,10 +187,13 @@ mod tests {
       now_ms: 1000,
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(first_press, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: true,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      first_press,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: true,
+        release_should_finalize: true,
+      }]
+    );
 
     let _ = sm.reduce(InteractionInput::HoldReleased {
       snapshot: snapshot(false, false, false, false, false),
@@ -223,10 +223,10 @@ mod tests {
 
     let release = sm
       .reduce(InteractionInput::HoldReleased { snapshot: snapshot(true, true, true, true, true) });
-    assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: false,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: false, has_started_turn: true }]
+    );
   }
 
   #[test]
@@ -240,20 +240,23 @@ mod tests {
     let first_release = sm.reduce(InteractionInput::HoldReleased {
       snapshot: snapshot(false, false, true, true, true),
     });
-    assert_eq!(first_release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: true,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      first_release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: true, has_started_turn: true }]
+    );
     assert!(sm.manual_finalize_pending());
 
     let second_press = sm.reduce(InteractionInput::HoldPressed {
       now_ms: 1100,
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(second_press, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: false,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      second_press,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: false,
+        release_should_finalize: true,
+      }]
+    );
 
     let _ = sm.reduce(InteractionInput::SpeechFinalized);
     assert!(!sm.manual_finalize_pending());
@@ -261,10 +264,10 @@ mod tests {
     let second_release = sm.reduce(InteractionInput::HoldReleased {
       snapshot: snapshot(false, false, true, true, true),
     });
-    assert_eq!(second_release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: true,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      second_release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: true, has_started_turn: true }]
+    );
   }
 
   #[test]
@@ -278,10 +281,10 @@ mod tests {
     let release = sm.reduce(InteractionInput::HoldReleased {
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: true,
-      has_started_turn: false
-    }]);
+    assert_eq!(
+      release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: true, has_started_turn: false }]
+    );
     assert!(!sm.manual_finalize_pending());
   }
 
@@ -296,10 +299,10 @@ mod tests {
     let first_release = sm.reduce(InteractionInput::HoldReleased {
       snapshot: snapshot(false, false, false, true, true),
     });
-    assert_eq!(first_release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: true,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      first_release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: true, has_started_turn: true }]
+    );
     assert!(!sm.manual_finalize_pending());
 
     let second_press = sm.reduce(InteractionInput::HoldPressed {
@@ -340,17 +343,20 @@ mod tests {
       now_ms: 1000,
       snapshot: snapshot(true, true, true, true, true),
     });
-    assert_eq!(press, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: false,
-      release_should_finalize: false,
-    }]);
+    assert_eq!(
+      press,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: false,
+        release_should_finalize: false,
+      }]
+    );
 
     let release = sm
       .reduce(InteractionInput::HoldReleased { snapshot: snapshot(true, true, true, true, true) });
-    assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: false,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: false, has_started_turn: true }]
+    );
     assert!(!sm.manual_finalize_pending());
   }
 
@@ -362,17 +368,20 @@ mod tests {
       now_ms: 1000,
       snapshot: snapshot(true, false, false, false, false),
     });
-    assert_eq!(press, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: true,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      press,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: true,
+        release_should_finalize: true,
+      }]
+    );
 
     let release = sm
       .reduce(InteractionInput::HoldReleased { snapshot: snapshot(true, false, true, true, true) });
-    assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: true,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: true, has_started_turn: true }]
+    );
   }
 
   #[test]
@@ -391,10 +400,13 @@ mod tests {
       now_ms: 1000 + DEFAULT_DOUBLE_TAP_WINDOW_MS + 1,
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(press, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: true,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      press,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: true,
+        release_should_finalize: true,
+      }]
+    );
   }
 
   #[test]
@@ -433,10 +445,13 @@ mod tests {
       now_ms: 1000 + DEFAULT_DOUBLE_TAP_WINDOW_MS - 1,
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(press, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: true,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      press,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: true,
+        release_should_finalize: true,
+      }]
+    );
   }
 
   #[test]
@@ -481,10 +496,10 @@ mod tests {
     let release = sm.reduce(InteractionInput::HoldReleased {
       snapshot: snapshot(false, false, true, true, true),
     });
-    assert_eq!(release, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: false,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      release,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: false, has_started_turn: true }]
+    );
     assert!(!sm.manual_finalize_pending());
   }
 
@@ -507,10 +522,13 @@ mod tests {
       now_ms: 1000 + DEFAULT_DOUBLE_TAP_WINDOW_MS + 1,
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(press, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: true,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      press,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: true,
+        release_should_finalize: true,
+      }]
+    );
   }
 
   #[test]
@@ -571,10 +589,13 @@ mod tests {
       now_ms: 4242,
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(effects, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: true,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      effects,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: true,
+        release_should_finalize: true,
+      }]
+    );
     assert_core_state(&sm, Some(4242), true, false);
   }
 
@@ -595,10 +616,13 @@ mod tests {
       now_ms: 1100,
       snapshot: snapshot(false, false, false, false, false),
     });
-    assert_eq!(effects, vec![InteractionEffect::ActivateManualHold {
-      reset_turn_state: false,
-      release_should_finalize: true,
-    }]);
+    assert_eq!(
+      effects,
+      vec![InteractionEffect::ActivateManualHold {
+        reset_turn_state: false,
+        release_should_finalize: true,
+      }]
+    );
     assert_core_state(&sm, Some(1100), true, false);
   }
 
@@ -636,10 +660,10 @@ mod tests {
     let effects = sm.reduce(InteractionInput::HoldReleased {
       snapshot: snapshot(false, false, true, true, true),
     });
-    assert_eq!(effects, vec![InteractionEffect::ReleaseManualHold {
-      should_finalize: true,
-      has_started_turn: true
-    }]);
+    assert_eq!(
+      effects,
+      vec![InteractionEffect::ReleaseManualHold { should_finalize: true, has_started_turn: true }]
+    );
     assert_core_state(&sm, Some(1000), false, true);
   }
 

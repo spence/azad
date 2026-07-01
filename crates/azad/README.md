@@ -2,6 +2,9 @@
 
 Development workflow now targets a launchd-managed app instance.
 
+For normal non-development installs, use the signed and notarized DMG from
+GitHub Releases. The commands below are for source development.
+
 ## Commands
 
 ```bash

@@ -1,0 +1,11 @@
+{
+  "turn_id": 0,
+  "ts_ms": 0,
+  "sample_rate": 16000,
+  "num_samples": 235264,
+  "emitted_kind": "synthetic",
+  "emitted_text": "",
+  "full_text": "For reference, here is a font that already has the glyphs that we're just gonna copy. Of note, right, some fonts have different kerning. There's it's not a pure science, but this is generally like the mapping.",
+  "partials": [],
+  "_note": "Synthesized from the original recovery-bridges-400ms-gap fixture by re-pinning the silence run from 400ms to 200ms. With recovery_window_ms=250 (the new default), recovery still bridges this into a single turn. Companion to recovery-splits-400ms-gap.wav which asserts the inverse direction."
+}

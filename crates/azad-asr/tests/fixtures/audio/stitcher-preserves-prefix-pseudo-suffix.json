@@ -1,0 +1,53 @@
+{
+  "emitted_kind": "assembled",
+  "emitted_text": "I want you to undo the fix. You don't need to commit it, but I want you to prove that it actually exists. And then if you can prove that it exists, then go ahead and uh you know get the code back to the current state that you have. Have a conversation. Actually, why don't you do an investigation and then we can have a conversation of what to do next if it is not crystal obvious.",
+  "full_text": "I want you to undo the fix. You don't need to commit it, but I want you to prove that it actually exists. And then if you can prove that it exists, then go ahead and uh you know get the code back to the current state that you have. Uh if you can't reproduce it, then let's have a conversation. Actually, why don't you do an investigation and then we can have a conversation of what to do next if it is not crystal obvious.",
+  "num_samples": 532480,
+  "partials": [
+    {
+      "end_sample": 110080,
+      "is_tail": false,
+      "segment_id": 1,
+      "start_sample": 0,
+      "text": "I want you to undo the fix. You don't need to commit it, but I want you to prove that."
+    },
+    {
+      "end_sample": 207360,
+      "is_tail": false,
+      "segment_id": 2,
+      "start_sample": 79360,
+      "text": "to commit it, but I want you to prove that it actually exists. And then if you can prove that it exists, then go ahead."
+    },
+    {
+      "end_sample": 304640,
+      "is_tail": false,
+      "segment_id": 3,
+      "start_sample": 176640,
+      "text": "that it exists, then go ahead and uh you know get the code back to the current state that you have."
+    },
+    {
+      "end_sample": 401920,
+      "is_tail": false,
+      "segment_id": 4,
+      "start_sample": 273920,
+      "text": "state that you have."
+    },
+    {
+      "end_sample": 499200,
+      "is_tail": false,
+      "segment_id": 5,
+      "start_sample": 371200,
+      "text": "Have a conversation. Actually, why don't you do an investigation and then we can have a conversation of what to do next if it is not."
+    },
+    {
+      "end_sample": 532480,
+      "is_tail": true,
+      "segment_id": 6,
+      "start_sample": 404480,
+      "text": "investigation and then we can have a conversation of what to do next if it is not crystal obvious."
+    }
+  ],
+  "sample_rate": 16000,
+  "ts_ms": 1777225982993,
+  "turn_id": 78
+}

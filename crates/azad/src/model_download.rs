@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use crate::app::{AppEvent, send_event};
-use crate::models::{ModelPackDef, pack_dir};
+use crate::models::{ModelFileDef, ModelPackDef, pack_dir};
 
 pub struct DownloadHandle {
   pub cancel: Arc<AtomicBool>,
@@ -58,9 +58,16 @@ fn download_pack(pack: &'static ModelPackDef, cancel: &AtomicBool) -> Result<(),
 
     let dest = dir.join(file_def.rel_path);
     if dest.exists() {
-      bytes_done += file_def.size_bytes;
-      send_progress(pack.id, bytes_done, bytes_total);
-      continue;
+      match verify_download(&dest, file_def) {
+        Ok(()) => {
+          bytes_done += file_def.size_bytes;
+          send_progress(pack.id, bytes_done, bytes_total);
+          continue;
+        }
+        Err(_) => {
+          let _ = fs::remove_file(&dest);
+        }
+      }
     }
 
     if let Some(parent) = dest.parent() {
@@ -77,6 +84,7 @@ fn download_pack(pack: &'static ModelPackDef, cancel: &AtomicBool) -> Result<(),
       &mut bytes_done,
       bytes_total,
     )?;
+    verify_download(&part_path, file_def)?;
 
     fs::rename(&part_path, &dest)
       .map_err(|e| format!("rename {} -> {}: {e}", part_path.display(), dest.display()))?;
@@ -135,6 +143,44 @@ fn download_file(
 
   send_progress(pack_id, *bytes_done, bytes_total);
   Ok(())
+}
+
+fn verify_download(path: &PathBuf, file_def: &ModelFileDef) -> Result<(), String> {
+  let actual_len = fs::metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?.len();
+  if actual_len != file_def.size_bytes {
+    let _ = fs::remove_file(path);
+    return Err(format!(
+      "downloaded {} has {} bytes, expected {}",
+      file_def.rel_path, actual_len, file_def.size_bytes
+    ));
+  }
+
+  let actual_hash = sha256_file(path)?;
+  if actual_hash != file_def.sha256 {
+    let _ = fs::remove_file(path);
+    return Err(format!(
+      "downloaded {} has SHA-256 {}, expected {}",
+      file_def.rel_path, actual_hash, file_def.sha256
+    ));
+  }
+
+  Ok(())
+}
+
+fn sha256_file(path: &PathBuf) -> Result<String, String> {
+  use sha2::{Digest, Sha256};
+
+  let mut file = fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+  let mut hasher = Sha256::new();
+  let mut buf = vec![0u8; 2 * 1024 * 1024];
+  loop {
+    let n = file.read(&mut buf).map_err(|e| format!("read {}: {e}", path.display()))?;
+    if n == 0 {
+      break;
+    }
+    hasher.update(&buf[..n]);
+  }
+  Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn send_progress(pack_id: &str, bytes_done: u64, bytes_total: u64) {

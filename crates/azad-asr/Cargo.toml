@@ -1,0 +1,33 @@
+[package]
+name = "azad-asr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+name = "asr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "asr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.4.18", features = ["derive"] }
+crossterm = "0.27.0"
+cpal = "0.17.1"
+hound = "3.5"
+ratatui = { version = "0.24.0", default-features = true }
+whisper-cpp-plus = { workspace = true, features = ["metal"] }
+parakeet-rs = { workspace = true }
+crossbeam-channel = "0.5.13"
+ringbuf = "0.4.7"
+serde_json = "1.0"
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "alac", "isomp4"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-sys = "0.2.17"
+core-foundation = "0.10.1"

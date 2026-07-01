@@ -6,7 +6,11 @@
 - Rust toolchain installed
 - `just` installed (`brew install just`)
 
-## Quickstart
+## Public Install
+
+Install the signed and notarized DMG from GitHub Releases for normal use.
+
+## Development Quickstart
 
 ```bash
 just install
@@ -25,11 +29,41 @@ just uninstall
 
 ## Optional Overrides
 
+`just install` works without local signing config. Optional machine-specific
+install settings go in `.codesign.env` at the workspace root. The file is
+ignored by Git.
+
 ```bash
-AZAD_BUILD_PROFILE=release just install
-AZAD_APP_DIR="$HOME/Applications/Azad.app" just install
-AZAD_CODESIGN_IDENTITY="Azad Dev Code Signing Root" just install
+cp .codesign.env.example .codesign.env
 ```
+
+Supported settings:
+
+- `AZAD_BUILD_PROFILE=release`
+- `AZAD_APP_DIR="$HOME/Applications/Azad.app"`
+- `AZAD_CODESIGN_IDENTITY="<40-character certificate hash>"`
+
+When `AZAD_CODESIGN_IDENTITY` is unset, `just install` installs an unsigned
+development build and does not run `codesign`. On Apple silicon, the executable
+may still be linker-signed ad-hoc; that is not a stable app-bundle signature for
+macOS permission preservation.
+
+Explicit environment variables override values from `.codesign.env`.
+
+## Release Builds
+
+Maintainer release builds use the separate distribution path:
+
+```bash
+cp .codesign.env.example .codesign.env
+just dist
+```
+
+`just dist` requires a Developer ID Application certificate and a notarytool
+profile. It signs with hardened runtime, notarizes, staples, and creates
+`dist/Azad-<version>.dmg`.
+
+Explicit environment variables override values from `.codesign.env`.
 
 ## Permissions
 

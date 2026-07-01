@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "empty-audio",
+      "wav": "empty-audio.wav",
+      "json": "empty-audio.json",
+      "description": "1 second of silence. The pipeline must produce no transcription. Plumbing fixture: proves the harness loads models, opens the WAV, runs the pipeline, and collects events without producing spurious output.",
+      "assertions": {
+        "must_be_empty": true
+      }
+    },
+    {
+      "id": "stitcher-preserves-prefix-pseudo-suffix",
+      "wav": "stitcher-preserves-prefix-pseudo-suffix.wav",
+      "json": "stitcher-preserves-prefix-pseudo-suffix.json",
+      "description": "Pinned 2026-04-26. Real ~32s utterance ('I want you to undo the fix...') that contains a duplicated phrase ('I want you' / 'why don't you do an investigation' / 'have a conversation') giving the incremental stitcher a tempting false anchor. Pre-fix code (any commit at or before 74d53ac) drops the first ~50 words and emits only the trailing 'reproduce it, then let's have a conversation...' Current code (with the chain of stitcher fixes 10309a4 through fb31c66) preserves the prefix correctly. Regression: any future change that re-introduces a false-overlap path will drop the prefix and fail the must_contain assertions.",
+      "assertions": {
+        "must_contain": ["undo the fix", "commit it", "actually exists"],
+        "must_not_contain": []
+      }
+    },
+    {
+      "id": "recovery-bridges-200ms-gap",
+      "wav": "recovery-bridges-200ms-gap.wav",
+      "json": "recovery-bridges-200ms-gap.json",
+      "description": "Pinned 2026-04-26 (re-pinned from the original 400ms-gap variant when recovery_window_ms tightened from 500 to 250). Synthesized: turn-000008 ('For reference...') + 200 ms of zero-padded silence + turn-000009 ('Of note...'). The 200 ms gap fits inside the new 250 ms recovery window, so the pipeline correctly merges into ONE turn / ONE paste. Asserts the positive direction: recovery DOES fire on a gap inside the window.",
+      "assertions": {
+        "must_be_single_turn": true,
+        "must_contain": ["for reference", "kerning"]
+      }
+    },
+    {
+      "id": "recovery-splits-400ms-gap",
+      "wav": "recovery-splits-400ms-gap.wav",
+      "json": "recovery-splits-400ms-gap.json",
+      "description": "Companion to recovery-bridges-200ms-gap. Same source clips, but with a 400 ms silence gap that EXCEEDS recovery_window_ms (250). Asserts the negative direction: recovery does NOT fire on gaps wider than the window — the pipeline must produce TWO turns. Catches a future regression where the window expands beyond intent or recovery falsely fires on long pauses.",
+      "assertions": {
+        "must_be_two_turns": true,
+        "must_contain": ["for reference", "kerning"]
+      }
+    }
+  ]
+}

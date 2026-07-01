@@ -172,7 +172,5 @@ fn workspace_root() -> PathBuf {
 
 #[cfg(debug_assertions)]
 fn default_vad_model_path(root: &std::path::Path) -> PathBuf {
-  let model_dir = root.join("crates").join("whisper.cpp").join("models");
-  let primary = model_dir.join("ggml-silero-v6.2.0.bin");
-  if primary.exists() { primary } else { model_dir.join("for-tests-silero-v6.2.0-ggml.bin") }
+  root.join("models").join("vad").join("ggml-silero-v6.2.0.bin")
 }

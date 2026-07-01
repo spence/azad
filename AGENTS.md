@@ -25,14 +25,12 @@ When taking over a task, do this first:
 ## Repository Map
 
 - `crates/azad`: macOS app (overlay UI, hotkeys, settings, paste modes, lifecycle).
-- `crates/asr-rs`: ASR/transcription engine crate used by app runtime.
-- `crates/whisper-cpp-plus-rs`: whisper integration layer, examples, benches, tests.
-- `crates/parakeet-rs`: additional model/audio components.
-- `crates/whisper.cpp`: upstream dependency checkout.
+- `crates/azad-asr`: ASR/transcription engine crate used by app runtime and CLI.
+- Forked/upstream third-party crates are Cargo dependencies, not submodules.
 
 ## Deep Specs
 
-- `crates/asr-rs/SPECIFICATION.md`: ASR runtime architecture, turn pipeline, fallback/quality design, and change playbooks.
+- `crates/azad-asr/SPECIFICATION.md`: ASR runtime architecture, turn pipeline, fallback/quality design, and change playbooks.
 - `crates/azad/SPECIFICATION.md`: app interaction architecture, state machine integration, overlay/paste/settings behavior, and change playbooks.
 
 ## Primary Runtime Ownership (Non-Negotiable)

@@ -2,3 +2,10 @@ target/
 models/
 dist/
 .DS_Store
+.codesign.env
+
+# Legacy submodule checkouts kept out of the publishable workspace.
+crates/asr-rs/
+crates/parakeet-rs/
+crates/whisper-cpp-plus-rs/
+crates/whisper.cpp/

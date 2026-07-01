@@ -1,0 +1,11 @@
+{
+  "turn_id": 0,
+  "ts_ms": 0,
+  "sample_rate": 16000,
+  "num_samples": 16000,
+  "emitted_kind": "synthetic",
+  "emitted_text": "",
+  "full_text": "",
+  "partials": [],
+  "_note": "Synthetic 1-second silence fixture. Generated, not pinned from a real recording. The pipeline must produce no transcription for this audio."
+}
