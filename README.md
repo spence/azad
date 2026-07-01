@@ -123,6 +123,10 @@ Azad needs:
 
 Use `just reset-permissions` to reset prompts during development.
 
+## Usage
+
+- [Keyboard workflow](crates/azad/docs/keyboard-workflow.md)
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
