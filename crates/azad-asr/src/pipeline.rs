@@ -264,6 +264,17 @@ pub struct PipelineControls {
   /// logs (`AZAD_AUDIO_FIRST_NONZERO`, `AZAD_VAD_COLDSTART`,
   /// `AZAD_VAD_START_LATENCY`). `None` until the first enable.
   last_capture_enable_at: std::sync::Mutex<Option<Instant>>,
+  /// Wake channel for the audio consumer thread. The CPAL callback signals
+  /// this on every buffer push, and `set_capture_enabled` signals it on a
+  /// capture-state flip, so `CpalInput::read_chunk` can block on it instead of
+  /// polling the ring buffer on a tight `sleep()` loop (which showed up as
+  /// ~1000 idle wakeups/sec). The mutex guards no shared state — it exists
+  /// solely to satisfy the `Condvar` API; the predicate (ring-buffer
+  /// occupancy) is owned by the single consumer, and a bounded backstop
+  /// timeout covers the classic lost-wakeup race so the notifier never has to
+  /// take the lock (keeping the real-time audio callback lock-free).
+  wake_lock: std::sync::Mutex<()>,
+  wake: std::sync::Condvar,
 }
 
 impl PipelineControls {
@@ -293,6 +304,10 @@ impl PipelineControls {
       if let Ok(mut slot) = self.last_capture_enable_at.lock() {
         *slot = now;
       }
+      // Wake the audio consumer so it resumes/pauses the CPAL stream promptly
+      // rather than after the next backstop timeout — keeps press-to-capture
+      // latency instant despite the consumer blocking on `wake`.
+      self.wake.notify_all();
       if self.debug_stats_enabled() {
         let loc = std::panic::Location::caller();
         eprintln!(
@@ -304,6 +319,24 @@ impl PipelineControls {
           loc.line()
         );
       }
+    }
+  }
+
+  /// Signal the audio consumer that fresh samples were pushed to the ring
+  /// buffer. Called from the real-time CPAL callback, so it must stay
+  /// lock-free: `Condvar::notify_one` wakes a waiter without acquiring
+  /// `wake_lock`. A missed wakeup (notify between the consumer's occupancy
+  /// check and its wait) is bounded by the consumer's backstop timeout.
+  pub fn notify_audio(&self) {
+    self.wake.notify_one();
+  }
+
+  /// Block until the next `notify_audio`/`set_capture_enabled` signal, or until
+  /// `backstop` elapses (whichever comes first). The consumer re-checks its own
+  /// predicate after returning, so spurious and timed-out wakeups are benign.
+  pub fn wait_for_wake(&self, backstop: Duration) {
+    if let Ok(guard) = self.wake_lock.lock() {
+      let _ = self.wake.wait_timeout(guard, backstop);
     }
   }
 
@@ -375,6 +408,8 @@ impl Default for PipelineControls {
       force_start_requested: AtomicBool::new(false),
       force_finish_requested: AtomicBool::new(false),
       cancel_turn_requested: AtomicBool::new(false),
+      wake_lock: std::sync::Mutex::new(()),
+      wake: std::sync::Condvar::new(),
       last_capture_enable_at: std::sync::Mutex::new(None),
     }
   }
