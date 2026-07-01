@@ -518,7 +518,16 @@ fn manual_hold_release_plan(
     ManualHoldReleaseAction::KeepLive
   };
 
-  ManualHoldReleasePlan { capture_enabled: always_listening_enabled, action }
+  // Keep the mic alive across a FinalizeTurn even in push-to-talk mode: the
+  // pipeline consumes the finalize request (force_finish) inside `on_chunk`,
+  // which stalls the instant capture is cut — so cutting capture on release
+  // would strand the turn's audio and the final TDT pass would never run. The
+  // FinalText handler drops capture once the turn completes
+  // (`should_keep_capture_for_followups()` is false for a released hold).
+  let capture_enabled =
+    always_listening_enabled || matches!(action, ManualHoldReleaseAction::FinalizeTurn);
+
+  ManualHoldReleasePlan { capture_enabled, action }
 }
 
 fn should_ignore_finalizing_event(raw_handled_turn_id: Option<u64>, turn_id: u64) -> bool {
@@ -4193,6 +4202,16 @@ impl AppController {
   }
 
   fn update_activity_from_meter(&mut self, peak_db: f32, vad_speech: bool, vad_prob: f32) {
+    // A held push-to-talk turn only finalizes (runs the TDT final pass) if the
+    // hold "saw speech". That flag used to flip only when an incremental draft
+    // arrived — but drafts fire on a ~6 s cadence, so a short hold produced
+    // none and the turn was discarded on release (no text, no paste). VAD
+    // detects speech within a couple hundred ms, so key the flag off the
+    // meter's speech flag instead: real short utterances now finalize, while
+    // silent taps (no VAD speech) still get discarded as before.
+    if self.manual_hold_active && vad_speech {
+      self.hold_saw_speech = true;
+    }
     let normalized_peak = ((peak_db + 60.0) / 60.0).clamp(0.0, 1.0);
     let vad_component = if vad_speech { vad_prob.clamp(0.0, 1.0).max(0.15) } else { 0.0 };
     let mut next = normalized_peak.max(vad_component);
@@ -4291,13 +4310,30 @@ mod tests {
   }
 
   #[test]
-  fn manual_hold_release_plan_disables_capture_when_listen_is_off() {
+  fn manual_hold_release_plan_keeps_capture_through_finalize_when_listen_is_off() {
+    // Even with always-listening off, a finalized hold must keep the mic alive
+    // so the pipeline can pump the final TDT pass (force_finish is consumed in
+    // on_chunk, which stalls if capture is cut). The FinalText handler drops
+    // capture once the turn completes.
     let plan = manual_hold_release_plan(false, true, true);
     assert_eq!(
       plan,
       ManualHoldReleasePlan {
-        capture_enabled: false,
+        capture_enabled: true,
         action: ManualHoldReleaseAction::FinalizeTurn,
+      }
+    );
+  }
+
+  #[test]
+  fn manual_hold_release_plan_disables_capture_when_nothing_started_and_listen_off() {
+    // Silent tap in push-to-talk: no turn started, so discard and drop the mic.
+    let plan = manual_hold_release_plan(false, true, false);
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan {
+        capture_enabled: false,
+        action: ManualHoldReleaseAction::HideOverlay,
       }
     );
   }
