@@ -264,6 +264,14 @@ pub struct PipelineControls {
   /// logs (`AZAD_AUDIO_FIRST_NONZERO`, `AZAD_VAD_COLDSTART`,
   /// `AZAD_VAD_START_LATENCY`). `None` until the first enable.
   last_capture_enable_at: std::sync::Mutex<Option<Instant>>,
+  /// Wake channel for the audio consumer thread. The CPAL callback signals
+  /// this on every buffer push, and `set_capture_enabled` signals it on a
+  /// capture-state flip. The mutex guards no shared state; it exists solely to
+  /// satisfy the `Condvar` API. The predicate is ring-buffer occupancy owned by
+  /// the single consumer, and a bounded backstop timeout covers lost wakeups so
+  /// the notifier never has to lock from the real-time audio callback.
+  wake_lock: std::sync::Mutex<()>,
+  wake: std::sync::Condvar,
 }
 
 impl PipelineControls {
@@ -293,6 +301,10 @@ impl PipelineControls {
       if let Ok(mut slot) = self.last_capture_enable_at.lock() {
         *slot = now;
       }
+      // Wake the audio consumer so it resumes/pauses the CPAL stream promptly
+      // rather than after the next backstop timeout; this keeps press-to-capture
+      // latency instant despite the consumer blocking on `wake`.
+      self.wake.notify_all();
       if self.debug_stats_enabled() {
         let loc = std::panic::Location::caller();
         eprintln!(
@@ -304,6 +316,24 @@ impl PipelineControls {
           loc.line()
         );
       }
+    }
+  }
+
+  /// Signal the audio consumer that fresh samples were pushed to the ring
+  /// buffer. Called from the real-time CPAL callback, so it must stay
+  /// lock-free: `Condvar::notify_one` wakes a waiter without acquiring
+  /// `wake_lock`. A missed wakeup (notify between the consumer's occupancy
+  /// check and its wait) is bounded by the consumer's backstop timeout.
+  pub fn notify_audio(&self) {
+    self.wake.notify_one();
+  }
+
+  /// Block until the next `notify_audio`/`set_capture_enabled` signal, or until
+  /// `backstop` elapses (whichever comes first). The consumer re-checks its own
+  /// predicate after returning, so spurious and timed-out wakeups are benign.
+  pub fn wait_for_wake(&self, backstop: Duration) {
+    if let Ok(guard) = self.wake_lock.lock() {
+      let _ = self.wake.wait_timeout(guard, backstop);
     }
   }
 
@@ -375,6 +405,8 @@ impl Default for PipelineControls {
       force_start_requested: AtomicBool::new(false),
       force_finish_requested: AtomicBool::new(false),
       cancel_turn_requested: AtomicBool::new(false),
+      wake_lock: std::sync::Mutex::new(()),
+      wake: std::sync::Condvar::new(),
       last_capture_enable_at: std::sync::Mutex::new(None),
     }
   }
@@ -1448,6 +1480,14 @@ impl PipelineCore {
     draft
   }
 
+  fn should_submit_final_pass_for_finished_turn(
+    enable_tdt_final_pass: bool,
+    audio_has_samples: bool,
+    _draft_text: &str,
+  ) -> bool {
+    enable_tdt_final_pass && audio_has_samples
+  }
+
   /// Emit `RenderEvent::Finalizing` for the current turn. Used by
   /// `enter_tentative_finalize` so the pulsing border becomes visible
   /// immediately at EOU latch — the recovery window keeps it on screen
@@ -1494,29 +1534,31 @@ impl PipelineCore {
   fn finish_turn(&mut self, already_pulsed: bool) -> Result<()> {
     let draft = self.current_finalize_draft();
     let audio_snapshot: Vec<f32> = std::mem::take(&mut self.turn_audio);
-    if !draft.is_empty() {
-      if self.cfg.enable_tdt_final_pass {
+    if self.cfg.enable_tdt_final_pass {
+      if !draft.is_empty() {
         self
           .renderer
           .emit(RenderEvent::FinalLine { id: self.turn_id, text: draft.clone() });
-        // If no pre-final text was produced, skip expensive final-pass ASR.
-        // This avoids running a refinement pass on silent/no-content turns.
-        if !audio_snapshot.is_empty() {
-          if !already_pulsed {
-            self
-              .renderer
-              .emit(RenderEvent::Finalizing { id: self.turn_id, text: draft.clone() });
-          }
-          if self.cfg.incremental_finalization_enabled {
-            self.submit_incremental_final_pass(audio_snapshot, &draft);
-          } else {
-            self.submit_final_pass(audio_snapshot);
-          }
-        }
-      } else {
-        // EOU-only mode: finalize immediately without a TDT refinement pass.
-        self.renderer.emit(RenderEvent::ReplaceLine { id: self.turn_id, text: draft });
       }
+      if Self::should_submit_final_pass_for_finished_turn(
+        self.cfg.enable_tdt_final_pass,
+        !audio_snapshot.is_empty(),
+        &draft,
+      ) {
+        if !already_pulsed {
+          self
+            .renderer
+            .emit(RenderEvent::Finalizing { id: self.turn_id, text: draft.clone() });
+        }
+        if self.cfg.incremental_finalization_enabled {
+          self.submit_incremental_final_pass(audio_snapshot, &draft);
+        } else {
+          self.submit_final_pass(audio_snapshot);
+        }
+      }
+    } else if !draft.is_empty() {
+      // EOU-only mode: finalize immediately without a TDT refinement pass.
+      self.renderer.emit(RenderEvent::ReplaceLine { id: self.turn_id, text: draft });
     }
 
     self.tracker.reset();
@@ -4366,9 +4408,9 @@ mod tests {
   use super::{
     DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES, EmptyPartialAction, EouEmission,
     FinalizeTailPlan, INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_TAIL_MAX_WAIT_FACTOR,
-    IncrementalPartialSegment, MIDDLE_COVERAGE_TOLERANCE_SAMPLES, TAIL_COVERAGE_TOLERANCE_SAMPLES,
-    cap_segment_start, debug_recording_stem, empty_partial_action, eou_chars_in_range,
-    eou_corroborates_silence, finalize_tail_plan, incremental_tail_wait_ms,
+    IncrementalPartialSegment, MIDDLE_COVERAGE_TOLERANCE_SAMPLES, PipelineControls, PipelineCore,
+    TAIL_COVERAGE_TOLERANCE_SAMPLES, cap_segment_start, debug_recording_stem, empty_partial_action,
+    eou_chars_in_range, eou_corroborates_silence, finalize_tail_plan, incremental_tail_wait_ms,
     is_one_char_audio_cutoff_truncation, leading_coverage_is_incomplete,
     middle_coverage_is_incomplete, non_empty_partials, normalize_chunk_case,
     prune_debug_recordings, samples_to_ms_at_target_sr, stitch_incremental_text,
@@ -4763,6 +4805,83 @@ mod tests {
   fn finalize_tail_plan_runs_without_refined_text() {
     let plan = finalize_tail_plan(false, 302_080, 0, false);
     assert_eq!(plan, FinalizeTailPlan::RunTail);
+  }
+
+  #[test]
+  fn finished_turn_final_pass_runs_for_audio_even_without_draft() {
+    assert!(PipelineCore::should_submit_final_pass_for_finished_turn(true, true, ""));
+  }
+
+  #[test]
+  fn finished_turn_final_pass_still_skips_empty_audio() {
+    assert!(!PipelineCore::should_submit_final_pass_for_finished_turn(true, false, ""));
+  }
+
+  #[test]
+  fn finished_turn_final_pass_respects_tdt_flag() {
+    assert!(!PipelineCore::should_submit_final_pass_for_finished_turn(false, true, "draft"));
+  }
+
+  #[test]
+  fn pipeline_controls_notify_audio_wakes_waiter_before_backstop() {
+    let controls = std::sync::Arc::new(PipelineControls::default());
+    let waiter_controls = controls.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter_done = done.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+      let start = std::time::Instant::now();
+      waiter_controls.wait_for_wake(std::time::Duration::from_secs(5));
+      tx.send(start.elapsed()).unwrap();
+      waiter_done.store(true, std::sync::atomic::Ordering::Release);
+    });
+
+    wake_until_waiter_returns(&controls, &done, |controls| controls.notify_audio());
+    let elapsed = rx.recv_timeout(std::time::Duration::from_secs(6)).unwrap();
+    handle.join().unwrap();
+
+    assert!(elapsed < std::time::Duration::from_secs(3));
+  }
+
+  #[test]
+  fn pipeline_controls_capture_flip_wakes_waiter_before_backstop() {
+    let controls = std::sync::Arc::new(PipelineControls::default());
+    let waiter_controls = controls.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter_done = done.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+      let start = std::time::Instant::now();
+      waiter_controls.wait_for_wake(std::time::Duration::from_secs(5));
+      tx.send(start.elapsed()).unwrap();
+      waiter_done.store(true, std::sync::atomic::Ordering::Release);
+    });
+
+    let next_capture_enabled = std::sync::atomic::AtomicBool::new(false);
+    wake_until_waiter_returns(&controls, &done, |controls| {
+      let next = next_capture_enabled.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+      controls.set_capture_enabled(next);
+    });
+    let elapsed = rx.recv_timeout(std::time::Duration::from_secs(6)).unwrap();
+    handle.join().unwrap();
+
+    assert!(elapsed < std::time::Duration::from_secs(3));
+  }
+
+  fn wake_until_waiter_returns<F>(
+    controls: &PipelineControls,
+    done: &std::sync::atomic::AtomicBool,
+    wake: F,
+  ) where
+    F: Fn(&PipelineControls),
+  {
+    for _ in 0..200 {
+      if done.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+      }
+      wake(controls);
+      std::thread::sleep(std::time::Duration::from_millis(10));
+    }
   }
 
   #[test]

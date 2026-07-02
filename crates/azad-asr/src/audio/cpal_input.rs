@@ -10,6 +10,12 @@ use std::time::{Duration, Instant};
 
 const PREFERRED_INPUT_BUFFER_FRAMES: u32 = 2048;
 
+/// Upper bound on how long `read_chunk` blocks between wake signals. The
+/// consumer is normally woken by the CPAL callback on audio or by
+/// `set_capture_enabled` on a state flip; this timeout bounds lost wakeups and
+/// CLI replay paths without `PipelineControls`.
+const WAKE_BACKSTOP: Duration = Duration::from_millis(50);
+
 fn preferred_fixed_buffer_frames(range_min: u32, range_max: u32) -> Option<u32> {
   if range_min == 0 || range_max == 0 || range_min > range_max {
     return None;
@@ -122,6 +128,7 @@ impl CpalInput {
       Arc::clone(&dropped_samples),
       Arc::clone(&ended),
       Arc::clone(&stream_error),
+      cfg.capture_enabled.clone(),
     )?;
     // Start the CoreAudio input unit only when capture is on at open time.
     // Starting it unconditionally lit the macOS mic indicator even with
@@ -167,6 +174,7 @@ impl CpalInput {
     dropped_samples: Arc<AtomicU64>,
     ended: Arc<AtomicBool>,
     stream_error: Arc<Mutex<Option<String>>>,
+    notify: Option<Arc<PipelineControls>>,
   ) -> Result<Stream> {
     let err_ended = Arc::clone(&ended);
     let err_store = Arc::clone(&stream_error);
@@ -183,6 +191,7 @@ impl CpalInput {
         let mut producer_cb = producer;
         let produced_cb = Arc::clone(&produced_samples);
         let dropped_cb = Arc::clone(&dropped_samples);
+        let notify_cb = notify.clone();
         device.build_input_stream(
           stream_cfg,
           move |data: &[f32], _info| {
@@ -190,6 +199,9 @@ impl CpalInput {
             let written = producer_cb.push_slice(data);
             if written < data.len() {
               dropped_cb.fetch_add((data.len() - written) as u64, Ordering::Relaxed);
+            }
+            if let Some(n) = &notify_cb {
+              n.notify_audio();
             }
           },
           err_fn,
@@ -201,6 +213,7 @@ impl CpalInput {
         let produced_cb = Arc::clone(&produced_samples);
         let dropped_cb = Arc::clone(&dropped_samples);
         let mut scratch: Vec<f32> = Vec::new();
+        let notify_cb = notify.clone();
         device.build_input_stream(
           stream_cfg,
           move |data: &[i16], _info| {
@@ -213,6 +226,9 @@ impl CpalInput {
             if written < scratch.len() {
               dropped_cb.fetch_add((scratch.len() - written) as u64, Ordering::Relaxed);
             }
+            if let Some(n) = &notify_cb {
+              n.notify_audio();
+            }
           },
           err_fn,
           None,
@@ -223,6 +239,7 @@ impl CpalInput {
         let produced_cb = Arc::clone(&produced_samples);
         let dropped_cb = Arc::clone(&dropped_samples);
         let mut scratch: Vec<f32> = Vec::new();
+        let notify_cb = notify.clone();
         device.build_input_stream(
           stream_cfg,
           move |data: &[u16], _info| {
@@ -235,6 +252,9 @@ impl CpalInput {
             let written = producer_cb.push_slice(&scratch);
             if written < scratch.len() {
               dropped_cb.fetch_add((scratch.len() - written) as u64, Ordering::Relaxed);
+            }
+            if let Some(n) = &notify_cb {
+              n.notify_audio();
             }
           },
           err_fn,
@@ -305,6 +325,16 @@ impl CpalInput {
     self.shutdown.as_ref().map(|flag| flag.load(Ordering::Relaxed)).unwrap_or(false)
   }
 
+  /// Block until the CPAL callback pushes samples, capture state flips, or the
+  /// backstop elapses. Falls back to a short sleep when no `PipelineControls`
+  /// is wired, which is the case for CLI replay.
+  fn wait_wake(&self) {
+    match self.capture_enabled.as_ref() {
+      Some(controls) => controls.wait_for_wake(WAKE_BACKSTOP),
+      None => std::thread::sleep(Duration::from_millis(5)),
+    }
+  }
+
   fn stream_error_message(&self) -> Option<String> {
     self.stream_error.lock().ok().and_then(|slot| slot.clone())
   }
@@ -364,7 +394,10 @@ impl AudioInput for CpalInput {
         if self.consumer.occupied_len() > 0 {
           self.clear_backlog();
         }
-        std::thread::sleep(Duration::from_millis(5));
+        // Paused stream produces no callback signal; `set_capture_enabled`
+        // wakes us the instant capture is re-enabled, and the backstop bounds
+        // how long we linger before re-checking shutdown/state.
+        self.wait_wake();
         continue;
       }
 
@@ -384,7 +417,9 @@ impl AudioInput for CpalInput {
             .unwrap_or_else(|| "unknown stream failure".to_string());
           return Err(anyhow!("audio input stream ended after error: {message}"));
         }
-        std::thread::sleep(Duration::from_millis(1));
+        // Woken by the CPAL callback as soon as a buffer lands; the backstop is
+        // just a lost-wakeup safety net.
+        self.wait_wake();
       }
       if !self.capture_active {
         continue;
