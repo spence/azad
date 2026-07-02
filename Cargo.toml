@@ -16,5 +16,4 @@ license = "MIT"
 [workspace.dependencies]
 thiserror = "1.0"
 num_cpus = "1.16"
-parakeet-rs = { git = "https://github.com/spence/parakeet-rs.git", rev = "7b6208699f094575df1d81ee210c5a3987b639e6" }
 whisper-cpp-plus = "=0.1.5"

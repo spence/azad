@@ -3,7 +3,7 @@
 //! Each fixture is a `(WAV, JSON)` pair under `tests/fixtures/audio/`. The WAV is replayed
 //! through `run_pipeline` exactly as the live mic pipeline would consume it; the JSON is the
 //! sidecar that was captured alongside the original recording (ground-truth `full_text` from
-//! the full TDT pass, plus partials and metadata). New fixtures get added per the bug-report
+//! the finalization pass, plus partials and metadata). New fixtures get added per the bug-report
 //! workflow:
 //!
 //!   1. User reports a bug. The debug-recording capture (in `pipeline.rs::save_debug_recording`)
@@ -15,7 +15,7 @@
 //!      input.
 //!   4. Fix the code. The test flips green.
 //!
-//! Because the pipeline needs Parakeet EOU, Parakeet TDT, and Silero VAD, every test in this
+//! Because the pipeline needs MLX Nemotron and Silero VAD, every test in this
 //! file is `#[ignore]` by default — `cargo test -p azad-asr` skips them, so contributors without
 //! models on disk don't see spurious failures. To run them:
 //!
@@ -39,7 +39,7 @@ const FIXTURE_AUDIO_DIR: &str = "tests/fixtures/audio";
 const MANIFEST_REL: &str = "tests/fixtures/manifest.json";
 
 #[test]
-#[ignore = "requires Parakeet EOU/TDT + Silero VAD models on disk"]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn replay_empty_audio_emits_nothing() {
   let Some(r) = run_fixture("empty-audio") else {
     return;
@@ -60,7 +60,7 @@ fn replay_empty_audio_emits_nothing() {
 /// suffix, and emits only the trailing fragment ("reproduce it, then let's have a conversation
 /// ...") — dropping ~50 words from the start.
 #[test]
-#[ignore = "requires Parakeet EOU/TDT + Silero VAD models on disk"]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn replay_stitcher_preserves_prefix_pseudo_suffix() {
   let Some(r) = run_fixture("stitcher-preserves-prefix-pseudo-suffix") else {
     return;
@@ -85,7 +85,7 @@ fn replay_stitcher_preserves_prefix_pseudo_suffix() {
 /// window shrinks below 200 ms, this fixture's transcript arrives as two
 /// lines and the test fails.
 #[test]
-#[ignore = "requires Parakeet EOU/TDT + Silero VAD models on disk"]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn replay_recovery_bridges_200ms_gap() {
   let Some(r) = run_fixture("recovery-bridges-200ms-gap") else {
     return;
@@ -121,7 +121,7 @@ fn replay_recovery_bridges_200ms_gap() {
 /// reachable). For now, this fixture pins the merge behaviour at 400 ms
 /// so a future tightening of `vad_in_speech_thold` will visibly flip it.
 #[test]
-#[ignore = "requires Parakeet EOU/TDT + Silero VAD models on disk"]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn replay_recovery_merges_400ms_gap_under_low_in_speech_thold() {
   let Some(r) = run_fixture("recovery-splits-400ms-gap") else {
     return;
@@ -190,12 +190,12 @@ fn run_fixture(id: &str) -> Option<ReplayResult> {
     None => {
       if env_truthy("AZAD_TEST_REQUIRE_MODELS") {
         panic!(
-          "AZAD_TEST_REQUIRE_MODELS is set but Parakeet/VAD models were not found at the \
-           workspace dev paths (models/parakeet/{{eou,tdt}} and models/vad/ggml-silero-v6.2.0.bin)"
+          "AZAD_TEST_REQUIRE_MODELS is set but MLX/VAD models were not found at the \
+           workspace dev paths (models/nemotron-mlx and models/vad/ggml-silero-v6.2.0.bin)"
         );
       }
       eprintln!(
-        "[replay] skipping fixture `{id}`: Parakeet/VAD models not found at workspace dev paths.\n\
+        "[replay] skipping fixture `{id}`: MLX/VAD models not found at workspace dev paths.\n\
          set AZAD_TEST_REQUIRE_MODELS=1 to make this a hard failure."
       );
       return None;
@@ -293,9 +293,7 @@ fn repo_root() -> PathBuf {
 /// `None` when any required model file is missing.
 fn resolve_pipeline_config() -> Option<PipelineConfig> {
   let root = repo_root();
-  let parakeet = root.join("models").join("parakeet");
-  let eou = parakeet.join("eou");
-  let tdt = parakeet.join("tdt");
+  let model_dir = root.join("models").join("nemotron-mlx");
 
   let vad = root.join("models").join("vad").join("ggml-silero-v6.2.0.bin");
   if !vad.is_file() {
@@ -303,13 +301,10 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
   }
 
   for required in [
-    eou.join("encoder.onnx"),
-    eou.join("decoder_joint.onnx"),
-    eou.join("tokenizer.json"),
-    tdt.join("encoder-model.onnx"),
-    tdt.join("encoder-model.onnx.data"),
-    tdt.join("decoder_joint-model.onnx"),
-    tdt.join("vocab.txt"),
+    model_dir.join("config.json"),
+    model_dir.join("model.safetensors"),
+    model_dir.join("tokenizer.model"),
+    model_dir.join("vocab.txt"),
   ] {
     if !required.is_file() {
       return None;
@@ -318,7 +313,13 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
 
   Some(PipelineConfig {
     vad_model_path: vad,
-    streaming_model: StreamingModelConfig::Parakeet,
+    streaming_model: StreamingModelConfig::MlxNemotron {
+      model_dir,
+      language: "en-US".to_string(),
+      streaming_chunk_ms: 80,
+      final_chunk_ms: 560,
+      helper_path: None,
+    },
     vad_thold: 0.45,
     vad_start_chunks: 1,
     pre_roll_ms: 800,
@@ -329,7 +330,6 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
     recovery_vad_thold: 0.30,
     stable_k: 3,
     stable_h: 5,
-    enable_tdt_final_pass: true,
     finalizing_pulse_enabled: true,
     incremental_finalization_enabled: true,
     incremental_slice_ms: 6_000,
@@ -337,8 +337,6 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
     incremental_left_context_ms: 10_000,
     incremental_min_new_audio_ms: 1_200,
     incremental_wait_tail_result_ms: 220,
-    parakeet_tdt_dir: tdt,
-    parakeet_eou_dir: eou,
   })
 }
 

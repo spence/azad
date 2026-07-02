@@ -75,6 +75,20 @@ impl MlxNemotronAsr {
     Ok((!text.is_empty()).then_some(text))
   }
 
+  pub fn transcribe_final_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
+    let response = self.command(json!({
+      "type": "final_samples",
+      "samples": samples,
+    }))?;
+    let text = response
+      .get("text")
+      .and_then(Value::as_str)
+      .unwrap_or_default()
+      .trim()
+      .to_string();
+    Ok((!text.is_empty()).then_some(text))
+  }
+
   fn command(&mut self, payload: Value) -> Result<Value> {
     serde_json::to_writer(&mut self.stdin, &payload)
       .context("failed to encode MLX helper command")?;

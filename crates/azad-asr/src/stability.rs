@@ -124,7 +124,7 @@ fn find_overlap(committed: &[String], hyp: &[String], max_overlap: usize) -> usi
     return 0;
   }
 
-  // Common case for incremental / monotonic hypotheses (e.g. Parakeet EOU draft):
+  // Common case for incremental / monotonic hypotheses:
   // the new hypothesis contains the entire committed prefix. In that case we should
   // skip all committed tokens, otherwise `live` will include the whole hypothesis
   // and the UI will show duplicated text (`committed` + `live`).

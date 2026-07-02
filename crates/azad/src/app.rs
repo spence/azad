@@ -866,9 +866,8 @@ fn strip_removed_words(text: &str, removed_words: &[String]) -> String {
 /// emitted text before `platform::insert_text` fires.
 ///
 /// Safety net for duplicate-word artifacts the azad-asr stitcher's seam-dedup
-/// can't see: model-induced doubles inside a single Parakeet partial (203 of
-/// 617 dup-bearing turns in the 2026-05-08 stderr.log analysis) and stable
-/// user/model duplicates the full-pass also produces (159 turns).
+/// can't see: model-induced doubles inside a single partial and stable
+/// user/model duplicates the final pass also produces.
 ///
 /// Rules — exhaustive, each independently auditable:
 /// 1. Tokenize on whitespace (matches `strip_removed_words` style).

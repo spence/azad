@@ -19,7 +19,7 @@ use asr::ui;
 
 #[derive(Parser)]
 #[command(name = "asr")]
-#[command(about = "Terminal live speech-to-text (English) via Parakeet (cpal capture)", long_about = None)]
+#[command(about = "Terminal live speech-to-text (English) via MLX Nemotron (cpal capture)", long_about = None)]
 #[command(version)]
 struct Cli {
   #[command(subcommand)]
@@ -86,7 +86,7 @@ struct CommonArgs {
   #[arg(long, default_value_t = 5)]
   stable_h: usize,
 
-  /// Enable incremental partial TDT refinement during an active turn.
+  /// Enable incremental MLX finalization slices during an active turn.
   #[arg(
         long,
         default_value_t = true,
@@ -115,13 +115,25 @@ struct CommonArgs {
   #[arg(long, default_value_t = 220)]
   incremental_wait_tail_result_ms: u32,
 
-  /// Parakeet TDT model directory (contains encoder-model.onnx, encoder-model.onnx.data, decoder_joint-model.onnx, vocab.txt).
-  #[arg(long)]
-  parakeet_tdt: Option<PathBuf>,
+  /// MLX Nemotron model directory (contains config.json, model.safetensors, tokenizer.model, vocab.txt).
+  #[arg(long = "mlx-model-dir")]
+  mlx_model_dir: Option<PathBuf>,
 
-  /// Parakeet EOU model directory (contains encoder.onnx, decoder_joint.onnx, tokenizer.json).
-  #[arg(long)]
-  parakeet_eou: Option<PathBuf>,
+  /// Path to azad-mlx-asr helper. Defaults to the bundled helper or target/swift build output.
+  #[arg(long = "mlx-helper")]
+  mlx_helper: Option<PathBuf>,
+
+  /// ASR language tag passed to the MLX helper.
+  #[arg(long, default_value = "en-US")]
+  language: String,
+
+  /// MLX streaming chunk size for live partial text (ms).
+  #[arg(long, default_value_t = 80)]
+  streaming_chunk_ms: u32,
+
+  /// MLX chunk size for finalization passes (ms).
+  #[arg(long, default_value_t = 560)]
+  final_chunk_ms: u32,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -380,8 +392,8 @@ fn workspace_root() -> PathBuf {
     .to_path_buf()
 }
 
-fn default_parakeet_dir() -> PathBuf {
-  workspace_root().join("models").join("parakeet")
+fn default_mlx_model_dir() -> PathBuf {
+  workspace_root().join("models").join("nemotron-mlx")
 }
 
 fn default_vad_model_path() -> PathBuf {
@@ -397,25 +409,25 @@ fn is_wav(path: &Path) -> bool {
 }
 
 fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
-  let parakeet_root = default_parakeet_dir();
-  let parakeet_tdt = args.parakeet_tdt.clone().unwrap_or_else(|| parakeet_root.join("tdt"));
-  let parakeet_eou = args.parakeet_eou.clone().unwrap_or_else(|| parakeet_root.join("eou"));
-
   let vad_model_path = args.vad_model.clone().unwrap_or_else(default_vad_model_path);
+  let model_dir = args.mlx_model_dir.clone().unwrap_or_else(default_mlx_model_dir);
 
   // Friendlier errors: validate that required model files exist up-front.
   ensure_file(&vad_model_path, "VAD model")?;
-  ensure_file(&parakeet_eou.join("encoder.onnx"), "Parakeet EOU encoder")?;
-  ensure_file(&parakeet_eou.join("decoder_joint.onnx"), "Parakeet EOU decoder_joint")?;
-  ensure_file(&parakeet_eou.join("tokenizer.json"), "Parakeet EOU tokenizer")?;
-  ensure_file(&parakeet_tdt.join("encoder-model.onnx"), "Parakeet TDT encoder")?;
-  ensure_file(&parakeet_tdt.join("encoder-model.onnx.data"), "Parakeet TDT encoder weights")?;
-  ensure_file(&parakeet_tdt.join("decoder_joint-model.onnx"), "Parakeet TDT decoder_joint")?;
-  ensure_file(&parakeet_tdt.join("vocab.txt"), "Parakeet TDT vocab")?;
+  ensure_file(&model_dir.join("config.json"), "MLX Nemotron config")?;
+  ensure_file(&model_dir.join("model.safetensors"), "MLX Nemotron weights")?;
+  ensure_file(&model_dir.join("tokenizer.model"), "MLX Nemotron tokenizer")?;
+  ensure_file(&model_dir.join("vocab.txt"), "MLX Nemotron vocab")?;
 
   Ok(PipelineConfig {
     vad_model_path,
-    streaming_model: StreamingModelConfig::Parakeet,
+    streaming_model: StreamingModelConfig::MlxNemotron {
+      model_dir,
+      language: args.language.clone(),
+      streaming_chunk_ms: args.streaming_chunk_ms,
+      final_chunk_ms: args.final_chunk_ms,
+      helper_path: args.mlx_helper.clone(),
+    },
     vad_thold: args.vad_thold,
     vad_start_chunks: args.vad_start_chunks,
     pre_roll_ms: args.pre_roll_ms,
@@ -426,7 +438,6 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
     recovery_vad_thold: args.recovery_vad_thold,
     stable_k: args.stable_k,
     stable_h: args.stable_h,
-    enable_tdt_final_pass: true,
     finalizing_pulse_enabled: true,
     incremental_finalization_enabled: args.incremental_finalization_enabled,
     incremental_slice_ms: args.incremental_slice_ms,
@@ -434,8 +445,6 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
     incremental_left_context_ms: args.incremental_left_context_ms,
     incremental_min_new_audio_ms: args.incremental_min_new_audio_ms,
     incremental_wait_tail_result_ms: args.incremental_wait_tail_result_ms,
-    parakeet_tdt_dir: parakeet_tdt,
-    parakeet_eou_dir: parakeet_eou,
   })
 }
 

@@ -5,15 +5,8 @@ pub struct ModelPackDef {
   pub id: &'static str,
   pub display_name: &'static str,
   pub description: &'static str,
-  pub backend: ModelBackend,
   pub total_size_bytes: u64,
   pub files: &'static [ModelFileDef],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelBackend {
-  Parakeet,
-  MlxNemotron,
 }
 
 pub struct ModelFileDef {
@@ -35,7 +28,6 @@ pub static NEMOTRON_35_MLX_BF16_V1: ModelPackDef = ModelPackDef {
   id: "nemotron-3.5-mlx-bf16-v1",
   display_name: "Nemotron 3.5 MLX bf16",
   description: "Silero VAD + MLX Nemotron 3.5 streaming/final ASR",
-  backend: ModelBackend::MlxNemotron,
   total_size_bytes: 1_277_588_214,
   files: &[
     ModelFileDef {
@@ -128,7 +120,6 @@ pub struct ResolvedPipelinePaths {
 }
 
 pub enum ResolvedModelBackend {
-  Parakeet { eou_dir: PathBuf, tdt_dir: PathBuf },
   MlxNemotron { model_dir: PathBuf },
 }
 
@@ -136,30 +127,14 @@ pub enum ResolvedModelBackend {
 pub fn pipeline_paths(pack: &ModelPackDef) -> Option<ResolvedPipelinePaths> {
   let dir = pack_dir(pack.id)?;
   let vad = dir.join("vad").join("ggml-silero-v6.2.0.bin");
-  match pack.backend {
-    ModelBackend::Parakeet => {
-      let eou = dir.join("eou");
-      let tdt = dir.join("tdt");
-      if vad.exists() && eou.exists() && tdt.exists() {
-        Some(ResolvedPipelinePaths {
-          vad_model_path: vad,
-          backend: ResolvedModelBackend::Parakeet { eou_dir: eou, tdt_dir: tdt },
-        })
-      } else {
-        None
-      }
-    }
-    ModelBackend::MlxNemotron => {
-      let model_dir = dir.join("mlx");
-      if vad.exists() && mlx_nemotron_model_dir_ready(&model_dir) {
-        Some(ResolvedPipelinePaths {
-          vad_model_path: vad,
-          backend: ResolvedModelBackend::MlxNemotron { model_dir },
-        })
-      } else {
-        None
-      }
-    }
+  let model_dir = dir.join("mlx");
+  if vad.exists() && mlx_nemotron_model_dir_ready(&model_dir) {
+    Some(ResolvedPipelinePaths {
+      vad_model_path: vad,
+      backend: ResolvedModelBackend::MlxNemotron { model_dir },
+    })
+  } else {
+    None
   }
 }
 
@@ -189,7 +164,6 @@ mod tests {
   fn default_pack_is_bf16_mlx_nemotron() {
     let pack = default_pack();
     assert_eq!(pack.id, "nemotron-3.5-mlx-bf16-v1");
-    assert_eq!(pack.backend, ModelBackend::MlxNemotron);
     assert!(pack.files.iter().any(|f| f.rel_path == "mlx/model.safetensors"));
     assert!(!pack.files.iter().any(|f| f.rel_path.ends_with(".onnx")));
   }
@@ -198,7 +172,7 @@ mod tests {
   fn app_download_packs_only_include_mlx_nemotron() {
     assert_eq!(ALL_PACKS.len(), 1);
     assert_eq!(ALL_PACKS[0].id, default_pack().id);
-    assert!(pack_by_id("parakeet-v1").is_none());
+    assert!(pack_by_id("legacy-pack").is_none());
   }
 
   #[test]

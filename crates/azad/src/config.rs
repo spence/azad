@@ -49,19 +49,13 @@ impl Default for AzadConfig {
     let fallback_dir = models::pack_dir(default_pack.id)
       .unwrap_or_else(|| PathBuf::from("/nonexistent/azad/models"));
     let vad_path = fallback_dir.join("vad").join("ggml-silero-v6.2.0.bin");
-    let eou_dir = fallback_dir.join("eou");
-    let tdt_dir = fallback_dir.join("tdt");
-    let fallback_streaming_model = match default_pack.backend {
-      models::ModelBackend::Parakeet => StreamingModelConfig::Parakeet,
-      models::ModelBackend::MlxNemotron => StreamingModelConfig::MlxNemotron {
-        model_dir: fallback_dir.join("mlx"),
-        language: "en-US".to_string(),
-        streaming_chunk_ms: 80,
-        final_chunk_ms: 560,
-        helper_path: None,
-      },
+    let fallback_streaming_model = StreamingModelConfig::MlxNemotron {
+      model_dir: fallback_dir.join("mlx"),
+      language: "en-US".to_string(),
+      streaming_chunk_ms: 80,
+      final_chunk_ms: 560,
+      helper_path: None,
     };
-    let fallback_enable_tdt = default_pack.backend == models::ModelBackend::Parakeet;
 
     let mut cfg = Self {
       show_overlay_on_vad_start: true,
@@ -129,16 +123,13 @@ impl Default for AzadConfig {
         recovery_vad_thold: 0.30,
         stable_k: 3,
         stable_h: 5,
-        enable_tdt_final_pass: fallback_enable_tdt,
         finalizing_pulse_enabled: true,
-        incremental_finalization_enabled: fallback_enable_tdt,
+        incremental_finalization_enabled: true,
         incremental_slice_ms: 6_000,
         incremental_overlap_ms: 3_000,
         incremental_left_context_ms: 10_000,
         incremental_min_new_audio_ms: 1_200,
         incremental_wait_tail_result_ms: 220,
-        parakeet_tdt_dir: tdt_dir,
-        parakeet_eou_dir: eou_dir,
       },
     };
     if let Some(paths) = resolve_pipeline_paths(default_pack) {
@@ -155,26 +146,12 @@ fn resolve_pipeline_paths(pack: &models::ModelPackDef) -> Option<models::Resolve
   {
     let root = workspace_root();
     let dev_vad = default_vad_model_path(&root);
-    match pack.backend {
-      models::ModelBackend::Parakeet => {
-        let dev_eou = root.join("models").join("parakeet").join("eou");
-        let dev_tdt = root.join("models").join("parakeet").join("tdt");
-        if dev_vad.exists() && dev_eou.exists() && dev_tdt.exists() {
-          return Some(models::ResolvedPipelinePaths {
-            vad_model_path: dev_vad,
-            backend: models::ResolvedModelBackend::Parakeet { eou_dir: dev_eou, tdt_dir: dev_tdt },
-          });
-        }
-      }
-      models::ModelBackend::MlxNemotron => {
-        let dev_model_dir = root.join("models").join("nemotron-mlx");
-        if dev_vad.exists() && models::mlx_nemotron_model_dir_ready(&dev_model_dir) {
-          return Some(models::ResolvedPipelinePaths {
-            vad_model_path: dev_vad,
-            backend: models::ResolvedModelBackend::MlxNemotron { model_dir: dev_model_dir },
-          });
-        }
-      }
+    let dev_model_dir = root.join("models").join("nemotron-mlx");
+    if dev_vad.exists() && models::mlx_nemotron_model_dir_ready(&dev_model_dir) {
+      return Some(models::ResolvedPipelinePaths {
+        vad_model_path: dev_vad,
+        backend: models::ResolvedModelBackend::MlxNemotron { model_dir: dev_model_dir },
+      });
     }
   }
 
@@ -184,13 +161,6 @@ fn resolve_pipeline_paths(pack: &models::ModelPackDef) -> Option<models::Resolve
 fn apply_pipeline_paths(pipeline: &mut PipelineConfig, paths: models::ResolvedPipelinePaths) {
   pipeline.vad_model_path = paths.vad_model_path;
   match paths.backend {
-    models::ResolvedModelBackend::Parakeet { eou_dir, tdt_dir } => {
-      pipeline.streaming_model = StreamingModelConfig::Parakeet;
-      pipeline.parakeet_eou_dir = eou_dir;
-      pipeline.parakeet_tdt_dir = tdt_dir;
-      pipeline.enable_tdt_final_pass = true;
-      pipeline.incremental_finalization_enabled = true;
-    }
     models::ResolvedModelBackend::MlxNemotron { model_dir } => {
       pipeline.streaming_model = StreamingModelConfig::MlxNemotron {
         model_dir,
@@ -199,8 +169,7 @@ fn apply_pipeline_paths(pipeline: &mut PipelineConfig, paths: models::ResolvedPi
         final_chunk_ms: 560,
         helper_path: None,
       };
-      pipeline.enable_tdt_final_pass = false;
-      pipeline.incremental_finalization_enabled = false;
+      pipeline.incremental_finalization_enabled = true;
     }
   }
 }

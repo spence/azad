@@ -3,8 +3,7 @@ use crate::mlx::{MlxNemotronAsr, MlxNemotronConfig};
 use crate::render::{RenderEvent, Renderer, TurnStartedReason};
 use crate::stability::StabilityTracker;
 use crate::thread_qos;
-use anyhow::{Context, Result, anyhow};
-use parakeet_rs::{ExecutionConfig, ParakeetEOU, ParakeetTDT, Transcriber as _};
+use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,8 +14,7 @@ use whisper_cpp_plus::WhisperVadProcessor;
 
 const TARGET_SR: u32 = 16_000;
 const CHUNK_SAMPLES: usize = 2_560; // 160ms @ 16kHz
-const NO_SPECULATIVE_JOB_ID: u64 = 0;
-const SPECULATIVE_FINAL_WAIT_MS: u64 = 220;
+const NO_JOB_ID: u64 = 0;
 const INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS: usize = 256;
 const INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS: usize = 2;
 const INCREMENTAL_STITCH_MAX_TAIL_DROP_TOKENS: usize = 24;
@@ -28,39 +26,37 @@ const INCREMENTAL_TAIL_MAX_WAIT_FACTOR: u32 = 60;
 const INCREMENTAL_LIVE_TAIL_WAIT_FACTOR: u32 = 8;
 const INCREMENTAL_MAX_SEGMENT_MS: u32 = 8_000;
 
-/// When an incremental partial returns empty text in an EOU-confirmed-speech
-/// range, retry once with the start shifted back this many ms. The TDT joint's
-/// LSTM cold-start trap (see crates/azad-asr/INVESTIGATIONS/tdt-empty-partial.md)
-/// is exquisitely start-sample-specific — a ~100 ms shift recovers; left-
-/// extension reliably recovers even at +100 ms. 500 ms is a conservative margin.
+/// When a finalization slice returns empty text in a range where the streaming
+/// model already produced text, retry once with the start shifted back this
+/// many ms. Chunked decoders can be sensitive to segment boundaries; a little
+/// extra left context is cheap compared with falling back to whole-turn decode.
 const EMPTY_PARTIAL_RETRY_LEFT_SHIFT_MS: u32 = 500;
 
-/// Floor on EOU char count before we bother retrying. Without this we'd retry
-/// for ranges where EOU produced just a stray char (well below the silence-
+/// Floor on streaming char count before we bother retrying. Without this we'd retry
+/// for ranges where streaming produced just a stray char (well below the silence-
 /// corroboration threshold but technically non-zero). 2 chars is enough to
 /// signal speech-shaped audio worth a second model pass.
 const EMPTY_PARTIAL_RETRY_MIN_EOU_CHARS: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EmptyPartialAction {
-  /// EOU corroborates silence. Push an empty-text partial entry so the
+  /// Streaming output corroborates silence. Push an empty-text partial entry so the
   /// coverage map covers the range and `middle_coverage_is_incomplete`
   /// doesn't bail. This is the original behaviour for the silence case.
   PushSilenceMarker,
-  /// EOU saw speech and we haven't yet retried this range. Schedule a
+  /// Streaming output saw speech and we haven't yet retried this range. Schedule a
   /// retry incremental slice with start shifted back by
-  /// `EMPTY_PARTIAL_RETRY_LEFT_SHIFT_MS` to dodge the cold-LSTM trap.
+  /// `EMPTY_PARTIAL_RETRY_LEFT_SHIFT_MS` to provide more left context.
   ScheduleRetry,
-  /// EOU saw speech but a retry already ran (or this result IS the retry
+  /// Streaming output saw speech but a retry already ran (or this result IS the retry
   /// returning empty, or EOU output was below the retry-worth-it floor).
   /// Drop the range — coverage gap will fire the bailout, current behaviour.
   Drop,
 }
 
-/// Decides what to do when an incremental TDT partial returns empty text.
-/// See `INVESTIGATIONS/tdt-empty-partial.md` for the underlying cold-LSTM
-/// trap analysis that motivates the retry path. Pure function so the
-/// dispatch logic is testable without spinning up the full pipeline.
+/// Decides what to do when an incremental finalization slice returns empty
+/// text. Pure function so the dispatch logic is testable without spinning up
+/// the full pipeline.
 fn empty_partial_action(
   eou_chars: usize,
   corroborated: bool,
@@ -222,7 +218,6 @@ pub struct AudioHealthView {
 
 #[derive(Debug, Clone)]
 pub enum StreamingModelConfig {
-  Parakeet,
   MlxNemotron {
     model_dir: PathBuf,
     language: String,
@@ -276,9 +271,8 @@ pub struct PipelineConfig {
   pub stable_k: usize,
   pub stable_h: usize,
 
-  pub enable_tdt_final_pass: bool,
-  /// Controls the UI "finalizing" pulse independently from the backend used for
-  /// final text. TDT, MLX, or another backend can all run finalization.
+  /// Controls the UI "finalizing" pulse independently from whether the final
+  /// text comes from stitched background slices or a whole-turn pass.
   pub finalizing_pulse_enabled: bool,
   pub incremental_finalization_enabled: bool,
   pub incremental_slice_ms: u32,
@@ -286,17 +280,11 @@ pub struct PipelineConfig {
   pub incremental_left_context_ms: u32,
   pub incremental_min_new_audio_ms: u32,
   pub incremental_wait_tail_result_ms: u32,
-  pub parakeet_tdt_dir: PathBuf,
-  pub parakeet_eou_dir: PathBuf,
 }
 
 impl PipelineConfig {
   pub fn model_label(&self) -> String {
     match &self.streaming_model {
-      StreamingModelConfig::Parakeet => {
-        let tdt = self.parakeet_tdt_dir.file_name().and_then(|s| s.to_str()).unwrap_or("tdt");
-        format!("parakeet+eou ({tdt})")
-      }
       StreamingModelConfig::MlxNemotron {
         model_dir,
         language,
@@ -314,21 +302,12 @@ impl PipelineConfig {
 }
 
 enum StreamingAsr {
-  Parakeet(ParakeetEOU),
   MlxNemotron(MlxNemotronAsr),
 }
 
 impl StreamingAsr {
   fn load(cfg: &PipelineConfig) -> Result<Self> {
     match &cfg.streaming_model {
-      StreamingModelConfig::Parakeet => {
-        let eou_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
-        let eou =
-          ParakeetEOU::from_pretrained(&cfg.parakeet_eou_dir, Some(eou_cfg)).map_err(|e| {
-            anyhow!("failed to load Parakeet EOU model at {}: {e}", cfg.parakeet_eou_dir.display())
-          })?;
-        Ok(Self::Parakeet(eou))
-      }
       StreamingModelConfig::MlxNemotron {
         model_dir,
         language,
@@ -351,9 +330,6 @@ impl StreamingAsr {
 
   fn transcribe_chunk(&mut self, piece: &[f32]) -> Result<(String, bool)> {
     match self {
-      Self::Parakeet(eou) => eou
-        .transcribe_with_eou(piece, false)
-        .map_err(|e| anyhow!("Parakeet EOU transcribe failed: {e}")),
       Self::MlxNemotron(mlx) => {
         let out = mlx.transcribe_chunk(piece)?;
         Ok((out, false))
@@ -363,29 +339,38 @@ impl StreamingAsr {
 
   fn reset_turn(&mut self) -> Result<()> {
     match self {
-      Self::Parakeet(eou) => {
-        eou.reset_turn();
-        Ok(())
-      }
       Self::MlxNemotron(mlx) => mlx.reset_turn(),
     }
   }
 
   fn reset_after_tentative_finalize(&mut self) -> Result<()> {
     match self {
-      Self::Parakeet(eou) => {
-        eou.reset_turn();
-        Ok(())
-      }
       Self::MlxNemotron(_) => Ok(()),
     }
   }
 
   fn final_transcript(&mut self) -> Result<Option<String>> {
     match self {
-      Self::Parakeet(_) => Ok(None),
       Self::MlxNemotron(mlx) => mlx.final_transcript(),
     }
+  }
+}
+
+fn finalizer_config(model: &StreamingModelConfig) -> MlxNemotronConfig {
+  match model {
+    StreamingModelConfig::MlxNemotron {
+      model_dir,
+      language,
+      streaming_chunk_ms,
+      final_chunk_ms,
+      helper_path,
+    } => MlxNemotronConfig {
+      model_dir: model_dir.clone(),
+      language: language.clone(),
+      streaming_chunk_ms: *streaming_chunk_ms,
+      final_chunk_ms: *final_chunk_ms,
+      helper_path: helper_path.clone(),
+    },
   }
 }
 
@@ -593,23 +578,16 @@ pub fn run_pipeline_with_options(
 
   let streaming_asr = StreamingAsr::load(&cfg)?;
 
-  // Heavy final pass runs in worker thread so we never block capture.
-  let latest_speculative_job_id = Arc::new(AtomicU64::new(NO_SPECULATIVE_JOB_ID));
-  let (tdt_tx, async_rx, tdt_handle) = if cfg.enable_tdt_final_pass {
-    spawn_tdt_worker(
-      cfg.parakeet_tdt_dir.clone(),
-      Arc::clone(&renderer),
-      Arc::clone(&latest_speculative_job_id),
-    )
+  // Finalization slices run in a separate helper process so live streaming stays responsive.
+  let worker_cfg = finalizer_config(&cfg.streaming_model);
+  let (final_tx, async_rx, final_handle) = if cfg.incremental_finalization_enabled {
+    spawn_final_worker(worker_cfg.clone(), Arc::clone(&renderer))
   } else {
-    spawn_noop_tdt_worker()
+    spawn_noop_final_worker()
   };
   let worker_controls = options.controls.as_ref().map(Arc::clone);
-  let (partial_audit_tx, partial_audit_handle) = spawn_partial_audit_worker(
-    cfg.parakeet_tdt_dir.clone(),
-    Arc::clone(&renderer),
-    worker_controls,
-  );
+  let (partial_audit_tx, partial_audit_handle) =
+    spawn_partial_audit_worker(worker_cfg, Arc::clone(&renderer), worker_controls);
 
   renderer
     .emit(RenderEvent::Status(StatusView { state: EngineState::Idle, detail: "idle".to_string() }));
@@ -620,10 +598,9 @@ pub fn run_pipeline_with_options(
     cfg,
     vad,
     streaming_asr,
-    tdt_tx,
+    final_tx,
     partial_audit_tx,
     async_rx,
-    latest_speculative_job_id,
     options.controls,
     options.stop_after_turn,
   );
@@ -651,7 +628,7 @@ pub fn run_pipeline_with_options(
 
   if aborted {
     // Fast shutdown: drop capture + pipeline state and let the process exit without waiting
-    // for any remaining buffered audio or the TDT refinement worker.
+    // for any remaining buffered audio or the finalization worker.
     drop(runner);
     return Ok(());
   }
@@ -660,7 +637,7 @@ pub fn run_pipeline_with_options(
 
   // Close worker channels (drops senders) then wait for pending work.
   drop(runner);
-  let _ = tdt_handle.join();
+  let _ = final_handle.join();
   let _ = partial_audit_handle.join();
   Ok(())
 }
@@ -678,10 +655,9 @@ impl Runner {
     cfg: PipelineConfig,
     vad: WhisperVadProcessor,
     streaming_asr: StreamingAsr,
-    tdt_tx: crossbeam_channel::Sender<TdtJob>,
+    final_tx: crossbeam_channel::Sender<FinalJob>,
     partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
-    async_rx: crossbeam_channel::Receiver<TdtResult>,
-    latest_speculative_job_id: Arc<AtomicU64>,
+    async_rx: crossbeam_channel::Receiver<FinalResult>,
     controls: Option<Arc<PipelineControls>>,
     stop_after_turn: bool,
   ) -> Self {
@@ -693,10 +669,9 @@ impl Runner {
       cfg,
       vad,
       streaming_asr,
-      tdt_tx,
+      final_tx,
       partial_audit_tx,
       async_rx,
-      latest_speculative_job_id,
       controls,
       stop_after_turn,
     );
@@ -749,10 +724,9 @@ struct PipelineCore {
 
   vad: WhisperVadProcessor,
   streaming_asr: StreamingAsr,
-  tdt_tx: crossbeam_channel::Sender<TdtJob>,
+  final_tx: crossbeam_channel::Sender<FinalJob>,
   partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
-  async_rx: crossbeam_channel::Receiver<TdtResult>,
-  latest_speculative_job_id: Arc<AtomicU64>,
+  async_rx: crossbeam_channel::Receiver<FinalResult>,
   controls: Option<Arc<PipelineControls>>,
   stop_after_turn: bool,
   session_complete: bool,
@@ -813,10 +787,6 @@ struct PipelineCore {
   tentative_active_chunks: u32,
   tentative_active_with_text: u32,
 
-  next_speculative_job_id: u64,
-  active_speculation: Option<SpeculationMeta>,
-  cached_speculation: Option<SpeculativeResult>,
-  pending_spec_finalize: Option<PendingSpecFinalize>,
   incremental: IncrementalRefineState,
 
   // Don't clear "Active" immediately at turn end; short turns may only produce
@@ -841,10 +811,9 @@ impl PipelineCore {
     cfg: PipelineConfig,
     vad: WhisperVadProcessor,
     streaming_asr: StreamingAsr,
-    tdt_tx: crossbeam_channel::Sender<TdtJob>,
+    final_tx: crossbeam_channel::Sender<FinalJob>,
     partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
-    async_rx: crossbeam_channel::Receiver<TdtResult>,
-    latest_speculative_job_id: Arc<AtomicU64>,
+    async_rx: crossbeam_channel::Receiver<FinalResult>,
     controls: Option<Arc<PipelineControls>>,
     stop_after_turn: bool,
   ) -> Self {
@@ -863,10 +832,9 @@ impl PipelineCore {
       input_spec,
       vad,
       streaming_asr,
-      tdt_tx,
+      final_tx,
       partial_audit_tx,
       async_rx,
-      latest_speculative_job_id,
       controls,
       stop_after_turn,
       session_complete: false,
@@ -893,10 +861,6 @@ impl PipelineCore {
       tentative_recovery_vad_above_thr: false,
       tentative_active_chunks: 0,
       tentative_active_with_text: 0,
-      next_speculative_job_id: 1,
-      active_speculation: None,
-      cached_speculation: None,
-      pending_spec_finalize: None,
       incremental: IncrementalRefineState::new(Instant::now()),
       pending_active_clear_chunks: 0,
       last_health_emit: Instant::now(),
@@ -923,9 +887,6 @@ impl PipelineCore {
   fn on_chunk(&mut self, chunk16: &[f32], health: AudioHealth) -> Result<()> {
     debug_assert_eq!(chunk16.len(), CHUNK_SAMPLES);
     self.drain_async_results();
-    if !self.cfg.incremental_finalization_enabled {
-      self.maybe_timeout_pending_spec_finalize();
-    }
 
     let (rms_db, peak_db) = levels_dbfs(chunk16);
 
@@ -1168,7 +1129,6 @@ impl PipelineCore {
         );
       }
       self.seen_eou_since_speech = false;
-      self.invalidate_speculation();
       // Strong tentative recovery: VAD cleared the speech threshold during the
       // window. Un-latch and continue the turn.
       if self.tentative_active {
@@ -1214,8 +1174,8 @@ impl PipelineCore {
       // `incremental_min_new_audio_samples` threshold and the inflight-slice
       // guard, so it no-ops on rapid-fire turns. If the user keeps talking,
       // the existing `speech_resumed` branch (above) clears
-      // `seen_eou_since_speech` and `invalidate_speculation` drops the
-      // in-flight result.
+      // `seen_eou_since_speech`. In-flight finalization slices are matched by
+      // turn id and sample range, so stale results are ignored.
       if !was_latched && self.cfg.incremental_finalization_enabled {
         if self.debug_stats_enabled() {
           let inflight = self.incremental.inflight_segment.is_some();
@@ -1264,8 +1224,6 @@ impl PipelineCore {
 
     if self.cfg.incremental_finalization_enabled {
       self.maybe_schedule_incremental_slice(false);
-    } else if silence_started {
-      self.start_speculative_finalize();
     }
 
     let force_finish_requested =
@@ -1366,13 +1324,10 @@ impl PipelineCore {
       }
     }
     self.drain_async_results();
-    self.flush_pending_spec_finalize();
     Ok(())
   }
 
   fn start_turn(&mut self, current_chunk: &[f32], reason: TurnStartReason) -> Result<()> {
-    self.flush_pending_spec_finalize();
-    self.invalidate_speculation();
     self.start_run = 0;
     self.in_speech = true;
     self.silence_samples = 0;
@@ -1473,8 +1428,8 @@ impl PipelineCore {
       let delta_chars = cleaned.chars().count();
       self.eou_draft.push_str(&cleaned);
 
-      // Record per-emission timing and the surface form so the empty-TDT
-      // branch in `handle_incremental_result` can ask "did EOU emit text
+      // Record per-emission timing and the surface form so the empty-slice
+      // branch in `handle_incremental_result` can ask "did streaming emit text
       // during this slice's audio span?" AND the debug-recording sidecar
       // can record what EOU heard for that span. The audio_samples value
       // matches the TOON_EOU_TEXT log line below so log fixtures and
@@ -1523,9 +1478,8 @@ impl PipelineCore {
     self.tentative_active_chunks = 0;
     self.tentative_active_with_text = 0;
     // Fire the Finalizing pulse immediately so the overlay's pulsing border
-    // is visible during the entire recovery window plus the TDT pass — without
+    // is visible during the entire recovery window plus the finalization pass.
     // this, the deferred emission collapsed the visible window to ~100 ms when
-    // TDT returns quickly. Recovery emits `FinalizingCancelled` to undo this.
     self.emit_finalizing_pulse();
     // Reset the EOU decoder so it doesn't stay biased toward re-firing the
     // `<EOU>` token on every subsequent chunk. Without this, the decoder's
@@ -1617,12 +1571,11 @@ impl PipelineCore {
     draft
   }
 
-  fn should_submit_final_pass_for_finished_turn(
-    enable_tdt_final_pass: bool,
+  fn should_try_incremental_finalization(
+    incremental_finalization_enabled: bool,
     audio_has_samples: bool,
-    _draft_text: &str,
   ) -> bool {
-    enable_tdt_final_pass && audio_has_samples
+    incremental_finalization_enabled && audio_has_samples
   }
 
   /// Emit `RenderEvent::Finalizing` for the current turn. Used before backend
@@ -1674,48 +1627,51 @@ impl PipelineCore {
       self.emit_finalizing_pulse();
     }
     let audio_snapshot: Vec<f32> = std::mem::take(&mut self.turn_audio);
-    if self.cfg.enable_tdt_final_pass {
+    if Self::should_try_incremental_finalization(
+      self.cfg.incremental_finalization_enabled,
+      !audio_snapshot.is_empty(),
+    ) {
       if !draft.is_empty() {
         self
           .renderer
           .emit(RenderEvent::FinalLine { id: self.turn_id, text: draft.clone() });
       }
-      if Self::should_submit_final_pass_for_finished_turn(
-        self.cfg.enable_tdt_final_pass,
-        !audio_snapshot.is_empty(),
-        &draft,
-      ) {
-        if self.cfg.incremental_finalization_enabled {
-          self.submit_incremental_final_pass(audio_snapshot, &draft);
-        } else {
-          self.submit_final_pass(audio_snapshot);
-        }
+
+      if self.submit_incremental_final_pass(&audio_snapshot, &draft) {
+        self.streaming_asr.reset_turn()?;
+      } else {
+        self.emit_whole_turn_final(audio_snapshot.len(), draft)?;
       }
     } else {
-      let finalize_started_at = Instant::now();
-      let model_final = self.streaming_asr.final_transcript()?;
-      if self.debug_stats_enabled() {
-        eprintln!(
-          "TOON_STREAM_FINALIZE turn_id={} elapsed_ms={} audio_samples={} draft_chars={} \
-           model_final_chars={}",
-          self.turn_id,
-          finalize_started_at.elapsed().as_millis(),
-          audio_snapshot.len(),
-          draft.chars().count(),
-          model_final.as_deref().unwrap_or("").chars().count(),
-        );
-      }
-      let final_text = choose_streaming_final_text(draft, model_final);
-      if !final_text.is_empty() {
-        self
-          .renderer
-          .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text });
-      }
+      self.emit_whole_turn_final(audio_snapshot.len(), draft)?;
     }
 
     self.tracker.reset();
     self.eou_draft.clear();
     self.turn_started_by_vad = false;
+    Ok(())
+  }
+
+  fn emit_whole_turn_final(&mut self, audio_samples: usize, draft: String) -> Result<()> {
+    let finalize_started_at = Instant::now();
+    let model_final = self.streaming_asr.final_transcript()?;
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_STREAM_FINALIZE turn_id={} elapsed_ms={} audio_samples={} draft_chars={} \
+         model_final_chars={}",
+        self.turn_id,
+        finalize_started_at.elapsed().as_millis(),
+        audio_samples,
+        draft.chars().count(),
+        model_final.as_deref().unwrap_or("").chars().count(),
+      );
+    }
+    let final_text = choose_streaming_final_text(draft, model_final);
+    if !final_text.is_empty() {
+      self
+        .renderer
+        .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text });
+    }
     Ok(())
   }
 
@@ -1731,7 +1687,6 @@ impl PipelineCore {
     self.tentative_recovery_eou_text_seen = false;
     self.tentative_recovery_vad_above_thr = false;
     self.turn_started_by_vad = false;
-    self.invalidate_speculation();
     self.pending_active_clear_chunks = 0;
     self.tracker.reset();
     self.eou_draft.clear();
@@ -1816,7 +1771,7 @@ impl PipelineCore {
   }
 
   fn maybe_schedule_incremental_slice(&mut self, force_interval: bool) {
-    if !self.cfg.enable_tdt_final_pass || !self.cfg.incremental_finalization_enabled {
+    if !self.cfg.incremental_finalization_enabled {
       return;
     }
     if !self.in_speech || self.turn_audio.is_empty() || !self.has_draft_text() {
@@ -1883,11 +1838,11 @@ impl PipelineCore {
       tail_wait_budget_ms: None,
     });
     if self
-      .tdt_tx
-      .send(TdtJob {
+      .final_tx
+      .send(FinalJob {
         turn_id: self.turn_id,
         audio,
-        kind: TdtJobKind::Incremental { segment_id, start_sample, end_sample, is_tail },
+        kind: FinalJobKind::Incremental { segment_id, start_sample, end_sample, is_tail },
       })
       .is_err()
     {
@@ -1906,8 +1861,7 @@ impl PipelineCore {
       }
       let remaining = deadline.saturating_duration_since(now);
       match self.async_rx.recv_timeout(remaining) {
-        Ok(TdtResult::Speculative(result)) => self.handle_speculative_result(result),
-        Ok(TdtResult::Incremental(result)) => self.handle_incremental_result(result),
+        Ok(FinalResult::Incremental(result)) => self.handle_incremental_result(result),
         Err(crossbeam_channel::RecvTimeoutError::Timeout) => return false,
         Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return false,
       }
@@ -1915,7 +1869,7 @@ impl PipelineCore {
     true
   }
 
-  fn submit_incremental_final_pass(&mut self, audio: Vec<f32>, draft_text: &str) {
+  fn submit_incremental_final_pass(&mut self, audio: &[f32], draft_text: &str) -> bool {
     let debug_enabled = self.debug_stats_enabled();
     let live_session = self.controls.is_some();
     let wait_ms = u64::from(self.cfg.incremental_wait_tail_result_ms.max(1));
@@ -1968,10 +1922,9 @@ impl PipelineCore {
             PartialFinalizeOutcome::FullPassBailout("tail_enqueue_failed"),
           );
           if self.debug_stats_enabled() {
-            self.enqueue_bailout_audit(self.turn_id, audio.clone(), "tail_enqueue_failed");
+            self.enqueue_bailout_audit(self.turn_id, audio.to_vec(), "tail_enqueue_failed");
           }
-          self.submit_final_pass(audio);
-          return;
+          return false;
         }
         if let Some(inflight) = self.incremental.inflight_segment.as_mut() {
           inflight.tail_wait_budget_ms = Some(tail_wait_ms);
@@ -2015,10 +1968,9 @@ impl PipelineCore {
                 PartialFinalizeOutcome::FullPassBailout("tail_timeout"),
               );
               if self.debug_stats_enabled() {
-                self.enqueue_bailout_audit(self.turn_id, audio.clone(), "tail_timeout");
+                self.enqueue_bailout_audit(self.turn_id, audio.to_vec(), "tail_timeout");
               }
-              self.submit_final_pass(audio);
-              return;
+              return false;
             }
           } else if debug_enabled {
             eprintln!("TOON_PARTIAL_FINAL turn_id={} action=tail_timeout_recovered", self.turn_id);
@@ -2032,11 +1984,9 @@ impl PipelineCore {
       );
     }
 
-    // If the tail result came back with empty text (Parakeet TDT can silently decode a tail
-    // slice to `""` when its start boundary lands mid-phrase), partial_segments never grew for
+    // If the tail result came back with empty text, partial_segments never grew for
     // that range and assembled_text ends mid-sentence. Emitting that truncated text is
-    // strictly worse than running a full-pass TDT over the whole turn audio — the full-pass
-    // sees enough context to decode the tail correctly.
+    // strictly worse than running a whole-turn finalization pass over the turn audio.
     // Only guard against tail-coverage gaps when at least one non-empty partial actually
     // landed. If `partial_segments` is empty, `assembled_end=0` would always look like a
     // maximal gap and we'd fire `tail_coverage_gap` for every short turn — punting to the
@@ -2067,16 +2017,15 @@ impl PipelineCore {
         PartialFinalizeOutcome::FullPassBailout("tail_coverage_gap"),
       );
       if self.debug_stats_enabled() {
-        self.enqueue_bailout_audit(self.turn_id, audio.clone(), "tail_coverage_gap");
+        self.enqueue_bailout_audit(self.turn_id, audio.to_vec(), "tail_coverage_gap");
       }
-      self.submit_final_pass(audio);
-      return;
+      return false;
     }
 
     // Mirror the tail-coverage check at the leading edge: if the earliest non-empty partial
     // starts meaningfully after 0, an earlier incremental slice silently decoded to empty
-    // text and the audio before the next slice's start is uncovered. Full-pass TDT sees the
-    // whole turn and recovers the lost prefix.
+    // text and the audio before the next slice's start is uncovered. Whole-turn finalization
+    // sees the full context and recovers the lost prefix.
     let leading_start = self
       .incremental
       .partial_segments
@@ -2099,19 +2048,18 @@ impl PipelineCore {
         PartialFinalizeOutcome::FullPassBailout("leading_coverage_gap"),
       );
       if self.debug_stats_enabled() {
-        self.enqueue_bailout_audit(self.turn_id, audio.clone(), "leading_coverage_gap");
+        self.enqueue_bailout_audit(self.turn_id, audio.to_vec(), "leading_coverage_gap");
       }
-      self.submit_final_pass(audio);
-      return;
+      return false;
     }
 
     // Detect interior coverage gaps. `partial_segments` includes EOU-corroborated
     // empty-text entries from `handle_incremental_result` — they have valid
     // `(start_sample, end_sample)` ranges so they fill coverage holes the
     // surrounding non-empty partials don't reach. A surviving gap here means
-    // TDT decoded a slice to empty AND EOU was emitting at speech rates over
+    // finalization decoded a slice to empty AND streaming emitted text at speech rates over
     // that span — i.e. real-but-missed-speech where the stitcher would silently
-    // join across the missing audio. Full-pass TDT recovers what was lost.
+    // join across the missing audio. Whole-turn finalization recovers what was lost.
     let partial_ranges: Vec<(usize, usize)> = self
       .incremental
       .partial_segments
@@ -2133,10 +2081,9 @@ impl PipelineCore {
         PartialFinalizeOutcome::FullPassBailout("middle_coverage_gap"),
       );
       if self.debug_stats_enabled() {
-        self.enqueue_bailout_audit(self.turn_id, audio.clone(), "middle_coverage_gap");
+        self.enqueue_bailout_audit(self.turn_id, audio.to_vec(), "middle_coverage_gap");
       }
-      self.submit_final_pass(audio);
-      return;
+      return false;
     }
 
     let final_text = self.incremental.assembled_text.trim().to_string();
@@ -2149,7 +2096,7 @@ impl PipelineCore {
         let partial_count = partial_segments.len();
         if !self.enqueue_partial_audit(
           self.turn_id,
-          audio.clone(),
+          audio.to_vec(),
           final_text.clone(),
           AuditEmittedKind::Assembled,
           partial_segments,
@@ -2172,7 +2119,7 @@ impl PipelineCore {
         .renderer
         .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text });
       self.emit_partial_finalize_outcome(self.turn_id, PartialFinalizeOutcome::Assembled);
-      return;
+      return true;
     }
 
     let draft_text = draft_text.trim().to_string();
@@ -2182,7 +2129,7 @@ impl PipelineCore {
         let partial_count = partial_segments.len();
         if !self.enqueue_partial_audit(
           self.turn_id,
-          audio.clone(),
+          audio.to_vec(),
           draft_text.clone(),
           AuditEmittedKind::DraftEmit,
           partial_segments,
@@ -2204,7 +2151,7 @@ impl PipelineCore {
         .renderer
         .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: draft_text });
       self.emit_partial_finalize_outcome(self.turn_id, PartialFinalizeOutcome::DraftEmit);
-      return;
+      return true;
     }
 
     self.emit_partial_finalize_outcome(
@@ -2212,78 +2159,9 @@ impl PipelineCore {
       PartialFinalizeOutcome::FullPassBailout("no_incremental_or_draft_text"),
     );
     if self.debug_stats_enabled() {
-      self.enqueue_bailout_audit(self.turn_id, audio.clone(), "no_incremental_or_draft_text");
+      self.enqueue_bailout_audit(self.turn_id, audio.to_vec(), "no_incremental_or_draft_text");
     }
-    self.submit_final_pass(audio);
-  }
-
-  fn start_speculative_finalize(&mut self) {
-    if !self.cfg.enable_tdt_final_pass {
-      return;
-    }
-    if self.turn_audio.is_empty() || !self.has_draft_text() {
-      return;
-    }
-
-    let job_id = next_job_id(&mut self.next_speculative_job_id);
-    let audio_len = self.turn_audio.len();
-    self.active_speculation = Some(SpeculationMeta { job_id, turn_id: self.turn_id, audio_len });
-    self.cached_speculation = None;
-    self.latest_speculative_job_id.store(job_id, Ordering::Relaxed);
-    let _ = self.tdt_tx.send(TdtJob {
-      turn_id: self.turn_id,
-      audio: self.turn_audio.clone(),
-      kind: TdtJobKind::Speculative { job_id, audio_len },
-    });
-  }
-
-  fn submit_final_pass(&mut self, audio: Vec<f32>) {
-    if !self.cfg.enable_tdt_final_pass {
-      return;
-    }
-    // Keep only one pending speculative final at a time.
-    self.flush_pending_spec_finalize();
-    self.drain_async_results();
-
-    let turn_id = self.turn_id;
-    let audio_len = audio.len();
-    if let Some(spec) = self.cached_speculation.take() {
-      if spec.turn_id == turn_id && spec.audio_len == audio_len {
-        self.invalidate_speculation();
-        if let Some(message) = spec.error {
-          self.renderer.emit(RenderEvent::Error { message });
-        } else if !spec.text.trim().is_empty() {
-          let text = normalize_chunk_case("", spec.text);
-          self.renderer.emit(RenderEvent::ReplaceLine { id: turn_id, text });
-          return;
-        }
-        self.enqueue_final_pass(turn_id, audio);
-        return;
-      }
-    }
-
-    if !self.stop_after_turn
-      && self
-        .active_speculation
-        .as_ref()
-        .is_some_and(|s| s.turn_id == turn_id && s.audio_len == audio_len)
-    {
-      let spec_job_id = self
-        .active_speculation
-        .as_ref()
-        .map(|s| s.job_id)
-        .unwrap_or(NO_SPECULATIVE_JOB_ID);
-      self.pending_spec_finalize =
-        Some(PendingSpecFinalize { spec_job_id, turn_id, audio, waiting_since: Instant::now() });
-      return;
-    }
-
-    self.invalidate_speculation();
-    self.enqueue_final_pass(turn_id, audio);
-  }
-
-  fn enqueue_final_pass(&mut self, turn_id: u64, audio: Vec<f32>) {
-    let _ = self.tdt_tx.send(TdtJob { turn_id, audio, kind: TdtJobKind::Final });
+    false
   }
 
   fn enqueue_partial_audit(
@@ -2309,11 +2187,10 @@ impl PipelineCore {
       .is_ok()
   }
 
-  /// Save a debug recording for a turn that bailed to full-pass, so the wav +
-  /// sidecar are preserved for post-hoc investigation. Skips the audit-worker's
-  /// comparison full-pass TDT call (the bailout site already submitted one)
-  /// and uses a `-bailout` filename suffix that the pruner treats as a
-  /// separate, longer-retention tier.
+  /// Save a debug recording for a turn that bailed to whole-turn finalization,
+  /// so the wav + sidecar are preserved for post-hoc investigation. Skips the
+  /// audit-worker's comparison pass and uses a `-bailout` filename suffix that
+  /// the pruner treats as a separate, longer-retention tier.
   fn enqueue_bailout_audit(&mut self, turn_id: u64, audio: Vec<f32>, reason: &'static str) {
     if !self.debug_stats_enabled() {
       return;
@@ -2337,58 +2214,11 @@ impl PipelineCore {
     }
   }
 
-  fn flush_pending_spec_finalize(&mut self) {
-    if let Some(pending) = self.pending_spec_finalize.take() {
-      self.invalidate_speculation();
-      self.enqueue_final_pass(pending.turn_id, pending.audio);
-    }
-  }
-
-  fn maybe_timeout_pending_spec_finalize(&mut self) {
-    let timed_out = self.pending_spec_finalize.as_ref().is_some_and(|pending| {
-      pending.waiting_since.elapsed() >= Duration::from_millis(SPECULATIVE_FINAL_WAIT_MS)
-    });
-    if timed_out {
-      self.flush_pending_spec_finalize();
-    }
-  }
-
   fn drain_async_results(&mut self) {
     while let Ok(result) = self.async_rx.try_recv() {
       match result {
-        TdtResult::Speculative(spec) => self.handle_speculative_result(spec),
-        TdtResult::Incremental(incremental) => self.handle_incremental_result(incremental),
+        FinalResult::Incremental(incremental) => self.handle_incremental_result(incremental),
       }
-    }
-  }
-
-  fn handle_speculative_result(&mut self, result: SpeculativeResult) {
-    if self.pending_spec_finalize.as_ref().is_some_and(|pending| {
-      pending.spec_job_id == result.job_id && pending.turn_id == result.turn_id
-    }) {
-      if let Some(pending) = self.pending_spec_finalize.take() {
-        self.invalidate_speculation();
-        if let Some(message) = result.error {
-          self.renderer.emit(RenderEvent::Error { message });
-          self.enqueue_final_pass(pending.turn_id, pending.audio);
-          return;
-        }
-        if !result.text.trim().is_empty() {
-          let text = normalize_chunk_case("", result.text);
-          self.renderer.emit(RenderEvent::ReplaceLine { id: pending.turn_id, text });
-          return;
-        }
-        self.enqueue_final_pass(pending.turn_id, pending.audio);
-      }
-      return;
-    }
-
-    if self.active_speculation.as_ref().is_some_and(|active| {
-      active.job_id == result.job_id
-        && active.turn_id == result.turn_id
-        && active.audio_len == result.audio_len
-    }) {
-      self.cached_speculation = Some(result);
     }
   }
 
@@ -2510,20 +2340,19 @@ impl PipelineCore {
           );
         }
       } else {
-        // Parakeet-TDT decoded this slice to empty text. Three cases:
+        // Finalization decoded this slice to empty text. Three cases:
         //
-        // 1. EOU corroborates silence (both models agree it was non-speech /
+        // 1. Streaming corroborates silence (both passes agree it was non-speech /
         //    hesitation / breath). Record the range in `partial_segments` with
         //    empty text so the coverage map stays continuous and
         //    `middle_coverage_is_incomplete` doesn't bail to a full-pass.
         //
-        // 2. EOU shows speech and we haven't retried this range yet. The TDT
-        //    joint network's LSTM is start-sample-sensitive (cold-LSTM trap;
-        //    see INVESTIGATIONS/tdt-empty-partial.md). Retry once with start
-        //    shifted back ~500 ms; the retry result will arrive as a fresh
-        //    incremental result and land in the non-empty / case-3 path below.
+        // 2. Streaming shows speech and we haven't retried this range yet.
+        //    Retry once with the start shifted back ~500 ms; the retry result
+        //    will arrive as a fresh incremental result and land in the
+        //    non-empty / case-3 path below.
         //
-        // 3. EOU shows speech and we've already retried, or this result IS
+        // 3. Streaming shows speech and we've already retried, or this result IS
         //    the retry returning empty. Fall through to drop-the-range — the
         //    coverage check fires the bailout, current behaviour.
         let eou_chars = eou_chars_in_range(
@@ -2631,84 +2460,42 @@ impl PipelineCore {
       self.maybe_schedule_incremental_slice(true);
     }
   }
-
-  fn invalidate_speculation(&mut self) {
-    self.latest_speculative_job_id.store(NO_SPECULATIVE_JOB_ID, Ordering::Relaxed);
-    self.active_speculation = None;
-    self.cached_speculation = None;
-  }
 }
 
-fn spawn_tdt_worker(
-  tdt_dir: PathBuf,
+fn spawn_final_worker(
+  cfg: MlxNemotronConfig,
   renderer: Arc<dyn Renderer>,
-  latest_speculative_job_id: Arc<AtomicU64>,
 ) -> (
-  crossbeam_channel::Sender<TdtJob>,
-  crossbeam_channel::Receiver<TdtResult>,
+  crossbeam_channel::Sender<FinalJob>,
+  crossbeam_channel::Receiver<FinalResult>,
   std::thread::JoinHandle<()>,
 ) {
-  let (tx, rx) = crossbeam_channel::unbounded::<TdtJob>();
-  let (async_tx, async_rx) = crossbeam_channel::unbounded::<TdtResult>();
+  let (tx, rx) = crossbeam_channel::unbounded::<FinalJob>();
+  let (async_tx, async_rx) = crossbeam_channel::unbounded::<FinalResult>();
   let handle = std::thread::spawn(move || {
-    // Final-pass latency is user-visible (paste waits on it), so prioritize this worker.
+    // Final-slice latency is user-visible at turn end, so prioritize this worker.
     thread_qos::user_initiated();
 
-    let tdt_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
-    let mut tdt = match ParakeetTDT::from_pretrained(&tdt_dir, Some(tdt_cfg)) {
-      Ok(m) => Some(m),
+    let mut finalizer = match MlxNemotronAsr::load(&cfg) {
+      Ok(model) => Some(model),
       Err(e) => {
         renderer.emit(RenderEvent::Error {
-          message: format!("failed to load Parakeet TDT model at {}: {e}", tdt_dir.display()),
+          message: format!("failed to load MLX finalization helper: {e}"),
         });
         None
       }
     };
 
     while let Ok(job) = rx.recv() {
-      let Some(ref mut tdt) = tdt else {
+      let Some(ref mut finalizer) = finalizer else {
         renderer.emit(RenderEvent::Error {
-          message: "Parakeet TDT unavailable (failed to load)".to_string(),
+          message: "MLX finalization helper unavailable (failed to load)".to_string(),
         });
         continue;
       };
 
       match job.kind {
-        TdtJobKind::Final => match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
-          Ok(out) => {
-            let text = normalize_chunk_case("", out.text.trim().to_string());
-            if !text.is_empty() {
-              renderer.emit(RenderEvent::ReplaceLine { id: job.turn_id, text });
-            }
-          }
-          Err(e) => {
-            renderer
-              .emit(RenderEvent::Error { message: format!("Parakeet TDT transcribe failed: {e}") });
-          }
-        },
-        TdtJobKind::Speculative { job_id, audio_len } => {
-          // Skip queued stale speculation before doing heavy inference.
-          if latest_speculative_job_id.load(Ordering::Relaxed) != job_id {
-            continue;
-          }
-          let mut result = SpeculativeResult {
-            job_id,
-            turn_id: job.turn_id,
-            audio_len,
-            text: String::new(),
-            error: None,
-          };
-          match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
-            Ok(out) => {
-              result.text = out.text.trim().to_string();
-            }
-            Err(e) => {
-              result.error = Some(format!("Parakeet TDT transcribe failed: {e}"));
-            }
-          }
-          let _ = async_tx.send(TdtResult::Speculative(result));
-        }
-        TdtJobKind::Incremental { segment_id, start_sample, end_sample, is_tail } => {
+        FinalJobKind::Incremental { segment_id, start_sample, end_sample, is_tail } => {
           let mut result = IncrementalSegmentResult {
             turn_id: job.turn_id,
             segment_id,
@@ -2718,15 +2505,15 @@ fn spawn_tdt_worker(
             text: String::new(),
             error: None,
           };
-          match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
-            Ok(out) => {
-              result.text = out.text.trim().to_string();
+          match finalizer.transcribe_final_samples(&job.audio) {
+            Ok(text) => {
+              result.text = text.unwrap_or_default();
             }
             Err(e) => {
-              result.error = Some(format!("Parakeet TDT transcribe failed: {e}"));
+              result.error = Some(format!("MLX finalization transcribe failed: {e}"));
             }
           }
-          let _ = async_tx.send(TdtResult::Incremental(result));
+          let _ = async_tx.send(FinalResult::Incremental(result));
         }
       }
     }
@@ -2735,19 +2522,19 @@ fn spawn_tdt_worker(
   (tx, async_rx, handle)
 }
 
-fn spawn_noop_tdt_worker() -> (
-  crossbeam_channel::Sender<TdtJob>,
-  crossbeam_channel::Receiver<TdtResult>,
+fn spawn_noop_final_worker() -> (
+  crossbeam_channel::Sender<FinalJob>,
+  crossbeam_channel::Receiver<FinalResult>,
   std::thread::JoinHandle<()>,
 ) {
-  let (tx, rx) = crossbeam_channel::unbounded::<TdtJob>();
-  let (_async_tx, async_rx) = crossbeam_channel::unbounded::<TdtResult>();
+  let (tx, rx) = crossbeam_channel::unbounded::<FinalJob>();
+  let (_async_tx, async_rx) = crossbeam_channel::unbounded::<FinalResult>();
   let handle = std::thread::spawn(move || while rx.recv().is_ok() {});
   (tx, async_rx, handle)
 }
 
 fn spawn_partial_audit_worker(
-  tdt_dir: PathBuf,
+  cfg: MlxNemotronConfig,
   renderer: Arc<dyn Renderer>,
   _controls: Option<Arc<PipelineControls>>,
 ) -> (crossbeam_channel::Sender<PartialAuditJob>, std::thread::JoinHandle<()>) {
@@ -2757,13 +2544,11 @@ fn spawn_partial_audit_worker(
     // competing with user-interactive work.
     thread_qos::utility();
 
-    let mut tdt: Option<ParakeetTDT> = None;
+    let mut finalizer: Option<MlxNemotronAsr> = None;
 
     while let Ok(job) = rx.recv() {
-      // Bailout jobs short-circuit the TDT comparison path: the bailout site
-      // already submitted a full-pass and there's no emitted_text to audit.
-      // We still want the wav + sidecar on disk so an investigator can replay
-      // the failing window through parakeet-rs offline.
+      // Bailout jobs short-circuit the comparison path: the caller is already
+      // falling back to a whole-turn pass. Keep the wav + sidecar for replay.
       if let Some(bailout_reason) = job.bailout_reason.as_deref() {
         let auditable_partials = non_empty_partials(&job.partial_segments);
         if let Err(e) = save_debug_recording(
@@ -2781,9 +2566,8 @@ fn spawn_partial_audit_worker(
         continue;
       }
 
-      if tdt.is_none() {
-        let tdt_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
-        tdt = match ParakeetTDT::from_pretrained(&tdt_dir, Some(tdt_cfg)) {
+      if finalizer.is_none() {
+        finalizer = match MlxNemotronAsr::load(&cfg) {
           Ok(model) => Some(model),
           Err(e) => {
             let auditable = non_empty_partials(&job.partial_segments);
@@ -2793,10 +2577,7 @@ fn spawn_partial_audit_worker(
               &auditable,
               &job.emitted_text,
               "",
-              Some(&format!(
-                "audit worker failed to load Parakeet TDT model at {}: {e}",
-                tdt_dir.display()
-              )),
+              Some(&format!("audit worker failed to load MLX finalization helper: {e}")),
             );
             renderer.emit(RenderEvent::DebugStats(event));
             continue;
@@ -2804,7 +2585,7 @@ fn spawn_partial_audit_worker(
         };
       }
 
-      let Some(ref mut tdt) = tdt else {
+      let Some(ref mut finalizer) = finalizer else {
         let auditable = non_empty_partials(&job.partial_segments);
         let event = log_partial_audit_result(
           job.turn_id,
@@ -2812,30 +2593,30 @@ fn spawn_partial_audit_worker(
           &auditable,
           &job.emitted_text,
           "",
-          Some("audit worker unavailable (model failed to load)"),
+          Some("audit worker unavailable (MLX finalization helper failed to load)"),
         );
         renderer.emit(RenderEvent::DebugStats(event));
         continue;
       };
 
-      // Clone the audio before moving it into the TDT call so we can dump it to disk for
-      // offline replay/regression testing. Only done when debug stats are enabled (which is
-      // the only path that reaches this worker at all).
+      // Clone the audio before decoding so we can dump it to disk for offline
+      // replay/regression testing. Only done when debug stats are enabled
+      // (which is the only path that reaches this worker at all).
       let audio_for_disk = job.audio.clone();
 
       let mut full_text = String::new();
       let mut error: Option<String> = None;
-      match tdt.transcribe_samples(job.audio, TARGET_SR, 1, None) {
-        Ok(out) => {
-          full_text = out.text.trim().to_string();
+      match finalizer.transcribe_final_samples(&job.audio) {
+        Ok(text) => {
+          full_text = text.unwrap_or_default();
         }
         Err(e) => {
-          error = Some(format!("Parakeet TDT transcribe failed: {e}"));
+          error = Some(format!("MLX finalization transcribe failed: {e}"));
         }
       }
-      // `partial_segments` may now contain empty-text entries (EOU-corroborated
-      // silence slices recorded purely to fill the coverage map). Audit logs
-      // and the debug recording dump report only real partials, so filter once.
+      // `partial_segments` may contain empty-text entries recorded purely to
+      // fill the coverage map. Audit logs and the debug recording dump report
+      // only real partials, so filter once.
       let auditable_partials = non_empty_partials(&job.partial_segments);
       let event = log_partial_audit_result(
         job.turn_id,
@@ -2899,11 +2680,11 @@ const TAIL_COVERAGE_TOLERANCE_SAMPLES: usize = 24_000;
 /// latency on long turns for at most 2-3 mis-stitched words. 24_000 @ 16 kHz = 1.5 s.
 const MIDDLE_COVERAGE_TOLERANCE_SAMPLES: usize = 24_000;
 
-/// EOU-corroboration floor for treating a TDT-empty incremental slice as covered.
-/// When Parakeet-TDT returns empty for a slice AND Parakeet-EOU emitted text at a
-/// rate strictly below this threshold during the same audio span, both models
+/// Streaming-corroboration floor for treating an empty incremental slice as covered.
+/// When finalization returns empty for a slice AND streaming emitted text at a
+/// rate strictly below this threshold during the same audio span, both passes
 /// agree the audio was non-speech and we record the range as covered with empty
-/// text — keeping `middle_coverage_is_incomplete` quiet and avoiding a full-pass
+/// text — keeping `middle_coverage_is_incomplete` quiet and avoiding a whole-turn
 /// bailout. Calibrated against turn 33 (2026-05-07): segment 3's slice averaged
 /// 2.0 chars/s (16 chars over 8.0 s), neighbouring segments 2 and 4 ran
 /// 10.25 and 6.5 chars/s respectively. 3.0 chars/s sits comfortably between
@@ -2922,12 +2703,12 @@ fn tail_coverage_is_incomplete(
 }
 
 /// Same idea as `tail_coverage_is_incomplete` but for the *leading* edge. If the earliest
-/// `start_sample` across non-empty partials is meaningfully > 0, Parakeet decoded the first
+/// `start_sample` across non-empty partials is meaningfully > 0, finalization decoded the first
 /// incremental slice to empty text — the handler's `if !text.is_empty()` guard dropped it
 /// silently and the audio before the next scheduled slice has no coverage. Real case from
 /// turn 80: segment 1 `[0, 110080)` returned "", segment 2 `[79360, 207360)` carried text,
 /// and the stitched output lost the first ~5 s of speech ("We have the core runtime
-/// harness, which is like the the…"). Full-pass TDT decodes the whole audio correctly so
+/// harness, which is like the the…"). Whole-turn finalization decodes the full audio so
 /// bailing out at finalize is the right recovery. Uses the same 0.5 s tolerance as the tail
 /// check — a handful of samples of pre-speech silence is harmless.
 fn leading_coverage_is_incomplete(leading_start: usize, tolerance_samples: usize) -> bool {
@@ -2935,7 +2716,7 @@ fn leading_coverage_is_incomplete(leading_start: usize, tolerance_samples: usize
 }
 
 /// Mirror of the leading/tail coverage checks but for *interior* gaps: when an
-/// inner incremental segment decodes to empty text, Parakeet's non-empty guard
+/// inner incremental segment decodes to empty text, the non-empty guard
 /// silently drops it and the surviving partials surround a stretch of audio that
 /// no partial covered. The stitcher has no overlap to anchor on and joins the
 /// surrounding partials directly, losing whatever speech was in the gap.
@@ -2943,7 +2724,7 @@ fn leading_coverage_is_incomplete(leading_start: usize, tolerance_samples: usize
 /// Real case from turn 11 (2026-04-29, 86.7% accuracy): segment 2 returned "",
 /// leaving a 4.16 s window between partial 1's end (sample 110_080) and partial
 /// 3's start (sample 176_640). The stitched output dropped ~10 tokens of speech
-/// from the middle. Full-pass TDT decodes the whole audio correctly, so bailing
+/// from the middle. Whole-turn finalization decodes the full audio, so bailing
 /// out at finalize is the right recovery — same shape as the existing
 /// leading/tail bailouts.
 ///
@@ -3172,10 +2953,10 @@ fn prune_debug_recordings(dir: &Path) {
   }
 }
 
-struct TdtJob {
+struct FinalJob {
   turn_id: u64,
   audio: Vec<f32>,
-  kind: TdtJobKind,
+  kind: FinalJobKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3185,9 +2966,7 @@ enum AuditEmittedKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum TdtJobKind {
-  Final,
-  Speculative { job_id: u64, audio_len: usize },
+enum FinalJobKind {
   Incremental { segment_id: u64, start_sample: usize, end_sample: usize, is_tail: bool },
 }
 
@@ -3200,7 +2979,7 @@ struct PartialAuditJob {
   eou_emissions: Vec<EouEmission>,
   /// When `Some`, this job represents a full-pass bailout: no `emitted_text`
   /// was sent to the renderer, so the audit worker skips the comparison
-  /// full-pass TDT call and just saves the recording. The reason string
+  /// comparison finalization call and just saves the recording. The reason string
   /// matches the `reason=…` in the `TOON_PARTIAL_FINAL action=full_pass_bailout`
   /// log line that fired at the same site.
   bailout_reason: Option<String>,
@@ -3215,11 +2994,10 @@ struct IncrementalPartialSegment {
   text: String,
 }
 
-/// One non-empty Parakeet-EOU emission within the current turn. Stored verbatim
-/// so the debug-recording sidecar can record *what* EOU heard for each span,
+/// One non-empty streaming-model emission within the current turn. Stored verbatim
+/// so the debug-recording sidecar can record *what* streaming heard for each span,
 /// not just *how much* (the count-only form was insufficient when investigating
-/// partial-empty bailouts — we couldn't tell whether EOU agreed with a TDT miss
-/// or transcribed a specific phrase).
+/// partial-empty bailouts).
 #[derive(Debug, Clone)]
 struct EouEmission {
   audio_samples: usize,
@@ -3248,12 +3026,11 @@ struct IncrementalRefineState {
   timed_out_tail_segments: Vec<IncrementalSegmentMeta>,
   pending_reschedule: bool,
   has_refined_text: bool,
-  /// Per-emission Parakeet-EOU history within the current turn. Drives the
-  /// EOU-corroboration check on TDT-empty incremental slices — when both
-  /// models go quiet on the same audio span, we record the slice as
-  /// covered (with empty text) instead of bailing to full-pass. The `text`
-  /// field is also written to the debug-recording sidecar so post-hoc
-  /// inspection can read what EOU decoded for a partial-empty range.
+  /// Per-emission streaming history within the current turn. Drives the
+  /// silence-corroboration check on empty incremental slices: when streaming
+  /// and finalization both go quiet on the same audio span, we record the
+  /// slice as covered instead of bailing to whole-turn finalization. The
+  /// `text` field is also written to the debug-recording sidecar.
   eou_emissions: Vec<EouEmission>,
   /// Original `[start_sample, end_sample)` ranges of partials that already
   /// triggered an empty-result retry this turn. Drives the at-most-one-retry-
@@ -3301,27 +3078,6 @@ impl IncrementalRefineState {
   }
 }
 
-struct SpeculationMeta {
-  job_id: u64,
-  turn_id: u64,
-  audio_len: usize,
-}
-
-struct PendingSpecFinalize {
-  spec_job_id: u64,
-  turn_id: u64,
-  audio: Vec<f32>,
-  waiting_since: Instant,
-}
-
-struct SpeculativeResult {
-  job_id: u64,
-  turn_id: u64,
-  audio_len: usize,
-  text: String,
-  error: Option<String>,
-}
-
 struct IncrementalSegmentResult {
   turn_id: u64,
   segment_id: u64,
@@ -3332,8 +3088,7 @@ struct IncrementalSegmentResult {
   error: Option<String>,
 }
 
-enum TdtResult {
-  Speculative(SpeculativeResult),
+enum FinalResult {
   Incremental(IncrementalSegmentResult),
 }
 
@@ -3362,10 +3117,10 @@ struct PartialFinalizeCounters {
 fn next_job_id(next: &mut u64) -> u64 {
   let id = *next;
   *next = next.wrapping_add(1);
-  if *next == NO_SPECULATIVE_JOB_ID {
+  if *next == NO_JOB_ID {
     *next = 1;
   }
-  if id == NO_SPECULATIVE_JOB_ID { 1 } else { id }
+  if id == NO_JOB_ID { 1 } else { id }
 }
 
 fn incremental_meta_matches(
@@ -4314,8 +4069,8 @@ fn resolve_tens_rule(classified: &[(NumberWord, String)], has_and: bool) -> Opti
   }
 }
 
-// Parakeet's tokenizer emits capitalized word tokens (e.g. `That`) when it treats a brief audio
-// pause as a sentence boundary. A single EOU chunk can contain many such words. At every word
+// The streaming tokenizer can emit capitalized word tokens (e.g. `That`) when it treats a brief
+// audio pause as a sentence boundary. A single chunk can contain many such words. At every word
 // boundary inside the chunk, lower the leading ASCII capital unless (a) the last non-whitespace
 // char across prior+chunk is terminal punctuation, or (b) the word looks like an acronym or a
 // single-letter word. Acronyms are detected by peeking at the next char: if it's another
@@ -4721,13 +4476,13 @@ mod tests {
   }
 
   #[test]
-  fn normalize_chunk_case_tdt_full_text_regression() {
-    let tdt_output = "The ideal is that we use excess capacity to use as the s compute for \
+  fn normalize_chunk_case_final_text_regression() {
+    let final_output = "The ideal is that we use excess capacity to use as the s compute for \
       pre-warming engines. Which Kinda means that we pre-warm At a Lower priority than \
       Executors would have Is the right way to do this would be to spin up a separate thread \
       that would listen on a queue for For requests from Groups to pre warm workers and And \
       just reduce the priority given to that thread.";
-    let normalized = normalize_chunk_case("", tdt_output.to_string());
+    let normalized = normalize_chunk_case("", final_output.to_string());
     let expected = "The ideal is that we use excess capacity to use as the s compute for \
       pre-warming engines. Which kinda means that we pre-warm at a lower priority than \
       executors would have is the right way to do this would be to spin up a separate thread \
@@ -4972,7 +4727,7 @@ mod tests {
   }
 
   #[test]
-  fn finalizing_pulse_emits_for_non_tdt_backend_finalization() {
+  fn finalizing_pulse_emits_for_backend_finalization() {
     let plan = finalizing_pulse_plan(true, true, true);
     assert_eq!(plan, FinalizingPulsePlan::Emit);
   }
@@ -5017,18 +4772,18 @@ mod tests {
   }
 
   #[test]
-  fn finished_turn_final_pass_runs_for_audio_even_without_draft() {
-    assert!(PipelineCore::should_submit_final_pass_for_finished_turn(true, true, ""));
+  fn finished_turn_incremental_finalization_runs_for_audio_even_without_draft() {
+    assert!(PipelineCore::should_try_incremental_finalization(true, true));
   }
 
   #[test]
-  fn finished_turn_final_pass_still_skips_empty_audio() {
-    assert!(!PipelineCore::should_submit_final_pass_for_finished_turn(true, false, ""));
+  fn finished_turn_incremental_finalization_still_skips_empty_audio() {
+    assert!(!PipelineCore::should_try_incremental_finalization(true, false));
   }
 
   #[test]
-  fn finished_turn_final_pass_respects_tdt_flag() {
-    assert!(!PipelineCore::should_submit_final_pass_for_finished_turn(false, true, "draft"));
+  fn finished_turn_incremental_finalization_respects_config_flag() {
+    assert!(!PipelineCore::should_try_incremental_finalization(false, true));
   }
 
   #[test]
@@ -5606,7 +5361,7 @@ mod tests {
 
   #[test]
   fn eou_corroborates_silence_for_turn33_quiet_window_but_not_speech() {
-    // Production turn 33 (2026-05-07) shape. TDT-empty slice [189_440, 317_440)
+    // Production turn 33 (2026-05-07) shape. Empty slice [189_440, 317_440)
     // = 8.0 s. EOU emitted ~16 chars over that window (2.0 chars/s) while
     // neighbouring speech segments ran 6.5–10.25 chars/s. With the 3.0 chars/s
     // floor, turn 33's slice corroborates without falsely corroborating speech.
@@ -5676,14 +5431,14 @@ mod tests {
 
   #[test]
   fn middle_coverage_complete_when_eou_corroborated_empty_fills_gap() {
-    // Turn 33 shape after the fix: TDT-empty slice [189_440, 317_440) was
+    // Turn 33 shape after the fix: empty slice [189_440, 317_440) was
     // pushed to `partial_segments` with empty text because EOU corroborated
     // silence over the same window. The coverage union is now continuous —
     // `middle_coverage_is_incomplete` returns None instead of bailing.
     let ranges: Vec<(usize, usize)> = vec![
       (0, 122_880),
       (92_160, 220_160),
-      (189_440, 317_440), // formerly missing — now filled by EOU-corroborated empty
+      (189_440, 317_440), // formerly missing — now filled by streaming-corroborated empty
       (286_720, 414_720),
       (358_400, 486_400),
     ];
@@ -5694,7 +5449,7 @@ mod tests {
   fn leading_coverage_gap_detected_when_first_partial_decoded_to_empty() {
     // Real data from turn 80 (58.3% token-count accuracy). The full audio had "We have the
     // core runtime harness, which is like the the constraints, the flow, …" but segment 1
-    // covering [0, 110080) returned "" from Parakeet and was silently dropped by the
+    // covering [0, 110080) returned "" and was silently dropped by the
     // non-empty guard. Segment 2 at [79360, 207360) was the first non-empty partial, so
     // `min(partial_segments.start_sample) = 79360`. Audio before sample 79360 (~5 s) is
     // uncovered by any non-empty partial — ~10 tokens of speech lost from the front.
@@ -5840,7 +5595,7 @@ mod tests {
   #[test]
   fn stitch_regression_turn11_recovers_truncated_tail_at_partial_boundary() {
     // Turn 11 (2026-04-28). Partial 1's audio chunk ended at sample 110_080 mid-utterance,
-    // so Parakeet emitted `"...the UR"` instead of `"...the URL"`. Partial 2 covered samples
+    // so the model emitted `"...the UR"` instead of `"...the URL"`. Partial 2 covered samples
     // 79_360..207_360 — its audio extends past the cutoff, so it emitted `"the URL ..."`
     // cleanly. Without the boundary-recovery branch the stitcher couldn't anchor (the k=2
     // slice `["the","ur"]` vs `["the","url"]` fails because `tokens_equivalent` rejects

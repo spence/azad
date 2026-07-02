@@ -109,6 +109,10 @@ final class Worker {
                 case "finish":
                     let text = finish()
                     writeResponse(["ok": true, "text": text])
+                case "final_samples":
+                    let samples = try parseSamples(object["samples"])
+                    let text = transcribeFinal(samples)
+                    writeResponse(["ok": true, "text": text])
                 case "shutdown":
                     writeResponse(["ok": true])
                     return
@@ -139,12 +143,20 @@ final class Worker {
             return streamTail.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        let finalSession = model.makeStreamSession(language: language, chunkMs: finalChunkMs)
-        _ = finalSession.step(turnSamples)
-        _ = finalSession.finish()
-        let text = finalSession.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = transcribeFinal(turnSamples)
         reset()
         return text.isEmpty ? streamTail.trimmingCharacters(in: .whitespacesAndNewlines) : text
+    }
+
+    private func transcribeFinal(_ samples: [Float]) -> String {
+        guard !samples.isEmpty else {
+            return ""
+        }
+
+        let finalSession = model.makeStreamSession(language: language, chunkMs: finalChunkMs)
+        _ = finalSession.step(samples)
+        _ = finalSession.finish()
+        return finalSession.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
