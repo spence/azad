@@ -7,6 +7,8 @@ Project documentation is organized by ownership boundary.
 - [README](../README.md): install, source development, requirements, and release notes.
 - [PROJECT](../PROJECT.md): active cleanup and product-quality plan.
 - [Quality plan](quality-plan.md): cleanup phases and refactor order.
+- [Surface design specification](design-agent-surface-spec.md): design-agent brief
+  for onboarding, settings, menu, overlays, history, and connectors.
 
 ## App
 
