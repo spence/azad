@@ -2068,6 +2068,33 @@ impl PipelineCore {
       return false;
     }
 
+    if let Some(gap) = partial_core_coverage_gap(
+      &self.incremental.partial_segments,
+      &self.incremental.assembled_text,
+    ) {
+      if debug_enabled {
+        eprintln!(
+          "TOON_PARTIAL_FINAL turn_id={} action=full_pass_bailout \
+           reason=partial_core_coverage_gap segment_id={} matched_tokens={} \
+           required_tokens={} core_tokens={} core_text={:?}",
+          self.turn_id,
+          gap.segment_id,
+          gap.matched_tokens,
+          gap.required_tokens,
+          gap.core_tokens,
+          gap.core_text
+        );
+      }
+      self.emit_partial_finalize_outcome(
+        self.turn_id,
+        PartialFinalizeOutcome::FullPassBailout("partial_core_coverage_gap"),
+      );
+      if self.debug_stats_enabled() {
+        self.enqueue_bailout_audit(self.turn_id, audio.to_vec(), "partial_core_coverage_gap");
+      }
+      return false;
+    }
+
     let final_text = self.incremental.assembled_text.trim().to_string();
     if !final_text.is_empty() {
       if debug_enabled {
@@ -2673,6 +2700,20 @@ const MIDDLE_COVERAGE_TOLERANCE_SAMPLES: usize = 24_000;
 /// the two regimes (margin > 2× the silence value, < ½ of the lowest neighbouring
 /// speech value), so turn 33's slice corroborates while real speech doesn't.
 const EOU_SILENCE_CHARS_PER_SECOND: f64 = 3.0;
+const PARTIAL_CORE_MIN_TOKENS: usize = 8;
+const PARTIAL_CORE_MIN_CORE_TOKENS: usize = 5;
+const PARTIAL_CORE_ALLOWED_MISSES: usize = 2;
+const PARTIAL_CORE_MIN_COVERAGE_PCT: usize = 70;
+const PARTIAL_CORE_FILLERS: &[&str] = &["uh", "um", "ah", "er", "eh", "uhh", "umm"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PartialCoreCoverageGap {
+  segment_id: u64,
+  matched_tokens: usize,
+  required_tokens: usize,
+  core_tokens: usize,
+  core_text: String,
+}
 
 /// Pure predicate for the tail-coverage-gap check. Extracted so it's trivial to test against
 /// the exact audio-sample ranges that regressed the live pipeline.
@@ -2735,6 +2776,82 @@ fn middle_coverage_is_incomplete(
     }
   }
   None
+}
+
+fn partial_core_coverage_gap(
+  partials: &[IncrementalPartialSegment],
+  assembled_text: &str,
+) -> Option<PartialCoreCoverageGap> {
+  let assembled_tokens = significant_partial_tokens(assembled_text);
+  if assembled_tokens.is_empty() {
+    return None;
+  }
+
+  for partial in non_empty_partials(partials) {
+    let tokens = significant_partial_tokens(&partial.text);
+    let Some(core) = partial_core_tokens(&tokens) else {
+      continue;
+    };
+    let matched_tokens = token_lcs_len(core, &assembled_tokens);
+    let required_tokens = required_partial_core_matches(core.len());
+    if matched_tokens < required_tokens {
+      return Some(PartialCoreCoverageGap {
+        segment_id: partial.segment_id,
+        matched_tokens,
+        required_tokens,
+        core_tokens: core.len(),
+        core_text: core.join(" "),
+      });
+    }
+  }
+
+  None
+}
+
+fn significant_partial_tokens(text: &str) -> Vec<String> {
+  audit_tokens(text)
+    .into_iter()
+    .filter(|token| !PARTIAL_CORE_FILLERS.contains(&token.as_str()))
+    .collect()
+}
+
+fn partial_core_tokens(tokens: &[String]) -> Option<&[String]> {
+  if tokens.len() < PARTIAL_CORE_MIN_TOKENS {
+    return None;
+  }
+  let edge_drop = if tokens.len() >= 12 { 2 } else { 1 };
+  if tokens.len() <= edge_drop * 2 + PARTIAL_CORE_MIN_CORE_TOKENS {
+    return None;
+  }
+  let start = edge_drop;
+  let end = tokens.len() - edge_drop;
+  let core = &tokens[start..end];
+  if core.len() < PARTIAL_CORE_MIN_CORE_TOKENS {
+    return None;
+  }
+  Some(core)
+}
+
+fn required_partial_core_matches(core_len: usize) -> usize {
+  let pct = core_len.saturating_mul(PARTIAL_CORE_MIN_COVERAGE_PCT).div_ceil(100);
+  let allowed = core_len.saturating_sub(PARTIAL_CORE_ALLOWED_MISSES);
+  pct.max(allowed).min(core_len)
+}
+
+fn token_lcs_len(left: &[String], right: &[String]) -> usize {
+  if left.is_empty() || right.is_empty() {
+    return 0;
+  }
+  let mut prev = vec![0usize; right.len() + 1];
+  let mut curr = vec![0usize; right.len() + 1];
+  for left_token in left {
+    for (j, right_token) in right.iter().enumerate() {
+      curr[j + 1] = if left_token == right_token { prev[j] + 1 } else { curr[j].max(prev[j + 1]) };
+    }
+    std::mem::swap(&mut prev, &mut curr);
+    curr.fill(0);
+  }
+  prev[right.len()]
 }
 
 /// Sum of `delta_chars` for EOU emissions whose `audio_samples` lies
@@ -3406,9 +3523,26 @@ mod tests {
     choose_streaming_final_text, debug_recording_stem, empty_partial_action, eou_chars_in_range,
     eou_corroborates_silence, finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
     leading_coverage_is_incomplete, middle_coverage_is_incomplete, non_empty_partials,
-    normalize_chunk_case, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stitch_incremental_text, stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
+    normalize_chunk_case, partial_core_coverage_gap, prune_debug_recordings,
+    samples_to_ms_at_target_sr, stitch_incremental_text, stitch_right_start_cap_from_overlap,
+    tail_coverage_is_incomplete,
   };
+
+  fn partial(
+    segment_id: u64,
+    start_sample: usize,
+    end_sample: usize,
+    is_tail: bool,
+    text: &str,
+  ) -> IncrementalPartialSegment {
+    IncrementalPartialSegment {
+      segment_id,
+      start_sample,
+      end_sample,
+      is_tail,
+      text: text.to_string(),
+    }
+  }
 
   #[test]
   fn samples_to_ms_at_16k_zero_is_zero() {
@@ -4315,6 +4449,129 @@ mod tests {
       middle_coverage_is_incomplete(&[(0, 110_080)], MIDDLE_COVERAGE_TOLERANCE_SAMPLES),
       None,
     );
+  }
+
+  #[test]
+  fn partial_core_coverage_gap_detects_turn142_clause_drop() {
+    let partials = vec![
+      partial(1, 0, 107_520, false, "What does the final output of our"),
+      partial(
+        2,
+        76_800,
+        204_800,
+        false,
+        "Our system look like from a relationship standpoint is that",
+      ),
+      partial(
+        3,
+        174_080,
+        302_080,
+        false,
+        "Is that something we are building towards is that not necessary is",
+      ),
+      partial(
+        4,
+        184_320,
+        312_320,
+        true,
+        "Is that something we are building towards?  Is that not necessary is",
+      ),
+    ];
+    let assembled = "What does the final output of Our system look like from a relationship standpoint \
+       Is that not necessary is";
+
+    let gap = partial_core_coverage_gap(&partials, assembled).expect("core clause was lost");
+    assert_eq!(gap.segment_id, 3);
+    assert!(gap.core_text.contains("something we are building towards"));
+  }
+
+  #[test]
+  fn partial_core_coverage_gap_detects_turn18_milestone_drop() {
+    let partials = vec![
+      partial(
+        1,
+        0,
+        122_880,
+        false,
+        "Once we're done with that, I want you to plan the the the final.",
+      ),
+      partial(
+        2,
+        92_160,
+        220_160,
+        false,
+        "The final design stage no more intermediate stages we are going to",
+      ),
+      partial(
+        3,
+        189_440,
+        317_440,
+        false,
+        "We are going to focus on what is the final design need to look like and.",
+      ),
+      partial(
+        4,
+        286_720,
+        414_720,
+        false,
+        "And then what are the different milestones along that path to get there and",
+      ),
+      partial(
+        5,
+        384_000,
+        512_000,
+        false,
+        "And then present me with this plan because so far you have just created a plan and then executed.",
+      ),
+      partial(
+        6,
+        465_920,
+        593_920,
+        true,
+        "far you have just created a plan and then executed and then delivered only a partial result.  I'm freaking sick of that.",
+      ),
+    ];
+    let assembled = "Once we're done with that, I want you to plan the the The final design stage no more \
+       intermediate stages We are going to focus on what is the final design need to look \
+       like And then present me with this plan because so far you have just created a plan \
+       and then executed and then delivered only a partial result. I'm freaking sick of that.";
+
+    let gap = partial_core_coverage_gap(&partials, assembled).expect("milestone clause was lost");
+    assert_eq!(gap.segment_id, 4);
+    assert!(gap.core_text.contains("different milestones along that path"));
+  }
+
+  #[test]
+  fn partial_core_coverage_accepts_complete_assembled_text() {
+    let partials = vec![
+      partial(
+        3,
+        174_080,
+        302_080,
+        false,
+        "Is that something we are building towards is that not necessary is",
+      ),
+      partial(
+        4,
+        184_320,
+        312_320,
+        true,
+        "Is that something we are building towards?  Is that not necessary is",
+      ),
+    ];
+    let assembled = "What does the final output of our system look like from a relationship standpoint? \
+       Is that something we are building towards? Is that not necessary is";
+
+    assert_eq!(partial_core_coverage_gap(&partials, assembled), None);
+  }
+
+  #[test]
+  fn partial_core_coverage_ignores_filler_policy_drift() {
+    let partials =
+      vec![partial(1, 0, 128_000, true, "I think um this is the right plan for us today")];
+    let assembled = "I think this is the right plan for us today";
+
+    assert_eq!(partial_core_coverage_gap(&partials, assembled), None);
   }
 
   fn eou(audio_samples: usize, delta_chars: usize) -> EouEmission {
