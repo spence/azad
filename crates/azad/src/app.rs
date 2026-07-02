@@ -29,15 +29,13 @@ mod policy;
 mod text;
 
 use policy::{
-  DraftOverlayAction, ListenToggleNotice, ManualHoldReleaseAction, ManualHoldReleasePlan,
-  RawFinalizeUiPlan, SessionRecoveryState, allow_immediate_restart_for_fault_count,
-  draft_matches_finalized_text, draft_update_overlay_action, final_text_has_user_visible_context,
-  has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
-  has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
+  DraftOverlayAction, ListenToggleNotice, ManualHoldReleaseAction, SessionRecoveryState,
+  allow_immediate_restart_for_fault_count, draft_update_overlay_action,
+  final_text_has_user_visible_context, has_actionable_turn_context_for_snapshot,
+  has_started_turn_for_snapshot, is_stream_fault_message, listen_toggle_notice,
   manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
   raw_finalize_ui_plan, recovery_state_for_fault_count, should_ignore_finalizing_event,
   should_latch_raw_on_hold_release, split_overlay_active_for_turns,
-  split_overlay_visible_for_state, split_overlay_visible_with_hold_for_state,
   split_overlay_visible_with_live_divergence_for_state,
   split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
   turn_started_should_arm_pending,
@@ -3537,11 +3535,10 @@ impl AppController {
 mod tests {
   use std::time::{Duration, Instant};
 
-  use super::{
-    AppController, AzadConfig, DraftOverlayAction, EngineState, HotkeyEffect,
-    ManualHoldReleaseAction, ManualHoldReleasePlan, RawFinalizeUiPlan, SessionRecoveryState,
-    allow_immediate_restart_for_fault_count, draft_matches_finalized_text,
-    draft_update_overlay_action, final_text_has_user_visible_context,
+  use super::policy::{
+    DraftOverlayAction, ListenToggleNotice, ManualHoldReleaseAction, ManualHoldReleasePlan,
+    RawFinalizeUiPlan, SessionRecoveryState, allow_immediate_restart_for_fault_count,
+    draft_matches_finalized_text, draft_update_overlay_action, final_text_has_user_visible_context,
     has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
     has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
     manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
@@ -3552,7 +3549,9 @@ mod tests {
     split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
     turn_started_should_arm_pending,
   };
-  use super::{LISTEN_TOGGLE_NOTICE_DURATION_MS, ListenToggleNotice};
+  use super::{
+    AppController, AzadConfig, EngineState, HotkeyEffect, LISTEN_TOGGLE_NOTICE_DURATION_MS,
+  };
   use crate::speech::{SpeechEvent, SpeechSession};
 
   #[test]

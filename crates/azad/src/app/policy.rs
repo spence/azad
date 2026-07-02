@@ -358,9 +358,6 @@ pub(super) fn final_text_has_user_visible_context(
     || (finalizing_turn_id == Some(turn_id) && !finalizing_draft.trim().is_empty())
 }
 
-/// Map a raw gateway error / disconnect reason to a short message for the overlay error
-/// state, smoothing the common cases while keeping anything unexpected readable.
-
 pub(super) fn listen_toggle_notice(
   enabled: bool,
 ) -> (&'static str, Vec<platform::OverlayNoticeSegment>) {
