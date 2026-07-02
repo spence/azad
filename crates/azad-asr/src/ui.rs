@@ -137,8 +137,7 @@ impl App {
   fn transcript_max_scroll(&self) -> u16 {
     let lines = self.transcript_lines_len() as i32;
     let inner_h = self.transcript_inner_height() as i32;
-    let max = (lines - inner_h).max(0) as u16;
-    max
+    (lines - inner_h).max(0) as u16
   }
 
   fn scroll_transcript_up(&mut self, lines: u16) {
@@ -342,15 +341,11 @@ fn run_loop(
           _ => {}
         },
         Event::Mouse(m) => match m.kind {
-          MouseEventKind::ScrollUp => {
-            if rect_contains(app.transcript_area, m.column, m.row) {
-              app.scroll_transcript_up(3);
-            }
+          MouseEventKind::ScrollUp if rect_contains(app.transcript_area, m.column, m.row) => {
+            app.scroll_transcript_up(3);
           }
-          MouseEventKind::ScrollDown => {
-            if rect_contains(app.transcript_area, m.column, m.row) {
-              app.scroll_transcript_down(3);
-            }
+          MouseEventKind::ScrollDown if rect_contains(app.transcript_area, m.column, m.row) => {
+            app.scroll_transcript_down(3);
           }
           _ => {}
         },
@@ -390,7 +385,7 @@ fn vertical_audio_meter(
   for row in 0..h {
     let is_filled = row >= h.saturating_sub(filled);
     let c = if is_filled { '|' } else { ' ' };
-    let s = std::iter::repeat(c).take(w).collect::<String>();
+    let s = std::iter::repeat_n(c, w).collect::<String>();
     let style = if is_filled { fill_style } else { Style::default().fg(Color::DarkGray) };
     lines.push(Line::styled(s, style));
   }

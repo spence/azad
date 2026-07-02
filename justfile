@@ -13,8 +13,25 @@ build:
 check:
     cargo check --workspace
 
+fmt-check:
+    cargo fmt --all --check
+
 test:
     cargo test --workspace
+
+clippy:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+swift-build:
+    swift build -c release --package-path crates/azad-mlx-asr --scratch-path target/swift/azad-mlx-asr
+
+verify:
+    just doctor
+    just fmt-check
+    just check
+    just test
+    just swift-build
+    just clippy
 
 dist:
     just --justfile crates/azad/justfile dist

@@ -71,6 +71,15 @@ pub struct CpalInput {
   stream: Stream,
 }
 
+struct StreamBuildState {
+  producer: HeapProd<f32>,
+  produced_samples: Arc<AtomicU64>,
+  dropped_samples: Arc<AtomicU64>,
+  ended: Arc<AtomicBool>,
+  stream_error: Arc<Mutex<Option<String>>>,
+  notify: Option<Arc<PipelineControls>>,
+}
+
 impl CpalInput {
   pub fn list_input_devices() -> Result<Vec<cpal::Device>> {
     let host = cpal::default_host();
@@ -123,12 +132,14 @@ impl CpalInput {
       &device,
       sample_format,
       &stream_cfg,
-      prod,
-      Arc::clone(&produced_samples),
-      Arc::clone(&dropped_samples),
-      Arc::clone(&ended),
-      Arc::clone(&stream_error),
-      cfg.capture_enabled.clone(),
+      StreamBuildState {
+        producer: prod,
+        produced_samples: Arc::clone(&produced_samples),
+        dropped_samples: Arc::clone(&dropped_samples),
+        ended: Arc::clone(&ended),
+        stream_error: Arc::clone(&stream_error),
+        notify: cfg.capture_enabled.clone(),
+      },
     )?;
     // Start the CoreAudio input unit only when capture is on at open time.
     // Starting it unconditionally lit the macOS mic indicator even with
@@ -169,13 +180,16 @@ impl CpalInput {
     device: &Device,
     sample_format: SampleFormat,
     stream_cfg: &StreamConfig,
-    producer: HeapProd<f32>,
-    produced_samples: Arc<AtomicU64>,
-    dropped_samples: Arc<AtomicU64>,
-    ended: Arc<AtomicBool>,
-    stream_error: Arc<Mutex<Option<String>>>,
-    notify: Option<Arc<PipelineControls>>,
+    state: StreamBuildState,
   ) -> Result<Stream> {
+    let StreamBuildState {
+      producer,
+      produced_samples,
+      dropped_samples,
+      ended,
+      stream_error,
+      notify,
+    } = state;
     let err_ended = Arc::clone(&ended);
     let err_store = Arc::clone(&stream_error);
     let err_fn = move |err: cpal::StreamError| {
@@ -280,12 +294,8 @@ impl CpalInput {
   }
 
   fn start_capture(&mut self) {
-    // Resume the CPAL stream so CoreAudio re-acquires the input device
-    // handle and macOS shows the mic indicator. The stream-warm
-    // optimisation (commit 2f10a79) was traded against the user-visible
-    // privacy issue of the orange mic dot staying on while listening
-    // is off; the seed-grace + pre-roll fallbacks from that commit
-    // still mitigate the cold-start lag they targeted.
+    // Resume the CPAL stream only when capture is active so the macOS mic
+    // indicator tracks Azad's listen/capture state.
     if let Err(err) = self.stream.play() {
       eprintln!("Azad: failed to resume CPAL stream on capture-enable: {err}");
     }
@@ -298,9 +308,7 @@ impl CpalInput {
 
   fn stop_capture(&mut self) {
     // Pause the CPAL stream so CoreAudio releases the input device
-    // handle and macOS clears the orange mic indicator. The flag flip
-    // alone is no longer enough — leaving the stream warm kept the
-    // device "open" from the OS's perspective even with capture off.
+    // handle and macOS clears the orange mic indicator.
     self.capture_active = false;
     if let Err(err) = self.stream.pause() {
       eprintln!("Azad: failed to pause CPAL stream on capture-disable: {err}");
@@ -337,33 +345,6 @@ impl CpalInput {
 
   fn stream_error_message(&self) -> Option<String> {
     self.stream_error.lock().ok().and_then(|slot| slot.clone())
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::preferred_fixed_buffer_frames;
-
-  #[test]
-  fn preferred_fixed_buffer_frames_uses_preferred_in_valid_range() {
-    assert_eq!(preferred_fixed_buffer_frames(128, 4096), Some(2048));
-  }
-
-  #[test]
-  fn preferred_fixed_buffer_frames_clamps_to_min_when_range_above_preferred() {
-    assert_eq!(preferred_fixed_buffer_frames(4096, 8192), Some(4096));
-  }
-
-  #[test]
-  fn preferred_fixed_buffer_frames_clamps_to_max_when_range_below_preferred() {
-    assert_eq!(preferred_fixed_buffer_frames(32, 512), Some(512));
-  }
-
-  #[test]
-  fn preferred_fixed_buffer_frames_rejects_invalid_ranges() {
-    assert_eq!(preferred_fixed_buffer_frames(29, 0), None);
-    assert_eq!(preferred_fixed_buffer_frames(512, 256), None);
-    assert_eq!(preferred_fixed_buffer_frames(0, 256), None);
   }
 }
 
@@ -503,5 +484,32 @@ impl AudioInput for CpalInput {
       worst_wallclock_gap_frames: self.worst_gap_samples / channels,
       worst_backlog_frames: self.worst_backlog_samples / channels,
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::preferred_fixed_buffer_frames;
+
+  #[test]
+  fn preferred_fixed_buffer_frames_uses_preferred_in_valid_range() {
+    assert_eq!(preferred_fixed_buffer_frames(128, 4096), Some(2048));
+  }
+
+  #[test]
+  fn preferred_fixed_buffer_frames_clamps_to_min_when_range_above_preferred() {
+    assert_eq!(preferred_fixed_buffer_frames(4096, 8192), Some(4096));
+  }
+
+  #[test]
+  fn preferred_fixed_buffer_frames_clamps_to_max_when_range_below_preferred() {
+    assert_eq!(preferred_fixed_buffer_frames(32, 512), Some(512));
+  }
+
+  #[test]
+  fn preferred_fixed_buffer_frames_rejects_invalid_ranges() {
+    assert_eq!(preferred_fixed_buffer_frames(29, 0), None);
+    assert_eq!(preferred_fixed_buffer_frames(512, 256), None);
+    assert_eq!(preferred_fixed_buffer_frames(0, 256), None);
   }
 }

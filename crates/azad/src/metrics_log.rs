@@ -258,8 +258,10 @@ pub fn now_epoch_ms() -> i64 {
 }
 
 fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
+  type AuditSample = (i64, bool, usize, f64, f64);
+
   let mut outcomes_by_turn: HashMap<u64, Vec<(i64, String, String)>> = HashMap::new();
-  let mut audits_by_turn: HashMap<u64, Vec<(i64, bool, usize, f64, f64)>> = HashMap::new();
+  let mut audits_by_turn: HashMap<u64, Vec<AuditSample>> = HashMap::new();
   let mut audit_errors_by_turn: HashMap<u64, Vec<(i64, usize, String)>> = HashMap::new();
   let mut recent_snapshots: Vec<(i64, RecentTranscriptSummary)> = Vec::new();
   let mut summary = MetricsSummary::default();
@@ -378,7 +380,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
     summary.quality_avg_lcp_pct = sum_lcp / denom;
   }
 
-  recent_snapshots.sort_by(|a, b| b.0.cmp(&a.0));
+  recent_snapshots.sort_by_key(|(ts_ms, _)| std::cmp::Reverse(*ts_ms));
   let mut recent_samples: Vec<(i64, RecentTranscriptSummary)> =
     recent_snapshots.into_iter().take(RECENT_TRANSCRIPTS_LIMIT).collect();
 

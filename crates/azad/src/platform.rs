@@ -1352,6 +1352,7 @@ pub fn hide_overlay_top() {
   }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn set_overlay_stream_content(
   draft: &str,
   activity: &[f32],
@@ -1384,6 +1385,7 @@ pub fn set_overlay_stream_content(
 /// Render a gateway conversation turn into the overlay: pinned chip, the user's query, a
 /// divider, then the streaming reply (or a thinking/error status line), plus a bottom
 /// voice-activity strip. Mutually exclusive with `set_overlay_stream_content`.
+#[allow(clippy::too_many_arguments)]
 pub fn set_overlay_conversation_content(
   connector_tag: &str,
   connector_icon: &str,
@@ -2499,7 +2501,7 @@ unsafe fn setup_status_bar(delegate: id) {
   // Also run while the menu is open and tracking mouse hover.
   let _: () = msg_send![run_loop, addTimer: timer forMode: tracking_mode];
 
-  let delegate_obj = &mut *(delegate as *mut Object);
+  let delegate_obj = &mut *delegate;
   delegate_obj.set_ivar("statusItem", status_item);
 
   rebuild_status_menu();
@@ -2642,9 +2644,7 @@ fn current_menu_width(menu: id) -> f64 {
     }
 
     let header_context_width = DEVICE_HEADER_VIEW_REF.with(|slot| {
-      let Some(view) = *slot.borrow() else {
-        return None;
-      };
+      let view = (*slot.borrow())?;
 
       // Prefer the menu window's content width. This matches the rendered
       // menu background and stays stable across expand/collapse.
@@ -3727,7 +3727,7 @@ unsafe fn fit_rendered_head_for_height(
   let mut lo = 0usize;
   let mut hi = word_ends.len() - 1;
   while lo < hi {
-    let mid = (lo + hi + 1) / 2;
+    let mid = (lo + hi).div_ceil(2);
     let candidate = format!("{}…", trimmed[..word_ends[mid]].trim_end());
     let measured = measure_label_height(label, &candidate, width);
     if measured <= max_height + 0.5 {
@@ -3741,6 +3741,7 @@ unsafe fn fit_rendered_head_for_height(
   (rendered, measured)
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn render_overlay_conversation(
   refs: OverlayRefs,
   connector_tag: &str,
@@ -3964,6 +3965,7 @@ unsafe fn render_overlay_conversation(
   render_activity_wave(refs, activity, meter_frame.size.width, meter_frame.size.height);
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn render_overlay_text(
   refs: OverlayRefs,
   body_text: &str,
@@ -4600,9 +4602,8 @@ unsafe fn render_overlay_history_list(
   // top. The cursor advances by each row's NATURAL height so rows above the
   // expanded one stay anchored to their natural positions.
   let mut nat_row_bottom = layout_bottom_y;
-  for vis_idx in 0..measured.len() {
+  for (vis_idx, (rendered, body_h)) in measured.iter().enumerate() {
     let entry_idx = start + vis_idx;
-    let (rendered, body_h) = &measured[vis_idx];
     let row_label_w = if vis_idx == 0 { label_w_bottom } else { label_w_full };
     let is_selected = entry_idx == selected_index;
     let is_selected_expanded = is_selected && expanded_body.is_some();
@@ -4987,7 +4988,7 @@ unsafe fn fit_history_body_with_ellipsis(
   let mut lo = 1usize;
   let mut hi = boundaries.len() - 1;
   while lo < hi {
-    let mid = lo + (hi - lo + 1) / 2;
+    let mid = lo + (hi - lo).div_ceil(2);
     let end = boundaries[mid];
     let candidate = format!("{}{}", trimmed[..end].trim_end(), ellipsis);
     let h = measure_label_height(label, &candidate, width);
@@ -5337,13 +5338,12 @@ unsafe fn move_overlay_to_target_screen(refs: OverlayRefs, force_default_anchor:
   } else {
     OVERLAY_HEIGHT_MIN
   };
-  let (mut x, mut y) = if force_default_anchor || current_screen.is_none() {
+  let (mut x, mut y) = if force_default_anchor {
     (
       target_screen.origin.x + (target_screen.size.width - width) * 0.5,
       target_screen.origin.y + target_screen.size.height * 0.08,
     )
-  } else {
-    let source = current_screen.unwrap();
+  } else if let Some(source) = current_screen {
     (
       remap_origin_proportionally(
         current_frame.origin.x,
@@ -5363,6 +5363,11 @@ unsafe fn move_overlay_to_target_screen(refs: OverlayRefs, force_default_anchor:
         target_screen.size.height,
         height,
       ),
+    )
+  } else {
+    (
+      target_screen.origin.x + (target_screen.size.width - width) * 0.5,
+      target_screen.origin.y + target_screen.size.height * 0.08,
     )
   };
   let max_x =
@@ -7928,6 +7933,7 @@ type CGEventTapCallBack = extern "C" fn(
   user_info: *mut c_void,
 ) -> *mut c_void;
 
+#[allow(clippy::duplicated_attributes)]
 #[link(name = "CoreGraphics", kind = "framework")]
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {

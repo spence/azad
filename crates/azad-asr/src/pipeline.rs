@@ -597,18 +597,16 @@ pub fn run_pipeline_with_options(
   renderer
     .emit(RenderEvent::Status(StatusView { state: EngineState::Idle, detail: "idle".to_string() }));
 
-  let mut runner = Runner::new(
-    input_spec,
-    renderer,
-    cfg,
+  let runtime = PipelineRuntimeParts {
     vad,
     streaming_asr,
     final_tx,
     partial_audit_tx,
     async_rx,
-    options.controls,
-    options.stop_after_turn,
-  );
+    controls: options.controls,
+    stop_after_turn: options.stop_after_turn,
+  };
+  let mut runner = Runner::new(input_spec, renderer, cfg, runtime);
 
   let mut aborted = false;
   loop {
@@ -653,33 +651,26 @@ struct Runner {
   core: PipelineCore,
 }
 
+struct PipelineRuntimeParts {
+  vad: CoreMlVadProcessor,
+  streaming_asr: StreamingAsr,
+  final_tx: crossbeam_channel::Sender<FinalJob>,
+  partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
+  async_rx: crossbeam_channel::Receiver<FinalResult>,
+  controls: Option<Arc<PipelineControls>>,
+  stop_after_turn: bool,
+}
+
 impl Runner {
   fn new(
     input_spec: AudioSpec,
     renderer: Arc<dyn Renderer>,
     cfg: PipelineConfig,
-    vad: CoreMlVadProcessor,
-    streaming_asr: StreamingAsr,
-    final_tx: crossbeam_channel::Sender<FinalJob>,
-    partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
-    async_rx: crossbeam_channel::Receiver<FinalResult>,
-    controls: Option<Arc<PipelineControls>>,
-    stop_after_turn: bool,
+    runtime: PipelineRuntimeParts,
   ) -> Self {
     let prep = AudioPrep::new(input_spec, TARGET_SR);
     let q = SampleQueue::default();
-    let core = PipelineCore::new(
-      input_spec,
-      renderer,
-      cfg,
-      vad,
-      streaming_asr,
-      final_tx,
-      partial_audit_tx,
-      async_rx,
-      controls,
-      stop_after_turn,
-    );
+    let core = PipelineCore::new(input_spec, renderer, cfg, runtime);
     Self { prep, q, core }
   }
 
@@ -814,14 +805,17 @@ impl PipelineCore {
     input_spec: AudioSpec,
     renderer: Arc<dyn Renderer>,
     cfg: PipelineConfig,
-    vad: CoreMlVadProcessor,
-    streaming_asr: StreamingAsr,
-    final_tx: crossbeam_channel::Sender<FinalJob>,
-    partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
-    async_rx: crossbeam_channel::Receiver<FinalResult>,
-    controls: Option<Arc<PipelineControls>>,
-    stop_after_turn: bool,
+    runtime: PipelineRuntimeParts,
   ) -> Self {
+    let PipelineRuntimeParts {
+      vad,
+      streaming_asr,
+      final_tx,
+      partial_audit_tx,
+      async_rx,
+      controls,
+      stop_after_turn,
+    } = runtime;
     let pre_roll_samples = round_up_to_chunk(
       ((TARGET_SR as u64) * (cfg.pre_roll_ms as u64) / 1000) as usize,
       CHUNK_SAMPLES,
@@ -962,7 +956,7 @@ impl PipelineCore {
     if deep_silence_idle {
       self.vad_avg_ema = 0.0;
     } else if cadence_skip_idle {
-      self.vad_avg_ema = (1.0 - alpha) * self.vad_avg_ema;
+      self.vad_avg_ema *= 1.0 - alpha;
     } else {
       let probs = self.vad.probabilities(chunk16)?;
       vad_avg = if probs.is_empty() { 0.0 } else { probs.iter().sum::<f32>() / probs.len() as f32 };
@@ -1877,22 +1871,22 @@ impl PipelineCore {
     let live_session = self.controls.is_some();
     let wait_ms = u64::from(self.cfg.incremental_wait_tail_result_ms.max(1));
     let tail_wait_ms = incremental_tail_wait_ms(wait_ms, live_session);
-    if self.incremental.inflight_segment.is_some() {
-      if !self.wait_for_inflight_incremental(Duration::from_millis(tail_wait_ms)) {
-        // Avoid racing a just-completed inflight result.
-        self.drain_async_results();
-        if self.incremental.inflight_segment.is_some() {
-          if debug_enabled {
-            eprintln!(
-              "TOON_PARTIAL_FINAL turn_id={} action=preexisting_inflight_timeout_abandon",
-              self.turn_id
-            );
-          }
-          // A stale in-flight live segment can be superseded by a fresh tail request.
-          // Clearing here prevents an immediate full-pass bailout under normal load.
-          self.incremental.inflight_segment = None;
-          self.incremental.pending_reschedule = false;
+    if self.incremental.inflight_segment.is_some()
+      && !self.wait_for_inflight_incremental(Duration::from_millis(tail_wait_ms))
+    {
+      // Avoid racing a just-completed inflight result.
+      self.drain_async_results();
+      if self.incremental.inflight_segment.is_some() {
+        if debug_enabled {
+          eprintln!(
+            "TOON_PARTIAL_FINAL turn_id={} action=preexisting_inflight_timeout_abandon",
+            self.turn_id
+          );
         }
+        // A stale in-flight live segment can be superseded by a fresh tail request.
+        // Clearing here prevents an immediate full-pass bailout under normal load.
+        self.incremental.inflight_segment = None;
+        self.incremental.pending_reschedule = false;
       }
     }
 
@@ -2858,16 +2852,12 @@ fn save_debug_recording(
     bits_per_sample: 32,
     sample_format: hound::SampleFormat::Float,
   };
-  let mut writer = hound::WavWriter::create(&wav_path, spec)
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+  let mut writer =
+    hound::WavWriter::create(&wav_path, spec).map_err(|e| std::io::Error::other(e.to_string()))?;
   for &sample in audio {
-    writer
-      .write_sample(sample)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    writer.write_sample(sample).map_err(|e| std::io::Error::other(e.to_string()))?;
   }
-  writer
-    .finalize()
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+  writer.finalize().map_err(|e| std::io::Error::other(e.to_string()))?;
 
   let partials_json: Vec<serde_json::Value> = partial_segments
     .iter()

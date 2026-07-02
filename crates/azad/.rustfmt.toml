@@ -6,7 +6,5 @@ use_small_heuristics = "Max"
 chain_width = 80
 # comment_width = 100 # nightly only
 # wrap_comments = true # nightly only
-imports_layout = "HorizontalVertical" # nightly only
 # group_imports = "StdExternalWorkspaceCrate"
-overflow_delimited_expr = true
 use_field_init_shorthand = true

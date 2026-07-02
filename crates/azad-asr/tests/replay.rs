@@ -285,7 +285,7 @@ fn repo_root() -> PathBuf {
     .parent()
     .and_then(|p| p.parent())
     .map(PathBuf::from)
-    .unwrap_or_else(|| crate_dir())
+    .unwrap_or_else(crate_dir)
 }
 
 /// Mirror of `crates/azad/src/config.rs::resolve_pipeline_paths` (debug branch): prefer

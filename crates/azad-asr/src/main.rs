@@ -366,7 +366,7 @@ fn choose_input_device(select: bool, device_index: Option<usize>) -> Result<(usi
   }
 
   // Fallback: first enumerated device.
-  let label = devs.get(0).and_then(device_name).unwrap_or_else(|| "#0".to_string());
+  let label = devs.first().and_then(device_name).unwrap_or_else(|| "#0".to_string());
   Ok((0, label))
 }
 

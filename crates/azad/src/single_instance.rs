@@ -41,6 +41,7 @@ pub fn acquire_primary_instance_lock() -> Result<SingleInstanceGuard, SingleInst
 
   let lock_file = OpenOptions::new()
     .create(true)
+    .truncate(false)
     .read(true)
     .write(true)
     .open(&lock_path)

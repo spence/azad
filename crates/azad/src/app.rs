@@ -2803,10 +2803,10 @@ impl AppController {
             // paste actually lands, so dismissal and paste appear on the same frame.
             if let Some(final_text) = self.latest_final.as_ref() {
               let cleaned = final_text.trim().to_string();
-              if !cleaned.is_empty() {
-                if self.try_paste(self.latest_seen_turn_id, TranscriptMode::Normal, &cleaned) {
-                  self.last_pasted_turn_id = Some(self.latest_seen_turn_id);
-                }
+              if !cleaned.is_empty()
+                && self.try_paste(self.latest_seen_turn_id, TranscriptMode::Normal, &cleaned)
+              {
+                self.last_pasted_turn_id = Some(self.latest_seen_turn_id);
               }
             }
             self.hide_overlay();
@@ -2888,7 +2888,6 @@ impl AppController {
               session.set_capture_enabled(false);
             }
           }
-          return;
         }
       }
     }
@@ -3748,12 +3747,10 @@ impl AppController {
           }
         }
       }
-      1 => {
-        if self.history_browse_index > 0 {
-          self.history_browse_index -= 1;
-          if self.history_browse_index < last_start + LAG {
-            self.history_visible_start = self.history_browse_index.saturating_sub(LAG);
-          }
+      1 if self.history_browse_index > 0 => {
+        self.history_browse_index -= 1;
+        if self.history_browse_index < last_start + LAG {
+          self.history_visible_start = self.history_browse_index.saturating_sub(LAG);
         }
       }
       _ => {}
