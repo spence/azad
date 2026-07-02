@@ -116,10 +116,9 @@ fn replay_recovery_bridges_200ms_gap() {
 /// merges the 400 ms gap into a SINGLE turn. This matches the user's
 /// reported intent ("if I'm still talking softly, keep listening").
 ///
-/// Gap-split coverage is preserved by `replay_recovery_splits_long_gap`
-/// (TODO: pin a longer-gap fixture, e.g. 1500 ms, when the tooling is
-/// reachable). For now, this fixture pins the merge behaviour at 400 ms
-/// so a future tightening of `vad_in_speech_thold` will visibly flip it.
+/// This fixture pins the merge behaviour at 400 ms so a future tightening of
+/// `vad_in_speech_thold` will visibly flip it. A true long-gap split fixture
+/// should be added separately when we have a representative recording.
 #[test]
 #[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn replay_recovery_merges_400ms_gap_under_low_in_speech_thold() {

@@ -34,9 +34,9 @@
       "id": "recovery-splits-400ms-gap",
       "wav": "recovery-splits-400ms-gap.wav",
       "json": "recovery-splits-400ms-gap.json",
-      "description": "Companion to recovery-bridges-200ms-gap. Same source clips, but with a 400 ms silence gap that EXCEEDS recovery_window_ms (250). Asserts the negative direction: recovery does NOT fire on gaps wider than the window — the pipeline must produce TWO turns. Catches a future regression where the window expands beyond intent or recovery falsely fires on long pauses.",
+      "description": "Companion to recovery-bridges-200ms-gap. Same source clips with a 400 ms inserted gap. Under the current low in-speech VAD threshold, soft trailing speech keeps the turn active and the pipeline merges this into ONE turn. Catches future VAD/recovery changes that unexpectedly split this soft-continuation shape.",
       "assertions": {
-        "must_be_two_turns": true,
+        "must_be_single_turn": true,
         "must_contain": ["for reference", "kerning"]
       }
     }

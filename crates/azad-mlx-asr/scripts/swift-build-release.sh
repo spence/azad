@@ -15,7 +15,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if swift build -c release --package-path "$PACKAGE_PATH" --scratch-path "$SCRATCH_PATH" 2>"$STDERR_LOG"; then
+if swift build -q -c release --package-path "$PACKAGE_PATH" --scratch-path "$SCRATCH_PATH" 2>"$STDERR_LOG"; then
   STATUS=0
 else
   STATUS=$?

@@ -8,19 +8,25 @@ help:
     @just --list
 
 build:
-    cargo build -p azad
+    cargo build -q -p azad
 
 check:
-    cargo check --workspace
+    cargo check -q --workspace
 
 fmt-check:
     cargo fmt --all --check
 
 test:
-    cargo test --workspace
+    cargo test -q --workspace
+
+test-replay:
+    cargo test -q -p azad-asr --test replay -- --ignored --test-threads=1
+
+test-replay-required:
+    AZAD_TEST_REQUIRE_MODELS=1 cargo test -q -p azad-asr --test replay -- --ignored --test-threads=1
 
 clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy -q --workspace --all-targets -- -D warnings
 
 swift-build:
     crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-mlx-asr target/swift/azad-mlx-asr

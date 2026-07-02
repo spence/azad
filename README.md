@@ -81,6 +81,8 @@ Current notable dependency choices:
 
 ```bash
 just verify     # doctor + fmt + check + test + Swift helper build + Clippy
+just test-replay # run ignored ASR replay tests when local models are available
+just test-replay-required # same, but fail if replay models are missing
 just check      # cargo check --workspace
 just fmt-check  # cargo fmt --all --check
 just test       # cargo test --workspace

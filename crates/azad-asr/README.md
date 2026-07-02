@@ -13,7 +13,9 @@ Terminal live speech-to-text (English) using:
 
 ## Prereqs
 
-- macOS tested (should work on other platforms supported by `cpal`)
+- macOS 14+ for the bundled MLX/CoreML helper.
+- `just swift-build` must succeed before using MLX ASR or CoreML VAD from the CLI.
+- The runtime model files must exist either under local `models/` paths or explicit CLI paths.
 
 ## Models
 
@@ -37,6 +39,18 @@ The macOS app downloads the same files into
 `~/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/`.
 For CLI work, either mirror those files into `models/nemotron-mlx` or pass
 `--mlx-model-dir` and `--vad-model`.
+
+Replay tests use the same local model paths and are ignored by default. Run:
+
+```bash
+just test-replay
+```
+
+For maintainer verification that must fail when models are absent:
+
+```bash
+just test-replay-required
+```
 
 ## Build
 

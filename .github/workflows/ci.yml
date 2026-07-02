@@ -19,20 +19,5 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Doctor
-        run: just doctor
-
-      - name: Format
-        run: just fmt-check
-
-      - name: Check
-        run: cargo check --workspace
-
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Swift helper
-        run: just swift-build
-
-      - name: Clippy
-        run: just clippy
+      - name: Verify
+        run: just verify

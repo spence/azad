@@ -7,5 +7,5 @@
   "emitted_text": "",
   "full_text": "For reference, here is a font that already has the glyphs that we're just gonna copy. Of note, right, some fonts have different kerning. There's it's not a pure science, but this is generally like the mapping.",
   "partials": [],
-  "_note": "Synthesized: turn-000008 trimmed of trailing silence + 400ms zero-padded silence + turn-000009. The 400ms gap exceeds recovery_window_ms (250 ms in current config), so the pipeline correctly splits this into TWO turns / TWO pastes. This fixture asserts the *negative* direction: recovery does NOT bridge gaps wider than the window. Companion to recovery-bridges-200ms-gap.wav, which asserts the positive direction at a gap that fits inside the window. Originally pinned with the old 500 ms window where recovery DID bridge — renamed from recovery-bridges-400ms-gap when the window was tightened."
+  "_note": "Synthesized: turn-000008 trimmed of trailing silence + 400ms zero-padded silence + turn-000009. Under the current low in-speech VAD threshold, soft trailing speech keeps the turn active and the pipeline merges this into ONE turn / ONE paste. This fixture pins that soft-continuation behavior; a true long-gap split fixture should be added separately."
 }

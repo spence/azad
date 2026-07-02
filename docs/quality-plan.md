@@ -27,4 +27,5 @@ Do these extractions in small commits with tests passing after each move. The go
 ## Phase 4: Performance Regression Coverage
 
 - Add explicit checks for idle CPU behavior, VAD cold-start timing, first-token latency, and finalization fallback rate.
-- Keep model-dependent replay tests opt-in locally, but provide a maintainer command that fails if models are absent.
+- Keep model-dependent replay tests opt-in locally through `just test-replay`.
+- Use `just test-replay-required` for maintainer runs where missing models should fail the check.
