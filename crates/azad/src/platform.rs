@@ -26,6 +26,13 @@ use crate::app::AppEvent;
 use crate::gateway::ConvStatus;
 use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
 
+mod permissions;
+
+pub use permissions::{
+  PermissionStatus, accessibility_authorization, check_required_permissions_on_startup,
+  ensure_accessibility_for_auto_paste, input_monitoring_authorization, microphone_authorization,
+};
+
 const KEYCODE_RETURN: u16 = 0x24;
 const KEYCODE_DIRECT_INPUT: u16 = 0x00;
 const KEYCODE_LEFT_COMMAND: u16 = 0x37;
@@ -219,7 +226,6 @@ static HOTKEY_ARROW_RIGHT_REGISTERED: AtomicBool = AtomicBool::new(false);
 // logs. Set via `set_overlay_debug_logs_enabled` from app.rs whenever the
 // debug-stats setting toggles.
 static OVERLAY_DEBUG_LOGS_ENABLED: AtomicBool = AtomicBool::new(false);
-static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
 // Tracks the last sampled `pressedMouseButtons` bitmask between `on_tick`
 // polls. We dispatch a click-outside-overlay signal when a button transitions
 // from up→down (i.e., a bit goes 0→1) and the cursor is outside the overlay
@@ -551,21 +557,6 @@ pub fn run_app() {
     let _: () = msg_send![app, setDelegate: delegate];
     app.run();
   }
-}
-
-pub fn check_required_permissions_on_startup() {
-  let _ = ensure_accessibility_for_auto_paste();
-}
-
-pub fn ensure_accessibility_for_auto_paste() -> bool {
-  if is_accessibility_trusted() {
-    return true;
-  }
-  maybe_request_accessibility_permission_once();
-  eprintln!(
-    "Azad: Accessibility permission missing. Enable Azad in System Settings -> Privacy & Security -> Accessibility."
-  );
-  false
 }
 
 pub fn set_device_menu(model: DeviceMenuModel) {
@@ -7889,33 +7880,11 @@ unsafe fn write_pasteboard_string(text: &str) -> bool {
   ok != 0
 }
 
-fn is_accessibility_trusted() -> bool {
-  unsafe { AXIsProcessTrusted() }
-}
-
-fn maybe_request_accessibility_permission_once() {
-  if OPENED_ACCESSIBILITY_SETTINGS
-    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-    .is_ok()
-  {
-    // Ask macOS to surface the Accessibility trust flow.
-    // If that does not trigger UI, fall back to opening the settings pane directly.
-    let prompted = unsafe { request_accessibility_prompt() };
-    if !prompted {
-      let _ = std::process::Command::new("/usr/bin/open")
-        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        .spawn();
-    }
-  }
-}
-
 // AXValueType tags from <ApplicationServices/.../AXValue.h>.
 const KAX_VALUE_CG_POINT_TYPE: u32 = 1;
 const KAX_VALUE_CG_SIZE_TYPE: u32 = 2;
 
 unsafe extern "C" {
-  fn AXIsProcessTrusted() -> bool;
-  fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
   fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
   fn AXUIElementCopyAttributeValue(
     element: *const c_void,
@@ -7971,73 +7940,6 @@ unsafe extern "C" {
   fn CFRelease(cf: *const c_void);
 
   static kCFRunLoopCommonModes: *const c_void;
-}
-
-unsafe fn request_accessibility_prompt() -> bool {
-  let key = NSString::alloc(nil).init_str("AXTrustedCheckOptionPrompt");
-  let value: id = msg_send![class!(NSNumber), numberWithBool: YES];
-  let options: id = msg_send![class!(NSDictionary), dictionaryWithObject: value forKey: key];
-
-  if options == nil {
-    return false;
-  }
-
-  AXIsProcessTrustedWithOptions(options as *const c_void)
-}
-
-/// Live macOS privacy-permission state for a single permission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PermissionStatus {
-  Granted,
-  Denied,
-  #[default]
-  NotDetermined,
-}
-
-/// Accessibility is effectively binary (trusted or not); there is no
-/// "not determined" state to report.
-pub fn accessibility_authorization() -> PermissionStatus {
-  if is_accessibility_trusted() { PermissionStatus::Granted } else { PermissionStatus::Denied }
-}
-
-pub fn microphone_authorization() -> PermissionStatus {
-  // AVAuthorizationStatus: 0 NotDetermined, 1 Restricted, 2 Denied, 3 Authorized.
-  let status: i64 = unsafe {
-    msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: AVMediaTypeAudio]
-  };
-  match status {
-    3 => PermissionStatus::Granted,
-    0 => PermissionStatus::NotDetermined,
-    _ => PermissionStatus::Denied,
-  }
-}
-
-pub fn input_monitoring_authorization() -> PermissionStatus {
-  // IOHIDAccessType: 0 Granted, 1 Denied, 2 Unknown. The HID event tap that
-  // claims hotkeys over screen-sharing needs this; without it we fall back to
-  // Carbon hotkeys, so it is optional.
-  let access = unsafe { IOHIDCheckAccess(KIOHID_REQUEST_TYPE_LISTEN_EVENT) };
-  match access {
-    0 => PermissionStatus::Granted,
-    1 => PermissionStatus::Denied,
-    _ => PermissionStatus::NotDetermined,
-  }
-}
-
-// IOHIDRequestType (IOKit hidsystem/IOHIDLib.h) is a C enum with implicit values:
-// kIOHIDRequestTypePostEvent is the FIRST member (0), kIOHIDRequestTypeListenEvent
-// is the SECOND (1). Input Monitoring is the listen-event access, so query 1;
-// querying 0 (post) returns Granted spuriously.
-const KIOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
-
-#[link(name = "AVFoundation", kind = "framework")]
-unsafe extern "C" {
-  static AVMediaTypeAudio: id;
-}
-
-#[link(name = "IOKit", kind = "framework")]
-unsafe extern "C" {
-  fn IOHIDCheckAccess(request: u32) -> u32;
 }
 
 unsafe fn assign_status_icon(status_item: id) {
