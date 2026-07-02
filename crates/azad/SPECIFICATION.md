@@ -26,7 +26,7 @@ Azad does not own:
 
 - raw ASR inference internals,
 - VAD model execution internals,
-- EOU/TDT stitching internals.
+- ASR stitching/finalization internals.
 
 Those are in `azad-asr`.
 

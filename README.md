@@ -65,9 +65,6 @@ Current notable dependency choices:
 - `whisper-cpp-plus` is used for Silero VAD only. Azad does not use Whisper for
   speech-to-text. Its sys crate downloads the pinned `whisper.cpp` source during
   build when needed.
-- `parakeet-rs` remains a legacy engine/CLI/replay dependency while the MLX
-  migration is in progress. The app onboarding and settings downloads expose
-  only the MLX Nemotron pack.
 
 ## Common Commands
 

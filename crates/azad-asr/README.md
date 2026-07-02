@@ -2,7 +2,7 @@
 
 Terminal live speech-to-text (English) using:
 - `cpal` (microphone capture)
-- Parakeet (EOU streaming partials + TDT refinement) via `parakeet-rs`
+- MLX Nemotron streaming/final ASR via the bundled `azad-mlx-asr` helper
 - Silero VAD (ggml) for utterance start/stop via `whisper-cpp-plus`
 - `hound` for WAV input and `symphonia` for common compressed formats (e.g., `.m4a`) in `transcribe-file`
 
@@ -16,27 +16,21 @@ Terminal live speech-to-text (English) using:
 
 ## Models
 
-### Parakeet + VAD
-
-Download the dev model assets into `models/{parakeet,vad}`:
-
-```bash
-crates/azad-asr/scripts/download-parakeet-models.sh
-```
+### MLX Nemotron + VAD
 
 The expected layout is:
 
-- `models/parakeet/eou/`:
-  - `encoder.onnx`
-  - `decoder_joint.onnx`
-  - `tokenizer.json`
-- `models/parakeet/tdt/`:
-  - `encoder-model.onnx`
-  - `encoder-model.onnx.data`
-  - `decoder_joint-model.onnx`
+- `models/nemotron-mlx/`:
+  - `config.json`
+  - `model.safetensors`
+  - `tokenizer.model`
   - `vocab.txt`
-
 - `models/vad/ggml-silero-v6.2.0.bin`
+
+The macOS app downloads the same files into
+`~/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/`.
+For CLI work, either mirror those files into `models/nemotron-mlx` or pass
+`--mlx-model-dir` and `--vad-model`.
 
 ## Build
 
@@ -59,6 +53,14 @@ Listen + transcribe:
 
 ```bash
 cargo run -p azad-asr -- listen --select-device
+```
+
+With explicit model paths:
+
+```bash
+cargo run -p azad-asr -- listen --select-device \
+  --mlx-model-dir "$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/mlx" \
+  --vad-model "$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/vad/ggml-silero-v6.2.0.bin"
 ```
 
 Transcribe a recording through the exact same pipeline:

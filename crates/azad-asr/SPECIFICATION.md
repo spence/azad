@@ -7,7 +7,7 @@
 - the terminal CLI (`asr listen`, `asr transcribe-file`), and
 - the Azad macOS app (via embedded session API).
 
-It owns real-time audio ingestion, VAD gating, turn lifecycle, EOU draft generation, incremental/final TDT refinement, and debug observability events.
+It owns real-time audio ingestion, VAD gating, turn lifecycle, MLX streaming draft generation, incremental/final MLX refinement, and debug observability events.
 
 It intentionally does **not** own:
 
@@ -40,11 +40,11 @@ Those concerns live in Azad.
 
 1. Audio input is normalized/prepared to 16kHz mono chunks.
 2. VAD (`WhisperVadProcessor`) determines speech transitions.
-3. EOU (`ParakeetEOU`) generates streaming draft text.
+3. MLX Nemotron generates streaming draft text at low latency.
 4. Stability tracker splits draft into committed/live segments.
-5. During speech, incremental TDT slices refine text in background.
+5. During speech, incremental MLX finalization slices refine text in background.
 6. On finalize, assembled incremental text is preferred.
-7. If incremental output is unavailable or unsafe, full final pass (TDT) is used.
+7. If incremental output is unavailable or unsafe, whole-turn MLX finalization is used.
 8. Renderer emits state/text/debug events to embedding app or TUI.
 
 ### 3.2 Event Surface (`src/render.rs`)
@@ -89,7 +89,7 @@ On start:
 
 - pre-roll is prepended,
 - turn ID increments,
-- EOU/stability/incremental state reset,
+- streaming/stability/incremental state reset,
 - renderer emits `Status(Speech)` and initial `Active`.
 
 ## 4.2 During Speech
@@ -104,7 +104,7 @@ On start:
 A turn ends via one of:
 
 - forced finish request,
-- VAD silence + EOU/silence thresholds,
+- VAD silence + streaming/silence thresholds,
 - empty-turn timeout for false-positive VAD starts,
 - explicit cancel.
 
@@ -118,7 +118,7 @@ Finalize path:
 
 `src/pipeline.rs` intentionally optimizes for low-latency live behavior:
 
-- Heavy TDT inference runs off the live capture thread.
+- Heavy finalization inference runs off the live capture thread.
 - Incremental segments are stitched to avoid re-running full pass by default.
 - A tail-plan guard (`finalize_tail_plan`) decides if explicit tail segment is required.
 - Finalization output priority:
@@ -158,7 +158,7 @@ Design intent:
 Explicit QoS separation:
 
 - live pipeline thread: user-interactive.
-- final TDT worker: user-initiated (user-visible latency path).
+- finalization worker: user-initiated (user-visible latency path).
 - partial-audit worker: background.
 
 Other important choices:
@@ -169,13 +169,13 @@ Other important choices:
 
 ## 8. Configuration Surface
 
-`PipelineConfig` governs VAD/EOU/incremental/finalization behavior.
+`PipelineConfig` governs VAD/streaming/incremental/finalization behavior.
 Key classes of knobs:
 
 - VAD thresholds and start confirmation,
-- silence/end-of-utterance thresholds,
+- silence/end-of-turn thresholds,
 - incremental cadence/overlap/context/wait timings,
-- model paths (VAD + EOU + TDT).
+- model paths (VAD + MLX Nemotron).
 
 Host applications (Azad/CLI) are expected to provide coherent defaults. Azad default values live in `azad/src/config.rs`.
 

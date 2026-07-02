@@ -125,7 +125,7 @@ INFO
 
 cat <<RUST
 #[test]
-#[ignore = "requires Parakeet EOU/TDT + Silero VAD models on disk"]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn $fn_name() {
   let Some(r) = run_fixture("$fixture_id") else {
     return;
