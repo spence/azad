@@ -2,7 +2,8 @@
 
 set -eu
 
-# Download ASR model assets for Azad/azad-asr.
+# Download legacy Parakeet ASR assets for azad-asr CLI/replay debugging.
+# The Azad app downloads the MLX Nemotron pack from onboarding/settings.
 #
 # Default destination: <workspace>/models/{parakeet,vad}.
 # Pass an alternate model root as the first argument.

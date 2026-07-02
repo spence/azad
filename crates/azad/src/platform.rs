@@ -389,6 +389,8 @@ struct SettingsWindowRefs {
   removed_words_add_button: id,
   debug_checkbox: id,
   metrics_text_view: id,
+  models_name_label: id,
+  models_desc_label: id,
   models_status_label: id,
   models_progress_indicator: id,
   models_download_button: id,
@@ -470,6 +472,8 @@ pub struct SettingsViewModel {
   pub append_trailing_space_on_paste: bool,
   pub debug_stats_enabled: bool,
   pub metrics_text: String,
+  pub model_pack_display_name: String,
+  pub model_pack_description: String,
   pub model_pack_size_label: String,
   pub model_pack_status: crate::models::PackStatus,
   pub model_download_bytes_done: u64,
@@ -3573,6 +3577,11 @@ unsafe fn apply_connector_rows(refs: SettingsWindowRefs, connectors: &[Connector
 unsafe fn apply_models_view_state(refs: SettingsWindowRefs, model: &SettingsViewModel) {
   use crate::models::{PackStatus, format_size};
 
+  let name_ns = NSString::alloc(nil).init_str(&model.model_pack_display_name);
+  let _: () = msg_send![refs.models_name_label, setStringValue: name_ns];
+  let desc_ns = NSString::alloc(nil).init_str(&model.model_pack_description);
+  let _: () = msg_send![refs.models_desc_label, setStringValue: desc_ns];
+
   let (status_text, show_download, show_cancel, show_progress, progress_value) =
     match &model.model_pack_status {
       PackStatus::Ready => ("Installed".to_string(), false, false, false, 0.0),
@@ -6029,10 +6038,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   );
   let models_name_label: id = msg_send![class!(NSTextField), alloc];
   let models_name_label: id = msg_send![models_name_label, initWithFrame: models_name_frame];
-  let _: () = msg_send![
-      models_name_label,
-      setStringValue: NSString::alloc(nil).init_str("Parakeet v1")
-  ];
+  let _: () = msg_send![models_name_label, setStringValue: NSString::alloc(nil).init_str("")];
   let _: () = msg_send![models_name_label, setBezeled: NO];
   let _: () = msg_send![models_name_label, setDrawsBackground: NO];
   let _: () = msg_send![models_name_label, setEditable: NO];
@@ -6050,10 +6056,7 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   );
   let models_desc_label: id = msg_send![class!(NSTextField), alloc];
   let models_desc_label: id = msg_send![models_desc_label, initWithFrame: models_desc_frame];
-  let _: () = msg_send![
-      models_desc_label,
-      setStringValue: NSString::alloc(nil).init_str("Silero VAD + Parakeet streaming/finalization ASR")
-  ];
+  let _: () = msg_send![models_desc_label, setStringValue: NSString::alloc(nil).init_str("")];
   let _: () = msg_send![models_desc_label, setBezeled: NO];
   let _: () = msg_send![models_desc_label, setDrawsBackground: NO];
   let _: () = msg_send![models_desc_label, setEditable: NO];
@@ -6249,6 +6252,8 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     removed_words_add_button,
     debug_checkbox,
     metrics_text_view,
+    models_name_label,
+    models_desc_label,
     models_status_label,
     models_progress_indicator,
     models_download_button,

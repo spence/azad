@@ -22,15 +22,16 @@ just start
 just status
 ```
 
-On first launch, Azad opens onboarding and downloads its model pack into
-`~/Library/Application Support/Azad/models`. The pack is about 3.0 GB and is not
-stored in Git.
+On first launch, Azad opens onboarding and downloads its MLX Nemotron model pack
+into `~/Library/Application Support/Azad/models`. The default pack is about
+1.3 GB and is not stored in Git.
 
 ## Requirements
 
-- macOS 13 or newer
+- macOS 14 or newer
 - Rust stable, with Rust 2024 edition support
 - Xcode Command Line Tools
+- Full Xcode for the MLX Metal toolchain used by source installs
 - `just`
 - `cmake`
 - network access to crates.io, GitHub, and Hugging Face for dependencies/models
@@ -41,6 +42,9 @@ Homebrew setup:
 xcode-select --install
 brew install just cmake
 ```
+
+If `just install` cannot find Apple’s `metal` compiler, it will try to use
+`/Applications/Xcode.app` and download Xcode’s Metal Toolchain component.
 
 ## Repository Layout
 
@@ -55,10 +59,15 @@ or upstream third-party crates are Cargo dependencies pinned in `Cargo.lock`.
 
 Current notable dependency choices:
 
-- `parakeet-rs` is pinned to a public Git commit because the crates.io release
-  does not yet expose the EOU turn APIs Azad needs.
-- `whisper-cpp-plus` comes from crates.io; its sys crate downloads the pinned
-  `whisper.cpp` source during build when needed.
+- `azad-mlx-asr` is a bundled Swift helper that runs
+  `mlx-community/nemotron-3.5-asr-streaming-0.6b` with MLXAudio Swift. Source
+  installs build this helper during `just install`.
+- `whisper-cpp-plus` is used for Silero VAD only. Azad does not use Whisper for
+  speech-to-text. Its sys crate downloads the pinned `whisper.cpp` source during
+  build when needed.
+- `parakeet-rs` remains a legacy engine/CLI/replay dependency while the MLX
+  migration is in progress. The app onboarding and settings downloads expose
+  only the MLX Nemotron pack.
 
 ## Common Commands
 
@@ -105,14 +114,6 @@ Required release secrets:
 
 For local release builds, `.codesign.env` provides defaults and explicit environment
 variables override values from that file.
-
-For the terminal ASR CLI:
-
-```bash
-crates/azad-asr/scripts/download-parakeet-models.sh
-cargo run -p azad-asr -- devices
-cargo run -p azad-asr -- listen --select-device
-```
 
 ## Permissions
 

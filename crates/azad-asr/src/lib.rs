@@ -2,6 +2,7 @@ pub mod audio;
 pub mod devices;
 pub mod embed;
 pub mod logging;
+pub(crate) mod mlx;
 pub mod pipeline;
 pub mod render;
 pub mod stability;

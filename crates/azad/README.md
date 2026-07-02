@@ -25,7 +25,10 @@ just uninstall # remove LaunchAgent plist (keeps app bundle)
 
 ## Prerequisites
 
+- macOS 14 or newer
 - Rust toolchain
+- Xcode Command Line Tools with Swift
+- Full Xcode for the MLX Metal toolchain used by source installs
 - `just` (`brew install just`)
 
 ## Microphone Permission

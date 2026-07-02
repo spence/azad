@@ -5,8 +5,15 @@ pub struct ModelPackDef {
   pub id: &'static str,
   pub display_name: &'static str,
   pub description: &'static str,
+  pub backend: ModelBackend,
   pub total_size_bytes: u64,
   pub files: &'static [ModelFileDef],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelBackend {
+  Parakeet,
+  MlxNemotron,
 }
 
 pub struct ModelFileDef {
@@ -24,11 +31,12 @@ pub enum PackStatus {
   Incomplete,
 }
 
-pub static PARAKEET_V1: ModelPackDef = ModelPackDef {
-  id: "parakeet-v1",
-  display_name: "Parakeet v1",
-  description: "Silero VAD + Parakeet streaming/finalization ASR",
-  total_size_bytes: 3_031_399_977,
+pub static NEMOTRON_35_MLX_BF16_V1: ModelPackDef = ModelPackDef {
+  id: "nemotron-3.5-mlx-bf16-v1",
+  display_name: "Nemotron 3.5 MLX bf16",
+  description: "Silero VAD + MLX Nemotron 3.5 streaming/final ASR",
+  backend: ModelBackend::MlxNemotron,
+  total_size_bytes: 1_277_588_214,
   files: &[
     ModelFileDef {
       rel_path: "vad/ggml-silero-v6.2.0.bin",
@@ -37,54 +45,36 @@ pub static PARAKEET_V1: ModelPackDef = ModelPackDef {
       sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
     },
     ModelFileDef {
-      rel_path: "eou/encoder.onnx",
-      url: "https://huggingface.co/altunenes/parakeet-rs/resolve/a61d2818df4659c956b9661a9447f46e98c15126/realtime_eou_120m-v1-onnx/encoder.onnx",
-      size_bytes: 459_341_289,
-      sha256: "d472887cc38a784a5bfc21c2dbe247639edc3b3f9992388d8ceceaec07256b5b",
+      rel_path: "mlx/config.json",
+      url: "https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b/resolve/e550040c0478027ed679b2b6b0d055502c103663/config.json",
+      size_bytes: 159_432,
+      sha256: "97fe51f0970514e6cac928bcaebac4dbb1dba554f980642542ffac451a0dca56",
     },
     ModelFileDef {
-      rel_path: "eou/decoder_joint.onnx",
-      url: "https://huggingface.co/altunenes/parakeet-rs/resolve/a61d2818df4659c956b9661a9447f46e98c15126/realtime_eou_120m-v1-onnx/decoder_joint.onnx",
-      size_bytes: 21_347_639,
-      sha256: "9d2553ac043c2fc5f69e970769b0fb8ab9103fbfdeb7d26a1ea9729d4bd2dddd",
+      rel_path: "mlx/model.safetensors",
+      url: "https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b/resolve/e550040c0478027ed679b2b6b0d055502c103663/model.safetensors",
+      size_bytes: 1_276_058_836,
+      sha256: "1b78e4551371b1438daba0e8c9e1673bb18606994c1bcc493d85c5454d428ee5",
     },
     ModelFileDef {
-      rel_path: "eou/tokenizer.json",
-      url: "https://huggingface.co/altunenes/parakeet-rs/resolve/a61d2818df4659c956b9661a9447f46e98c15126/realtime_eou_120m-v1-onnx/tokenizer.json",
-      size_bytes: 20_053,
-      sha256: "f6b0ad8690559351fa478116fe0985a203b76f7c040f3a9381f485c99c0325f8",
+      rel_path: "mlx/tokenizer.model",
+      url: "https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b/resolve/e550040c0478027ed679b2b6b0d055502c103663/tokenizer.model",
+      size_bytes: 406_554,
+      sha256: "ce3895e40806f02a26c3a225161b96ef682d6c0054bae32a245dec4258d7d291",
     },
     ModelFileDef {
-      rel_path: "tdt/encoder-model.onnx",
-      url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/encoder-model.onnx",
-      size_bytes: 41_770_866,
-      sha256: "98a74b21b4cc0017c1e7030319a4a96f4a9506e50f0708f3a516d02a77c96bb1",
-    },
-    ModelFileDef {
-      rel_path: "tdt/encoder-model.onnx.data",
-      url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/encoder-model.onnx.data",
-      size_bytes: 2_435_420_160,
-      sha256: "9a22d372c51455c34f13405da2520baefb7125bd16981397561423ed32d24f36",
-    },
-    ModelFileDef {
-      rel_path: "tdt/decoder_joint-model.onnx",
-      url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/decoder_joint-model.onnx",
-      size_bytes: 72_520_893,
-      sha256: "e978ddf6688527182c10fde2eb4b83068421648985ef23f7a86be732be8706c1",
-    },
-    ModelFileDef {
-      rel_path: "tdt/vocab.txt",
-      url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/vocab.txt",
-      size_bytes: 93_939,
-      sha256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+      rel_path: "mlx/vocab.txt",
+      url: "https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b/resolve/e550040c0478027ed679b2b6b0d055502c103663/vocab.txt",
+      size_bytes: 78_294,
+      sha256: "d74b60edd1cad792cfce25dcb7e1048d78d717cf4f29acaae2854262d5189f4f",
     },
   ],
 };
 
-pub static ALL_PACKS: &[&ModelPackDef] = &[&PARAKEET_V1];
+pub static ALL_PACKS: &[&ModelPackDef] = &[&NEMOTRON_35_MLX_BF16_V1];
 
 pub fn default_pack() -> &'static ModelPackDef {
-  &PARAKEET_V1
+  &NEMOTRON_35_MLX_BF16_V1
 }
 
 pub fn pack_by_id(id: &str) -> Option<&'static ModelPackDef> {
@@ -132,13 +122,51 @@ pub fn check_pack_status(pack: &ModelPackDef) -> PackStatus {
   }
 }
 
-/// Returns (vad_model_path, eou_dir, tdt_dir) if the pack is ready.
-pub fn pipeline_paths(pack: &ModelPackDef) -> Option<(PathBuf, PathBuf, PathBuf)> {
+pub struct ResolvedPipelinePaths {
+  pub vad_model_path: PathBuf,
+  pub backend: ResolvedModelBackend,
+}
+
+pub enum ResolvedModelBackend {
+  Parakeet { eou_dir: PathBuf, tdt_dir: PathBuf },
+  MlxNemotron { model_dir: PathBuf },
+}
+
+/// Returns pipeline model paths if the pack has the required runtime directories.
+pub fn pipeline_paths(pack: &ModelPackDef) -> Option<ResolvedPipelinePaths> {
   let dir = pack_dir(pack.id)?;
   let vad = dir.join("vad").join("ggml-silero-v6.2.0.bin");
-  let eou = dir.join("eou");
-  let tdt = dir.join("tdt");
-  if vad.exists() && eou.exists() && tdt.exists() { Some((vad, eou, tdt)) } else { None }
+  match pack.backend {
+    ModelBackend::Parakeet => {
+      let eou = dir.join("eou");
+      let tdt = dir.join("tdt");
+      if vad.exists() && eou.exists() && tdt.exists() {
+        Some(ResolvedPipelinePaths {
+          vad_model_path: vad,
+          backend: ResolvedModelBackend::Parakeet { eou_dir: eou, tdt_dir: tdt },
+        })
+      } else {
+        None
+      }
+    }
+    ModelBackend::MlxNemotron => {
+      let model_dir = dir.join("mlx");
+      if vad.exists() && mlx_nemotron_model_dir_ready(&model_dir) {
+        Some(ResolvedPipelinePaths {
+          vad_model_path: vad,
+          backend: ResolvedModelBackend::MlxNemotron { model_dir },
+        })
+      } else {
+        None
+      }
+    }
+  }
+}
+
+pub fn mlx_nemotron_model_dir_ready(model_dir: &std::path::Path) -> bool {
+  ["config.json", "model.safetensors", "tokenizer.model", "vocab.txt"]
+    .iter()
+    .all(|file| model_dir.join(file).is_file())
 }
 
 pub fn format_size(bytes: u64) -> String {
@@ -148,5 +176,47 @@ pub fn format_size(bytes: u64) -> String {
     format!("{:.0} MB", bytes as f64 / 1_000_000.0)
   } else {
     format!("{:.0} KB", bytes as f64 / 1_000.0)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::fs;
+  use std::time::{SystemTime, UNIX_EPOCH};
+
+  #[test]
+  fn default_pack_is_bf16_mlx_nemotron() {
+    let pack = default_pack();
+    assert_eq!(pack.id, "nemotron-3.5-mlx-bf16-v1");
+    assert_eq!(pack.backend, ModelBackend::MlxNemotron);
+    assert!(pack.files.iter().any(|f| f.rel_path == "mlx/model.safetensors"));
+    assert!(!pack.files.iter().any(|f| f.rel_path.ends_with(".onnx")));
+  }
+
+  #[test]
+  fn app_download_packs_only_include_mlx_nemotron() {
+    assert_eq!(ALL_PACKS.len(), 1);
+    assert_eq!(ALL_PACKS[0].id, default_pack().id);
+    assert!(pack_by_id("parakeet-v1").is_none());
+  }
+
+  #[test]
+  fn mlx_nemotron_model_dir_requires_all_runtime_files() {
+    let dir = std::env::temp_dir().join(format!(
+      "azad-mlx-model-test-{}",
+      SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+
+    for file in ["config.json", "model.safetensors", "tokenizer.model"] {
+      fs::write(dir.join(file), b"x").unwrap();
+    }
+    assert!(!mlx_nemotron_model_dir_ready(&dir));
+
+    fs::write(dir.join("vocab.txt"), b"x").unwrap();
+    assert!(mlx_nemotron_model_dir_ready(&dir));
+
+    let _ = fs::remove_dir_all(dir);
   }
 }

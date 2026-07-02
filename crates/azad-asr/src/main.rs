@@ -13,7 +13,7 @@ use asr::audio::cpal_input::{CpalInput, CpalInputConfig};
 use asr::audio::decoded_input::DecodedInput;
 use asr::audio::wav_input::WavInput;
 use asr::logging;
-use asr::pipeline::{PipelineConfig, run_pipeline};
+use asr::pipeline::{PipelineConfig, StreamingModelConfig, run_pipeline};
 use asr::render::{RenderEvent, Renderer};
 use asr::ui;
 
@@ -415,6 +415,7 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
 
   Ok(PipelineConfig {
     vad_model_path,
+    streaming_model: StreamingModelConfig::Parakeet,
     vad_thold: args.vad_thold,
     vad_start_chunks: args.vad_start_chunks,
     pre_roll_ms: args.pre_roll_ms,
@@ -426,6 +427,7 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
     stable_k: args.stable_k,
     stable_h: args.stable_h,
     enable_tdt_final_pass: true,
+    finalizing_pulse_enabled: true,
     incremental_finalization_enabled: args.incremental_finalization_enabled,
     incremental_slice_ms: args.incremental_slice_ms,
     incremental_overlap_ms: args.incremental_overlap_ms,

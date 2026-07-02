@@ -974,6 +974,7 @@ impl AppController {
     let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
     platform::set_overlay_debug_logs_enabled(debug_stats_enabled);
     let active_pack_id = preferred_store::load_active_model_pack()
+      .filter(|id| models::pack_by_id(id).is_some())
       .unwrap_or_else(|| models::default_pack().id.to_string());
     let transcript_index = TranscriptIndex::load();
     let removed_words = preferred_store::load_removed_words();
@@ -2086,6 +2087,8 @@ impl AppController {
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
       debug_stats_enabled: self.debug_stats_enabled,
       metrics_text,
+      model_pack_display_name: pack.display_name.to_string(),
+      model_pack_description: pack.description.to_string(),
       model_pack_size_label: models::format_size(pack.total_size_bytes),
       model_pack_status: pack_status,
       model_download_bytes_done: self.download_progress.0,

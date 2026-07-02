@@ -1,4 +1,5 @@
 use crate::audio::{AudioHealth, AudioInput, AudioSpec};
+use crate::mlx::{MlxNemotronAsr, MlxNemotronConfig};
 use crate::render::{RenderEvent, Renderer, TurnStartedReason};
 use crate::stability::StabilityTracker;
 use crate::thread_qos;
@@ -115,6 +116,14 @@ enum FinalizeTailPlan {
   SkipTailSafe,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalizingPulsePlan {
+  Emit,
+  SkipDisabled,
+  SkipAudioEmpty,
+  SkipDraftEmpty,
+}
+
 fn finalize_tail_plan(
   has_refined_text: bool,
   audio_len: usize,
@@ -131,6 +140,28 @@ fn finalize_tail_plan(
   } else {
     FinalizeTailPlan::RunTail
   }
+}
+
+fn finalizing_pulse_plan(
+  finalizing_pulse_enabled: bool,
+  audio_has_samples: bool,
+  draft_has_text: bool,
+) -> FinalizingPulsePlan {
+  if !finalizing_pulse_enabled {
+    FinalizingPulsePlan::SkipDisabled
+  } else if !audio_has_samples {
+    FinalizingPulsePlan::SkipAudioEmpty
+  } else if !draft_has_text {
+    FinalizingPulsePlan::SkipDraftEmpty
+  } else {
+    FinalizingPulsePlan::Emit
+  }
+}
+
+fn choose_streaming_final_text(draft: String, model_final: Option<String>) -> String {
+  let model_final = model_final.unwrap_or_default();
+  let model_final = model_final.trim();
+  if !model_final.is_empty() { model_final.to_string() } else { draft.trim().to_string() }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,8 +221,21 @@ pub struct AudioHealthView {
 }
 
 #[derive(Debug, Clone)]
+pub enum StreamingModelConfig {
+  Parakeet,
+  MlxNemotron {
+    model_dir: PathBuf,
+    language: String,
+    streaming_chunk_ms: u32,
+    final_chunk_ms: u32,
+    helper_path: Option<PathBuf>,
+  },
+}
+
+#[derive(Debug, Clone)]
 pub struct PipelineConfig {
   pub vad_model_path: PathBuf,
+  pub streaming_model: StreamingModelConfig,
   pub vad_thold: f32,
   pub vad_start_chunks: usize,
   pub pre_roll_ms: u32,
@@ -233,6 +277,9 @@ pub struct PipelineConfig {
   pub stable_h: usize,
 
   pub enable_tdt_final_pass: bool,
+  /// Controls the UI "finalizing" pulse independently from the backend used for
+  /// final text. TDT, MLX, or another backend can all run finalization.
+  pub finalizing_pulse_enabled: bool,
   pub incremental_finalization_enabled: bool,
   pub incremental_slice_ms: u32,
   pub incremental_overlap_ms: u32,
@@ -245,8 +292,100 @@ pub struct PipelineConfig {
 
 impl PipelineConfig {
   pub fn model_label(&self) -> String {
-    let tdt = self.parakeet_tdt_dir.file_name().and_then(|s| s.to_str()).unwrap_or("tdt");
-    format!("parakeet+eou ({tdt})")
+    match &self.streaming_model {
+      StreamingModelConfig::Parakeet => {
+        let tdt = self.parakeet_tdt_dir.file_name().and_then(|s| s.to_str()).unwrap_or("tdt");
+        format!("parakeet+eou ({tdt})")
+      }
+      StreamingModelConfig::MlxNemotron {
+        model_dir,
+        language,
+        streaming_chunk_ms,
+        final_chunk_ms,
+        ..
+      } => {
+        let model = model_dir.file_name().and_then(|s| s.to_str()).unwrap_or("nemotron-mlx");
+        format!(
+          "nemotron-3.5-mlx ({model}, {language}, live={streaming_chunk_ms}ms, final={final_chunk_ms}ms)"
+        )
+      }
+    }
+  }
+}
+
+enum StreamingAsr {
+  Parakeet(ParakeetEOU),
+  MlxNemotron(MlxNemotronAsr),
+}
+
+impl StreamingAsr {
+  fn load(cfg: &PipelineConfig) -> Result<Self> {
+    match &cfg.streaming_model {
+      StreamingModelConfig::Parakeet => {
+        let eou_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
+        let eou =
+          ParakeetEOU::from_pretrained(&cfg.parakeet_eou_dir, Some(eou_cfg)).map_err(|e| {
+            anyhow!("failed to load Parakeet EOU model at {}: {e}", cfg.parakeet_eou_dir.display())
+          })?;
+        Ok(Self::Parakeet(eou))
+      }
+      StreamingModelConfig::MlxNemotron {
+        model_dir,
+        language,
+        streaming_chunk_ms,
+        final_chunk_ms,
+        helper_path,
+      } => {
+        let mlx = MlxNemotronAsr::load(&MlxNemotronConfig {
+          model_dir: model_dir.clone(),
+          language: language.clone(),
+          streaming_chunk_ms: *streaming_chunk_ms,
+          final_chunk_ms: *final_chunk_ms,
+          helper_path: helper_path.clone(),
+        })
+        .with_context(|| format!("failed to load MLX Nemotron model at {}", model_dir.display()))?;
+        Ok(Self::MlxNemotron(mlx))
+      }
+    }
+  }
+
+  fn transcribe_chunk(&mut self, piece: &[f32]) -> Result<(String, bool)> {
+    match self {
+      Self::Parakeet(eou) => eou
+        .transcribe_with_eou(piece, false)
+        .map_err(|e| anyhow!("Parakeet EOU transcribe failed: {e}")),
+      Self::MlxNemotron(mlx) => {
+        let out = mlx.transcribe_chunk(piece)?;
+        Ok((out, false))
+      }
+    }
+  }
+
+  fn reset_turn(&mut self) -> Result<()> {
+    match self {
+      Self::Parakeet(eou) => {
+        eou.reset_turn();
+        Ok(())
+      }
+      Self::MlxNemotron(mlx) => mlx.reset_turn(),
+    }
+  }
+
+  fn reset_after_tentative_finalize(&mut self) -> Result<()> {
+    match self {
+      Self::Parakeet(eou) => {
+        eou.reset_turn();
+        Ok(())
+      }
+      Self::MlxNemotron(_) => Ok(()),
+    }
+  }
+
+  fn final_transcript(&mut self) -> Result<Option<String>> {
+    match self {
+      Self::Parakeet(_) => Ok(None),
+      Self::MlxNemotron(mlx) => mlx.final_transcript(),
+    }
   }
 }
 
@@ -452,19 +591,19 @@ pub fn run_pipeline_with_options(
     format!("failed to load Silero VAD model at {}", cfg.vad_model_path.display())
   })?;
 
-  // EOU runs on the main pipeline thread: keep it lightweight.
-  let eou_cfg = ExecutionConfig::new().with_intra_threads(2).with_inter_threads(1);
-  let eou = ParakeetEOU::from_pretrained(&cfg.parakeet_eou_dir, Some(eou_cfg)).map_err(|e| {
-    anyhow!("failed to load Parakeet EOU model at {}: {e}", cfg.parakeet_eou_dir.display())
-  })?;
+  let streaming_asr = StreamingAsr::load(&cfg)?;
 
   // Heavy final pass runs in worker thread so we never block capture.
   let latest_speculative_job_id = Arc::new(AtomicU64::new(NO_SPECULATIVE_JOB_ID));
-  let (tdt_tx, async_rx, tdt_handle) = spawn_tdt_worker(
-    cfg.parakeet_tdt_dir.clone(),
-    Arc::clone(&renderer),
-    Arc::clone(&latest_speculative_job_id),
-  );
+  let (tdt_tx, async_rx, tdt_handle) = if cfg.enable_tdt_final_pass {
+    spawn_tdt_worker(
+      cfg.parakeet_tdt_dir.clone(),
+      Arc::clone(&renderer),
+      Arc::clone(&latest_speculative_job_id),
+    )
+  } else {
+    spawn_noop_tdt_worker()
+  };
   let worker_controls = options.controls.as_ref().map(Arc::clone);
   let (partial_audit_tx, partial_audit_handle) = spawn_partial_audit_worker(
     cfg.parakeet_tdt_dir.clone(),
@@ -480,7 +619,7 @@ pub fn run_pipeline_with_options(
     renderer,
     cfg,
     vad,
-    eou,
+    streaming_asr,
     tdt_tx,
     partial_audit_tx,
     async_rx,
@@ -538,7 +677,7 @@ impl Runner {
     renderer: Arc<dyn Renderer>,
     cfg: PipelineConfig,
     vad: WhisperVadProcessor,
-    eou: ParakeetEOU,
+    streaming_asr: StreamingAsr,
     tdt_tx: crossbeam_channel::Sender<TdtJob>,
     partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
     async_rx: crossbeam_channel::Receiver<TdtResult>,
@@ -553,7 +692,7 @@ impl Runner {
       renderer,
       cfg,
       vad,
-      eou,
+      streaming_asr,
       tdt_tx,
       partial_audit_tx,
       async_rx,
@@ -609,7 +748,7 @@ struct PipelineCore {
   input_spec: AudioSpec,
 
   vad: WhisperVadProcessor,
-  eou: ParakeetEOU,
+  streaming_asr: StreamingAsr,
   tdt_tx: crossbeam_channel::Sender<TdtJob>,
   partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
   async_rx: crossbeam_channel::Receiver<TdtResult>,
@@ -669,7 +808,7 @@ struct PipelineCore {
   // Diagnostic counters — surface as TOON_TENTATIVE log fields on commit so
   // we can spot the EOU-stall fingerprint (chunks > 0 with text_chunks == 0
   // means EOU produced no text during the entire window, which is the
-  // failure mode the `eou.reset_turn()` call in `enter_tentative_finalize`
+  // failure mode the streaming decoder reset in `enter_tentative_finalize`
   // is meant to prevent).
   tentative_active_chunks: u32,
   tentative_active_with_text: u32,
@@ -701,7 +840,7 @@ impl PipelineCore {
     renderer: Arc<dyn Renderer>,
     cfg: PipelineConfig,
     vad: WhisperVadProcessor,
-    eou: ParakeetEOU,
+    streaming_asr: StreamingAsr,
     tdt_tx: crossbeam_channel::Sender<TdtJob>,
     partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
     async_rx: crossbeam_channel::Receiver<TdtResult>,
@@ -723,7 +862,7 @@ impl PipelineCore {
       renderer,
       input_spec,
       vad,
-      eou,
+      streaming_asr,
       tdt_tx,
       partial_audit_tx,
       async_rx,
@@ -1211,7 +1350,7 @@ impl PipelineCore {
     // being fed, VAD keeps being scored. Strong/weak recovery branches above
     // can un-latch us; otherwise this very block re-fires next chunk and
     // commits when the window elapses.
-    self.enter_tentative_finalize(reason, vad_avg);
+    self.enter_tentative_finalize(reason, vad_avg)?;
     Ok(())
   }
 
@@ -1242,7 +1381,7 @@ impl PipelineCore {
     self.turn_started_at = Instant::now();
     self.turn_started_by_vad = reason == TurnStartReason::Vad;
 
-    self.eou.reset_turn();
+    self.streaming_asr.reset_turn()?;
     self.eou_draft.clear();
     self.prev_silence_ms = 0;
     self.seen_eou_since_speech = false;
@@ -1325,10 +1464,7 @@ impl PipelineCore {
   }
 
   fn feed_eou(&mut self, piece: &[f32]) -> Result<bool> {
-    let (out, saw_eou) = self
-      .eou
-      .transcribe_with_eou(piece, false)
-      .map_err(|e| anyhow!("Parakeet EOU transcribe failed: {e}"))?;
+    let (out, saw_eou) = self.streaming_asr.transcribe_chunk(piece)?;
 
     if !out.is_empty() {
       let was_empty = self.eou_draft.is_empty();
@@ -1378,7 +1514,7 @@ impl PipelineCore {
     Ok(saw_eou)
   }
 
-  fn enter_tentative_finalize(&mut self, reason: &'static str, vad_prob: f32) {
+  fn enter_tentative_finalize(&mut self, reason: &'static str, vad_prob: f32) -> Result<()> {
     self.tentative_active = true;
     self.tentative_latched_at_audio_samples = self.turn_audio.len();
     self.tentative_latch_reason = reason;
@@ -1399,7 +1535,7 @@ impl PipelineCore {
     // text) from ever firing. Cost: we lose inter-chunk RNN context for the
     // recovery audio, which is acceptable since the user has just finished
     // a clause.
-    self.eou.reset_turn();
+    self.streaming_asr.reset_after_tentative_finalize()?;
     if self.debug_stats_enabled() {
       eprintln!(
         "TOON_TENTATIVE turn_id={} action=enter reason={} audio_samples={} vad_prob={:.3}",
@@ -1409,6 +1545,7 @@ impl PipelineCore {
         vad_prob
       );
     }
+    Ok(())
   }
 
   fn exit_tentative_finalize_recover(&mut self, signal: &'static str) {
@@ -1488,32 +1625,32 @@ impl PipelineCore {
     enable_tdt_final_pass && audio_has_samples
   }
 
-  /// Emit `RenderEvent::Finalizing` for the current turn. Used by
-  /// `enter_tentative_finalize` so the pulsing border becomes visible
-  /// immediately at EOU latch — the recovery window keeps it on screen
-  /// even when TDT returns quickly. Skipped when there's nothing to
-  /// pulse: no TDT-final-pass mode, no audio yet, or no draft text.
+  /// Emit `RenderEvent::Finalizing` for the current turn. Used before backend
+  /// finalization so the overlay can show the in-flight state. Skipped when
+  /// finalization UI is disabled, there is no audio, or there is no draft text.
   fn emit_finalizing_pulse(&self) {
-    if !self.cfg.enable_tdt_final_pass || self.turn_audio.is_empty() {
+    let draft = self.current_finalize_draft();
+    let plan = finalizing_pulse_plan(
+      self.cfg.finalizing_pulse_enabled,
+      !self.turn_audio.is_empty(),
+      !draft.is_empty(),
+    );
+    let skip_reason = match plan {
+      FinalizingPulsePlan::Emit => None,
+      FinalizingPulsePlan::SkipDisabled => Some("pulse_disabled"),
+      FinalizingPulsePlan::SkipAudioEmpty => Some("audio_empty"),
+      FinalizingPulsePlan::SkipDraftEmpty => Some("empty_draft"),
+    };
+    if let Some(reason) = skip_reason {
       if self.debug_stats_enabled() {
         eprintln!(
           "TOON_FINALIZE_PULSE turn_id={} action=skip reason={} \
-           enable_tdt={} audio_empty={}",
+           pulse_enabled={} audio_empty={} draft_empty={} tracker_len={} eou_draft_len={}",
           self.turn_id,
-          if !self.cfg.enable_tdt_final_pass { "tdt_disabled" } else { "audio_empty" },
-          self.cfg.enable_tdt_final_pass,
+          reason,
+          self.cfg.finalizing_pulse_enabled,
           self.turn_audio.is_empty(),
-        );
-      }
-      return;
-    }
-    let draft = self.current_finalize_draft();
-    if draft.is_empty() {
-      if self.debug_stats_enabled() {
-        eprintln!(
-          "TOON_FINALIZE_PULSE turn_id={} action=skip reason=empty_draft tracker_len={} \
-           eou_draft_len={}",
-          self.turn_id,
+          draft.is_empty(),
           self.tracker.full_text().len(),
           self.eou_draft.len(),
         );
@@ -1533,6 +1670,9 @@ impl PipelineCore {
 
   fn finish_turn(&mut self, already_pulsed: bool) -> Result<()> {
     let draft = self.current_finalize_draft();
+    if !already_pulsed {
+      self.emit_finalizing_pulse();
+    }
     let audio_snapshot: Vec<f32> = std::mem::take(&mut self.turn_audio);
     if self.cfg.enable_tdt_final_pass {
       if !draft.is_empty() {
@@ -1545,20 +1685,32 @@ impl PipelineCore {
         !audio_snapshot.is_empty(),
         &draft,
       ) {
-        if !already_pulsed {
-          self
-            .renderer
-            .emit(RenderEvent::Finalizing { id: self.turn_id, text: draft.clone() });
-        }
         if self.cfg.incremental_finalization_enabled {
           self.submit_incremental_final_pass(audio_snapshot, &draft);
         } else {
           self.submit_final_pass(audio_snapshot);
         }
       }
-    } else if !draft.is_empty() {
-      // EOU-only mode: finalize immediately without a TDT refinement pass.
-      self.renderer.emit(RenderEvent::ReplaceLine { id: self.turn_id, text: draft });
+    } else {
+      let finalize_started_at = Instant::now();
+      let model_final = self.streaming_asr.final_transcript()?;
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_STREAM_FINALIZE turn_id={} elapsed_ms={} audio_samples={} draft_chars={} \
+           model_final_chars={}",
+          self.turn_id,
+          finalize_started_at.elapsed().as_millis(),
+          audio_snapshot.len(),
+          draft.chars().count(),
+          model_final.as_deref().unwrap_or("").chars().count(),
+        );
+      }
+      let final_text = choose_streaming_final_text(draft, model_final);
+      if !final_text.is_empty() {
+        self
+          .renderer
+          .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text });
+      }
     }
 
     self.tracker.reset();
@@ -1583,7 +1735,7 @@ impl PipelineCore {
     self.pending_active_clear_chunks = 0;
     self.tracker.reset();
     self.eou_draft.clear();
-    self.eou.reset_turn();
+    let _ = self.streaming_asr.reset_turn();
     self.incremental.reset(Instant::now());
 
     self.renderer.emit(RenderEvent::Active {
@@ -2580,6 +2732,17 @@ fn spawn_tdt_worker(
     }
   });
 
+  (tx, async_rx, handle)
+}
+
+fn spawn_noop_tdt_worker() -> (
+  crossbeam_channel::Sender<TdtJob>,
+  crossbeam_channel::Receiver<TdtResult>,
+  std::thread::JoinHandle<()>,
+) {
+  let (tx, rx) = crossbeam_channel::unbounded::<TdtJob>();
+  let (_async_tx, async_rx) = crossbeam_channel::unbounded::<TdtResult>();
+  let handle = std::thread::spawn(move || while rx.recv().is_ok() {});
   (tx, async_rx, handle)
 }
 
@@ -4407,10 +4570,11 @@ impl LinearResampler {
 mod tests {
   use super::{
     DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES, EmptyPartialAction, EouEmission,
-    FinalizeTailPlan, INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_TAIL_MAX_WAIT_FACTOR,
-    IncrementalPartialSegment, MIDDLE_COVERAGE_TOLERANCE_SAMPLES, PipelineControls, PipelineCore,
-    TAIL_COVERAGE_TOLERANCE_SAMPLES, cap_segment_start, debug_recording_stem, empty_partial_action,
-    eou_chars_in_range, eou_corroborates_silence, finalize_tail_plan, incremental_tail_wait_ms,
+    FinalizeTailPlan, FinalizingPulsePlan, INCREMENTAL_LIVE_TAIL_WAIT_FACTOR,
+    INCREMENTAL_TAIL_MAX_WAIT_FACTOR, IncrementalPartialSegment, MIDDLE_COVERAGE_TOLERANCE_SAMPLES,
+    PipelineControls, PipelineCore, TAIL_COVERAGE_TOLERANCE_SAMPLES, cap_segment_start,
+    choose_streaming_final_text, debug_recording_stem, empty_partial_action, eou_chars_in_range,
+    eou_corroborates_silence, finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
     is_one_char_audio_cutoff_truncation, leading_coverage_is_incomplete,
     middle_coverage_is_incomplete, non_empty_partials, normalize_chunk_case,
     prune_debug_recordings, samples_to_ms_at_target_sr, stitch_incremental_text,
@@ -4805,6 +4969,51 @@ mod tests {
   fn finalize_tail_plan_runs_without_refined_text() {
     let plan = finalize_tail_plan(false, 302_080, 0, false);
     assert_eq!(plan, FinalizeTailPlan::RunTail);
+  }
+
+  #[test]
+  fn finalizing_pulse_emits_for_non_tdt_backend_finalization() {
+    let plan = finalizing_pulse_plan(true, true, true);
+    assert_eq!(plan, FinalizingPulsePlan::Emit);
+  }
+
+  #[test]
+  fn finalizing_pulse_can_be_disabled_independently() {
+    let plan = finalizing_pulse_plan(false, true, true);
+    assert_eq!(plan, FinalizingPulsePlan::SkipDisabled);
+  }
+
+  #[test]
+  fn finalizing_pulse_skips_empty_audio() {
+    let plan = finalizing_pulse_plan(true, false, true);
+    assert_eq!(plan, FinalizingPulsePlan::SkipAudioEmpty);
+  }
+
+  #[test]
+  fn finalizing_pulse_skips_empty_draft() {
+    let plan = finalizing_pulse_plan(true, true, false);
+    assert_eq!(plan, FinalizingPulsePlan::SkipDraftEmpty);
+  }
+
+  #[test]
+  fn streaming_final_text_prefers_model_finalization() {
+    let text = choose_streaming_final_text(
+      "live draft without tail".to_string(),
+      Some("live draft with finalized tail".to_string()),
+    );
+    assert_eq!(text, "live draft with finalized tail");
+  }
+
+  #[test]
+  fn streaming_final_text_falls_back_to_live_draft_when_model_final_empty() {
+    let text = choose_streaming_final_text(" live draft ".to_string(), Some("   ".to_string()));
+    assert_eq!(text, "live draft");
+  }
+
+  #[test]
+  fn streaming_final_text_falls_back_to_live_draft_when_model_final_absent() {
+    let text = choose_streaming_final_text("live draft".to_string(), None);
+    assert_eq!(text, "live draft");
   }
 
   #[test]

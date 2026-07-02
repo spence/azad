@@ -21,7 +21,7 @@ dist:
 
 doctor:
     @missing=0; \
-    for tool in git cargo rustc just cmake clang; do \
+    for tool in git cargo rustc just cmake clang swift; do \
       if command -v "$tool" >/dev/null 2>&1; then \
         printf "ok  %s: %s\n" "$tool" "$(command -v "$tool")"; \
       else \
@@ -30,11 +30,22 @@ doctor:
       fi; \
     done; \
     if [[ "$(uname -s)" == "Darwin" ]]; then \
-      printf "ok  macos: %s\n" "$(sw_vers -productVersion)"; \
+      macos_version="$(sw_vers -productVersion)"; \
+      printf "ok  macos: %s\n" "$macos_version"; \
+      major="${macos_version%%.*}"; \
+      if [[ "$major" -lt 14 ]]; then printf "err macos: Azad MLX runtime requires macOS 14+\n"; missing=1; fi; \
       if xcode-select -p >/dev/null 2>&1; then \
         printf "ok  xcode-select: %s\n" "$(xcode-select -p)"; \
       else \
         printf "err xcode-select: command line tools missing\n"; \
+        missing=1; \
+      fi; \
+      if xcrun --find metal >/dev/null 2>&1; then \
+        printf "ok  metal: %s\n" "$(xcrun --find metal)"; \
+      elif [[ -d /Applications/Xcode.app/Contents/Developer ]] && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun --find metal >/dev/null 2>&1; then \
+        printf "ok  metal: %s\n" "$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun --find metal)"; \
+      else \
+        printf "err metal: missing; run DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain\n"; \
         missing=1; \
       fi; \
     else \

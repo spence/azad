@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use asr::audio::wav_input::WavInput;
-use asr::pipeline::{PipelineConfig, run_pipeline};
+use asr::pipeline::{PipelineConfig, StreamingModelConfig, run_pipeline};
 use asr::render::{RenderEvent, Renderer};
 
 const FIXTURE_AUDIO_DIR: &str = "tests/fixtures/audio";
@@ -318,6 +318,7 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
 
   Some(PipelineConfig {
     vad_model_path: vad,
+    streaming_model: StreamingModelConfig::Parakeet,
     vad_thold: 0.45,
     vad_start_chunks: 1,
     pre_roll_ms: 800,
@@ -329,6 +330,7 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
     stable_k: 3,
     stable_h: 5,
     enable_tdt_final_pass: true,
+    finalizing_pulse_enabled: true,
     incremental_finalization_enabled: true,
     incremental_slice_ms: 6_000,
     incremental_overlap_ms: 3_000,
