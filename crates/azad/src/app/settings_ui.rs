@@ -9,6 +9,11 @@ use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
 
 use super::AppController;
 
+fn updated_listen_modifier_mask(current: u8, bit: u8, enabled: bool) -> u8 {
+  let next = if enabled { current | bit } else { current & !bit };
+  if next == 0 { current } else { next }
+}
+
 impl AppController {
   pub(super) fn handle_menu_open_settings(&mut self) {
     platform::show_settings_window(self.settings_view_model());
@@ -45,13 +50,23 @@ impl AppController {
   }
 
   pub(super) fn handle_onboarding_set_listen_modifier(&mut self, bit: u8, enabled: bool) {
+    self.handle_listen_modifier_change(bit, enabled);
+  }
+
+  pub(super) fn handle_settings_set_listen_modifier(&mut self, bit: u8, enabled: bool) {
+    self.handle_listen_modifier_change(bit, enabled);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
+  fn handle_listen_modifier_change(&mut self, bit: u8, enabled: bool) {
     let current = platform::listen_modifiers();
-    let next = if enabled { current | bit } else { current & !bit };
-    if next != 0 {
+    let next = updated_listen_modifier_mask(current, bit, enabled);
+    if next != current {
       platform::set_listen_modifiers(next);
       preferred_store::save_listen_modifiers(next);
     }
     platform::sync_onboarding_listen_modifiers(platform::listen_modifiers());
+    platform::sync_settings_listen_modifiers(platform::listen_modifiers());
   }
 
   pub(super) fn handle_onboarding_select_device(&mut self, index: usize) {
@@ -303,6 +318,7 @@ impl AppController {
       auto_submit_mode: self.auto_submit_mode,
       overlay_position: self.overlay_position,
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
+      listen_modifiers: platform::listen_modifiers(),
       debug_stats_enabled: self.debug_stats_enabled,
       metrics_text,
       model_pack_display_name: pack.display_name.to_string(),
@@ -318,5 +334,30 @@ impl AppController {
         .map(|c| ConnectorRowVM { display_name: c.display_name.to_string(), enabled: c.enabled })
         .collect(),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use crate::platform::{MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
+
+  use super::updated_listen_modifier_mask;
+
+  #[test]
+  fn listen_modifier_update_adds_and_removes_bits() {
+    let mask = updated_listen_modifier_mask(MOD_OPTION, MOD_COMMAND, true);
+    assert_eq!(mask, MOD_OPTION | MOD_COMMAND);
+
+    let mask = updated_listen_modifier_mask(mask, MOD_OPTION, false);
+    assert_eq!(mask, MOD_COMMAND);
+
+    let mask = updated_listen_modifier_mask(mask, MOD_CONTROL, true);
+    assert_eq!(mask, MOD_COMMAND | MOD_CONTROL);
+  }
+
+  #[test]
+  fn listen_modifier_update_keeps_last_modifier() {
+    assert_eq!(updated_listen_modifier_mask(MOD_SHIFT, MOD_SHIFT, false), MOD_SHIFT);
+    assert_eq!(updated_listen_modifier_mask(MOD_OPTION, MOD_OPTION, false), MOD_OPTION);
   }
 }

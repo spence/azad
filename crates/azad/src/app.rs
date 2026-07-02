@@ -85,6 +85,10 @@ pub enum AppEvent {
   SettingsSelectAutoSubmit(AutoSubmitMode),
   SettingsSelectOverlayPosition(OverlayPosition),
   SettingsToggleAppendTrailingSpace(bool),
+  SettingsSetListenModifier {
+    bit: u8,
+    enabled: bool,
+  },
   SettingsToggleConnector {
     index: usize,
     enabled: bool,
@@ -791,6 +795,9 @@ impl AppController {
       }
       AppEvent::SettingsToggleAppendTrailingSpace(enabled) => {
         self.handle_settings_toggle_append_trailing_space(enabled)
+      }
+      AppEvent::SettingsSetListenModifier { bit, enabled } => {
+        self.handle_settings_set_listen_modifier(bit, enabled)
       }
       AppEvent::SettingsToggleConnector { index, enabled } => {
         self.handle_settings_toggle_connector(index, enabled)

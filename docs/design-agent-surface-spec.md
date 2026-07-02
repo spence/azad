@@ -278,6 +278,10 @@ Current controls:
   - `Follow cursor`.
   - `Primary display`.
   - `Active window`.
+- `Listen shortcut`
+  - Modifier checkboxes: Shift, Control, Option, Command glyphs.
+  - Fixed `+ Space` suffix.
+  - At least one modifier is required.
 - Checkbox: `Append trailing space after paste`.
 - `Removed words`
   - Existing removed words rendered as removable chips.
@@ -291,15 +295,12 @@ States to design:
 - Each insert method selected.
 - Each auto-submit mode selected.
 - Each overlay position selected.
+- Listen shortcut modifier set selected.
+- Last listen shortcut modifier cannot be cleared.
 - Trailing space enabled / disabled.
 - Removed words empty.
 - Removed words populated.
 - Duplicate or empty removed-word entry rejected.
-
-Current gap to address in design:
-
-- Onboarding exposes listen shortcut modifier selection, but Settings does not
-  currently expose a way to change the listen shortcut after setup.
 
 ### Models Tab
 
@@ -729,8 +730,6 @@ them visible:
   something closer to "Recent Dictations"?
 - Should connector settings show trigger phrases inline, or only display the
   connector name?
-- Should Settings include the listen shortcut control that currently exists
-  only in onboarding?
 - Should Ask Claude remain visually inside the dictation overlay family, or
   should it gain a more distinct conversation identity?
 - Should model names be exposed to first-time users, or should onboarding speak

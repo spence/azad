@@ -46,11 +46,11 @@ const KEYCODE_ARROW_DOWN: u16 = 0x7D;
 const KEYCODE_ARROW_LEFT: u16 = 0x7B;
 const KEYCODE_ARROW_RIGHT: u16 = 0x7C;
 const OVERLAY_WIDTH_MIN: f64 = 300.0;
-const OVERLAY_WIDTH_MAX: f64 = 620.0;
-const OVERLAY_HEIGHT_MIN: f64 = 60.0;
+const OVERLAY_WIDTH_MAX: f64 = 680.0;
+const OVERLAY_HEIGHT_MIN: f64 = 64.0;
 const OVERLAY_HEIGHT_MAX: f64 = 540.0;
 const OVERLAY_STACK_GAP: f64 = 10.0;
-const OVERLAY_CARD_RADIUS: f64 = 22.0;
+const OVERLAY_CARD_RADIUS: f64 = 8.0;
 const OVERLAY_BORDER_THICKNESS: f64 = 2.0;
 const OVERLAY_BUSY_RING_THICKNESS: f64 = 3.4;
 const OVERLAY_PAD_X: f64 = 12.0;
@@ -71,14 +71,14 @@ const OVERLAY_HOLD_BADGE_HEIGHT: f64 = 16.0;
 const OVERLAY_BADGE_GAP: f64 = 8.0;
 const DEVICE_HEADER_WIDTH: f64 = 280.0;
 const DEVICE_HEADER_MIN_WIDTH: f64 = 220.0;
-const DEVICE_HEADER_HEIGHT: f64 = 24.0;
+const DEVICE_HEADER_HEIGHT: f64 = 28.0;
 const DEVICE_HEADER_TEXT_LEADING: f64 = 14.0;
 const DEVICE_HEADER_TRAILING: f64 = 12.0;
 const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
 const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
 const DEVICE_HEADER_EXTRA_TOP_PADDING: f64 = 1.0;
 const DEVICE_HEADER_EXTRA_SIDE_MARGIN: f64 = 2.0;
-const ALWAYS_LISTENING_ROW_HEIGHT: f64 = 24.0;
+const ALWAYS_LISTENING_ROW_HEIGHT: f64 = 30.0;
 const ALWAYS_LISTENING_LABEL_LEADING: f64 = 14.0;
 const ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP: f64 = 10.0;
 const ALWAYS_LISTENING_SWITCH_WIDTH: f64 = 32.0;
@@ -92,19 +92,19 @@ const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
 const DEVICE_MENU_TEXT_SAFETY_PADDING: f64 = 10.0;
 const DEVICE_MENU_SCREEN_EDGE_MARGIN: f64 = 24.0;
 const DEVICE_HEADER_MENU_COMPENSATION: f64 = 22.0;
-const SETTINGS_WINDOW_WIDTH: f64 = 820.0;
-const SETTINGS_WINDOW_HEIGHT: f64 = 460.0;
+const SETTINGS_WINDOW_WIDTH: f64 = 860.0;
+const SETTINGS_WINDOW_HEIGHT: f64 = 520.0;
 const SETTINGS_INSET_X: f64 = 20.0;
-const SETTINGS_TOP_MARGIN: f64 = 18.0;
+const SETTINGS_TOP_MARGIN: f64 = 76.0;
 const SETTINGS_CONTROL_HEIGHT: f64 = 24.0;
 const SETTINGS_REFRESH_WIDTH: f64 = 90.0;
 const SETTINGS_METRICS_TOP_GAP: f64 = 14.0;
 const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
 const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
-const ONBOARDING_WINDOW_WIDTH: f64 = 640.0;
-const ONBOARDING_WINDOW_HEIGHT: f64 = 640.0;
-const ONBOARDING_PAD_X: f64 = 40.0;
+const ONBOARDING_WINDOW_WIDTH: f64 = 700.0;
+const ONBOARDING_WINDOW_HEIGHT: f64 = 720.0;
+const ONBOARDING_PAD_X: f64 = 44.0;
 const ONBOARDING_LABEL_WIDTH: f64 = 170.0;
 const ONBOARDING_CONTROL_X: f64 = ONBOARDING_PAD_X + ONBOARDING_LABEL_WIDTH + 12.0;
 const ONBOARDING_CONTROL_WIDTH: f64 =
@@ -113,6 +113,11 @@ const ONBOARDING_ROW_HEIGHT: f64 = 26.0;
 const SETTINGS_LABEL_WIDTH: f64 = 180.0;
 const SETTINGS_POPUP_WIDTH: f64 = 220.0;
 const SETTINGS_CONTROL_VERTICAL_GAP: f64 = 14.0;
+const SETTINGS_HEADER_TITLE_SIZE: f64 = 17.0;
+const SETTINGS_HEADER_SUBTITLE_SIZE: f64 = 12.0;
+const SETTINGS_MODIFIER_WIDTH: f64 = 52.0;
+const SETTINGS_MODIFIER_GAP: f64 = 6.0;
+const SETTINGS_SPACE_HINT_WIDTH: f64 = 80.0;
 const LISTEN_NOTICE_CARD_ALPHA: f64 = 0.92;
 const LISTEN_NOTICE_WAVE_BASE_ALPHA: f64 = 0.060;
 const LISTEN_NOTICE_WAVE_PEAK_ALPHA: f64 = 0.170;
@@ -375,6 +380,10 @@ struct SettingsWindowRefs {
   paste_method_popup: id,
   auto_submit_popup: id,
   overlay_position_popup: id,
+  listen_mod_shift: id,
+  listen_mod_control: id,
+  listen_mod_option: id,
+  listen_mod_command: id,
   append_trailing_space_checkbox: id,
   removed_words_tags_view: id,
   removed_words_input: id,
@@ -462,6 +471,7 @@ pub struct SettingsViewModel {
   pub auto_submit_mode: AutoSubmitMode,
   pub overlay_position: OverlayPosition,
   pub append_trailing_space_on_paste: bool,
+  pub listen_modifiers: u8,
   pub debug_stats_enabled: bool,
   pub metrics_text: String,
   pub model_pack_display_name: String,
@@ -610,6 +620,24 @@ pub fn sync_onboarding_listen_modifiers(mask: u8) {
   }
 }
 
+unsafe fn sync_settings_listen_mod_checkboxes(refs: SettingsWindowRefs, mask: u8) {
+  let on = |bit: u8| -> i64 { if mask & bit != 0 { 1 } else { 0 } };
+  let _: () = msg_send![refs.listen_mod_shift, setState: on(MOD_SHIFT)];
+  let _: () = msg_send![refs.listen_mod_control, setState: on(MOD_CONTROL)];
+  let _: () = msg_send![refs.listen_mod_option, setState: on(MOD_OPTION)];
+  let _: () = msg_send![refs.listen_mod_command, setState: on(MOD_COMMAND)];
+}
+
+/// Re-sync Settings shortcut checkboxes after live preference changes or a
+/// rejected last-modifier toggle.
+pub fn sync_settings_listen_modifiers(mask: u8) {
+  if let Some(refs) = current_settings_window() {
+    unsafe {
+      sync_settings_listen_mod_checkboxes(refs, mask);
+    }
+  }
+}
+
 pub fn close_onboarding_window() {
   let refs = ONBOARDING_WINDOW_REFS.with(|store| store.borrow_mut().take());
   if let Some(refs) = refs {
@@ -670,6 +698,57 @@ unsafe fn set_permission_status_label(label: id, status: PermissionStatus) {
   let _: () = msg_send![label, setTextColor: color];
 }
 
+unsafe fn design_color(r: f64, g: f64, b: f64, a: f64) -> id {
+  NSColor::colorWithCalibratedRed_green_blue_alpha_(
+    nil,
+    r.clamp(0.0, 1.0),
+    g.clamp(0.0, 1.0),
+    b.clamp(0.0, 1.0),
+    a.clamp(0.0, 1.0),
+  )
+}
+
+unsafe fn apply_view_fill(view: id, color: id, radius: f64) {
+  if view == nil || color == nil {
+    return;
+  }
+  let _: () = msg_send![view, setWantsLayer: YES];
+  let layer: id = msg_send![view, layer];
+  if layer != nil {
+    let cg_color: id = msg_send![color, CGColor];
+    let _: () = msg_send![layer, setBackgroundColor: cg_color];
+    let _: () = msg_send![layer, setCornerRadius: radius];
+    let _: () = msg_send![layer, setMasksToBounds: YES];
+  }
+}
+
+unsafe fn apply_view_border(view: id, color: id, width: f64) {
+  if view == nil || color == nil {
+    return;
+  }
+  let _: () = msg_send![view, setWantsLayer: YES];
+  let layer: id = msg_send![view, layer];
+  if layer != nil {
+    let cg_color: id = msg_send![color, CGColor];
+    let _: () = msg_send![layer, setBorderColor: cg_color];
+    let _: () = msg_send![layer, setBorderWidth: width.max(0.0)];
+  }
+}
+
+unsafe fn make_design_panel(frame: NSRect, fill: id, border: id) -> id {
+  let view: id = msg_send![class!(NSView), alloc];
+  let view: id = msg_send![view, initWithFrame: frame];
+  apply_view_fill(view, fill, 8.0);
+  apply_view_border(view, border, 1.0);
+  view
+}
+
+unsafe fn set_label_color(label: id, color: id) {
+  if label != nil && color != nil {
+    let _: () = msg_send![label, setTextColor: color];
+  }
+}
+
 unsafe fn make_onboarding_label(text: &str, frame: NSRect, font_size: f64, bold: bool) -> id {
   let label: id = msg_send![class!(NSTextField), alloc];
   let label: id = msg_send![label, initWithFrame: frame];
@@ -687,12 +766,45 @@ unsafe fn make_onboarding_label(text: &str, frame: NSRect, font_size: f64, bold:
   label
 }
 
+unsafe fn add_settings_tab_header(
+  container: id,
+  title: &str,
+  subtitle: &str,
+  content_width: f64,
+  content_height: f64,
+) {
+  let title_frame =
+    NSRect::new(NSPoint::new(0.0, content_height - 32.0), NSSize::new(content_width, 24.0));
+  let title_label = make_onboarding_label(title, title_frame, SETTINGS_HEADER_TITLE_SIZE, true);
+  let _: () = msg_send![container, addSubview: title_label];
+
+  let subtitle_frame =
+    NSRect::new(NSPoint::new(0.0, content_height - 53.0), NSSize::new(content_width, 18.0));
+  let subtitle_label =
+    make_onboarding_label(subtitle, subtitle_frame, SETTINGS_HEADER_SUBTITLE_SIZE, false);
+  let secondary: id = msg_send![class!(NSColor), secondaryLabelColor];
+  set_label_color(subtitle_label, secondary);
+  let _: () = msg_send![container, addSubview: subtitle_label];
+
+  let rule_frame =
+    NSRect::new(NSPoint::new(0.0, content_height - 66.0), NSSize::new(content_width, 1.0));
+  let rule = make_design_panel(
+    rule_frame,
+    design_color(0.56, 0.60, 0.66, 0.28),
+    design_color(0.56, 0.60, 0.66, 0.0),
+  );
+  let _: () = msg_send![container, addSubview: rule];
+}
+
 unsafe fn make_onboarding_row_label(text: &str, y: f64) -> id {
   let frame = NSRect::new(
     NSPoint::new(ONBOARDING_PAD_X, y),
     NSSize::new(ONBOARDING_LABEL_WIDTH, ONBOARDING_ROW_HEIGHT),
   );
-  make_onboarding_label(text, frame, 13.0, false)
+  let label = make_onboarding_label(text, frame, 13.0, false);
+  let secondary: id = msg_send![class!(NSColor), secondaryLabelColor];
+  set_label_color(label, secondary);
+  label
 }
 
 unsafe fn make_onboarding_popup(items: &[&str], y: f64, action: Sel) -> id {
@@ -739,6 +851,19 @@ unsafe fn make_onboarding_mod_checkbox(
   let _: () = msg_send![cb, setTag: tag];
   let _: () = msg_send![cb, setAction: sel!(onboardingToggleListenModifier:)];
   let _: () = msg_send![content_view, addSubview: cb];
+  cb
+}
+
+unsafe fn make_settings_mod_checkbox(container: id, title: &str, x: f64, y: f64, tag: i64) -> id {
+  let frame =
+    NSRect::new(NSPoint::new(x, y), NSSize::new(SETTINGS_MODIFIER_WIDTH, SETTINGS_CONTROL_HEIGHT));
+  let cb: id = msg_send![class!(NSButton), alloc];
+  let cb: id = msg_send![cb, initWithFrame: frame];
+  let _: () = msg_send![cb, setButtonType: 3usize];
+  let _: () = msg_send![cb, setTitle: NSString::alloc(nil).init_str(title)];
+  let _: () = msg_send![cb, setTag: tag];
+  let _: () = msg_send![cb, setAction: sel!(settingsToggleListenModifier:)];
+  let _: () = msg_send![container, addSubview: cb];
   cb
 }
 
@@ -805,6 +930,8 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   let _: () = msg_send![window, setReleasedWhenClosed: NO];
   let _: () = msg_send![window, setTitleVisibility: 1isize]; // NSWindowTitleHidden
   let _: () = msg_send![window, setTitlebarAppearsTransparent: YES];
+  let bg = design_color(0.945, 0.950, 0.940, 1.0);
+  let _: () = msg_send![window, setBackgroundColor: bg];
   // Chromeless but draggable: no title bar to grab, so let the user move it by
   // dragging anywhere on the background (clicks on controls still work normally).
   let _: () = msg_send![window, setMovableByWindowBackground: YES];
@@ -817,6 +944,31 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
   }
 
   let content_view: id = msg_send![window, contentView];
+  apply_view_fill(content_view, bg, 0.0);
+
+  let panel_fill = design_color(1.0, 1.0, 0.985, 0.76);
+  let panel_border = design_color(0.56, 0.60, 0.66, 0.22);
+  let setup_panel = make_design_panel(
+    NSRect::new(NSPoint::new(24.0, 286.0), NSSize::new(ONBOARDING_WINDOW_WIDTH - 48.0, 368.0)),
+    panel_fill,
+    panel_border,
+  );
+  let _: () = msg_send![content_view, addSubview: setup_panel];
+  let permissions_panel = make_design_panel(
+    NSRect::new(NSPoint::new(24.0, 72.0), NSSize::new(ONBOARDING_WINDOW_WIDTH - 48.0, 214.0)),
+    panel_fill,
+    panel_border,
+  );
+  let _: () = msg_send![content_view, addSubview: permissions_panel];
+  let accent = make_design_panel(
+    NSRect::new(
+      NSPoint::new(ONBOARDING_PAD_X, ONBOARDING_WINDOW_HEIGHT - 92.0),
+      NSSize::new(132.0, 3.0),
+    ),
+    design_color(0.02, 0.48, 0.55, 0.95),
+    design_color(0.02, 0.48, 0.55, 0.0),
+  );
+  let _: () = msg_send![content_view, addSubview: accent];
 
   let full_w = ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0;
   let heading = make_onboarding_label(
@@ -828,9 +980,10 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     22.0,
     true,
   );
+  set_label_color(heading, design_color(0.08, 0.10, 0.12, 1.0));
   let _: () = msg_send![content_view, addSubview: heading];
   let subhead = make_onboarding_label(
-    "Let's get you set up — finish below to start dictating.",
+    "Finish the local model, permissions, and input defaults to start dictating.",
     NSRect::new(
       NSPoint::new(ONBOARDING_PAD_X, ONBOARDING_WINDOW_HEIGHT - 72.0),
       NSSize::new(full_w, 18.0),
@@ -838,6 +991,8 @@ unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
     13.0,
     false,
   );
+  let secondary: id = msg_send![class!(NSColor), secondaryLabelColor];
+  set_label_color(subhead, secondary);
   let _: () = msg_send![content_view, addSubview: subhead];
 
   // Model section: a two-line status (name · size, then location/progress); the
@@ -1613,6 +1768,10 @@ fn register_delegate_class() -> &'static Class {
       settings_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
     );
     decl.add_method(
+      sel!(settingsToggleListenModifier:),
+      settings_toggle_listen_modifier as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
       sel!(settingsAddRemovedWord:),
       settings_add_removed_word as extern "C" fn(&Object, Sel, id),
     );
@@ -2038,6 +2197,21 @@ extern "C" fn settings_toggle_append_trailing_space(_: &Object, _: Sel, sender: 
     }
     let state: i64 = msg_send![sender, state];
     crate::app::send_event(AppEvent::SettingsToggleAppendTrailingSpace(state != 0));
+    crate::app::drain_events();
+  }
+}
+
+extern "C" fn settings_toggle_listen_modifier(_: &Object, _: Sel, sender: id) {
+  unsafe {
+    if sender == nil {
+      return;
+    }
+    let tag: i64 = msg_send![sender, tag];
+    let state: i64 = msg_send![sender, state];
+    crate::app::send_event(AppEvent::SettingsSetListenModifier {
+      bit: tag as u8,
+      enabled: state != 0,
+    });
     crate::app::drain_events();
   }
 }
@@ -2588,7 +2762,7 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
 }
 
 unsafe fn always_listening_row_width(font: id) -> f64 {
-  let text_width = measure_text_width("Listen", font);
+  let text_width = measure_text_width("Listen Mode", font);
   ALWAYS_LISTENING_LABEL_LEADING
     + text_width
     + ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP
@@ -2750,11 +2924,10 @@ fn set_always_listening_switch_state(enabled: bool) {
 }
 
 unsafe fn always_listening_track_color(view: id, enabled: bool) -> id {
-  let ns_color_class = class!(NSColor);
-  let base_color: id = if enabled {
-    msg_send![ns_color_class, systemBlueColor]
+  let base_color = if enabled {
+    design_color(0.02, 0.52, 0.55, 1.0)
   } else {
-    msg_send![ns_color_class, systemGrayColor]
+    design_color(0.48, 0.50, 0.52, 0.55)
   };
 
   if view == nil || base_color == nil {
@@ -2790,9 +2963,9 @@ fn always_listening_thumb_frame(enabled: bool) -> NSRect {
 
 fn device_header_label(model: &DeviceMenuModel) -> String {
   if model.header_label.trim().is_empty() {
-    "No Input Device".to_string()
+    "Input: No Device".to_string()
   } else {
-    model.header_label.clone()
+    format!("Input: {}", model.header_label)
   }
 }
 
@@ -2918,7 +3091,7 @@ unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
   let label: id = msg_send![class!(NSTextField), alloc];
   let label: id = msg_send![label, initWithFrame: label_frame];
   let _: () = msg_send![label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
-  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("Listen")];
+  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("Listen Mode")];
   let _: () = msg_send![label, setBezeled: NO];
   let _: () = msg_send![label, setDrawsBackground: NO];
   let _: () = msg_send![label, setEditable: NO];
@@ -3320,6 +3493,7 @@ unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsVi
       refs.append_trailing_space_checkbox,
       setState: append_trailing_space_state
   ];
+  sync_settings_listen_mod_checkboxes(refs, model.listen_modifiers);
 
   let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
   let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
@@ -3727,7 +3901,7 @@ unsafe fn render_overlay_conversation(
   let _: () = msg_send![refs.card_view, setFrame: card_frame];
   let card_layer: id = msg_send![refs.card_view, layer];
   if card_layer != nil {
-    let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
+    let card_color = design_color(0.035, 0.040, 0.046, 0.94);
     let card_cg: id = msg_send![card_color, CGColor];
     let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
   }
@@ -3836,6 +4010,17 @@ unsafe fn render_overlay_text(
   let screen = overlay_screen_frame_for_window(current_frame);
   let width = overlay_width_for_screen(screen);
   let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
+  let display_text = if body_text.trim().is_empty() {
+    if busy_phase.is_some() {
+      "Finalizing"
+    } else if show_hold_badge {
+      "Listening"
+    } else {
+      body_text
+    }
+  } else {
+    body_text
+  };
 
   // Space reserved at the top of the card for the connector chip, folded into the
   // body height budget so the transcription drops below it.
@@ -3847,7 +4032,7 @@ unsafe fn render_overlay_text(
     (OVERLAY_HEIGHT_MAX - OVERLAY_PAD_TOP - OVERLAY_PAD_BOTTOM - chip_reserve).max(1.0);
 
   let (rendered_body, mut measured_body_height) =
-    fit_rendered_body_for_height(refs.label, body_text, content_width, max_body_height);
+    fit_rendered_body_for_height(refs.label, display_text, content_width, max_body_height);
   if rendered_body.is_empty() {
     measured_body_height = OVERLAY_TEXT_LINE_HEIGHT.min(max_body_height);
   }
@@ -3876,7 +4061,7 @@ unsafe fn render_overlay_text(
   let _: () = msg_send![refs.card_view, setFrame: card_frame];
   let card_layer: id = msg_send![refs.card_view, layer];
   if card_layer != nil {
-    let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
+    let card_color = design_color(0.035, 0.040, 0.046, 0.94);
     let card_cg: id = msg_send![card_color, CGColor];
     let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
   }
@@ -4015,16 +4200,16 @@ const HISTORY_BG_X_INSET: f64 = 4.0;
 // `OVERLAY_PAD_X (12) - HISTORY_BG_X_INSET (4) = 8`). Smaller values leave a
 // visible gap between the highlight corner and the card corner; larger values
 // clip past the curve.
-const HISTORY_BG_RADIUS: f64 = 14.0;
+const HISTORY_BG_RADIUS: f64 = 6.0;
 // Symmetric padding inside the highlight bg between its left/right edges and
 // the entry text. Keeps the text from butting against the rounded bg corner.
 const HISTORY_TEXT_INNER_PAD_X: f64 = 12.0;
-// Deep blue (#002EA2) at high alpha so the selected entry pops without washing
-// out against the dark card.
-const HISTORY_SELECTED_BG_R: f64 = 0.0;
-const HISTORY_SELECTED_BG_G: f64 = 0.180;
-const HISTORY_SELECTED_BG_B: f64 = 0.635;
-const HISTORY_SELECTED_BG_ALPHA: f64 = 0.85;
+// Teal selection fill so the active history row reads as part of the same
+// accent system as the listening switch and overlay border.
+const HISTORY_SELECTED_BG_R: f64 = 0.02;
+const HISTORY_SELECTED_BG_G: f64 = 0.42;
+const HISTORY_SELECTED_BG_B: f64 = 0.48;
+const HISTORY_SELECTED_BG_ALPHA: f64 = 0.78;
 // All entries (selected and unselected) render in the same bright off-white.
 const HISTORY_TEXT_ALPHA: f64 = 0.95;
 const HISTORY_EMPTY_TEXT_ALPHA: f64 = 0.40;
@@ -4889,13 +5074,13 @@ unsafe fn apply_history_card_frame(refs: OverlayRefs, width: f64, height: f64) {
   let _: () = msg_send![refs.card_view, setFrame: card_frame];
   let card_layer: id = msg_send![refs.card_view, layer];
   if card_layer != nil {
-    let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.90);
+    let card_color = design_color(0.035, 0.040, 0.046, 0.94);
     let card_cg: id = msg_send![card_color, CGColor];
     let _: () = msg_send![card_layer, setBackgroundColor: card_cg];
     // Carry the subtle outer border forward from speech mode so the history
     // overlay doesn't visually drop a pixel of definition when the user
     // pivots into it.
-    let border = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.22);
+    let border = design_color(0.26, 0.70, 0.74, 0.28);
     let border_cg: id = msg_send![border, CGColor];
     let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
     let _: () = msg_send![card_layer, setBorderColor: border_cg];
@@ -5491,7 +5676,7 @@ unsafe fn apply_busy_border_style(
     return;
   }
 
-  let subtle = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.22);
+  let subtle = design_color(0.26, 0.70, 0.74, 0.28);
   let subtle_cg: id = msg_send![subtle, CGColor];
   let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
   let _: () = msg_send![card_layer, setBorderColor: subtle_cg];
@@ -5548,6 +5733,9 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let _: () = msg_send![window, setTitle: NSString::alloc(nil).init_str("Azad Settings")];
 
   let content_view: id = msg_send![window, contentView];
+  let settings_bg = design_color(0.950, 0.954, 0.948, 1.0);
+  let _: () = msg_send![window, setBackgroundColor: settings_bg];
+  apply_view_fill(content_view, settings_bg, 0.0);
 
   let body_frame = NSRect::new(
     NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
@@ -5563,6 +5751,8 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
       setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
   ];
   let _: () = msg_send![content_view, addSubview: body_view];
+  apply_view_fill(body_view, design_color(1.0, 1.0, 0.990, 0.54), 8.0);
+  apply_view_border(body_view, design_color(0.56, 0.60, 0.66, 0.18), 1.0);
 
   let sidebar_height = body_frame.size.height.max(220.0);
   let sidebar_frame =
@@ -5605,6 +5795,15 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let content_width = (body_frame.size.width - content_origin_x).max(420.0);
   let content_frame =
     NSRect::new(NSPoint::new(content_origin_x, 0.0), NSSize::new(content_width, content_height));
+  let divider = make_design_panel(
+    NSRect::new(
+      NSPoint::new(SETTINGS_SIDEBAR_WIDTH + SETTINGS_SIDEBAR_TO_CONTENT_GAP * 0.5, 0.0),
+      NSSize::new(1.0, content_height),
+    ),
+    design_color(0.56, 0.60, 0.66, 0.22),
+    design_color(0.56, 0.60, 0.66, 0.0),
+  );
+  let _: () = msg_send![body_view, addSubview: divider];
 
   let general_container: id = msg_send![class!(NSView), alloc];
   let general_container: id = msg_send![general_container, initWithFrame: content_frame];
@@ -5624,6 +5823,27 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
       permissions_container,
       setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
   ];
+  add_settings_tab_header(
+    general_container,
+    "General",
+    "Control how Azad starts listening, inserts text, and cleans output.",
+    content_width,
+    content_height,
+  );
+  add_settings_tab_header(
+    models_container,
+    "Models",
+    "Manage the local speech model pack used for transcription.",
+    content_width,
+    content_height,
+  );
+  add_settings_tab_header(
+    permissions_container,
+    "Permissions",
+    "Grant macOS access for microphone capture and text insertion.",
+    content_width,
+    content_height,
+  );
   let perm_delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()).unwrap_or(nil);
   let perm_top = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
   let perm_accessibility_status = make_onboarding_permission_row(
@@ -5655,6 +5875,13 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
       debug_container,
       setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
   ];
+  add_settings_tab_header(
+    debug_container,
+    "Debug",
+    "Inspect recent runtime metrics and enable detailed statistics.",
+    content_width,
+    content_height,
+  );
 
   let connectors_container: id = msg_send![class!(NSView), alloc];
   let connectors_container: id = msg_send![connectors_container, initWithFrame: content_frame];
@@ -5662,6 +5889,13 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
       connectors_container,
       setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
   ];
+  add_settings_tab_header(
+    connectors_container,
+    "Connectors",
+    "Route specific spoken phrases into external assistant workflows.",
+    content_width,
+    content_height,
+  );
   let connectors_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
   let connectors_hint_frame = NSRect::new(
     NSPoint::new(0.0, connectors_top_y),
@@ -5808,8 +6042,67 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
   let _: () = msg_send![overlay_position_popup, setAction: sel!(settingsSelectOverlayPosition:)];
   let _: () = msg_send![general_container, addSubview: overlay_position_popup];
 
-  let append_trailing_space_y =
+  let listen_shortcut_y =
     overlay_position_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
+  let listen_shortcut_label_frame = NSRect::new(
+    NSPoint::new(0.0, listen_shortcut_y),
+    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
+  );
+  let listen_shortcut_label: id = msg_send![class!(NSTextField), alloc];
+  let listen_shortcut_label: id =
+    msg_send![listen_shortcut_label, initWithFrame: listen_shortcut_label_frame];
+  let _: () = msg_send![
+      listen_shortcut_label,
+      setStringValue: NSString::alloc(nil).init_str("Listen shortcut")
+  ];
+  let _: () = msg_send![listen_shortcut_label, setBezeled: NO];
+  let _: () = msg_send![listen_shortcut_label, setDrawsBackground: NO];
+  let _: () = msg_send![listen_shortcut_label, setEditable: NO];
+  let _: () = msg_send![listen_shortcut_label, setSelectable: NO];
+  let _: () = msg_send![listen_shortcut_label, setAlignment: 0isize];
+  let _: () = msg_send![general_container, addSubview: listen_shortcut_label];
+
+  let listen_mod_x = paste_method_popup_x;
+  let listen_mod_shift = make_settings_mod_checkbox(
+    general_container,
+    "⇧",
+    listen_mod_x,
+    listen_shortcut_y,
+    MOD_SHIFT as i64,
+  );
+  let listen_mod_control = make_settings_mod_checkbox(
+    general_container,
+    "⌃",
+    listen_mod_x + SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP,
+    listen_shortcut_y,
+    MOD_CONTROL as i64,
+  );
+  let listen_mod_option = make_settings_mod_checkbox(
+    general_container,
+    "⌥",
+    listen_mod_x + (SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP) * 2.0,
+    listen_shortcut_y,
+    MOD_OPTION as i64,
+  );
+  let listen_mod_command = make_settings_mod_checkbox(
+    general_container,
+    "⌘",
+    listen_mod_x + (SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP) * 3.0,
+    listen_shortcut_y,
+    MOD_COMMAND as i64,
+  );
+  let space_hint_frame = NSRect::new(
+    NSPoint::new(
+      listen_mod_x + (SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP) * 4.0 + 4.0,
+      listen_shortcut_y + 4.0,
+    ),
+    NSSize::new(SETTINGS_SPACE_HINT_WIDTH, SETTINGS_CONTROL_HEIGHT),
+  );
+  let space_hint = make_onboarding_label("+ Space", space_hint_frame, 12.0, false);
+  let _: () = msg_send![general_container, addSubview: space_hint];
+
+  let append_trailing_space_y =
+    listen_shortcut_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
   let append_trailing_space_frame = NSRect::new(
     NSPoint::new(0.0, append_trailing_space_y),
     NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
@@ -6041,6 +6334,10 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     let _: () = msg_send![paste_method_popup, setTarget: delegate];
     let _: () = msg_send![auto_submit_popup, setTarget: delegate];
     let _: () = msg_send![overlay_position_popup, setTarget: delegate];
+    let _: () = msg_send![listen_mod_shift, setTarget: delegate];
+    let _: () = msg_send![listen_mod_control, setTarget: delegate];
+    let _: () = msg_send![listen_mod_option, setTarget: delegate];
+    let _: () = msg_send![listen_mod_command, setTarget: delegate];
     let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
     let _: () = msg_send![removed_words_add_button, setTarget: delegate];
     let _: () = msg_send![models_download_button, setTarget: delegate];
@@ -6107,6 +6404,10 @@ unsafe fn create_settings_window() -> SettingsWindowRefs {
     paste_method_popup,
     auto_submit_popup,
     overlay_position_popup,
+    listen_mod_shift,
+    listen_mod_control,
+    listen_mod_option,
+    listen_mod_command,
     append_trailing_space_checkbox,
     removed_words_tags_view,
     removed_words_input,
@@ -6163,13 +6464,12 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   )];
   let _: () = msg_send![card_view, setWantsLayer: YES];
   let card_layer: id = msg_send![card_view, layer];
-  let card_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.02, 0.02, 0.02, 0.9);
+  let card_color = design_color(0.035, 0.040, 0.046, 0.94);
   let cg_color: id = msg_send![card_color, CGColor];
   let _: () = msg_send![card_layer, setBackgroundColor: cg_color];
   let _: () = msg_send![card_layer, setCornerRadius: OVERLAY_CARD_RADIUS];
   let _: () = msg_send![card_layer, setMasksToBounds: YES];
-  let subtle_border =
-    NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.62, 0.74, 0.98, 0.20);
+  let subtle_border = design_color(0.26, 0.70, 0.74, 0.28);
   let subtle_border_cg: id = msg_send![subtle_border, CGColor];
   let _: () = msg_send![card_layer, setBorderWidth: OVERLAY_BORDER_THICKNESS];
   let _: () = msg_send![card_layer, setBorderColor: subtle_border_cg];
@@ -6698,11 +6998,11 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
 
     let colors: id = msg_send![class!(NSMutableArray), arrayWithCapacity: 5usize];
     for (r, g, b, a) in [
-      (0.88, 0.97, 1.0, 1.0),
-      (0.62, 0.88, 1.0, 0.98),
-      (0.34, 0.74, 1.0, 0.62),
-      (0.14, 0.52, 0.98, 0.16),
-      (0.88, 0.97, 1.0, 1.0),
+      (0.84, 0.99, 0.96, 1.0),
+      (0.30, 0.82, 0.82, 0.98),
+      (0.08, 0.58, 0.62, 0.62),
+      (0.76, 0.42, 0.28, 0.18),
+      (0.84, 0.99, 0.96, 1.0),
     ] {
       let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, a);
       let cg_color: id = msg_send![color, CGColor];
@@ -6734,6 +7034,10 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![search_field, setDrawsBackground: NO];
   let _: () = msg_send![search_field, setEditable: YES];
   let _: () = msg_send![search_field, setSelectable: YES];
+  let _: () = msg_send![
+      search_field,
+      setPlaceholderString: NSString::alloc(nil).init_str("Search history")
+  ];
   let _: () = msg_send![search_field, setUsesSingleLineMode: YES];
   let _: () = msg_send![search_field, setLineBreakMode: 4isize]; // truncating tail
   let _: () = msg_send![search_field, setFocusRingType: 1isize]; // None
