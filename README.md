@@ -60,6 +60,12 @@ crates/
   azad-mlx-asr/ bundled Swift helper for MLX ASR and CoreML VAD
 ```
 
+Key internal boundaries:
+
+- `crates/azad/src/app/text.rs`: paste text shaping and duplicate-collapse tests.
+- `crates/azad/src/platform/permissions.rs`: macOS permission checks and prompts.
+- `crates/azad-asr/src/pipeline/stitch.rs`: incremental finalization text stitching.
+
 The workspace no longer uses Git submodules. Owned code lives in this repo. Forked
 or upstream third-party crates are Cargo dependencies pinned in `Cargo.lock`.
 
