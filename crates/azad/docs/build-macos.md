@@ -18,6 +18,10 @@ just start
 just status
 ```
 
+The first source install can take several minutes while Rust crates, Swift MLX
+packages, and MLX Metal kernels build. Subsequent installs are much faster
+because the local build caches are warm.
+
 ## Common Operations
 
 ```bash

@@ -4,7 +4,7 @@ dist/
 .DS_Store
 .codesign.env
 
-# Legacy submodule checkouts kept out of the publishable workspace.
+# Local legacy checkouts; the publishable workspace does not depend on them.
 crates/asr-rs/
 crates/parakeet-rs/
 crates/whisper-cpp-plus-rs/

@@ -22,6 +22,10 @@ just start
 just status
 ```
 
+The first source install can take several minutes because it builds the Rust app,
+resolves the Swift MLX dependency graph, and compiles the bundled MLX Metal
+kernels. Later installs reuse local build caches.
+
 On first launch, Azad opens onboarding and downloads its MLX Nemotron model pack
 into `~/Library/Application Support/Azad/models`. The default pack is about
 1.3 GB and is not stored in Git.

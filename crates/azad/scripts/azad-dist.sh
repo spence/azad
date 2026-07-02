@@ -56,6 +56,10 @@ APP_DIR="${DIST_DIR}/Azad.app"
 APP_CONTENTS="${APP_DIR}/Contents"
 APP_MACOS="${APP_CONTENTS}/MacOS"
 APP_RESOURCES="${APP_CONTENTS}/Resources"
+MLX_HELPER_DIR="${ROOT_DIR}/crates/azad-mlx-asr"
+MLX_HELPER_BUILD_DIR="${ROOT_DIR}/target/swift/azad-mlx-asr"
+MLX_HELPER_SOURCE=""
+MLX_METALLIB_SOURCE=""
 DMG_NAME="Azad-${VERSION}.dmg"
 DMG_PATH="${DIST_DIR}/${DMG_NAME}"
 
@@ -83,6 +87,104 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
   exit 0
 fi
 
+build_mlx_helper() {
+  if [[ ! -f "${MLX_HELPER_DIR}/Package.swift" ]]; then
+    echo "error: MLX ASR helper package missing at ${MLX_HELPER_DIR}" >&2
+    exit 1
+  fi
+
+  if ! command -v swift >/dev/null 2>&1; then
+    echo "error: swift not found; install Xcode Command Line Tools to build the MLX ASR helper" >&2
+    exit 1
+  fi
+
+  swift build \
+    -c release \
+    --package-path "$MLX_HELPER_DIR" \
+    --scratch-path "$MLX_HELPER_BUILD_DIR"
+
+  MLX_HELPER_SOURCE="${MLX_HELPER_BUILD_DIR}/release/azad-mlx-asr"
+  if [[ ! -x "$MLX_HELPER_SOURCE" ]]; then
+    echo "error: built MLX ASR helper missing at $MLX_HELPER_SOURCE" >&2
+    exit 1
+  fi
+
+  build_mlx_metallib
+}
+
+ensure_metal_toolchain() {
+  if xcrun --find metal >/dev/null 2>&1; then
+    return
+  fi
+
+  if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+  fi
+
+  if xcrun --find metal >/dev/null 2>&1; then
+    return
+  fi
+
+  if command -v xcodebuild >/dev/null 2>&1; then
+    echo "Installing Apple Metal Toolchain component for MLX..."
+    xcodebuild -downloadComponent MetalToolchain || true
+  fi
+
+  if ! xcrun --find metal >/dev/null 2>&1; then
+    echo "error: Apple Metal compiler not available; install Xcode's Metal Toolchain component" >&2
+    echo "hint: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain" >&2
+    exit 1
+  fi
+}
+
+build_mlx_metallib() {
+  ensure_metal_toolchain
+
+  local metal_src="${MLX_HELPER_BUILD_DIR}/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal"
+  local metal_build_dir="${MLX_HELPER_BUILD_DIR}/release/mlx-metallib-build"
+  local out_lib="${MLX_HELPER_BUILD_DIR}/release/mlx.metallib"
+
+  if [[ ! -d "$metal_src" ]]; then
+    echo "error: MLX generated Metal sources missing at $metal_src" >&2
+    exit 1
+  fi
+
+  rm -rf "$metal_build_dir"
+  mkdir -p "$metal_build_dir"
+
+  local airs=()
+  local src rel stem air
+  while IFS= read -r src; do
+    rel="${src#${metal_src}/}"
+    stem="${rel%.metal}"
+    stem="${stem//\//_}"
+    air="${metal_build_dir}/${stem}.air"
+    (
+      cd "$metal_src"
+      xcrun -sdk macosx metal \
+        -x metal \
+        -Wall \
+        -Wextra \
+        -fno-fast-math \
+        -Wno-c++17-extensions \
+        -Wno-c++20-extensions \
+        -mmacosx-version-min=14.0 \
+        -c "$rel" \
+        -I. \
+        -o "$air"
+    )
+    airs+=("$air")
+  done < <(find "$metal_src" -name '*.metal' -type f | sort)
+
+  if [[ "${#airs[@]}" == "0" ]]; then
+    echo "error: no MLX Metal kernels found under $metal_src" >&2
+    exit 1
+  fi
+
+  xcrun -sdk macosx metallib "${airs[@]}" -o "$out_lib"
+  MLX_METALLIB_SOURCE="$out_lib"
+}
+
 if [[ -z "$SIGNING_IDENTITY" ]]; then
   echo "error: set AZAD_SIGNING_IDENTITY to your Developer ID Application identity" >&2
   echo "error: local release settings can also go in: $CONFIG_FILE" >&2
@@ -91,7 +193,7 @@ fi
 
 echo "==> Building release binary"
 pushd "$CRATE_DIR" >/dev/null
-MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release
+MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --release
 popd >/dev/null
 
 target_dir="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
@@ -105,11 +207,16 @@ if [[ ! -x "$BIN_SOURCE" ]]; then
   exit 1
 fi
 
+echo "==> Building MLX ASR helper"
+build_mlx_helper
+
 echo "==> Assembling app bundle"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 
 install -m 755 "$BIN_SOURCE" "${APP_MACOS}/azad"
+install -m 755 "$MLX_HELPER_SOURCE" "${APP_MACOS}/azad-mlx-asr"
+install -m 644 "$MLX_METALLIB_SOURCE" "${APP_MACOS}/mlx.metallib"
 install -m 644 "${CRATE_DIR}/assets/azad-black.png" "${APP_RESOURCES}/azad-black.png"
 install -m 644 "${CRATE_DIR}/assets/azad-white.png" "${APP_RESOURCES}/azad-white.png"
 install -m 644 "${CRATE_DIR}/assets/azad.icns" "${APP_RESOURCES}/azad.icns"
@@ -143,7 +250,7 @@ cat >"${APP_CONTENTS}/Info.plist" <<EOF
   <key>NSMicrophoneUsageDescription</key>
   <string>Azad uses microphone audio to transcribe your speech.</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>14.0</string>
 </dict>
 </plist>
 EOF
