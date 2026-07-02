@@ -48,7 +48,7 @@ impl Default for AzadConfig {
     let default_pack = models::default_pack();
     let fallback_dir = models::pack_dir(default_pack.id)
       .unwrap_or_else(|| PathBuf::from("/nonexistent/azad/models"));
-    let vad_path = fallback_dir.join("vad").join("ggml-silero-v6.2.0.bin");
+    let vad_path = fallback_dir.join("vad").join("silero_vad.mlmodelc");
     let fallback_streaming_model = StreamingModelConfig::MlxNemotron {
       model_dir: fallback_dir.join("mlx"),
       language: "en-US".to_string(),
@@ -70,6 +70,7 @@ impl Default for AzadConfig {
       native_engine_logs_enabled: env_flag_enabled("AZAD_NATIVE_ENGINE_LOGS"),
       pipeline: PipelineConfig {
         vad_model_path: vad_path,
+        vad_helper_path: None,
         streaming_model: fallback_streaming_model,
         // Lowered from 0.45 → 0.30 to detect softer speech-starts faster.
         // Trade-off: more permissive turn-start means a quiet false-positive
@@ -147,7 +148,9 @@ fn resolve_pipeline_paths(pack: &models::ModelPackDef) -> Option<models::Resolve
     let root = workspace_root();
     let dev_vad = default_vad_model_path(&root);
     let dev_model_dir = root.join("models").join("nemotron-mlx");
-    if dev_vad.exists() && models::mlx_nemotron_model_dir_ready(&dev_model_dir) {
+    if models::coreml_vad_model_ready(&dev_vad)
+      && models::mlx_nemotron_model_dir_ready(&dev_model_dir)
+    {
       return Some(models::ResolvedPipelinePaths {
         vad_model_path: dev_vad,
         backend: models::ResolvedModelBackend::MlxNemotron { model_dir: dev_model_dir },
@@ -192,5 +195,5 @@ fn workspace_root() -> PathBuf {
 
 #[cfg(debug_assertions)]
 fn default_vad_model_path(root: &std::path::Path) -> PathBuf {
-  root.join("models").join("vad").join("ggml-silero-v6.2.0.bin")
+  root.join("models").join("vad").join("silero_vad.mlmodelc")
 }

@@ -66,9 +66,8 @@ Current notable dependency choices:
 - `azad-mlx-asr` is a bundled Swift helper that runs
   `mlx-community/nemotron-3.5-asr-streaming-0.6b` with MLXAudio Swift. Source
   installs build this helper during `just install`.
-- `whisper-cpp-plus` is used for Silero VAD only. Azad does not use Whisper for
-  speech-to-text. Its sys crate downloads the pinned `whisper.cpp` source during
-  build when needed.
+- The same bundled Swift helper runs Silero VAD v6.2.1 through CoreML. Azad does
+  not use Whisper or whisper.cpp for speech-to-text or VAD.
 
 ## Common Commands
 

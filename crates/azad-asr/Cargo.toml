@@ -21,7 +21,6 @@ crossterm = "0.27.0"
 cpal = "0.17.1"
 hound = "3.5"
 ratatui = { version = "0.24.0", default-features = true }
-whisper-cpp-plus = { workspace = true, features = ["metal"] }
 crossbeam-channel = "0.5.13"
 ringbuf = "0.4.7"
 serde_json = "1.0"

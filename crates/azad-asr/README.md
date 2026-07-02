@@ -3,7 +3,7 @@
 Terminal live speech-to-text (English) using:
 - `cpal` (microphone capture)
 - MLX Nemotron streaming/final ASR via the bundled `azad-mlx-asr` helper
-- Silero VAD (ggml) for utterance start/stop via `whisper-cpp-plus`
+- CoreML Silero VAD v6.2.1 for utterance start/stop via the bundled `azad-mlx-asr` helper
 - `hound` for WAV input and `symphonia` for common compressed formats (e.g., `.m4a`) in `transcribe-file`
 
 ## Specification
@@ -25,7 +25,12 @@ The expected layout is:
   - `model.safetensors`
   - `tokenizer.model`
   - `vocab.txt`
-- `models/vad/ggml-silero-v6.2.0.bin`
+- `models/vad/silero_vad.mlmodelc/`:
+  - `analytics/coremldata.bin`
+  - `coremldata.bin`
+  - `metadata.json`
+  - `model.mil`
+  - `weights/weight.bin`
 
 The macOS app downloads the same files into
 `~/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/`.
@@ -38,8 +43,8 @@ For CLI work, either mirror those files into `models/nemotron-mlx` or pass
 cargo build -p azad-asr
 ```
 
-The `whisper-cpp-plus-sys` build script downloads its pinned `whisper.cpp`
-source when needed; no `whisper.cpp` submodule checkout is required.
+The Swift helper is built during app install and is used for both MLX ASR and
+CoreML VAD. No `whisper.cpp` checkout or build dependency is required.
 
 ## Run
 
@@ -60,7 +65,7 @@ With explicit model paths:
 ```bash
 cargo run -p azad-asr -- listen --select-device \
   --mlx-model-dir "$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/mlx" \
-  --vad-model "$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/vad/ggml-silero-v6.2.0.bin"
+  --vad-model "$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1/vad/silero_vad.mlmodelc"
 ```
 
 Transcribe a recording through the exact same pipeline:

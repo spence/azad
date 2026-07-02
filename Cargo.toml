@@ -16,4 +16,3 @@ license = "MIT"
 [workspace.dependencies]
 thiserror = "1.0"
 num_cpus = "1.16"
-whisper-cpp-plus = "=0.1.5"

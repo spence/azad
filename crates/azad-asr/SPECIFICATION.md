@@ -31,7 +31,7 @@ Those concerns live in Azad.
 - `src/devices/mod.rs`: input-device discovery/controller infrastructure.
 - `src/stability.rs`: stable-prefix tracking for streaming draft text.
 - `src/thread_qos.rs`: QoS policy helpers for foreground/background worker separation.
-- `src/logging.rs`: native whisper/ggml log suppression or enablement.
+- `src/logging.rs`: native helper logging setup hook.
 - `src/ui.rs`, `src/render.rs`: TUI-only rendering path.
 
 ## 3. Core Runtime Contracts
@@ -39,7 +39,7 @@ Those concerns live in Azad.
 ### 3.1 High-Level Pipeline
 
 1. Audio input is normalized/prepared to 16kHz mono chunks.
-2. VAD (`WhisperVadProcessor`) determines speech transitions.
+2. CoreML Silero VAD determines speech transitions.
 3. MLX Nemotron generates streaming draft text at low latency.
 4. Stability tracker splits draft into committed/live segments.
 5. During speech, incremental MLX finalization slices refine text in background.

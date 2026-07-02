@@ -40,7 +40,7 @@ enum Commands {
 
 #[derive(Args, Debug, Clone)]
 struct CommonArgs {
-  /// Path to a Silero VAD ggml model (from whisper.cpp).
+  /// Path to a CoreML Silero VAD .mlmodelc directory.
   #[arg(long = "vad-model")]
   vad_model: Option<PathBuf>,
 
@@ -397,7 +397,7 @@ fn default_mlx_model_dir() -> PathBuf {
 }
 
 fn default_vad_model_path() -> PathBuf {
-  workspace_root().join("models").join("vad").join("ggml-silero-v6.2.0.bin")
+  workspace_root().join("models").join("vad").join("silero_vad.mlmodelc")
 }
 
 fn is_wav(path: &Path) -> bool {
@@ -413,7 +413,7 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
   let model_dir = args.mlx_model_dir.clone().unwrap_or_else(default_mlx_model_dir);
 
   // Friendlier errors: validate that required model files exist up-front.
-  ensure_file(&vad_model_path, "VAD model")?;
+  ensure_coreml_vad_model(&vad_model_path)?;
   ensure_file(&model_dir.join("config.json"), "MLX Nemotron config")?;
   ensure_file(&model_dir.join("model.safetensors"), "MLX Nemotron weights")?;
   ensure_file(&model_dir.join("tokenizer.model"), "MLX Nemotron tokenizer")?;
@@ -421,6 +421,7 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
 
   Ok(PipelineConfig {
     vad_model_path,
+    vad_helper_path: args.mlx_helper.clone(),
     streaming_model: StreamingModelConfig::MlxNemotron {
       model_dir,
       language: args.language.clone(),
@@ -453,4 +454,17 @@ fn ensure_file(path: &Path, label: &str) -> Result<()> {
     return Ok(());
   }
   Err(anyhow!("{label} missing: {}", path.display()))
+}
+
+fn ensure_coreml_vad_model(path: &Path) -> Result<()> {
+  for file in [
+    "analytics/coremldata.bin",
+    "coremldata.bin",
+    "metadata.json",
+    "model.mil",
+    "weights/weight.bin",
+  ] {
+    ensure_file(&path.join(file), "CoreML VAD model file")?;
+  }
+  Ok(())
 }

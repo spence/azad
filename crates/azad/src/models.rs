@@ -27,14 +27,44 @@ pub enum PackStatus {
 pub static NEMOTRON_35_MLX_BF16_V1: ModelPackDef = ModelPackDef {
   id: "nemotron-3.5-mlx-bf16-v1",
   display_name: "Nemotron 3.5 MLX bf16",
-  description: "Silero VAD + MLX Nemotron 3.5 streaming/final ASR",
-  total_size_bytes: 1_277_588_214,
+  description: "CoreML Silero VAD + MLX Nemotron 3.5 streaming/final ASR",
+  total_size_bytes: 1_277_344_990,
   files: &[
     ModelFileDef {
-      rel_path: "vad/ggml-silero-v6.2.0.bin",
-      url: "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
-      size_bytes: 885_098,
-      sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+      rel_path: "vad/config.json",
+      url: "https://huggingface.co/aufklarer/Silero-VAD-v6.2.1-CoreML/resolve/523876545a57961474fee9df913e833e130560b8/config.json",
+      size_bytes: 888,
+      sha256: "459e764d58cdc13f3db6878adfdf8a29b5fd467ad1f4ef2161137cc115339c81",
+    },
+    ModelFileDef {
+      rel_path: "vad/silero_vad.mlmodelc/analytics/coremldata.bin",
+      url: "https://huggingface.co/aufklarer/Silero-VAD-v6.2.1-CoreML/resolve/523876545a57961474fee9df913e833e130560b8/silero_vad.mlmodelc/analytics/coremldata.bin",
+      size_bytes: 243,
+      sha256: "b777c3751d72b7430eac7f8544769a3d918faf77c15db184fec30e44c56007a3",
+    },
+    ModelFileDef {
+      rel_path: "vad/silero_vad.mlmodelc/coremldata.bin",
+      url: "https://huggingface.co/aufklarer/Silero-VAD-v6.2.1-CoreML/resolve/523876545a57961474fee9df913e833e130560b8/silero_vad.mlmodelc/coremldata.bin",
+      size_bytes: 399,
+      sha256: "f6fcd92c3132c9c718e5f54e0e770a8c8075beaa50a5b212a6287273b4ddae67",
+    },
+    ModelFileDef {
+      rel_path: "vad/silero_vad.mlmodelc/metadata.json",
+      url: "https://huggingface.co/aufklarer/Silero-VAD-v6.2.1-CoreML/resolve/523876545a57961474fee9df913e833e130560b8/silero_vad.mlmodelc/metadata.json",
+      size_bytes: 3_005,
+      sha256: "1b953eb3818e7092deedd96e976c05354f77beb2ddc2976fe416af17e47f62d2",
+    },
+    ModelFileDef {
+      rel_path: "vad/silero_vad.mlmodelc/model.mil",
+      url: "https://huggingface.co/aufklarer/Silero-VAD-v6.2.1-CoreML/resolve/523876545a57961474fee9df913e833e130560b8/silero_vad.mlmodelc/model.mil",
+      size_bytes: 18_203,
+      sha256: "b0a1384c4a664697989d9eb9cfb166b4b85f151206aeefd1bfa391ef9e5ad08f",
+    },
+    ModelFileDef {
+      rel_path: "vad/silero_vad.mlmodelc/weights/weight.bin",
+      url: "https://huggingface.co/aufklarer/Silero-VAD-v6.2.1-CoreML/resolve/523876545a57961474fee9df913e833e130560b8/silero_vad.mlmodelc/weights/weight.bin",
+      size_bytes: 619_136,
+      sha256: "83210545de90c65195e8d6db1b349b7e5c31f989f48d0a908a8dc0e2f586e5f9",
     },
     ModelFileDef {
       rel_path: "mlx/config.json",
@@ -126,9 +156,9 @@ pub enum ResolvedModelBackend {
 /// Returns pipeline model paths if the pack has the required runtime directories.
 pub fn pipeline_paths(pack: &ModelPackDef) -> Option<ResolvedPipelinePaths> {
   let dir = pack_dir(pack.id)?;
-  let vad = dir.join("vad").join("ggml-silero-v6.2.0.bin");
+  let vad = dir.join("vad").join("silero_vad.mlmodelc");
   let model_dir = dir.join("mlx");
-  if vad.exists() && mlx_nemotron_model_dir_ready(&model_dir) {
+  if coreml_vad_model_ready(&vad) && mlx_nemotron_model_dir_ready(&model_dir) {
     Some(ResolvedPipelinePaths {
       vad_model_path: vad,
       backend: ResolvedModelBackend::MlxNemotron { model_dir },
@@ -140,6 +170,12 @@ pub fn pipeline_paths(pack: &ModelPackDef) -> Option<ResolvedPipelinePaths> {
 
 pub fn mlx_nemotron_model_dir_ready(model_dir: &std::path::Path) -> bool {
   ["config.json", "model.safetensors", "tokenizer.model", "vocab.txt"]
+    .iter()
+    .all(|file| model_dir.join(file).is_file())
+}
+
+pub fn coreml_vad_model_ready(model_dir: &std::path::Path) -> bool {
+  ["analytics/coremldata.bin", "coremldata.bin", "metadata.json", "model.mil", "weights/weight.bin"]
     .iter()
     .all(|file| model_dir.join(file).is_file())
 }
@@ -165,6 +201,7 @@ mod tests {
     let pack = default_pack();
     assert_eq!(pack.id, "nemotron-3.5-mlx-bf16-v1");
     assert!(pack.files.iter().any(|f| f.rel_path == "mlx/model.safetensors"));
+    assert!(pack.files.iter().any(|f| f.rel_path == "vad/silero_vad.mlmodelc/model.mil"));
     assert!(!pack.files.iter().any(|f| f.rel_path.ends_with(".onnx")));
   }
 
@@ -190,6 +227,26 @@ mod tests {
 
     fs::write(dir.join("vocab.txt"), b"x").unwrap();
     assert!(mlx_nemotron_model_dir_ready(&dir));
+
+    let _ = fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn coreml_vad_model_dir_requires_compiled_model_files() {
+    let dir = std::env::temp_dir().join(format!(
+      "azad-coreml-vad-model-test-{}",
+      SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    fs::create_dir_all(dir.join("analytics")).unwrap();
+    fs::create_dir_all(dir.join("weights")).unwrap();
+
+    for file in ["analytics/coremldata.bin", "coremldata.bin", "metadata.json", "model.mil"] {
+      fs::write(dir.join(file), b"x").unwrap();
+    }
+    assert!(!coreml_vad_model_ready(&dir));
+
+    fs::write(dir.join("weights").join("weight.bin"), b"x").unwrap();
+    assert!(coreml_vad_model_ready(&dir));
 
     let _ = fs::remove_dir_all(dir);
   }

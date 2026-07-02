@@ -130,12 +130,11 @@ fn response_ok(response: &Value) -> Result<()> {
   Err(anyhow!("{message}"))
 }
 
-fn resolve_helper_path(configured: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn resolve_helper_path(configured: Option<&Path>) -> Result<PathBuf> {
   let candidates = helper_path_candidates(configured, std::env::current_exe().ok());
-  candidates
-    .into_iter()
-    .find(|path| path.is_file())
-    .ok_or_else(|| anyhow!("MLX ASR helper not found; run `just install` to build and bundle it"))
+  candidates.into_iter().find(|path| path.is_file()).ok_or_else(|| {
+    anyhow!("azad-mlx-asr helper not found; run `just install` to build and bundle it")
+  })
 }
 
 fn helper_path_candidates(configured: Option<&Path>, current_exe: Option<PathBuf>) -> Vec<PathBuf> {

@@ -1,4 +1,5 @@
 pub mod audio;
+pub(crate) mod coreml_vad;
 pub mod devices;
 pub mod embed;
 pub mod logging;

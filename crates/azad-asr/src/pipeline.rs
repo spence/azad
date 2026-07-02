@@ -1,4 +1,5 @@
 use crate::audio::{AudioHealth, AudioInput, AudioSpec};
+use crate::coreml_vad::{CoreMlVadConfig, CoreMlVadProcessor};
 use crate::mlx::{MlxNemotronAsr, MlxNemotronConfig};
 use crate::render::{RenderEvent, Renderer, TurnStartedReason};
 use crate::stability::StabilityTracker;
@@ -10,7 +11,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use whisper_cpp_plus::WhisperVadProcessor;
 
 const TARGET_SR: u32 = 16_000;
 const CHUNK_SAMPLES: usize = 2_560; // 160ms @ 16kHz
@@ -230,6 +230,7 @@ pub enum StreamingModelConfig {
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
   pub vad_model_path: PathBuf,
+  pub vad_helper_path: Option<PathBuf>,
   pub streaming_model: StreamingModelConfig,
   pub vad_thold: f32,
   pub vad_start_chunks: usize,
@@ -572,8 +573,12 @@ pub fn run_pipeline_with_options(
 
   let input_spec = input.spec();
 
-  let vad = WhisperVadProcessor::new(&cfg.vad_model_path).with_context(|| {
-    format!("failed to load Silero VAD model at {}", cfg.vad_model_path.display())
+  let vad = CoreMlVadProcessor::load(&CoreMlVadConfig {
+    model_path: cfg.vad_model_path.clone(),
+    helper_path: cfg.vad_helper_path.clone(),
+  })
+  .with_context(|| {
+    format!("failed to load CoreML Silero VAD model at {}", cfg.vad_model_path.display())
   })?;
 
   let streaming_asr = StreamingAsr::load(&cfg)?;
@@ -653,7 +658,7 @@ impl Runner {
     input_spec: AudioSpec,
     renderer: Arc<dyn Renderer>,
     cfg: PipelineConfig,
-    vad: WhisperVadProcessor,
+    vad: CoreMlVadProcessor,
     streaming_asr: StreamingAsr,
     final_tx: crossbeam_channel::Sender<FinalJob>,
     partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
@@ -722,7 +727,7 @@ struct PipelineCore {
   renderer: Arc<dyn Renderer>,
   input_spec: AudioSpec,
 
-  vad: WhisperVadProcessor,
+  vad: CoreMlVadProcessor,
   streaming_asr: StreamingAsr,
   final_tx: crossbeam_channel::Sender<FinalJob>,
   partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
@@ -809,7 +814,7 @@ impl PipelineCore {
     input_spec: AudioSpec,
     renderer: Arc<dyn Renderer>,
     cfg: PipelineConfig,
-    vad: WhisperVadProcessor,
+    vad: CoreMlVadProcessor,
     streaming_asr: StreamingAsr,
     final_tx: crossbeam_channel::Sender<FinalJob>,
     partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
@@ -958,8 +963,8 @@ impl PipelineCore {
       self.vad_avg_ema = 0.0;
     } else if cadence_skip_idle {
       self.vad_avg_ema = (1.0 - alpha) * self.vad_avg_ema;
-    } else if self.vad.detect_speech(chunk16) {
-      let probs = self.vad.get_probs();
+    } else {
+      let probs = self.vad.probabilities(chunk16)?;
       vad_avg = if probs.is_empty() { 0.0 } else { probs.iter().sum::<f32>() / probs.len() as f32 };
 
       if self.vad_seed_grace_chunks > 0 {
@@ -973,8 +978,6 @@ impl PipelineCore {
       } else {
         self.vad_avg_ema = alpha * vad_avg + (1.0 - alpha) * self.vad_avg_ema;
       }
-    } else {
-      self.vad_avg_ema = (1.0 - alpha) * self.vad_avg_ema;
     }
 
     let score = vad_avg.max(self.vad_avg_ema);

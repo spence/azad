@@ -191,7 +191,7 @@ fn run_fixture(id: &str) -> Option<ReplayResult> {
       if env_truthy("AZAD_TEST_REQUIRE_MODELS") {
         panic!(
           "AZAD_TEST_REQUIRE_MODELS is set but MLX/VAD models were not found at the \
-           workspace dev paths (models/nemotron-mlx and models/vad/ggml-silero-v6.2.0.bin)"
+           workspace dev paths (models/nemotron-mlx and models/vad/silero_vad.mlmodelc)"
         );
       }
       eprintln!(
@@ -295,8 +295,20 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
   let root = repo_root();
   let model_dir = root.join("models").join("nemotron-mlx");
 
-  let vad = root.join("models").join("vad").join("ggml-silero-v6.2.0.bin");
-  if !vad.is_file() {
+  let vad = root.join("models").join("vad").join("silero_vad.mlmodelc");
+  for required in [
+    vad.join("analytics").join("coremldata.bin"),
+    vad.join("coremldata.bin"),
+    vad.join("metadata.json"),
+    vad.join("model.mil"),
+    vad.join("weights").join("weight.bin"),
+  ] {
+    if !required.is_file() {
+      return None;
+    }
+  }
+
+  if !vad.is_dir() {
     return None;
   }
 
@@ -313,6 +325,7 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
 
   Some(PipelineConfig {
     vad_model_path: vad,
+    vad_helper_path: None,
     streaming_model: StreamingModelConfig::MlxNemotron {
       model_dir,
       language: "en-US".to_string(),
