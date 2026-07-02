@@ -23,7 +23,7 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 swift-build:
-    swift build -c release --package-path crates/azad-mlx-asr --scratch-path target/swift/azad-mlx-asr
+    crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-mlx-asr target/swift/azad-mlx-asr
 
 verify:
     just doctor

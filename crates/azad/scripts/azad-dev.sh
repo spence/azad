@@ -141,10 +141,9 @@ build_mlx_helper() {
     exit 1
   fi
 
-  swift build \
-    -c release \
-    --package-path "$MLX_HELPER_DIR" \
-    --scratch-path "$MLX_HELPER_BUILD_DIR"
+  "${ROOT_DIR}/crates/azad-mlx-asr/scripts/swift-build-release.sh" \
+    "$MLX_HELPER_DIR" \
+    "$MLX_HELPER_BUILD_DIR"
 
   MLX_HELPER_SOURCE="${MLX_HELPER_BUILD_DIR}/release/azad-mlx-asr"
   if [[ ! -x "$MLX_HELPER_SOURCE" ]]; then
