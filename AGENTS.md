@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This workspace is a multi-repo speech transcription system centered on the `Azad` macOS menu bar app.
+This workspace is a single-repository speech transcription system centered on the `Azad` macOS menu bar app.
 The project is focused on low-latency transcription, reliable hotkey/VAD interaction state, and predictable paste behavior.
 
 ## Responsibilities
@@ -30,6 +30,7 @@ When taking over a task, do this first:
 
 ## Deep Specs
 
+- `docs/README.md`: documentation index.
 - `crates/azad-asr/SPECIFICATION.md`: ASR runtime architecture, turn pipeline, fallback/quality design, and change playbooks.
 - `crates/azad/SPECIFICATION.md`: app interaction architecture, state machine integration, overlay/paste/settings behavior, and change playbooks.
 
@@ -71,6 +72,6 @@ Expected service/app identifiers:
 
 ## Commit and Scope Hygiene
 
-- This workspace has multiple git repos. Commit in the correct repo(s).
+- This workspace is one Git repository. Keep commits grouped by workstream.
 - Group commits by change domain (state machine, UI, engine, etc.), not by random file order.
 - Do not revert unrelated local changes unless explicitly requested.

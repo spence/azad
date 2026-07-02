@@ -9,6 +9,7 @@ Terminal live speech-to-text (English) using:
 ## Specification
 
 - `SPECIFICATION.md` - architecture, design decisions, runtime contracts, and change playbooks.
+- `../../docs/README.md` - repository-wide documentation index.
 
 ## Prereqs
 
@@ -45,6 +46,12 @@ cargo build -p azad-asr
 
 The Swift helper is built during app install and is used for both MLX ASR and
 CoreML VAD. No `whisper.cpp` checkout or build dependency is required.
+
+Build the helper directly from the repository root with:
+
+```bash
+just swift-build
+```
 
 ## Run
 

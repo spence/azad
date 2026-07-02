@@ -47,3 +47,4 @@ Azad also checks Accessibility permission on startup (required for auto-paste) a
 - `docs/keyboard-workflow.md` - User-facing keyboard workflow for dictation, history, and connectors.
 - `docs/keyboard-shortcut-state-machine.md` - Hotkey/VAD interaction rules and transitions.
 - `SPECIFICATION.md` - architecture, design decisions, subsystem boundaries, and change playbooks.
+- `../../docs/README.md` - repository-wide documentation index.

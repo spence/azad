@@ -94,7 +94,7 @@ On start:
 
 ## 4.2 During Speech
 
-- `feed_eou()` updates cumulative draft.
+- The streaming chunk feed updates cumulative draft text and stability state.
 - stability tracker emits committed/live split.
 - incremental slices are periodically scheduled when enough new audio exists.
 - speculative finalize can be scheduled at silence transitions (non-incremental mode path).

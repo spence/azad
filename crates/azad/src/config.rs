@@ -103,8 +103,8 @@ impl Default for AzadConfig {
         // sub-0.30 — so the engine misread soft continuation as silence and
         // force-ended mid-clause. 0.10 keeps any non-trivial voice activity
         // above the floor while staying above typical mic / room noise floor
-        // (< 0.05 in tests). Starting a turn still requires `vad_thold = 0.45`
-        // confidence; only the in-speech floor was lowered.
+        // (< 0.05 in tests). Starting a turn still requires the higher
+        // `vad_thold` confidence; only the in-speech floor is permissive.
         vad_in_speech_thold: 0.10,
         // Tentative-finalize: after EOU latches and `eou_min_silence_ms` is met,
         // wait this long before actually committing. If VAD picks up speech AND
@@ -119,7 +119,7 @@ impl Default for AzadConfig {
         // halves the paste-latency cost on every turn while still catching
         // soft-attack resumes that land within ~half the window.
         recovery_window_ms: 250,
-        // Lower than the turn-start `vad_thold` (0.45). False-positive recovery
+        // Lower than the turn-start `vad_thold`. False-positive recovery
         // only costs latency; false-negative cuts the user off. Keep generous.
         recovery_vad_thold: 0.30,
         stable_k: 3,

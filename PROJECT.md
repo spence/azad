@@ -2,10 +2,12 @@
 Runtime Agent Design delivers low-latency transcription with deterministic hotkey/listen-mode behavior and predictable overlay/paste UX in the Azad macOS app.
 
 Active milestones:
-- Idle VAD Silence Compute Reduction
-- Root Rust Workspace Cutover
+- Repository Quality Cleanup
+- Runtime Module Boundary Cleanup
 
 Completed milestones:
+- Idle VAD Silence Compute Reduction
+- Root Rust Workspace Cutover
 - Debug Recent Quality Session Association
 - Tail Finalization Timing Telemetry
 - Paste Trailing Space Toggle
@@ -15,19 +17,30 @@ Completed milestones:
 - Listen Toggle Overlay Feedback
 
 # Milestones
+## Repository Quality Cleanup
+- [x] Add a documentation index and cross-link root/crate READMEs to active docs.
+- [x] Remove obsolete historical fork/model investigation docs from the active tree.
+- [x] Add root verification commands covering Rust tests, formatting, Clippy, and Swift helper build.
+- [x] Run the full verification chain locally after cleanup.
+
+## Runtime Module Boundary Cleanup
+- [ ] Split macOS platform integration by concern (`hotkeys`, `paste`, `overlay`, `settings`, `history`, `onboarding`).
+- [ ] Split app orchestration by behavior flow (`interaction`, `overlay`, `paste`, `history`, `gateway`, `recovery`).
+- [ ] Split ASR pipeline internals by engine concern (`turn`, `vad`, `incremental`, `stitch`, `workers`, `debug_audit`).
+
 ## Debug Recent Quality Session Association
 - [x] Prevent recent transcription quality rows from reusing stale audit scores across app sessions.
 - [x] Use per-row nearest-in-time matching for audit/error/finalize records so `turn_id` reuse cannot mislabel quality.
 - [x] Keep summary aggregates accurate when `turn_id` values repeat after restarts.
 
 ## Idle VAD Silence Compute Reduction
-- [o] Skip VAD model inference for hard-silence idle chunks while preserving start-gating behavior.
-- [o] Validate live always-listening idle CPU after redeploy to confirm the baseline drops.
+- [x] Skip VAD model inference for hard-silence idle chunks while preserving start-gating behavior.
+- [x] Validate live always-listening idle CPU after redeploy to confirm the baseline drops.
 
 ## Root Rust Workspace Cutover
-- [o] Build Azad from repository root via a top-level Cargo workspace and root `just` workflow.
-- [o] Fix crate pathing and model path defaults so the new `crates/*` layout works without old directory assumptions.
-- [o] Update setup docs/scripts to root-first commands and `crates/*` paths.
+- [x] Build Azad from repository root via a top-level Cargo workspace and root `just` workflow.
+- [x] Fix crate pathing and model path defaults so the new `crates/*` layout works without old directory assumptions.
+- [x] Update setup docs/scripts to root-first commands and `crates/*` paths.
 
 ## Tail Finalization Timing Telemetry
 - [x] Emit debug-only timing logs for tail incremental enqueue, completion, timeout, and late dropped results.

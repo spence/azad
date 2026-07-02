@@ -53,9 +53,11 @@ If `just install` cannot find Apple’s `metal` compiler, it will try to use
 ## Repository Layout
 
 ```text
+docs/       documentation index and cross-cutting cleanup plans
 crates/
-  azad/       macOS menu bar app, onboarding, settings, overlay, hotkeys
-  azad-asr/   owned ASR engine crate used by the app and CLI
+  azad/         macOS menu bar app, onboarding, settings, overlay, hotkeys
+  azad-asr/     owned ASR engine crate used by the app and CLI
+  azad-mlx-asr/ bundled Swift helper for MLX ASR and CoreML VAD
 ```
 
 The workspace no longer uses Git submodules. Owned code lives in this repo. Forked
@@ -72,8 +74,12 @@ Current notable dependency choices:
 ## Common Commands
 
 ```bash
+just verify     # doctor + fmt + check + test + Swift helper build + Clippy
 just check      # cargo check --workspace
+just fmt-check  # cargo fmt --all --check
 just test       # cargo test --workspace
+just clippy     # cargo clippy --workspace --all-targets -- -D warnings
+just swift-build # build the bundled Swift MLX/CoreML helper
 just install    # build and install ~/Applications/Azad.app
 just start      # start launchd service
 just restart    # restart launchd service
@@ -126,6 +132,7 @@ Use `just reset-permissions` to reset prompts during development.
 
 ## Usage
 
+- [Documentation index](docs/README.md)
 - [Keyboard workflow](crates/azad/docs/keyboard-workflow.md)
 
 ## License
