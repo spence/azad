@@ -234,9 +234,9 @@ static MOUSE_BUTTON_PREV_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic
 static OVERLAY_ACCEPTS_KEY_INPUT: AtomicBool = AtomicBool::new(false);
 
 // Event-tap state. `EVENT_TAP_PORT` holds the CFMachPortRef so the callback can re-enable the
-// tap after macOS times it out. `SPACE_HOLD_CLAIMED` tracks whether we consumed a keydown for
-// Option+Space so we know to also consume (and dispatch Released for) the matching keyup —
-// macOS can deliver the Space keyup with Option already released, so we can't re-check flags.
+// tap after macOS times it out. `SPACE_HOLD_CLAIMED` tracks whether we consumed a Space keydown
+// for the listen hotkey. Once claimed, Azad owns that physical Space hold until keyup, even if
+// the user releases the modifier first.
 static EVENT_TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static SPACE_HOLD_CLAIMED: AtomicBool = AtomicBool::new(false);
 
@@ -7214,6 +7214,54 @@ extern "C" fn event_tap_callback(
   event
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpaceHotkeyDecision {
+  claimed_after: bool,
+  action: SpaceHotkeyAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpaceHotkeyAction {
+  PassThrough,
+  ClaimOnly,
+  Press,
+  Release { raw_requested: bool },
+}
+
+fn space_hotkey_decision(
+  wanted_mods: u8,
+  prior_claimed: bool,
+  live_mods: u8,
+  is_keydown: bool,
+  is_autorepeat: bool,
+) -> SpaceHotkeyDecision {
+  let mods_match = wanted_mods != 0 && (live_mods & wanted_mods) == wanted_mods;
+  if is_keydown {
+    if mods_match {
+      if is_autorepeat {
+        return SpaceHotkeyDecision {
+          claimed_after: prior_claimed,
+          action: SpaceHotkeyAction::ClaimOnly,
+        };
+      }
+      return SpaceHotkeyDecision { claimed_after: true, action: SpaceHotkeyAction::Press };
+    }
+    if prior_claimed {
+      return SpaceHotkeyDecision { claimed_after: true, action: SpaceHotkeyAction::ClaimOnly };
+    }
+    return SpaceHotkeyDecision { claimed_after: false, action: SpaceHotkeyAction::PassThrough };
+  }
+
+  if prior_claimed {
+    SpaceHotkeyDecision {
+      claimed_after: false,
+      action: SpaceHotkeyAction::Release { raw_requested: live_mods & MOD_OPTION != 0 },
+    }
+  } else {
+    SpaceHotkeyDecision { claimed_after: false, action: SpaceHotkeyAction::PassThrough }
+  }
+}
+
 fn claim_tap_hotkey(
   keycode: u16,
   is_option: bool,
@@ -7223,42 +7271,36 @@ fn claim_tap_hotkey(
   is_keydown: bool,
   is_autorepeat: bool,
 ) -> bool {
-  // Option+Space: hold-to-talk.
-  //
-  // Dispatch `HotkeyPressed` on **every** non-autorepeat Opt+Space keydown (no edge-debounce),
-  // because if the prior keyup was ever dropped (tap disabled mid-hold, screen lock, another
-  // app briefly taking exclusive keyboard focus, etc.), the previous approach of gating on
-  // `SPACE_HOLD_CLAIMED.swap(true)` would return `was_held=true` forever and silently swallow
-  // every subsequent press — appearing to the user as "Azad is stuck; restart fixes it". OS
-  // auto-repeat keydowns are filtered via `kCGKeyboardEventAutorepeat` so this doesn't flood
-  // the state machine with repeated presses while you're just holding the key.
-  //
-  // `SPACE_HOLD_CLAIMED` is still used to decide whether to *claim* (swallow) the subsequent
-  // keyup — a bare Space keyup not preceded by Opt+Space should pass through normally — but it
-  // no longer gates dispatch.
+  // Listen hotkey: a non-autorepeat matching Space keydown dispatches a hold
+  // press. Once that physical Space hold is claimed, every later Space event in
+  // the hold is swallowed until keyup, even if the modifier is released first.
+  // Bare unclaimed Space continues to pass through to the focused app.
   if keycode == KEYCODE_SPACE {
     // Listen hotkey: Space plus the user-configured modifier set. Superset-match
-    // (all wanted modifiers held; extras OK) so the default (Option) is identical
-    // to the old `is_option` check. `wanted != 0` guards against a corrupt empty
-    // mask turning bare Space into a global trigger.
+    // (all wanted modifiers held; extras OK). `wanted != 0` guards against a
+    // corrupt empty mask turning bare Space into a global trigger.
     let wanted = LISTEN_MODIFIERS.load(Ordering::Acquire);
     let live = current_mod_mask(is_option, is_shift, is_command, is_control);
-    let mods_match = wanted != 0 && (live & wanted) == wanted;
-    if is_keydown && mods_match {
-      if is_autorepeat {
-        // Claim the event so the remote VNC never gets a flood of spaces, but don't dispatch
-        // — the state machine already knows we're holding.
+    let decision = space_hotkey_decision(
+      wanted,
+      SPACE_HOLD_CLAIMED.load(Ordering::Acquire),
+      live,
+      is_keydown,
+      is_autorepeat,
+    );
+    SPACE_HOLD_CLAIMED.store(decision.claimed_after, Ordering::Release);
+    match decision.action {
+      SpaceHotkeyAction::PassThrough => return false,
+      SpaceHotkeyAction::ClaimOnly => return true,
+      SpaceHotkeyAction::Press => {
+        crate::app::send_event(AppEvent::HotkeyPressed);
         return true;
       }
-      SPACE_HOLD_CLAIMED.store(true, Ordering::Release);
-      crate::app::send_event(AppEvent::HotkeyPressed);
-      return true;
+      SpaceHotkeyAction::Release { raw_requested } => {
+        crate::app::send_event(AppEvent::HotkeyReleased { raw_requested });
+        return true;
+      }
     }
-    if !is_keydown && SPACE_HOLD_CLAIMED.swap(false, Ordering::AcqRel) {
-      crate::app::send_event(AppEvent::HotkeyReleased);
-      return true;
-    }
-    return false;
   }
 
   // Overlay-only hotkeys. Claim both keydown and keyup so the underlying app never sees either
@@ -7398,7 +7440,9 @@ fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
   if listen_id != 0 && event.id == listen_id {
     match event.state {
       HotKeyState::Pressed => crate::app::send_event(AppEvent::HotkeyPressed),
-      HotKeyState::Released => crate::app::send_event(AppEvent::HotkeyReleased),
+      HotKeyState::Released => {
+        crate::app::send_event(AppEvent::HotkeyReleased { raw_requested: is_raw_mode_pressed() })
+      }
     }
     return;
   }
@@ -8148,4 +8192,67 @@ unsafe fn nsstring_to_string(value: id) -> Option<String> {
   }
 
   Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{MOD_OPTION, SpaceHotkeyAction, SpaceHotkeyDecision, space_hotkey_decision};
+
+  #[test]
+  fn option_space_press_claims_and_dispatches_press() {
+    assert_eq!(
+      space_hotkey_decision(MOD_OPTION, false, MOD_OPTION, true, false),
+      SpaceHotkeyDecision { claimed_after: true, action: SpaceHotkeyAction::Press }
+    );
+  }
+
+  #[test]
+  fn claimed_space_repeat_after_option_release_is_swallowed() {
+    assert_eq!(
+      space_hotkey_decision(MOD_OPTION, true, 0, true, true),
+      SpaceHotkeyDecision { claimed_after: true, action: SpaceHotkeyAction::ClaimOnly }
+    );
+  }
+
+  #[test]
+  fn claimed_space_keydown_after_option_release_is_swallowed() {
+    assert_eq!(
+      space_hotkey_decision(MOD_OPTION, true, 0, true, false),
+      SpaceHotkeyDecision { claimed_after: true, action: SpaceHotkeyAction::ClaimOnly }
+    );
+  }
+
+  #[test]
+  fn claimed_space_keyup_after_option_release_finalizes_non_raw() {
+    assert_eq!(
+      space_hotkey_decision(MOD_OPTION, true, 0, false, false),
+      SpaceHotkeyDecision {
+        claimed_after: false,
+        action: SpaceHotkeyAction::Release { raw_requested: false },
+      }
+    );
+  }
+
+  #[test]
+  fn claimed_space_keyup_while_option_held_finalizes_raw() {
+    assert_eq!(
+      space_hotkey_decision(MOD_OPTION, true, MOD_OPTION, false, false),
+      SpaceHotkeyDecision {
+        claimed_after: false,
+        action: SpaceHotkeyAction::Release { raw_requested: true },
+      }
+    );
+  }
+
+  #[test]
+  fn unclaimed_bare_space_passes_through() {
+    assert_eq!(
+      space_hotkey_decision(MOD_OPTION, false, 0, true, false),
+      SpaceHotkeyDecision { claimed_after: false, action: SpaceHotkeyAction::PassThrough }
+    );
+    assert_eq!(
+      space_hotkey_decision(MOD_OPTION, false, 0, false, false),
+      SpaceHotkeyDecision { claimed_after: false, action: SpaceHotkeyAction::PassThrough }
+    );
+  }
 }

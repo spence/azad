@@ -50,7 +50,9 @@ const GATEWAY_STALL_MESSAGE: &str = "Claude stopped responding — press Esc to 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
   HotkeyPressed,
-  HotkeyReleased,
+  HotkeyReleased {
+    raw_requested: bool,
+  },
   FinalizeHotkeyPressed {
     raw_requested: bool,
   },
@@ -274,6 +276,7 @@ struct AppController {
   engine_state: EngineState,
   hotkey_state: HotkeyState,
   raw_finalize_requested: bool,
+  pending_hold_release_raw_requested: bool,
   run_on_startup_enabled: bool,
   history_enabled: bool,
   paste_method: PasteMethod,
@@ -518,7 +521,14 @@ fn manual_hold_release_plan(
     ManualHoldReleaseAction::KeepLive
   };
 
-  ManualHoldReleasePlan { capture_enabled: always_listening_enabled, action }
+  let capture_enabled =
+    always_listening_enabled || matches!(action, ManualHoldReleaseAction::FinalizeTurn);
+
+  ManualHoldReleasePlan { capture_enabled, action }
+}
+
+fn should_latch_raw_on_hold_release(raw_requested: bool, action: ManualHoldReleaseAction) -> bool {
+  raw_requested && matches!(action, ManualHoldReleaseAction::FinalizeTurn)
 }
 
 fn should_ignore_finalizing_event(raw_handled_turn_id: Option<u64>, turn_id: u64) -> bool {
@@ -999,6 +1009,7 @@ impl AppController {
       engine_state: EngineState::Idle,
       hotkey_state: HotkeyState::default(),
       raw_finalize_requested: false,
+      pending_hold_release_raw_requested: false,
       run_on_startup_enabled,
       history_enabled,
       paste_method,
@@ -1196,7 +1207,7 @@ impl AppController {
   fn handle_event(&mut self, event: AppEvent) {
     match event {
       AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
-      AppEvent::HotkeyReleased => self.handle_hotkey_released(),
+      AppEvent::HotkeyReleased { raw_requested } => self.handle_hotkey_released(raw_requested),
       AppEvent::FinalizeHotkeyPressed { raw_requested } => {
         self.handle_finalize_hotkey_pressed(raw_requested)
       }
@@ -1307,6 +1318,7 @@ impl AppController {
     self.current_turn_id = None;
     self.dispatch_hotkey_input(HotkeyInput::SessionReset);
     self.raw_finalize_requested = false;
+    self.pending_hold_release_raw_requested = false;
     self.reset_activity_history();
     self.busy_border_phase = 0.0;
     self.turn_started_at.clear();
@@ -1394,8 +1406,8 @@ impl AppController {
     });
   }
 
-  fn handle_hotkey_released(&mut self) {
-    self.log_input_event(InputLogEvent::HotkeyReleased);
+  fn handle_hotkey_released(&mut self, raw_requested: bool) {
+    self.log_input_event(InputLogEvent::HotkeyReleased { raw_requested });
     if self.history_browsing {
       // Once in history mode the user is no longer required to hold opt+space —
       // they navigate with Up/Down and dismiss with Esc/Left or paste with Enter.
@@ -1405,7 +1417,9 @@ impl AppController {
     if !self.models_ready {
       return;
     }
+    self.pending_hold_release_raw_requested = raw_requested;
     self.dispatch_hotkey_input(HotkeyInput::HoldReleased { snapshot: self.hotkey_snapshot() });
+    self.pending_hold_release_raw_requested = false;
   }
 
   fn handle_finalize_hotkey_pressed(&mut self, raw_requested: bool) {
@@ -1696,6 +1710,9 @@ impl AppController {
           should_finalize,
           has_started_turn,
         );
+        if should_latch_raw_on_hold_release(self.pending_hold_release_raw_requested, plan.action) {
+          self.raw_finalize_requested = true;
+        }
         if let Some(session) = &self.session {
           session.release_manual_hold();
           // Keep capture state in sync immediately on hold release so
@@ -2132,6 +2149,7 @@ impl AppController {
     self.hold_saw_speech = false;
     self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
     self.raw_finalize_requested = false;
+    self.pending_hold_release_raw_requested = false;
     self.clear_overlay_pending();
     self.clear_held_top_overlay();
     if !split_active {
@@ -3451,6 +3469,7 @@ impl AppController {
     self.hold_saw_speech = false;
     self.clear_overlay_pending();
     self.raw_finalize_requested = false;
+    self.pending_hold_release_raw_requested = false;
     self.deferred_vad_start = false;
     self.finalizing_deadline = None;
     self.finalizing_turn_id = None;
@@ -3997,6 +4016,7 @@ impl AppController {
     self.finalizing_turn_id = None;
     self.raw_handled_turn_id = None;
     self.raw_finalize_requested = false;
+    self.pending_hold_release_raw_requested = false;
     self.deferred_vad_start = false;
     self.accessibility_notice_deadline = None;
     self.listen_toggle_notice = None;
@@ -4051,6 +4071,7 @@ impl AppController {
     }
     self.raw_handled_turn_id = Some(turn_id);
     self.raw_finalize_requested = false;
+    self.pending_hold_release_raw_requested = false;
     self.dispatch_hotkey_input(HotkeyInput::SpeechFinalized);
     self.latest_final = Some(raw_text.clone());
 
@@ -4193,6 +4214,9 @@ impl AppController {
   }
 
   fn update_activity_from_meter(&mut self, peak_db: f32, vad_speech: bool, vad_prob: f32) {
+    if self.manual_hold_active && vad_speech {
+      self.hold_saw_speech = true;
+    }
     let normalized_peak = ((peak_db + 60.0) / 60.0).clamp(0.0, 1.0);
     let vad_component = if vad_speech { vad_prob.clamp(0.0, 1.0).max(0.15) } else { 0.0 };
     let mut next = normalized_peak.max(vad_component);
@@ -4258,8 +4282,8 @@ mod tests {
     has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
     manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
     raw_finalize_ui_plan, recovery_state_for_fault_count, should_ignore_finalizing_event,
-    split_overlay_active_for_turns, split_overlay_visible_for_state,
-    split_overlay_visible_with_hold_for_state,
+    should_latch_raw_on_hold_release, split_overlay_active_for_turns,
+    split_overlay_visible_for_state, split_overlay_visible_with_hold_for_state,
     split_overlay_visible_with_live_divergence_for_state,
     split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
     turn_started_should_arm_pending,
@@ -4291,13 +4315,25 @@ mod tests {
   }
 
   #[test]
-  fn manual_hold_release_plan_disables_capture_when_listen_is_off() {
+  fn manual_hold_release_plan_keeps_capture_through_finalize_when_listen_is_off() {
     let plan = manual_hold_release_plan(false, true, true);
     assert_eq!(
       plan,
       ManualHoldReleasePlan {
-        capture_enabled: false,
+        capture_enabled: true,
         action: ManualHoldReleaseAction::FinalizeTurn,
+      }
+    );
+  }
+
+  #[test]
+  fn manual_hold_release_plan_disables_capture_when_nothing_started_and_listen_off() {
+    let plan = manual_hold_release_plan(false, true, false);
+    assert_eq!(
+      plan,
+      ManualHoldReleasePlan {
+        capture_enabled: false,
+        action: ManualHoldReleaseAction::HideOverlay,
       }
     );
   }
@@ -4318,6 +4354,36 @@ mod tests {
       plan,
       ManualHoldReleasePlan { capture_enabled: false, action: ManualHoldReleaseAction::KeepLive }
     );
+  }
+
+  #[test]
+  fn manual_hold_meter_vad_marks_short_hold_as_started() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.manual_hold_active = true;
+    controller.hold_saw_speech = false;
+
+    controller.update_activity_from_meter(-45.0, true, 0.50);
+
+    assert!(controller.hold_saw_speech);
+  }
+
+  #[test]
+  fn idle_meter_vad_does_not_mark_hold_as_started() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.manual_hold_active = false;
+    controller.hold_saw_speech = false;
+
+    controller.update_activity_from_meter(-45.0, true, 0.50);
+
+    assert!(!controller.hold_saw_speech);
+  }
+
+  #[test]
+  fn raw_hold_release_latches_only_when_release_finalizes() {
+    assert!(should_latch_raw_on_hold_release(true, ManualHoldReleaseAction::FinalizeTurn));
+    assert!(!should_latch_raw_on_hold_release(true, ManualHoldReleaseAction::KeepLive));
+    assert!(!should_latch_raw_on_hold_release(true, ManualHoldReleaseAction::HideOverlay));
+    assert!(!should_latch_raw_on_hold_release(false, ManualHoldReleaseAction::FinalizeTurn));
   }
 
   #[test]

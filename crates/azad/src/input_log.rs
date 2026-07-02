@@ -58,7 +58,7 @@ pub enum InputLogEvent {
   /// Opt+Space pressed (start of dictation hold).
   HotkeyPressed,
   /// Opt+Space released.
-  HotkeyReleased,
+  HotkeyReleased { raw_requested: bool },
   /// Enter (or Opt+Enter) pressed in the overlay context.
   FinalizeHotkeyPressed { raw_requested: bool },
   /// Esc pressed (overlay cancel).
@@ -190,6 +190,19 @@ mod tests {
     };
     let line = serde_json::to_string(&entry).unwrap();
     assert!(line.contains("\"event\":\"finalize_hotkey_pressed\""));
+    assert!(line.contains("\"raw_requested\":true"));
+  }
+
+  #[test]
+  fn hotkey_release_event_records_raw_flag() {
+    let entry = InputLogEntry {
+      schema_version: 1,
+      ts_ms: 0,
+      event: InputLogEvent::HotkeyReleased { raw_requested: true },
+      state: empty_state(),
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(line.contains("\"event\":\"hotkey_released\""));
     assert!(line.contains("\"raw_requested\":true"));
   }
 
