@@ -79,6 +79,8 @@ pub enum InputLogEvent {
   EngineFinalizingCancelled { turn_id: u64 },
   /// Engine emitted a final transcript for a turn.
   EngineFinalText { turn_id: u64, text_chars: usize },
+  /// App dropped a final transcript because the turn never became user-visible.
+  FinalTextSuppressed { turn_id: u64, text_chars: usize, reason: &'static str },
   /// Engine reported the audio session ended.
   EngineSessionEnded,
   /// App-side paste attempt (normal or raw).
@@ -217,5 +219,24 @@ mod tests {
     let line = serde_json::to_string(&entry).unwrap();
     assert!(line.contains("\"event\":\"raw_fallback_fired\""));
     assert!(line.contains("\"turn_id\":42"));
+  }
+
+  #[test]
+  fn suppressed_final_text_event_records_reason() {
+    let entry = InputLogEntry {
+      schema_version: 1,
+      ts_ms: 0,
+      event: InputLogEvent::FinalTextSuppressed {
+        turn_id: 42,
+        text_chars: 4,
+        reason: "hidden_without_visible_draft",
+      },
+      state: empty_state(),
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(line.contains("\"event\":\"final_text_suppressed\""));
+    assert!(line.contains("\"turn_id\":42"));
+    assert!(line.contains("\"text_chars\":4"));
+    assert!(line.contains("\"reason\":\"hidden_without_visible_draft\""));
   }
 }

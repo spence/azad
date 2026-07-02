@@ -78,6 +78,11 @@ pub struct SpeechSession {
 }
 
 impl SpeechSession {
+  #[cfg(test)]
+  pub(crate) fn test(session_id: u64) -> Self {
+    Self { session_id, handle: Arc::new(TestSessionHandle) }
+  }
+
   pub fn start_or_resume_manual_hold(&self) {
     let _ = self.handle.control(SessionControl::StartOrResumeManualHold);
   }
@@ -112,6 +117,20 @@ impl SpeechSession {
 
   pub fn capture_enabled(&self) -> bool {
     self.handle.capture_enabled()
+  }
+}
+
+#[cfg(test)]
+struct TestSessionHandle;
+
+#[cfg(test)]
+impl SessionHandle for TestSessionHandle {
+  fn control(&self, _cmd: SessionControl) -> Result<()> {
+    Ok(())
+  }
+
+  fn shutdown(&self) -> Result<()> {
+    Ok(())
   }
 }
 

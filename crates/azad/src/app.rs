@@ -732,6 +732,21 @@ fn has_started_turn_for_snapshot(
   !latest_draft.trim().is_empty()
 }
 
+fn final_text_has_user_visible_context(
+  turn_id: u64,
+  current_turn_id: Option<u64>,
+  finalizing_turn_id: Option<u64>,
+  overlay_visible: bool,
+  manual_hold_active: bool,
+  latest_draft: &str,
+  finalizing_draft: &str,
+) -> bool {
+  overlay_visible
+    || manual_hold_active
+    || (current_turn_id == Some(turn_id) && !latest_draft.trim().is_empty())
+    || (finalizing_turn_id == Some(turn_id) && !finalizing_draft.trim().is_empty())
+}
+
 /// Map a raw gateway error / disconnect reason to a short message for the overlay error
 /// state, smoothing the common cases while keeping anything unexpected readable.
 fn friendly_gateway_error(raw: &str) -> String {
@@ -2606,6 +2621,15 @@ impl AppController {
         }
 
         let cleaned = text.trim().to_string();
+        let has_user_visible_context = final_text_has_user_visible_context(
+          turn_id,
+          self.current_turn_id,
+          self.finalizing_turn_id,
+          self.overlay_visible,
+          self.manual_hold_active,
+          &self.latest_draft,
+          &self.finalizing_draft,
+        );
         let hold_top_for_next_turn = self.finalizing_turn_id == Some(turn_id)
           && self.saw_vad_start_during_finalizing
           && self.latest_draft.trim().is_empty()
@@ -2694,6 +2718,24 @@ impl AppController {
           self.clear_held_top_overlay();
           self.turn_started_at.remove(&turn_id);
           self.raw_handled_turn_id = None;
+          self.maybe_start_deferred_vad_turn();
+          if !self.should_keep_capture_for_followups() {
+            if let Some(session) = &self.session {
+              session.set_capture_enabled(false);
+            }
+          }
+          return;
+        }
+        if !has_user_visible_context {
+          self.log_input_event(InputLogEvent::FinalTextSuppressed {
+            turn_id,
+            text_chars: cleaned.chars().count(),
+            reason: "hidden_without_visible_draft",
+          });
+          self.clear_held_top_overlay();
+          self.turn_started_at.remove(&turn_id);
+          self.raw_handled_turn_id = None;
+          self.latest_final = None;
           self.maybe_start_deferred_vad_turn();
           if !self.should_keep_capture_for_followups() {
             if let Some(session) = &self.session {
@@ -4277,7 +4319,7 @@ mod tests {
     AppController, AzadConfig, DraftOverlayAction, EngineState, HotkeyEffect,
     ManualHoldReleaseAction, ManualHoldReleasePlan, RawFinalizeUiPlan, SessionRecoveryState,
     allow_immediate_restart_for_fault_count, build_paste_text, collapse_consecutive_duplicates,
-    draft_matches_finalized_text, draft_update_overlay_action,
+    draft_matches_finalized_text, draft_update_overlay_action, final_text_has_user_visible_context,
     has_actionable_turn_context_for_snapshot, has_started_turn_for_snapshot,
     has_turn_context_for_snapshot, is_stream_fault_message, listen_toggle_notice,
     manual_hold_release_plan, next_current_turn_id, raw_finalize_target_turn_id_for_state,
@@ -4289,6 +4331,7 @@ mod tests {
     turn_started_should_arm_pending,
   };
   use super::{LISTEN_TOGGLE_NOTICE_DURATION_MS, ListenToggleNotice};
+  use crate::speech::{SpeechEvent, SpeechSession};
 
   #[test]
   fn raw_finalize_hotkey_forces_overlay_hide_even_during_manual_hold() {
@@ -5022,6 +5065,95 @@ mod tests {
   #[test]
   fn started_turn_snapshot_marks_hold_as_started_after_speech_is_seen() {
     assert!(has_started_turn_for_snapshot(true, true, EngineState::Idle, None, "",));
+  }
+
+  #[test]
+  fn final_text_without_visible_turn_context_is_not_pasteable() {
+    assert!(!final_text_has_user_visible_context(
+      42,
+      Some(42),
+      None,
+      /* overlay_visible */ false,
+      /* manual_hold_active */ false,
+      "",
+      "",
+    ));
+  }
+
+  #[test]
+  fn final_text_with_live_draft_for_same_turn_is_pasteable() {
+    assert!(final_text_has_user_visible_context(
+      42,
+      Some(42),
+      None,
+      /* overlay_visible */ false,
+      /* manual_hold_active */ false,
+      "hello",
+      "",
+    ));
+  }
+
+  #[test]
+  fn final_text_ignores_stale_draft_from_prior_turn() {
+    assert!(!final_text_has_user_visible_context(
+      42,
+      Some(41),
+      None,
+      /* overlay_visible */ false,
+      /* manual_hold_active */ false,
+      "prior text",
+      "",
+    ));
+  }
+
+  #[test]
+  fn final_text_with_finalizing_draft_for_same_turn_is_pasteable() {
+    assert!(final_text_has_user_visible_context(
+      42,
+      Some(42),
+      Some(42),
+      /* overlay_visible */ false,
+      /* manual_hold_active */ false,
+      "",
+      "visible finalizing text",
+    ));
+  }
+
+  #[test]
+  fn final_text_with_overlay_or_manual_hold_context_is_pasteable() {
+    assert!(final_text_has_user_visible_context(
+      42, None, None, /* overlay_visible */ true, /* manual_hold_active */ false, "", "",
+    ));
+    assert!(final_text_has_user_visible_context(
+      42, None, None, /* overlay_visible */ false, /* manual_hold_active */ true, "", "",
+    ));
+  }
+
+  #[test]
+  fn hidden_final_text_does_not_become_session_fallback_candidate() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.session = Some(SpeechSession::test(7));
+    controller.current_turn_id = Some(42);
+    controller.latest_seen_turn_id = 42;
+    controller.latest_draft.clear();
+    controller.finalizing_draft.clear();
+    controller.overlay_visible = false;
+    controller.manual_hold_active = false;
+    controller.latest_final = Some("stale prior text".to_string());
+
+    controller.handle_speech_event(SpeechEvent::FinalText {
+      session_id: 7,
+      turn_id: 42,
+      text: "Hmm.".to_string(),
+    });
+
+    assert!(controller.latest_final.is_none());
+    assert_eq!(controller.last_pasted_turn_id, None);
+
+    controller.handle_speech_event(SpeechEvent::SessionEnded { session_id: 7 });
+
+    assert_eq!(controller.last_pasted_turn_id, None);
+    assert!(controller.latest_final.is_none());
   }
 
   #[test]
