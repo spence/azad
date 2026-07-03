@@ -75,11 +75,13 @@ const DEVICE_HEADER_MIN_WIDTH: f64 = 220.0;
 const DEVICE_HEADER_HEIGHT: f64 = 28.0;
 const DEVICE_HEADER_TEXT_LEADING: f64 = 14.0;
 const DEVICE_HEADER_ICON_SIZE: f64 = 16.0;
-const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 10.0;
+const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 0.0;
 const DEVICE_HEADER_TRAILING: f64 = 12.0;
 const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
 const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
 const DEVICE_HEADER_LABEL_HEIGHT: f64 = 18.0;
+const DEVICE_MENU_ROW_HEIGHT: f64 = 24.0;
+const DEVICE_MENU_LABEL_DOWN_OFFSET: f64 = 2.0;
 const DEVICE_HEADER_EXTRA_TOP_PADDING: f64 = 1.0;
 const DEVICE_HEADER_EXTRA_SIDE_MARGIN: f64 = 2.0;
 const ALWAYS_LISTENING_ROW_HEIGHT: f64 = 30.0;
@@ -1148,6 +1150,9 @@ extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
     let selected = DEVICE_ROW_IDS.with(|rows| rows.borrow().get(tag as usize).cloned());
     if let Some(device_id) = selected {
       crate::app::send_event(AppEvent::MenuSelectDevice(device_id));
+      if let Some(menu) = STATUS_MENU_REF.with(|slot| *slot.borrow()) {
+        let _: () = msg_send![menu, cancelTracking];
+      }
     }
   }
 }
@@ -1495,10 +1500,10 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
 
     if model.expanded {
       if model.rows.is_empty() {
-        max_width = max_width.max(menu_row_width_for_text("No input devices", font, 1, false));
+        max_width = max_width.max(device_menu_row_width_for_label("No input devices", font));
       } else {
         for row in &model.rows {
-          max_width = max_width.max(menu_row_width_for_text(&row.label, font, 1, true));
+          max_width = max_width.max(device_menu_row_width_for_label(&row.label, font));
         }
       }
     }
@@ -1575,15 +1580,24 @@ unsafe fn menu_row_width_for_text(
 unsafe fn device_header_width_for_label(label: &str, font: id) -> f64 {
   let text_width = measure_text_width(label, font);
   let mut width = text_width
-    + DEVICE_HEADER_TEXT_LEADING
-    + DEVICE_HEADER_ICON_SIZE
-    + DEVICE_HEADER_ICON_TO_LABEL_GAP
+    + device_header_title_x()
     + DEVICE_HEADER_LABEL_TO_CHEVRON_GAP
     + DEVICE_HEADER_CHEVRON_SIZE
     + DEVICE_HEADER_TRAILING
     + DEVICE_MENU_TEXT_SAFETY_PADDING;
   width += 6.0 + (DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0);
   width
+}
+
+unsafe fn device_menu_row_width_for_label(label: &str, font: id) -> f64 {
+  device_header_title_x()
+    + measure_text_width(label, font)
+    + DEVICE_HEADER_TRAILING
+    + DEVICE_MENU_TEXT_SAFETY_PADDING
+}
+
+fn device_header_title_x() -> f64 {
+  DEVICE_HEADER_TEXT_LEADING + DEVICE_HEADER_ICON_SIZE + DEVICE_HEADER_ICON_TO_LABEL_GAP
 }
 
 fn menu_screen_width_cap() -> f64 {
@@ -1700,6 +1714,10 @@ unsafe fn always_listening_track_color(view: id, enabled: bool) -> id {
 
 fn centered_menu_axis_offset(container: f64, item: f64) -> f64 {
   ((container - item) * 0.5).max(0.0)
+}
+
+fn menu_label_axis_offset(container: f64, item: f64) -> f64 {
+  (centered_menu_axis_offset(container, item) - DEVICE_MENU_LABEL_DOWN_OFFSET).max(0.0)
 }
 
 fn always_listening_thumb_frame(enabled: bool) -> NSRect {
@@ -2003,8 +2021,7 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
   let icon_tint: id = msg_send![class!(NSColor), secondaryLabelColor];
   set_image_view_tint_if_supported(icon_view, icon_tint);
 
-  let title_x =
-    DEVICE_HEADER_TEXT_LEADING + DEVICE_HEADER_ICON_SIZE + DEVICE_HEADER_ICON_TO_LABEL_GAP;
+  let title_x = device_header_title_x();
   let title_width = DEVICE_HEADER_WIDTH
     - DEVICE_HEADER_TEXT_LEADING
     - DEVICE_HEADER_ICON_SIZE
@@ -2013,10 +2030,7 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
     - DEVICE_HEADER_CHEVRON_SIZE
     - DEVICE_HEADER_LABEL_TO_CHEVRON_GAP;
   let title_label_frame = NSRect::new(
-    NSPoint::new(
-      title_x,
-      centered_menu_axis_offset(DEVICE_HEADER_HEIGHT, DEVICE_HEADER_LABEL_HEIGHT),
-    ),
+    NSPoint::new(title_x, menu_label_axis_offset(DEVICE_HEADER_HEIGHT, DEVICE_HEADER_LABEL_HEIGHT)),
     NSSize::new(title_width, DEVICE_HEADER_LABEL_HEIGHT),
   );
   let title_label: id = msg_send![class!(NSTextField), alloc];
@@ -2110,16 +2124,7 @@ unsafe fn insert_device_rows(menu: id, delegate: id, model: &DeviceMenuModel, mu
   }
 
   if model.rows.is_empty() {
-    let placeholder_item = NSMenuItem::alloc(nil)
-      .initWithTitle_action_keyEquivalent_(
-        NSString::alloc(nil).init_str("No input devices"),
-        sel!(noop:),
-        NSString::alloc(nil).init_str(""),
-      )
-      .autorelease();
-    placeholder_item.setTarget_(delegate);
-    let _: () = msg_send![placeholder_item, setEnabled: NO];
-    let _: () = msg_send![placeholder_item, setIndentationLevel: 1isize];
+    let placeholder_item = make_device_row_item(delegate, "No input devices", false, -1, false);
     let _: () = msg_send![menu, insertItem: placeholder_item atIndex: insert_at];
     return;
   }
@@ -2131,21 +2136,97 @@ unsafe fn insert_device_rows(menu: id, delegate: id, model: &DeviceMenuModel, mu
       (rows.len() - 1) as i64
     });
 
-    let row_item = NSMenuItem::alloc(nil)
-      .initWithTitle_action_keyEquivalent_(
-        NSString::alloc(nil).init_str(&row.label),
-        sel!(selectDevice:),
-        NSString::alloc(nil).init_str(""),
-      )
-      .autorelease();
-    row_item.setTarget_(delegate);
-    let _: () = msg_send![row_item, setTag: tag];
-    let state = if row.checked { 1isize } else { 0isize };
-    let _: () = msg_send![row_item, setState: state];
-    let _: () = msg_send![row_item, setIndentationLevel: 1isize];
+    let row_item = make_device_row_item(delegate, &row.label, row.checked, tag, true);
     let _: () = msg_send![menu, insertItem: row_item atIndex: insert_at];
     insert_at += 1;
   }
+}
+
+unsafe fn make_device_row_item(
+  delegate: id,
+  label: &str,
+  checked: bool,
+  tag: i64,
+  enabled: bool,
+) -> id {
+  let item = NSMenuItem::alloc(nil)
+    .initWithTitle_action_keyEquivalent_(
+      NSString::alloc(nil).init_str(""),
+      sel!(noop:),
+      NSString::alloc(nil).init_str(""),
+    )
+    .autorelease();
+  let _: () = msg_send![item, setEnabled: if enabled { YES } else { NO }];
+
+  let row_frame =
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_MENU_ROW_HEIGHT));
+  let row_view_class = register_device_header_view_class();
+  let view: id = msg_send![row_view_class, alloc];
+  let view: id = msg_send![view, initWithFrame: row_frame];
+  let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+
+  let font: id = msg_send![class!(NSFont), menuFontOfSize: 0.0f64];
+  let text_color: id = if enabled {
+    msg_send![class!(NSColor), labelColor]
+  } else {
+    msg_send![class!(NSColor), disabledControlTextColor]
+  };
+
+  let text_y = menu_label_axis_offset(DEVICE_MENU_ROW_HEIGHT, DEVICE_HEADER_LABEL_HEIGHT);
+  let check_frame = NSRect::new(
+    NSPoint::new(DEVICE_HEADER_TEXT_LEADING, text_y),
+    NSSize::new(DEVICE_HEADER_ICON_SIZE, DEVICE_HEADER_LABEL_HEIGHT),
+  );
+  let check_label: id = msg_send![class!(NSTextField), alloc];
+  let check_label: id = msg_send![check_label, initWithFrame: check_frame];
+  let _: () = msg_send![
+    check_label,
+    setStringValue: NSString::alloc(nil).init_str(if checked { "✓" } else { "" })
+  ];
+  let _: () = msg_send![check_label, setBezeled: NO];
+  let _: () = msg_send![check_label, setDrawsBackground: NO];
+  let _: () = msg_send![check_label, setEditable: NO];
+  let _: () = msg_send![check_label, setSelectable: NO];
+  let _: () = msg_send![check_label, setAlignment: 1isize];
+  let _: () = msg_send![check_label, setFont: font];
+  let _: () = msg_send![check_label, setTextColor: text_color];
+
+  let title_x = device_header_title_x();
+  let title_width = DEVICE_HEADER_WIDTH - title_x - DEVICE_HEADER_TRAILING;
+  let title_frame = NSRect::new(
+    NSPoint::new(title_x, text_y),
+    NSSize::new(title_width, DEVICE_HEADER_LABEL_HEIGHT),
+  );
+  let title_label: id = msg_send![class!(NSTextField), alloc];
+  let title_label: id = msg_send![title_label, initWithFrame: title_frame];
+  let _: () = msg_send![title_label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+  let _: () = msg_send![title_label, setStringValue: NSString::alloc(nil).init_str(label)];
+  let _: () = msg_send![title_label, setBezeled: NO];
+  let _: () = msg_send![title_label, setDrawsBackground: NO];
+  let _: () = msg_send![title_label, setEditable: NO];
+  let _: () = msg_send![title_label, setSelectable: NO];
+  let _: () = msg_send![title_label, setAlignment: 0isize];
+  let _: () = msg_send![title_label, setFont: font];
+  let _: () = msg_send![title_label, setTextColor: text_color];
+
+  let _: () = msg_send![view, addSubview: check_label];
+  let _: () = msg_send![view, addSubview: title_label];
+
+  if enabled {
+    let row_button: id = msg_send![class!(NSButton), alloc];
+    let row_button: id = msg_send![row_button, initWithFrame: row_frame];
+    let _: () =
+      msg_send![row_button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
+    let _: () = msg_send![row_button, setBordered: NO];
+    let _: () = msg_send![row_button, setTitle: NSString::alloc(nil).init_str("")];
+    let _: () = msg_send![row_button, setTarget: delegate];
+    let _: () = msg_send![row_button, setAction: sel!(selectDevice:)];
+    let _: () = msg_send![row_button, setTag: tag];
+    let _: () = msg_send![view, addSubview: row_button];
+  }
+
+  let _: () = msg_send![item, setView: view];
+  item
 }
 
 unsafe fn ensure_overlay() -> OverlayRefs {
