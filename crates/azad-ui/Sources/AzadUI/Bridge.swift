@@ -64,7 +64,7 @@ public func azadUISyncListenModifiers(_ mask: UInt8) -> Int32 {
     }
 }
 
-public final class AzadUI {
+public final class AzadUI: NSObject {
     public static let shared = AzadUI()
 
     private let decoder = JSONDecoder()
@@ -72,13 +72,15 @@ public final class AzadUI {
     private var onboardingController: OnboardingWindowController?
     private var settingsController: SettingsWindowController?
 
-    private init() {}
+    private override init() {
+        super.init()
+    }
 
     func showOnboarding(_ json: UnsafePointer<CChar>?) -> Bool {
         guard let model: OnboardingViewModel = decode(json) else { return false }
         let controller = onboardingController ?? OnboardingWindowController()
         onboardingController = controller
-        enterForegroundWindowMode()
+        enterForegroundWindowMode(menuMode: .onboarding)
         controller.show(model: model)
         return true
     }
@@ -99,7 +101,7 @@ public final class AzadUI {
         guard let model: SettingsViewModel = decode(json) else { return false }
         let controller = settingsController ?? SettingsWindowController()
         settingsController = controller
-        enterForegroundWindowMode()
+        enterForegroundWindowMode(menuMode: .settings)
         controller.show(model: model)
         return true
     }
@@ -136,13 +138,18 @@ public final class AzadUI {
         }
     }
 
-    private func enterForegroundWindowMode() {
+    private enum AppMenuMode {
+        case onboarding
+        case settings
+    }
+
+    private func enterForegroundWindowMode(menuMode: AppMenuMode) {
         NSApp.setActivationPolicy(.regular)
-        NSApp.mainMenu = makeAppMenu()
+        NSApp.mainMenu = makeAppMenu(mode: menuMode)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func makeAppMenu() -> NSMenu {
+    private func makeAppMenu(mode: AppMenuMode) -> NSMenu {
         let mainMenu = NSMenu()
         let appItem = NSMenuItem()
         mainMenu.addItem(appItem)
@@ -150,15 +157,32 @@ public final class AzadUI {
         let appMenu = NSMenu(title: "Azad")
         appItem.submenu = appMenu
 
-        let quitItem = NSMenuItem(
-            title: "Quit Azad",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
-        quitItem.target = NSApp
-        appMenu.addItem(quitItem)
+        switch mode {
+        case .onboarding:
+            let quitItem = NSMenuItem(
+                title: "Quit Azad",
+                action: #selector(NSApplication.terminate(_:)),
+                keyEquivalent: "q"
+            )
+            quitItem.target = NSApp
+            appMenu.addItem(quitItem)
+        case .settings:
+            let closeItem = NSMenuItem(
+                title: "Close Settings",
+                action: #selector(closeSettingsFromMenu(_:)),
+                keyEquivalent: "q"
+            )
+            closeItem.target = self
+            appMenu.addItem(closeItem)
+        }
 
         return mainMenu
+    }
+
+    @objc private func closeSettingsFromMenu(_ sender: Any?) {
+        settingsController?.close()
+        settingsController = nil
+        updateActivationPolicyAfterWindowClose()
     }
 
     func emit(_ event: UIEvent) {
