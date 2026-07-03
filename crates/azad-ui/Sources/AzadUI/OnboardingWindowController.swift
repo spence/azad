@@ -44,7 +44,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        AzadUI.shared.updateActivationPolicyAfterWindowClose()
     }
 
     private func render(_ model: OnboardingViewModel) {

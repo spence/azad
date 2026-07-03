@@ -76,7 +76,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "windowClosed"))
-        NSApp.setActivationPolicy(.accessory)
+        AzadUI.shared.updateActivationPolicyAfterWindowClose()
     }
 
     private func configureRoot() {

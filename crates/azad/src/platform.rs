@@ -241,6 +241,7 @@ thread_local! {
     // Cached connector chip icon, keyed by asset name. Loaded as a template image
     // (tinted at render time) once per name to keep file I/O off the streaming path.
     static CONNECTOR_ICON_CACHE: RefCell<Option<(String, id)>> = const { RefCell::new(None) };
+    static STATUS_ITEM_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static SEARCH_FIELD_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
@@ -264,6 +265,8 @@ thread_local! {
     static ACTIVE_WINDOW_SCREEN_CACHE: RefCell<Option<(NSRect, Instant)>> =
       const { RefCell::new(None) };
 }
+
+static STATUS_ITEM_VISIBLE: AtomicBool = AtomicBool::new(true);
 
 // How long an `ax_focused_window_screen_frame` result stays fresh before
 // ActiveWindow mode re-queries Accessibility.
@@ -409,19 +412,20 @@ pub fn set_device_menu(model: DeviceMenuModel) {
   rebuild_status_menu();
 }
 
-pub fn show_settings_window(model: SettingsViewModel) {
+pub fn set_status_item_visible(visible: bool) {
+  STATUS_ITEM_VISIBLE.store(visible, Ordering::Release);
   unsafe {
-    let app = NSApp();
-    let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+    if let Some(status_item) = STATUS_ITEM_REF.with(|slot| *slot.borrow()) {
+      apply_status_item_visibility(status_item, visible);
+    }
   }
+}
+
+pub fn show_settings_window(model: SettingsViewModel) {
   crate::ui_bridge::show_settings_window(&model);
 }
 
 pub fn show_onboarding_window(model: OnboardingViewModel) {
-  unsafe {
-    let app = NSApp();
-    let _: () = msg_send![app, activateIgnoringOtherApps: YES];
-  }
   crate::ui_bridge::show_onboarding_window(&model);
 }
 
@@ -435,10 +439,6 @@ pub fn sync_settings_listen_modifiers(mask: u8) {
 
 pub fn close_onboarding_window() {
   crate::ui_bridge::close_onboarding_window();
-  unsafe {
-    let app = NSApp();
-    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
-  }
 }
 
 pub fn update_onboarding_window(model: OnboardingViewModel) {
@@ -1440,7 +1440,11 @@ unsafe fn setup_status_bar(delegate: id) {
 
   status_item.setMenu_(menu);
   assign_status_icon(status_item);
+  apply_status_item_visibility(status_item, STATUS_ITEM_VISIBLE.load(Ordering::Acquire));
 
+  STATUS_ITEM_REF.with(|slot| {
+    slot.borrow_mut().replace(status_item);
+  });
   STATUS_MENU_REF.with(|slot| {
     slot.borrow_mut().replace(menu);
   });
@@ -1463,6 +1467,14 @@ unsafe fn setup_status_bar(delegate: id) {
   delegate_obj.set_ivar("statusItem", status_item);
 
   rebuild_status_menu();
+}
+
+unsafe fn apply_status_item_visibility(status_item: id, visible: bool) {
+  let can_set_visible: i8 = msg_send![status_item, respondsToSelector: sel!(setVisible:)];
+  if can_set_visible != 0 {
+    let visible = if visible { YES } else { NO };
+    let _: () = msg_send![status_item, setVisible: visible];
+  }
 }
 
 fn rebuild_status_menu() {

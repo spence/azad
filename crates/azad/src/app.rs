@@ -169,6 +169,9 @@ pub fn run() {
 
   let mut controller = AppController::new(AzadConfig::default());
   controller.bootstrap();
+  platform::set_status_item_visible(
+    !controller.pending_onboarding && !controller.onboarding_active,
+  );
   let _ = CONTROLLER.set(Mutex::new(controller));
 
   spawn_heartbeat_thread();
@@ -2143,6 +2146,7 @@ impl AppController {
       self.pending_onboarding = false;
       self.onboarding_active = true;
       eprintln!("AZAD_ONBOARDING showing welcome window");
+      platform::set_status_item_visible(false);
       let model = self.onboarding_view_model();
       platform::show_onboarding_window(model.clone());
       self.last_onboarding_view_model = Some(model);

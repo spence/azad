@@ -68,6 +68,7 @@ impl AppController {
     self.last_onboarding_view_model = None;
     preferred_store::save_onboarding_complete(true);
     platform::close_onboarding_window();
+    platform::set_status_item_visible(true);
     self.ensure_session();
   }
 

@@ -78,6 +78,7 @@ public final class AzadUI {
         guard let model: OnboardingViewModel = decode(json) else { return false }
         let controller = onboardingController ?? OnboardingWindowController()
         onboardingController = controller
+        enterForegroundWindowMode()
         controller.show(model: model)
         return true
     }
@@ -91,13 +92,14 @@ public final class AzadUI {
     func closeOnboarding() {
         onboardingController?.close()
         onboardingController = nil
-        NSApp.setActivationPolicy(.accessory)
+        updateActivationPolicyAfterWindowClose()
     }
 
     func showSettings(_ json: UnsafePointer<CChar>?) -> Bool {
         guard let model: SettingsViewModel = decode(json) else { return false }
         let controller = settingsController ?? SettingsWindowController()
         settingsController = controller
+        enterForegroundWindowMode()
         controller.show(model: model)
         return true
     }
@@ -120,6 +122,24 @@ public final class AzadUI {
     func syncListenModifiers(_ mask: UInt8) {
         onboardingController?.syncListenModifiers(mask)
         settingsController?.syncListenModifiers(mask)
+    }
+
+    func updateActivationPolicyAfterWindowClose() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let hasVisibleWindow =
+                self.onboardingController?.window?.isVisible == true ||
+                self.settingsController?.window?.isVisible == true
+            if !hasVisibleWindow {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
+    }
+
+    private func enterForegroundWindowMode() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.mainMenu = NSMenu()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func emit(_ event: UIEvent) {
