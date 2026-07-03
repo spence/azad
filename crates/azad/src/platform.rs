@@ -76,7 +76,7 @@ const DEVICE_HEADER_WIDTH: f64 = DEVICE_HEADER_MIN_WIDTH;
 const DEVICE_HEADER_HEIGHT: f64 = 28.0;
 const DEVICE_HEADER_TEXT_LEADING: f64 = 14.0;
 const DEVICE_HEADER_ICON_SIZE: f64 = 16.0;
-const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 1.0;
+const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 2.0;
 const DEVICE_HEADER_TRAILING: f64 = 12.0;
 const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
 const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
@@ -1313,13 +1313,22 @@ fn select_device_by_tag(tag: i64) {
     return;
   }
 
-  let selected = DEVICE_ROW_IDS.with(|rows| rows.borrow().get(tag as usize).cloned());
-  if let Some(device_id) = selected {
+  let selected = DEVICE_MENU_MODEL
+    .with(|slot| slot.borrow().rows.get(tag as usize).map(|row| (row.id.clone(), row.checked)));
+  if let Some((device_id, checked)) = selected {
+    if checked {
+      cancel_status_menu_tracking();
+      return;
+    }
     crate::app::send_event(AppEvent::MenuSelectDevice(device_id));
-    unsafe {
-      if let Some(menu) = STATUS_MENU_REF.with(|slot| *slot.borrow()) {
-        let _: () = msg_send![menu, cancelTracking];
-      }
+    cancel_status_menu_tracking();
+  }
+}
+
+fn cancel_status_menu_tracking() {
+  unsafe {
+    if let Some(menu) = STATUS_MENU_REF.with(|slot| *slot.borrow()) {
+      let _: () = msg_send![menu, cancelTracking];
     }
   }
 }

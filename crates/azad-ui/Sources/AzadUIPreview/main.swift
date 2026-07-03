@@ -262,14 +262,14 @@ final class MenuPreviewPanel: FlippedView {
     }
 
     private var deviceTitleX: CGFloat {
-        leading + iconSize + 1
+        leading + iconSize + 2
     }
 
     private static func width(expanded: Bool) -> CGFloat {
         let labels = expanded ? devices : ["MacBook Pro Microphone"]
         let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         let labelWidth = labels.map { textWidth($0, font: font) }.max() ?? 0
-        let deviceTitleX: CGFloat = 31
+        let deviceTitleX: CGFloat = 32
         let headerWidth = deviceTitleX + labelWidth + 8 + 10 + 12 + 10
         let actionWidth = max(textWidth("Settings...", font: font), textWidth("Quit Azad", font: font)) + 32
         let listenWidth = textWidth("Listen", font: font) + 16 + 10 + 32 + 12 + 10

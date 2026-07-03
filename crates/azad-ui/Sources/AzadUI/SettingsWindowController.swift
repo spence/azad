@@ -33,6 +33,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { [weak self] in
+            self?.window?.makeFirstResponder(nil)
+        }
     }
 
     func update(model: SettingsViewModel) {
@@ -86,7 +89,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         sidebar.orientation = .vertical
         sidebar.alignment = .leading
-        sidebar.spacing = 8
+        sidebar.spacing = 4
         sidebar.edgeInsets = NSEdgeInsets(top: 16, left: 12, bottom: 16, right: 14)
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         sidebar.wantsLayer = true
@@ -161,7 +164,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             (.models, "arrow.down.circle", "Models"),
             (.permissions, "lock", "Permissions"),
             (.connectors, "link", "Connectors"),
-            (.debug, "chart.bar", "Debug"),
+            (.debug, "ladybug", "Debug"),
         ]
         for row in rows {
             let button = SidebarButton(tab: row.0, icon: row.1, title: row.2, selected: row.0 == selectedTab, target: self, action: #selector(selectTab(_:)))
@@ -192,26 +195,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         stack.addArrangedSubview(FormRow(label: "Trailing space", control: Design.checkbox("Append trailing space after paste", checked: model.appendTrailingSpaceOnPaste, target: self, action: #selector(toggleTrailingSpace(_:)))))
 
-        let words = NSStackView()
-        words.orientation = .vertical
-        words.alignment = .leading
-        words.spacing = 8
-        words.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(removedWordsRow(model))
+        return stack
+    }
 
-        let chips = NSStackView()
-        chips.orientation = .horizontal
-        chips.alignment = .centerY
-        chips.spacing = 6
-        chips.translatesAutoresizingMaskIntoConstraints = false
-        for word in model.removedWords {
-            chips.addArrangedSubview(WordChip(word: word, target: self, action: #selector(removeWord(_:))))
-        }
-        words.addArrangedSubview(chips)
+    private func removedWordsRow(_ model: SettingsViewModel) -> NSView {
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = Design.label("Removed words", size: 13, color: Design.secondaryText)
+        label.alignment = .right
+        row.addSubview(label)
 
         let addRow = NSStackView()
         addRow.orientation = .horizontal
+        addRow.alignment = .centerY
         addRow.spacing = 10
         addRow.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(addRow)
+
         let field = NSTextField()
         field.placeholderString = "Enter word"
         field.controlSize = .large
@@ -219,13 +221,41 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         field.widthAnchor.constraint(equalToConstant: 178).isActive = true
         field.identifier = NSUserInterfaceItemIdentifier("removed-word-input")
         addRow.addArrangedSubview(field)
+
         let add = Design.pushButton("Add", target: self, action: #selector(addWord(_:)))
         add.widthAnchor.constraint(equalToConstant: 70).isActive = true
         addRow.addArrangedSubview(add)
-        words.addArrangedSubview(addRow)
 
-        stack.addArrangedSubview(FormRow(label: "Removed words", control: words))
-        return stack
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            label.widthAnchor.constraint(equalToConstant: 150),
+            label.centerYAnchor.constraint(equalTo: addRow.centerYAnchor),
+            addRow.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 14),
+            addRow.topAnchor.constraint(equalTo: row.topAnchor),
+            addRow.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+        ])
+
+        if model.removedWords.isEmpty {
+            addRow.bottomAnchor.constraint(equalTo: row.bottomAnchor).isActive = true
+        } else {
+            let chips = NSStackView()
+            chips.orientation = .horizontal
+            chips.alignment = .centerY
+            chips.spacing = 6
+            chips.translatesAutoresizingMaskIntoConstraints = false
+            for word in model.removedWords {
+                chips.addArrangedSubview(WordChip(word: word, target: self, action: #selector(removeWord(_:))))
+            }
+            row.addSubview(chips)
+            NSLayoutConstraint.activate([
+                chips.leadingAnchor.constraint(equalTo: addRow.leadingAnchor),
+                chips.topAnchor.constraint(equalTo: addRow.bottomAnchor, constant: 8),
+                chips.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor),
+                chips.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            ])
+        }
+
+        return row
     }
 
     private func modelsPane(_ model: SettingsViewModel) -> NSView {
@@ -285,30 +315,41 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         row.addArrangedSubview(refresh)
         root.addSubview(row)
 
+        let metricsPanel = Design.roundedPanel()
+        metricsPanel.layer?.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 0.7).cgColor
+        metricsPanel.layer?.masksToBounds = true
+        root.addSubview(metricsPanel)
+
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false
+        scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let text = NSTextView()
         text.isEditable = false
         text.isSelectable = true
-        text.drawsBackground = true
-        text.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 0.7)
+        text.drawsBackground = false
         text.textColor = Design.secondaryText
-        text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         text.string = model.metricsText
         scroll.documentView = text
-        root.addSubview(scroll)
+        metricsPanel.addSubview(scroll)
 
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             row.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             row.topAnchor.constraint(equalTo: root.topAnchor),
             row.heightAnchor.constraint(equalToConstant: 32),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: row.bottomAnchor, constant: 14),
-            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            metricsPanel.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            metricsPanel.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            metricsPanel.topAnchor.constraint(equalTo: row.bottomAnchor, constant: 14),
+            metricsPanel.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: metricsPanel.leadingAnchor, constant: 10),
+            scroll.trailingAnchor.constraint(equalTo: metricsPanel.trailingAnchor, constant: -8),
+            scroll.topAnchor.constraint(equalTo: metricsPanel.topAnchor, constant: 8),
+            scroll.bottomAnchor.constraint(equalTo: metricsPanel.bottomAnchor, constant: -8),
         ])
         return root
     }
@@ -504,7 +545,7 @@ final class SidebarButton: NSButton {
         self.title = ""
         self.translatesAutoresizingMaskIntoConstraints = false
         self.widthAnchor.constraint(equalToConstant: 132).isActive = true
-        self.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        self.heightAnchor.constraint(equalToConstant: 30).isActive = true
         self.wantsLayer = true
         self.layer?.cornerRadius = 7
         self.layer?.backgroundColor = selected ? Design.blue.cgColor : NSColor.clear.cgColor
@@ -536,7 +577,8 @@ final class SidebarButton: NSButton {
     }
 
     override func mouseDown(with event: NSEvent) {
-        performClick(nil)
+        guard isEnabled, let target, let action else { return }
+        _ = target.perform(action, with: self)
     }
 }
 

@@ -1319,6 +1319,10 @@ impl AppController {
   }
 
   fn handle_menu_select_device(&mut self, device_id: String) {
+    if !should_update_selected_device(self.current_device_id(), &device_id) {
+      return;
+    }
+
     preferred_store::save_preferred_device_id(&device_id);
 
     if let Some(controller) = &self.device_controller {
@@ -3213,6 +3217,13 @@ impl AppController {
   }
 }
 
+fn should_update_selected_device(
+  current_device_id: Option<&str>,
+  selected_device_id: &str,
+) -> bool {
+  current_device_id != Some(selected_device_id)
+}
+
 #[cfg(test)]
 mod tests {
   use std::time::{Duration, Instant};
@@ -3233,6 +3244,7 @@ mod tests {
   };
   use super::{
     AppController, AzadConfig, EngineState, HotkeyEffect, LISTEN_TOGGLE_NOTICE_DURATION_MS,
+    should_update_selected_device,
   };
   use crate::speech::{SpeechEvent, SpeechSession};
 
@@ -3258,6 +3270,21 @@ mod tests {
   fn raw_finalize_without_hold_in_always_listening_hides_overlay_but_keeps_capture() {
     let plan = raw_finalize_ui_plan(true, false, false);
     assert_eq!(plan, RawFinalizeUiPlan { hide_overlay: true, disable_capture: false });
+  }
+
+  #[test]
+  fn menu_device_selection_skips_current_device() {
+    assert!(!should_update_selected_device(Some("mic-a"), "mic-a"));
+  }
+
+  #[test]
+  fn menu_device_selection_updates_different_device() {
+    assert!(should_update_selected_device(Some("mic-a"), "mic-b"));
+  }
+
+  #[test]
+  fn menu_device_selection_updates_when_current_device_unknown() {
+    assert!(should_update_selected_device(None, "mic-a"));
   }
 
   #[test]
