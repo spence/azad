@@ -29,7 +29,7 @@ pub static NEMOTRON_35_MLX_BF16_V1: ModelPackDef = ModelPackDef {
   id: "nemotron-3.5-mlx-bf16-v1",
   display_name: "Nemotron 3.5 MLX bf16",
   description: "CoreML Silero VAD + MLX Nemotron 3.5 streaming/final ASR",
-  page_url: "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
+  page_url: "https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b",
   total_size_bytes: 1_277_344_990,
   files: &[
     ModelFileDef {
