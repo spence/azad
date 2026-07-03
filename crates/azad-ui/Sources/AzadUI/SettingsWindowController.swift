@@ -9,7 +9,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 656, height: 391),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -106,7 +106,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             sidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: root.topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: 180),
+            sidebar.widthAnchor.constraint(equalToConstant: 158),
 
             separator.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             separator.topAnchor.constraint(equalTo: root.topAnchor),
@@ -140,7 +140,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             pane = connectorsPane(model)
         }
         content.addSubview(pane)
-        pane.pinToSuperview(NSEdgeInsets(top: 26, left: 42, bottom: 34, right: 28))
+        pane.pinToSuperview(NSEdgeInsets(top: 24, left: 32, bottom: 34, right: 24))
 
         let build = Design.label(model.buildInfo, size: 10, color: Design.mutedText)
         build.alignment = .right
@@ -270,26 +270,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func debugPane(_ model: SettingsViewModel) -> NSView {
-        let pane = cardPane(height: 250)
-        let stack = pane.stack
+        let root = NSView()
+        root.translatesAutoresizingMaskIntoConstraints = false
 
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
         row.addArrangedSubview(Design.checkbox("Enable debug statistics", checked: model.debugStatsEnabled, target: self, action: #selector(toggleDebugStats(_:))))
         row.addArrangedSubview(NSView())
         let refresh = Design.pushButton("Refresh", target: self, action: #selector(refresh))
         refresh.widthAnchor.constraint(equalToConstant: 88).isActive = true
         row.addArrangedSubview(refresh)
-        stack.addArrangedSubview(row)
-        row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        root.addSubview(row)
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.heightAnchor.constraint(equalToConstant: 155).isActive = true
         let text = NSTextView()
         text.isEditable = false
         text.isSelectable = true
@@ -299,14 +298,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         text.string = model.metricsText
         scroll.documentView = text
-        stack.addArrangedSubview(scroll)
-        scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return pane.root
+        root.addSubview(scroll)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            row.topAnchor.constraint(equalTo: root.topAnchor),
+            row.heightAnchor.constraint(equalToConstant: 32),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: row.bottomAnchor, constant: 14),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        return root
     }
 
     private func connectorsPane(_ model: SettingsViewModel) -> NSView {
-        let pane = cardPane(height: 205)
-        let stack = pane.stack
+        let stack = paneStack()
         stack.addArrangedSubview(Design.label("Open an utterance with a connector's phrase to tag it.", size: 12, color: Design.mutedText))
 
         for (index, connector) in model.connectors.enumerated() {
@@ -327,38 +335,53 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             checkbox.state = connector.enabled ? .on : .off
             checkbox.tag = index
             row.addArrangedSubview(checkbox)
-            let badge = Design.label("*", size: 14, weight: .bold, color: .white)
-            badge.alignment = .center
-            badge.wantsLayer = true
-            badge.layer?.backgroundColor = NSColor(calibratedRed: 0.86, green: 0.47, blue: 0.34, alpha: 1).cgColor
-            badge.layer?.cornerRadius = 7
-            badge.widthAnchor.constraint(equalToConstant: 28).isActive = true
-            badge.heightAnchor.constraint(equalToConstant: 28).isActive = true
-            row.addArrangedSubview(badge)
+            row.addArrangedSubview(connectorLogo())
             row.addArrangedSubview(Design.label(connector.displayName, size: 13, weight: .medium))
             row.addArrangedSubview(NSView())
-            let phrase = Design.label(connector.trigger, size: 12, color: Design.secondaryText)
-            phrase.alignment = .center
-            phrase.wantsLayer = true
-            phrase.layer?.backgroundColor = Design.control.cgColor
-            phrase.layer?.cornerRadius = 6
-            phrase.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-            phrase.heightAnchor.constraint(equalToConstant: 24).isActive = true
-            row.addArrangedSubview(phrase)
+            row.addArrangedSubview(triggerPill(connector.trigger))
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        let placeholder = Design.label("Additional connectors appear here", size: 13, color: Design.mutedText)
-        placeholder.alignment = .center
-        placeholder.wantsLayer = true
-        placeholder.layer?.borderColor = Design.border.cgColor
-        placeholder.layer?.borderWidth = 1
-        placeholder.layer?.cornerRadius = 8
-        placeholder.heightAnchor.constraint(equalToConstant: 54).isActive = true
-        stack.addArrangedSubview(placeholder)
-        placeholder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return pane.root
+        return stack
+    }
+
+    private func connectorLogo() -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.wantsLayer = true
+        container.layer?.backgroundColor = Design.claude.cgColor
+        container.layer?.cornerRadius = 7
+        container.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        container.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+        let logo = Design.claudeLogoView(size: 18)
+        container.addSubview(logo)
+        NSLayoutConstraint.activate([
+            logo.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            logo.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        return container
+    }
+
+    private func triggerPill(_ text: String) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.wantsLayer = true
+        container.layer?.backgroundColor = Design.control.cgColor
+        container.layer?.cornerRadius = 6
+        container.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
+        container.heightAnchor.constraint(equalToConstant: 24).isActive = true
+
+        let label = Design.label(text, size: 12, color: Design.secondaryText)
+        label.alignment = .center
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        return container
     }
 
     private func cardPane(height: CGFloat) -> (root: NSView, panel: NSView, stack: NSStackView) {
@@ -469,6 +492,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 final class SidebarButton: NSButton {
     let tab: SettingsTab
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
 
     init(tab: SettingsTab, icon: String, title: String, selected: Bool, target: AnyObject?, action: Selector?) {
         self.tab = tab
@@ -476,22 +501,42 @@ final class SidebarButton: NSButton {
         self.target = target
         self.action = action
         self.isBordered = false
-        self.alignment = .left
-        self.title = "  \(title)"
-        self.font = .systemFont(ofSize: 14, weight: selected ? .semibold : .regular)
-        self.contentTintColor = selected ? .white : Design.secondaryText
-        self.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
-        self.imagePosition = .imageLeft
+        self.title = ""
         self.translatesAutoresizingMaskIntoConstraints = false
-        self.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        self.widthAnchor.constraint(equalToConstant: 132).isActive = true
         self.heightAnchor.constraint(equalToConstant: 34).isActive = true
         self.wantsLayer = true
         self.layer?.cornerRadius = 7
         self.layer?.backgroundColor = selected ? Design.blue.cgColor : NSColor.clear.cgColor
+
+        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+        iconView.contentTintColor = selected ? .white : Design.secondaryText
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(iconView)
+
+        titleLabel.stringValue = title
+        titleLabel.font = .systemFont(ofSize: 14, weight: selected ? .semibold : .regular)
+        titleLabel.textColor = selected ? .white : Design.secondaryText
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 18),
+            iconView.heightAnchor.constraint(equalToConstant: 18),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
     }
 }
 

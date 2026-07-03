@@ -64,6 +64,7 @@ enum Design {
     static let green = NSColor.systemGreen
     static let orange = NSColor.systemOrange
     static let red = NSColor.systemRed
+    static let claude = NSColor(calibratedRed: 0.851, green: 0.467, blue: 0.341, alpha: 1.0)
 
     static func label(_ text: String, size: CGFloat = 13, weight: NSFont.Weight = .regular, color: NSColor = Design.text) -> NSTextField {
         let label = NSTextField(labelWithString: text)
@@ -135,6 +136,19 @@ enum Design {
         return view
     }
 
+    static func claudeLogoView(size: CGFloat = 18, color: NSColor = .white) -> NSImageView {
+        let image = assetImage(named: "claude", extension: "svg") ?? NSImage()
+        image.isTemplate = true
+        image.size = NSSize(width: size, height: size)
+        let view = NSImageView(image: image)
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.contentTintColor = color
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalToConstant: size).isActive = true
+        view.heightAnchor.constraint(equalToConstant: size).isActive = true
+        return view
+    }
+
     static func appIconView(size: CGFloat = 32) -> NSView {
         let container = NSView()
         container.wantsLayer = true
@@ -188,6 +202,37 @@ enum Design {
             return image
         }
         return NSApp.applicationIconImage
+    }
+
+    private static func assetImage(named name: String, extension ext: String) -> NSImage? {
+        if let assetDir = ProcessInfo.processInfo.environment["AZAD_ASSETS_DIR"] {
+            let url = URL(fileURLWithPath: assetDir).appendingPathComponent("\(name).\(ext)")
+            if let image = NSImage(contentsOf: url) {
+                return image
+            }
+        }
+
+        if let url = Bundle.main.url(forResource: name, withExtension: ext),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+
+        if let url = Bundle(for: AzadUIBundleToken.self).url(forResource: name, withExtension: ext),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let candidates = [
+            cwd.appendingPathComponent("crates/azad/assets/\(name).\(ext)"),
+            cwd.appendingPathComponent("../azad/assets/\(name).\(ext)"),
+        ]
+        for url in candidates {
+            if let image = NSImage(contentsOf: url) {
+                return image
+            }
+        }
+        return nil
     }
 }
 

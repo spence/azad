@@ -246,9 +246,9 @@ final class ModelRowView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 12
+        stack.orientation = compact ? .horizontal : .vertical
+        stack.alignment = compact ? .centerY : .leading
+        stack.spacing = compact ? 12 : 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         stack.pinToSuperview()
@@ -275,13 +275,26 @@ final class ModelRowView: NSView {
             textStack.addArrangedSubview(Design.label(model.errorMessage.isEmpty ? "Download failed" : model.errorMessage, size: 12, color: Design.red))
         }
         stack.addArrangedSubview(textStack)
-        stack.addArrangedSubview(NSView())
+
+        let actionStack: NSStackView
+        if compact {
+            stack.addArrangedSubview(NSView())
+            actionStack = stack
+        } else {
+            actionStack = NSStackView()
+            actionStack.orientation = .horizontal
+            actionStack.alignment = .centerY
+            actionStack.spacing = 12
+            actionStack.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(actionStack)
+            actionStack.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
 
         switch model.status {
         case .notDownloaded:
             let button = Design.pushButton("Download", target: target, action: downloadAction)
             button.widthAnchor.constraint(equalToConstant: 96).isActive = true
-            stack.addArrangedSubview(button)
+            actionStack.addArrangedSubview(button)
         case .downloading:
             let progress = NSProgressIndicator()
             progress.isIndeterminate = false
@@ -290,11 +303,11 @@ final class ModelRowView: NSView {
             progress.doubleValue = Double(model.progressPct)
             progress.controlSize = .small
             progress.translatesAutoresizingMaskIntoConstraints = false
-            progress.widthAnchor.constraint(equalToConstant: compact ? 160 : 320).isActive = true
-            stack.addArrangedSubview(progress)
+            progress.widthAnchor.constraint(equalToConstant: compact ? 160 : 260).isActive = true
+            actionStack.addArrangedSubview(progress)
             let button = Design.pushButton("Cancel", target: target, action: cancelAction)
             button.widthAnchor.constraint(equalToConstant: 82).isActive = true
-            stack.addArrangedSubview(button)
+            actionStack.addArrangedSubview(button)
         case .ready:
             let status = StatusTextView(text: "", status: .granted)
             if let first = status.arrangedSubviews.first {
@@ -304,11 +317,11 @@ final class ModelRowView: NSView {
             if let label = status.arrangedSubviews.last as? NSTextField {
                 label.stringValue = "Ready"
             }
-            stack.addArrangedSubview(status)
+            actionStack.addArrangedSubview(status)
         case .failed:
             let button = Design.pushButton("Retry", target: target, action: downloadAction)
             button.widthAnchor.constraint(equalToConstant: 82).isActive = true
-            stack.addArrangedSubview(button)
+            actionStack.addArrangedSubview(button)
         }
     }
 
