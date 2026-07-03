@@ -3,7 +3,7 @@ import AppKit
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var model: SettingsViewModel?
     private var selectedTab: SettingsTab = .general
-    private let sidebar = NSStackView()
+    private let sidebar = ThemedStackView(fill: Design.sidebar)
     private let content = NSView()
     private var shortcutView: ShortcutView?
 
@@ -82,10 +82,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func configureRoot() {
         guard let window else { return }
-        let root = NSView()
-        root.wantsLayer = true
-        root.layer?.backgroundColor = Design.window.cgColor
-        root.translatesAutoresizingMaskIntoConstraints = false
+        let root = ThemedLayerView(fill: Design.content)
         window.contentView = root
 
         sidebar.orientation = .vertical
@@ -93,17 +90,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sidebar.spacing = 4
         sidebar.edgeInsets = NSEdgeInsets(top: 16, left: 12, bottom: 16, right: 14)
         sidebar.translatesAutoresizingMaskIntoConstraints = false
-        sidebar.wantsLayer = true
-        sidebar.layer?.backgroundColor = Design.panel.cgColor
         root.addSubview(sidebar)
 
         content.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(content)
 
-        let separator = NSView()
-        separator.wantsLayer = true
-        separator.layer?.backgroundColor = Design.separator.cgColor
-        separator.translatesAutoresizingMaskIntoConstraints = false
+        let separator = ThemedLayerView(fill: Design.separator)
         root.addSubview(separator)
 
         NSLayoutConstraint.activate([
@@ -330,7 +322,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         root.addSubview(row)
 
         let metricsPanel = Design.roundedPanel()
-        metricsPanel.layer?.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 0.7).cgColor
+        if let themedPanel = metricsPanel as? ThemedLayerView {
+            themedPanel.fillColor = Design.metricsPanel
+        }
         metricsPanel.layer?.masksToBounds = true
         root.addSubview(metricsPanel)
 
@@ -373,16 +367,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(Design.label("Open an utterance with a connector's phrase to tag it.", size: 12, color: Design.mutedText))
 
         for (index, connector) in model.connectors.enumerated() {
-            let row = NSStackView()
+            let row = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 10
             row.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
             row.translatesAutoresizingMaskIntoConstraints = false
-            row.wantsLayer = true
-            row.layer?.backgroundColor = Design.panel.cgColor
-            row.layer?.borderColor = Design.border.cgColor
-            row.layer?.borderWidth = 1
             row.layer?.cornerRadius = 8
             row.heightAnchor.constraint(equalToConstant: 58).isActive = true
 
@@ -402,10 +392,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func connectorLogo() -> NSView {
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.wantsLayer = true
-        container.layer?.backgroundColor = Design.claude.cgColor
+        let container = ThemedLayerView(fill: Design.claude, radius: 7)
         container.layer?.cornerRadius = 7
         container.widthAnchor.constraint(equalToConstant: 28).isActive = true
         container.heightAnchor.constraint(equalToConstant: 28).isActive = true
@@ -420,10 +407,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func triggerPill(_ text: String) -> NSView {
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.wantsLayer = true
-        container.layer?.backgroundColor = Design.control.cgColor
+        let container = ThemedLayerView(fill: Design.chip, radius: 6)
         container.layer?.cornerRadius = 6
         container.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
         container.heightAnchor.constraint(equalToConstant: 24).isActive = true
@@ -536,11 +520,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 final class SidebarButton: NSButton {
     let tab: SettingsTab
+    private let selected: Bool
     private let iconView = PassthroughImageView()
     private let titleLabel = PassthroughTextField(labelWithString: "")
 
     init(tab: SettingsTab, icon: String, title: String, selected: Bool, target: AnyObject?, action: Selector?) {
         self.tab = tab
+        self.selected = selected
         super.init(frame: .zero)
         self.target = target
         self.action = action
@@ -551,18 +537,16 @@ final class SidebarButton: NSButton {
         self.heightAnchor.constraint(equalToConstant: 30).isActive = true
         self.wantsLayer = true
         self.layer?.cornerRadius = 7
-        self.layer?.backgroundColor = selected ? Design.blue.cgColor : NSColor.clear.cgColor
 
         iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
-        iconView.contentTintColor = selected ? .white : Design.secondaryText
         iconView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(iconView)
 
         titleLabel.stringValue = title
         titleLabel.font = .systemFont(ofSize: 14, weight: selected ? .semibold : .regular)
-        titleLabel.textColor = selected ? .white : Design.secondaryText
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
+        updateAppearance()
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
@@ -582,6 +566,17 @@ final class SidebarButton: NSButton {
     override func mouseDown(with event: NSEvent) {
         guard isEnabled, let target, let action else { return }
         _ = target.perform(action, with: self)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        layer?.backgroundColor = selected ? Design.cgColor(Design.blue, for: self) : NSColor.clear.cgColor
+        iconView.contentTintColor = selected ? .white : Design.secondaryText
+        titleLabel.textColor = selected ? .white : Design.secondaryText
     }
 }
 
@@ -606,16 +601,25 @@ final class WordChip: NSButton {
         self.identifier = NSUserInterfaceItemIdentifier(word)
         self.isBordered = false
         self.font = .systemFont(ofSize: 12, weight: .medium)
-        self.contentTintColor = Design.text
         self.translatesAutoresizingMaskIntoConstraints = false
         self.wantsLayer = true
-        self.layer?.backgroundColor = Design.control.cgColor
         self.layer?.cornerRadius = 13
         self.heightAnchor.constraint(equalToConstant: 28).isActive = true
         self.widthAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
+        updateAppearance()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        contentTintColor = Design.text
+        layer?.backgroundColor = Design.cgColor(Design.chip, for: self)
     }
 }

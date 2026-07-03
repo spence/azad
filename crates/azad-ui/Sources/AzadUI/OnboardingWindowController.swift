@@ -48,11 +48,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func render(_ model: OnboardingViewModel) {
-        let root = NSView()
-        root.wantsLayer = true
-        root.layer?.backgroundColor = Design.window.cgColor
+        let root = ThemedLayerView(fill: Design.window, radius: 12)
         root.layer?.cornerRadius = 12
-        root.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView = root
 
         let header = makeHeader()
@@ -136,8 +133,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func makeHeader() -> NSView {
-        let view = NSView()
-        view.translatesAutoresizingMaskIntoConstraints = false
+        let view = ThemedLayerView(fill: Design.windowChrome)
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -164,8 +160,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func makeFooter(_ model: OnboardingViewModel) -> NSView {
-        let view = NSView()
-        view.translatesAutoresizingMaskIntoConstraints = false
+        let view = ThemedLayerView(fill: Design.windowChrome)
 
         let separator = Design.separatorView()
         view.addSubview(separator)

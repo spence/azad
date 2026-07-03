@@ -8,6 +8,7 @@ enum PreviewSurface: String {
     case onboardingFresh = "onboarding-fresh"
     case onboardingReady = "onboarding-ready"
     case settingsGeneral = "settings-general"
+    case settingsText = "settings-text"
     case settingsModels = "settings-models"
     case settingsPermissions = "settings-permissions"
     case settingsDebug = "settings-debug"
@@ -26,6 +27,8 @@ enum PreviewSurface: String {
 
     var settingsTab: SettingsTab {
         switch self {
+        case .settingsText:
+            return .text
         case .settingsModels:
             return .models
         case .settingsPermissions:
@@ -51,6 +54,7 @@ enum PreviewSurface: String {
 
 struct PreviewOptions {
     var surface: PreviewSurface = .onboardingReady
+    var appearance: NSAppearance.Name = .darkAqua
     var screenshotPath: String?
     var quitAfterSeconds: Double = 0.6
 }
@@ -66,6 +70,11 @@ func parseOptions() -> PreviewOptions {
                 args.removeFirst()
                 options.surface = PreviewSurface(rawValue: value) ?? options.surface
             }
+        case "--appearance":
+            if let value = args.first {
+                args.removeFirst()
+                options.appearance = value == "light" ? .aqua : .darkAqua
+            }
         case "--screenshot":
             if let value = args.first {
                 args.removeFirst()
@@ -77,8 +86,8 @@ func parseOptions() -> PreviewOptions {
                 options.quitAfterSeconds = Double(value) ?? options.quitAfterSeconds
             }
         case "--help", "-h":
-            print("usage: azad-ui-preview [--surface <name>] [--screenshot <path>] [--quit-after <seconds>]")
-            print("surfaces: onboarding-fresh, onboarding-ready, settings-general, settings-models, settings-permissions, settings-debug, settings-connectors, menu-collapsed, menu-expanded")
+            print("usage: azad-ui-preview [--surface <name>] [--appearance light|dark] [--screenshot <path>] [--quit-after <seconds>]")
+            print("surfaces: onboarding-fresh, onboarding-ready, settings-general, settings-text, settings-models, settings-permissions, settings-debug, settings-connectors, menu-collapsed, menu-expanded")
             exit(0)
         default:
             break
@@ -92,6 +101,7 @@ app.setActivationPolicy(.regular)
 configurePreviewIcon()
 
 let options = parseOptions()
+app.appearance = NSAppearance(named: options.appearance)
 
 func modelPack(status: ModelStatus, progress: UInt8 = 0) -> ModelPack {
     ModelPack(

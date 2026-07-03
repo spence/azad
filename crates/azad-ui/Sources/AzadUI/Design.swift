@@ -2,6 +2,76 @@ import AppKit
 
 private final class AzadUIBundleToken {}
 
+final class ThemedLayerView: NSView {
+    var fillColor: NSColor? { didSet { applyTheme() } }
+    var strokeColor: NSColor? { didSet { applyTheme() } }
+
+    init(fill: NSColor? = nil, stroke: NSColor? = nil, radius: CGFloat = 0, borderWidth: CGFloat = 0) {
+        self.fillColor = fill
+        self.strokeColor = stroke
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = radius
+        layer?.borderWidth = borderWidth
+        translatesAutoresizingMaskIntoConstraints = false
+        applyTheme()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyTheme()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTheme()
+    }
+
+    func applyTheme() {
+        layer?.backgroundColor = fillColor.map { Design.cgColor($0, for: self) }
+        layer?.borderColor = strokeColor.map { Design.cgColor($0, for: self) }
+    }
+}
+
+final class ThemedStackView: NSStackView {
+    var fillColor: NSColor? { didSet { applyTheme() } }
+    var strokeColor: NSColor? { didSet { applyTheme() } }
+
+    init(fill: NSColor? = nil, stroke: NSColor? = nil, radius: CGFloat = 0, borderWidth: CGFloat = 0) {
+        self.fillColor = fill
+        self.strokeColor = stroke
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = radius
+        layer?.borderWidth = borderWidth
+        translatesAutoresizingMaskIntoConstraints = false
+        applyTheme()
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyTheme()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTheme()
+    }
+
+    func applyTheme() {
+        layer?.backgroundColor = fillColor.map { Design.cgColor($0, for: self) }
+        layer?.borderColor = strokeColor.map { Design.cgColor($0, for: self) }
+    }
+}
+
 final class PrimaryActionButton: NSButton {
     override var isEnabled: Bool {
         didSet { updateAppearance() }
@@ -37,10 +107,10 @@ final class PrimaryActionButton: NSButton {
             background = isHighlighted ? Design.blue.withAlphaComponent(0.82) : Design.blue
             foreground = .white
         } else {
-            background = Design.control
+            background = Design.chip
             foreground = Design.mutedText
         }
-        layer?.backgroundColor = background.cgColor
+        layer?.backgroundColor = Design.cgColor(background, for: self)
         attributedTitle = NSAttributedString(
             string: title,
             attributes: [
@@ -48,6 +118,11 @@ final class PrimaryActionButton: NSButton {
                 .foregroundColor: foreground,
             ]
         )
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
     }
 }
 
@@ -87,19 +162,58 @@ final class LinkLabel: NSTextField {
 }
 
 enum Design {
-    static let window = NSColor(calibratedRed: 0.132, green: 0.132, blue: 0.145, alpha: 1.0)
-    static let panel = NSColor(calibratedRed: 0.112, green: 0.112, blue: 0.124, alpha: 1.0)
-    static let control = NSColor(calibratedRed: 0.205, green: 0.205, blue: 0.218, alpha: 1.0)
-    static let border = NSColor(calibratedWhite: 1.0, alpha: 0.105)
-    static let separator = NSColor(calibratedWhite: 1.0, alpha: 0.10)
-    static let text = NSColor(calibratedWhite: 0.88, alpha: 1.0)
-    static let secondaryText = NSColor(calibratedWhite: 0.62, alpha: 1.0)
-    static let mutedText = NSColor(calibratedWhite: 0.42, alpha: 1.0)
+    static let window = dynamic(light: rgb(0xFFFFFF), dark: rgb(0x222225))
+    static let windowChrome = dynamic(light: rgb(0xF8F8FA), dark: rgb(0x222225))
+    static let content = dynamic(light: rgb(0xF5F5F7), dark: rgb(0x222225))
+    static let sidebar = dynamic(light: rgb(0xE9E9EC), dark: rgb(0x1D1D20))
+    static let panel = dynamic(light: rgb(0xF4F4F6), dark: rgb(0x1D1D20))
+    static let control = dynamic(light: rgb(0xFFFFFF), dark: rgb(0x343437))
+    static let chip = dynamic(light: rgb(0xE5E5EA), dark: rgb(0x343437))
+    static let iconTile = dynamic(light: rgb(0x242428), dark: rgb(0x343437))
+    static let metricsPanel = dynamic(light: rgb(0xFFFFFF), dark: NSColor(calibratedWhite: 0.06, alpha: 0.7))
+    static let border = dynamic(light: rgb(0xD8D8DD), dark: NSColor(calibratedWhite: 1.0, alpha: 0.105))
+    static let separator = dynamic(light: rgb(0xD9D9DE), dark: NSColor(calibratedWhite: 1.0, alpha: 0.10))
+    static let text = dynamic(light: rgb(0x1D1D1F), dark: NSColor(calibratedWhite: 0.88, alpha: 1.0))
+    static let secondaryText = dynamic(light: rgb(0x6E6E73), dark: NSColor(calibratedWhite: 0.62, alpha: 1.0))
+    static let mutedText = dynamic(light: rgb(0x9A9AA0), dark: NSColor(calibratedWhite: 0.42, alpha: 1.0))
     static let blue = NSColor.systemBlue
     static let green = NSColor.systemGreen
     static let orange = NSColor.systemOrange
     static let red = NSColor.systemRed
     static let claude = NSColor(calibratedRed: 0.851, green: 0.467, blue: 0.341, alpha: 1.0)
+
+    static func cgColor(_ color: NSColor, for view: NSView?) -> CGColor {
+        let appearance = view?.effectiveAppearance ?? NSApp.effectiveAppearance
+        var resolved = color.cgColor
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = color.cgColor
+        }
+        return resolved
+    }
+
+    static func applyFill(_ color: NSColor, to view: NSView) {
+        view.layer?.backgroundColor = cgColor(color, for: view)
+    }
+
+    static func applyStroke(_ color: NSColor, to view: NSView) {
+        view.layer?.borderColor = cgColor(color, for: view)
+    }
+
+    private static func dynamic(light: NSColor, dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let best = appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua])
+            return best == .darkAqua || best == .accessibilityHighContrastDarkAqua ? dark : light
+        }
+    }
+
+    private static func rgb(_ value: UInt32, alpha: CGFloat = 1.0) -> NSColor {
+        NSColor(
+            calibratedRed: CGFloat((value >> 16) & 0xFF) / 255.0,
+            green: CGFloat((value >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(value & 0xFF) / 255.0,
+            alpha: alpha
+        )
+    }
 
     static func label(_ text: String, size: CGFloat = 13, weight: NSFont.Weight = .regular, color: NSColor = Design.text) -> NSTextField {
         let label = NSTextField(labelWithString: text)
@@ -189,11 +303,8 @@ enum Design {
     }
 
     static func appIconView(size: CGFloat = 32) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.backgroundColor = Design.control.cgColor
+        let container = ThemedLayerView(fill: Design.iconTile, radius: 8)
         container.layer?.cornerRadius = 8
-        container.translatesAutoresizingMaskIntoConstraints = false
         container.widthAnchor.constraint(equalToConstant: size).isActive = true
         container.heightAnchor.constraint(equalToConstant: size).isActive = true
 
@@ -212,21 +323,13 @@ enum Design {
     }
 
     static func roundedPanel(radius: CGFloat = 8) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = Design.panel.cgColor
-        view.layer?.cornerRadius = radius
-        view.layer?.borderColor = Design.border.cgColor
+        let view = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: radius, borderWidth: 1)
         view.layer?.borderWidth = 1
-        view.translatesAutoresizingMaskIntoConstraints = false
         return view
     }
 
     static func separatorView() -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = Design.separator.cgColor
-        view.translatesAutoresizingMaskIntoConstraints = false
+        let view = ThemedLayerView(fill: Design.separator)
         view.heightAnchor.constraint(equalToConstant: 1).isActive = true
         return view
     }

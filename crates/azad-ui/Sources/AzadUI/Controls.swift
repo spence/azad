@@ -46,8 +46,8 @@ final class KeycapButton: NSButton {
             ? (isHighlighted ? Design.blue.withAlphaComponent(0.82) : Design.blue)
             : Design.control
         let foreground = selected ? NSColor.white : Design.text
-        layer?.backgroundColor = background.cgColor
-        layer?.borderColor = selected ? Design.blue.cgColor : Design.border.cgColor
+        layer?.backgroundColor = Design.cgColor(background, for: self)
+        layer?.borderColor = Design.cgColor(selected ? Design.blue : Design.border, for: self)
         attributedTitle = NSAttributedString(
             string: title,
             attributes: [
@@ -55,6 +55,11 @@ final class KeycapButton: NSButton {
                 .foregroundColor: foreground,
             ]
         )
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
     }
 }
 
@@ -80,11 +85,7 @@ final class ShortcutView: NSStackView {
             addArrangedSubview(button)
         }
         addArrangedSubview(Design.label("+", size: 13, color: Design.mutedText))
-        let space = NSView()
-        space.translatesAutoresizingMaskIntoConstraints = false
-        space.wantsLayer = true
-        space.layer?.backgroundColor = Design.control.cgColor
-        space.layer?.borderColor = Design.border.cgColor
+        let space = ThemedLayerView(fill: Design.control, stroke: Design.border, radius: 6, borderWidth: 1)
         space.layer?.borderWidth = 1
         space.layer?.cornerRadius = 6
         space.widthAnchor.constraint(equalToConstant: 78).isActive = true
@@ -156,6 +157,8 @@ final class StatusTextView: NSStackView {
 }
 
 final class PermissionCard: NSView {
+    private let framed: Bool
+
     init(
         accessibility: PermissionStatus,
         microphone: PermissionStatus,
@@ -165,14 +168,14 @@ final class PermissionCard: NSView {
         showMissingHint: Bool = true,
         framed: Bool = true
     ) {
+        self.framed = framed
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         if framed {
             wantsLayer = true
-            layer?.backgroundColor = Design.panel.cgColor
             layer?.cornerRadius = 8
-            layer?.borderColor = Design.border.cgColor
             layer?.borderWidth = 1
+            applyTheme()
         }
 
         let stack = NSStackView()
@@ -218,6 +221,22 @@ final class PermissionCard: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyTheme()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTheme()
+    }
+
+    private func applyTheme() {
+        guard framed else { return }
+        Design.applyFill(Design.panel, to: self)
+        Design.applyStroke(Design.border, to: self)
+    }
+
     private func addPermissionRow(
         to stack: NSStackView,
         label: String,
@@ -255,15 +274,25 @@ final class PermissionCard: NSView {
 }
 
 final class ModelRowView: NSView {
+    private let contentStack = NSStackView()
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: contentStack.fittingSize.height)
+    }
+
     init(model: ModelPack, compact: Bool, target: AnyObject?, downloadAction: Selector?, cancelAction: Selector?) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .vertical)
 
-        let stack = NSStackView()
+        let stack = contentStack
         stack.orientation = compact ? .horizontal : .vertical
         stack.alignment = compact ? .centerY : .leading
         stack.spacing = compact ? 12 : 10
         stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setContentHuggingPriority(.required, for: .vertical)
+        stack.setContentCompressionResistancePriority(.required, for: .vertical)
         addSubview(stack)
         stack.pinToSuperview()
 
@@ -337,6 +366,7 @@ final class ModelRowView: NSView {
             button.widthAnchor.constraint(equalToConstant: 82).isActive = true
             actionStack.addArrangedSubview(button)
         }
+        invalidateIntrinsicContentSize()
     }
 
     required init?(coder: NSCoder) {

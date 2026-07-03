@@ -35,11 +35,15 @@ swift-build:
 ui-snapshots:
     crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-ui target/swift/azad-ui
     @mkdir -p target/ui-snapshots
-    @for surface in onboarding-fresh onboarding-ready settings-general settings-models settings-permissions settings-debug settings-connectors menu-collapsed menu-expanded; do \
-      target/swift/azad-ui/release/azad-ui-preview \
-        --surface "$surface" \
-        --screenshot "target/ui-snapshots/$surface.png" \
-        --quit-after 0.5; \
+    @for appearance in dark light; do \
+      mkdir -p "target/ui-snapshots/$appearance"; \
+      for surface in onboarding-fresh onboarding-ready settings-general settings-text settings-models settings-permissions settings-debug settings-connectors menu-collapsed menu-expanded; do \
+        target/swift/azad-ui/release/azad-ui-preview \
+          --surface "$surface" \
+          --appearance "$appearance" \
+          --screenshot "target/ui-snapshots/$appearance/$surface.png" \
+          --quit-after 0.5; \
+      done; \
     done
 
 verify:
