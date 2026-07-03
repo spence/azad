@@ -117,9 +117,8 @@ MIT. See [LICENSE](LICENSE).
 
 ### 0.3.0
 
-- Rebuilt onboarding, settings, and menu-bar surfaces with native Swift/AppKit UI.
-- Added spoken-number-to-digit conversion for final text output.
-- Added a dedicated text setting tab for transformations.
+- Added light and dark appearance support for native app surfaces.
+- Hardened source installs with pinned Swift MLX dependencies ([#2](https://github.com/spence/azad/issues/2)).
 
 ### 0.2.0
 
