@@ -91,6 +91,7 @@ doctor:
       missing=1; \
     fi; \
     if [[ -f Cargo.lock ]]; then printf "ok  Cargo.lock\n"; else printf "err Cargo.lock missing\n"; missing=1; fi; \
+    if bash crates/azad-mlx-asr/scripts/check-swift-pins.sh; then :; else missing=1; fi; \
     exit "$missing"
 
 install:

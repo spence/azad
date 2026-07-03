@@ -49,6 +49,15 @@ brew install just cmake
 
 If `just install` cannot find Apple’s `metal` compiler, it will try to use
 `/Applications/Xcode.app` and download Xcode’s Metal Toolchain component.
+You can install that component explicitly with:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain
+```
+
+The Swift MLX packages are pinned to versions that build with Swift 6.2. Run
+`just doctor` before `just install`; it checks the local toolchain, Metal compiler,
+and the checked-in Swift package pins.
 
 ## Build Commands
 
