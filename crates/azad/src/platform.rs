@@ -52,7 +52,7 @@ const OVERLAY_WIDTH_MAX: f64 = 680.0;
 const OVERLAY_HEIGHT_MIN: f64 = 64.0;
 const OVERLAY_HEIGHT_MAX: f64 = 540.0;
 const OVERLAY_STACK_GAP: f64 = 10.0;
-const OVERLAY_CARD_RADIUS: f64 = 36.0;
+const OVERLAY_CARD_RADIUS: f64 = 42.0;
 const OVERLAY_BORDER_THICKNESS: f64 = 2.0;
 const OVERLAY_BUSY_RING_THICKNESS: f64 = 3.4;
 const OVERLAY_PAD_X: f64 = 12.0;
@@ -63,6 +63,7 @@ const OVERLAY_TEXT_LINE_HEIGHT: f64 = 20.0;
 const OVERLAY_WAVE_BG_HEIGHT: f64 = 84.0;
 const OVERLAY_WAVE_BAR_COUNT: usize = 96;
 const OVERLAY_WAVE_BAR_MIN_HEIGHT: f64 = 3.0;
+const OVERLAY_WAVE_EDGE_INSET: f64 = OVERLAY_CARD_RADIUS - OVERLAY_PAD_X;
 const OVERLAY_RAW_BADGE_FONT_SIZE: f64 = 12.0;
 const OVERLAY_RAW_BADGE_WIDTH: f64 = 44.0;
 const OVERLAY_RAW_BADGE_HEIGHT: f64 = 16.0;
@@ -4395,7 +4396,9 @@ unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, 
   }
 
   let count = refs.wave_bars.len().max(1);
-  let spacing = (width / count as f64).max(1.0);
+  let side_inset = wave_edge_inset_for_width(width);
+  let drawable_width = (width - side_inset * 2.0).max(1.0);
+  let spacing = (drawable_width / count as f64).max(1.0);
   let bar_width = (spacing * 0.82).clamp(1.0, 6.0);
   let max_h = height.max(1.0);
   let samples_len = activity.len();
@@ -4418,7 +4421,7 @@ unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, 
     let bar_h = (OVERLAY_WAVE_BAR_MIN_HEIGHT + dramatic * (max_h - OVERLAY_WAVE_BAR_MIN_HEIGHT))
       .clamp(OVERLAY_WAVE_BAR_MIN_HEIGHT, max_h);
     let y = (max_h - bar_h) * 0.5;
-    let x = i as f64 * spacing + (spacing - bar_width) * 0.5;
+    let x = side_inset + i as f64 * spacing + (spacing - bar_width) * 0.5;
     let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(bar_width, bar_h));
     let _: () = msg_send![*bar, setFrame: frame];
     let _: () = msg_send![*bar, setHidden: if samples_len == 0 { YES } else { NO }];
@@ -4439,6 +4442,10 @@ unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, 
       let _: () = msg_send![layer, setCornerRadius: (bar_width * 0.5).max(0.5)];
     }
   }
+}
+
+fn wave_edge_inset_for_width(width: f64) -> f64 {
+  OVERLAY_WAVE_EDGE_INSET.min((width * 0.18).max(0.0))
 }
 
 fn listen_toggle_notice_activity(enabled: bool, progress: f32) -> Vec<f32> {
@@ -6166,7 +6173,7 @@ unsafe fn nsstring_to_string(value: id) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-  use super::overlay_display_text;
+  use super::{OVERLAY_WAVE_EDGE_INSET, overlay_display_text, wave_edge_inset_for_width};
 
   #[test]
   fn empty_overlay_body_stays_empty_while_holding_to_listen() {
@@ -6177,5 +6184,11 @@ mod tests {
   #[test]
   fn empty_overlay_body_shows_finalizing_when_busy() {
     assert_eq!(overlay_display_text("", true), "Finalizing");
+  }
+
+  #[test]
+  fn wave_edge_inset_keeps_bars_inside_overlay_edges() {
+    assert_eq!(wave_edge_inset_for_width(300.0), OVERLAY_WAVE_EDGE_INSET);
+    assert!(wave_edge_inset_for_width(80.0) < OVERLAY_WAVE_EDGE_INSET);
   }
 }
