@@ -138,8 +138,27 @@ public final class AzadUI {
 
     private func enterForegroundWindowMode() {
         NSApp.setActivationPolicy(.regular)
-        NSApp.mainMenu = NSMenu()
+        NSApp.mainMenu = makeAppMenu()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func makeAppMenu() -> NSMenu {
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+
+        let appMenu = NSMenu(title: "Azad")
+        appItem.submenu = appMenu
+
+        let quitItem = NSMenuItem(
+            title: "Quit Azad",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        quitItem.target = NSApp
+        appMenu.addItem(quitItem)
+
+        return mainMenu
     }
 
     func emit(_ event: UIEvent) {
