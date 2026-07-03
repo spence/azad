@@ -181,7 +181,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         view.addSubview(button)
         NSLayoutConstraint.activate([
             button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            button.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            button.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
             button.widthAnchor.constraint(equalToConstant: 150),
         ])
 
@@ -191,7 +191,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         NSLayoutConstraint.activate([
             hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            hint.topAnchor.constraint(equalTo: button.bottomAnchor, constant: 8),
+            hint.topAnchor.constraint(equalTo: button.bottomAnchor, constant: 6),
+            hint.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -6),
         ])
         return view
     }
