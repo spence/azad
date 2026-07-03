@@ -50,50 +50,23 @@ brew install just cmake
 If `just install` cannot find Apple’s `metal` compiler, it will try to use
 `/Applications/Xcode.app` and download Xcode’s Metal Toolchain component.
 
-## Repository Layout
-
-```text
-docs/       documentation index and cross-cutting cleanup plans
-crates/
-  azad/         macOS menu bar app, onboarding, settings, overlay, hotkeys
-  azad-asr/     owned ASR engine crate used by the app and CLI
-  azad-mlx-asr/ bundled Swift helper for MLX ASR and CoreML VAD
-```
-
-Key internal boundaries:
-
-- `crates/azad/src/app/text.rs`: paste text shaping and duplicate-collapse tests.
-- `crates/azad/src/platform/permissions.rs`: macOS permission checks and prompts.
-- `crates/azad-asr/src/pipeline/stitch.rs`: incremental finalization text stitching.
-
-The workspace no longer uses Git submodules. Owned code lives in this repo. Forked
-or upstream third-party crates are Cargo dependencies pinned in `Cargo.lock`.
-
-Current notable dependency choices:
-
-- `azad-mlx-asr` is a bundled Swift helper that runs
-  `mlx-community/nemotron-3.5-asr-streaming-0.6b` with MLXAudio Swift. Source
-  installs build this helper during `just install`.
-- The same bundled Swift helper runs Silero VAD v6.2.1 through CoreML. Azad does
-  not use Whisper or whisper.cpp for speech-to-text or VAD.
-
-## Common Commands
+## Build Commands
 
 ```bash
-just verify     # doctor + fmt + check + test + Swift helper build + Clippy
-just test-replay # run ignored ASR replay tests when local models are available
-just test-replay-required # same, but fail if replay models are missing
-just check      # cargo check --workspace
-just fmt-check  # cargo fmt --all --check
-just test       # cargo test --workspace
-just clippy     # cargo clippy --workspace --all-targets -- -D warnings
-just swift-build # build the bundled Swift MLX/CoreML helper
-just install    # build and install ~/Applications/Azad.app
-just start      # start launchd service
-just restart    # restart launchd service
-just status     # print launchd status
-just logs       # tail app logs
-just dist       # maintainer-only signed/notarized DMG build
+just verify                 # doctor + fmt + check + test + Swift helper build + Clippy
+just test-replay            # run ignored ASR replay tests when local models are available
+just test-replay-required   # same, but fail if replay models are missing
+just check                  # cargo check --workspace
+just fmt-check              # cargo fmt --all --check
+just test                   # cargo test --workspace
+just clippy                 # cargo clippy --workspace --all-targets -- -D warnings
+just swift-build            # build the bundled Swift MLX/CoreML helper
+just install                # build and install ~/Applications/Azad.app
+just start                  # start launchd service
+just restart                # restart launchd service
+just status                 # print launchd status
+just logs                   # tail app logs
+just dist                   # maintainer-only signed/notarized DMG build
 ```
 
 ## Local Signing
@@ -109,22 +82,6 @@ Explicit environment variables override values from `.codesign.env`.
 On Apple silicon, the linker may still leave a per-binary ad-hoc signature on
 the executable. That is not a stable app-bundle signature and should not be used
 for TCC permission preservation.
-
-## Public Releases
-
-Public builds are produced from tags by `.github/workflows/release.yml`. The
-workflow imports a Developer ID certificate from GitHub Actions secrets, signs
-the app with hardened runtime, notarizes/staples the app and DMG, verifies the
-result, and uploads the DMG to the GitHub Release.
-
-Required release secrets:
-
-- `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`
-- `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`
-- `APPLE_KEYCHAIN_PASSWORD`
-- `APPLE_ID`
-- `APPLE_TEAM_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
 
 For local release builds, `.codesign.env` provides defaults and explicit environment
 variables override values from that file.
