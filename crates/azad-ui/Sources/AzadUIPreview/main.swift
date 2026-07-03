@@ -98,6 +98,7 @@ func modelPack(status: ModelStatus, progress: UInt8 = 0) -> ModelPack {
         id: "nemotron-3.5-mlx-bf16-v1",
         welcomeName: "Nemotron-3.5 ASR Streaming",
         settingsName: "NVIDIA Nemotron-3.5 ASR Streaming 0.6B",
+        pageUrl: "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
         description: "On-device streaming speech-to-text · English",
         sizeLabel: "1.2 GB",
         status: status,

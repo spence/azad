@@ -51,6 +51,41 @@ final class PrimaryActionButton: NSButton {
     }
 }
 
+final class LinkLabel: NSTextField {
+    private let url: URL?
+
+    init(_ text: String, url: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) {
+        self.url = URL(string: url)
+        super.init(frame: .zero)
+        stringValue = text
+        font = .systemFont(ofSize: size, weight: weight)
+        textColor = color
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        drawsBackground = false
+        lineBreakMode = .byTruncatingTail
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let url else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
 enum Design {
     static let window = NSColor(calibratedRed: 0.132, green: 0.132, blue: 0.145, alpha: 1.0)
     static let panel = NSColor(calibratedRed: 0.112, green: 0.112, blue: 0.124, alpha: 1.0)
@@ -80,6 +115,10 @@ enum Design {
         label.maximumNumberOfLines = 0
         label.lineBreakMode = .byWordWrapping
         return label
+    }
+
+    static func linkLabel(_ text: String, url: String, size: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSTextField {
+        LinkLabel(text, url: url, size: size, weight: weight, color: Design.blue)
     }
 
     static func popup(_ items: [String], selected: Int, target: AnyObject?, action: Selector?) -> NSPopUpButton {

@@ -3339,6 +3339,7 @@ mod tests {
         id: "nemotron-3.5-mlx-bf16-v1".to_string(),
         welcome_name: "Nemotron-3.5 ASR Streaming".to_string(),
         settings_name: "NVIDIA Nemotron-3.5 ASR Streaming 0.6B".to_string(),
+        page_url: "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b".to_string(),
         description: "On-device streaming speech-to-text".to_string(),
         size_label: "1.2 GB".to_string(),
         status: UiModelStatus::Ready,

@@ -46,6 +46,7 @@ fn ui_model_pack(
     id: pack.id.to_string(),
     welcome_name: "Nemotron-3.5 ASR Streaming".to_string(),
     settings_name: "NVIDIA Nemotron-3.5 ASR Streaming 0.6B".to_string(),
+    page_url: pack.page_url.to_string(),
     description: "On-device streaming speech-to-text · English".to_string(),
     size_label: models::format_size(pack.total_size_bytes),
     status,

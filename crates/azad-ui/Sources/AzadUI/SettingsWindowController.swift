@@ -261,7 +261,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func modelsPane(_ model: SettingsViewModel) -> NSView {
         let stack = paneStack()
-        let title = Design.label("\(model.model.settingsName) ↗", size: 15, weight: .semibold, color: Design.blue)
+        let title = Design.linkLabel("\(model.model.settingsName) ↗", url: model.model.pageUrl, size: 15, weight: .semibold)
         stack.addArrangedSubview(title)
         stack.addArrangedSubview(Design.label(model.model.description, size: 13, color: Design.secondaryText))
         let row = ModelRowView(model: model.model, compact: false, target: self, downloadAction: #selector(downloadModel), cancelAction: #selector(cancelDownload))

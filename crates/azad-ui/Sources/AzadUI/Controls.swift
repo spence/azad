@@ -274,7 +274,7 @@ final class ModelRowView: NSView {
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
         if compact {
-            let title = Design.label("\(model.welcomeName) ↗", size: 13, weight: .medium, color: Design.blue)
+            let title = Design.linkLabel("\(model.welcomeName) ↗", url: model.pageUrl, size: 13, weight: .medium)
             textStack.addArrangedSubview(title)
         }
 

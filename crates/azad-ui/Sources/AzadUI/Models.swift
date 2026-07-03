@@ -25,6 +25,7 @@ public struct ModelPack: Codable {
     public let id: String
     public let welcomeName: String
     public let settingsName: String
+    public let pageUrl: String
     public let description: String
     public let sizeLabel: String
     public let status: ModelStatus
@@ -37,6 +38,7 @@ public struct ModelPack: Codable {
         id: String,
         welcomeName: String,
         settingsName: String,
+        pageUrl: String,
         description: String,
         sizeLabel: String,
         status: ModelStatus,
@@ -48,6 +50,7 @@ public struct ModelPack: Codable {
         self.id = id
         self.welcomeName = welcomeName
         self.settingsName = settingsName
+        self.pageUrl = pageUrl
         self.description = description
         self.sizeLabel = sizeLabel
         self.status = status
