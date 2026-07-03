@@ -60,6 +60,9 @@ MLX_HELPER_DIR="${ROOT_DIR}/crates/azad-mlx-asr"
 MLX_HELPER_BUILD_DIR="${ROOT_DIR}/target/swift/azad-mlx-asr"
 MLX_HELPER_SOURCE=""
 MLX_METALLIB_SOURCE=""
+UI_DIR="${ROOT_DIR}/crates/azad-ui"
+UI_BUILD_DIR="${ROOT_DIR}/target/swift/azad-ui"
+UI_LIB_SOURCE=""
 DMG_NAME="Azad-${VERSION}.dmg"
 DMG_PATH="${DIST_DIR}/${DMG_NAME}"
 
@@ -109,6 +112,28 @@ build_mlx_helper() {
   fi
 
   build_mlx_metallib
+}
+
+build_ui_library() {
+  if [[ ! -f "${UI_DIR}/Package.swift" ]]; then
+    echo "error: Azad UI package missing at ${UI_DIR}" >&2
+    exit 1
+  fi
+
+  if ! command -v swift >/dev/null 2>&1; then
+    echo "error: swift not found; install Xcode Command Line Tools to build the Azad UI library" >&2
+    exit 1
+  fi
+
+  "${ROOT_DIR}/crates/azad-mlx-asr/scripts/swift-build-release.sh" \
+    "$UI_DIR" \
+    "$UI_BUILD_DIR"
+
+  UI_LIB_SOURCE="${UI_BUILD_DIR}/release/libAzadUI.dylib"
+  if [[ ! -f "$UI_LIB_SOURCE" ]]; then
+    echo "error: built Azad UI library missing at $UI_LIB_SOURCE" >&2
+    exit 1
+  fi
 }
 
 ensure_metal_toolchain() {
@@ -206,6 +231,9 @@ if [[ ! -x "$BIN_SOURCE" ]]; then
   exit 1
 fi
 
+echo "==> Building Azad UI library"
+build_ui_library
+
 echo "==> Building MLX ASR helper"
 build_mlx_helper
 
@@ -214,6 +242,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 
 install -m 755 "$BIN_SOURCE" "${APP_MACOS}/azad"
+install -m 755 "$UI_LIB_SOURCE" "${APP_MACOS}/libAzadUI.dylib"
 install -m 755 "$MLX_HELPER_SOURCE" "${APP_MACOS}/azad-mlx-asr"
 install -m 644 "$MLX_METALLIB_SOURCE" "${APP_MACOS}/mlx.metallib"
 install -m 644 "${CRATE_DIR}/assets/azad-black.png" "${APP_RESOURCES}/azad-black.png"

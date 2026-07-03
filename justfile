@@ -29,6 +29,7 @@ clippy:
     cargo clippy -q --workspace --all-targets -- -D warnings
 
 swift-build:
+    crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-ui target/swift/azad-ui
     crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-mlx-asr target/swift/azad-mlx-asr
 
 verify:

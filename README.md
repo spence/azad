@@ -60,7 +60,7 @@ just check                  # cargo check --workspace
 just fmt-check              # cargo fmt --all --check
 just test                   # cargo test --workspace
 just clippy                 # cargo clippy --workspace --all-targets -- -D warnings
-just swift-build            # build the bundled Swift MLX/CoreML helper
+just swift-build            # build bundled Swift UI + MLX/CoreML helper
 just install                # build and install ~/Applications/Azad.app
 just start                  # start launchd service
 just restart                # restart launchd service
