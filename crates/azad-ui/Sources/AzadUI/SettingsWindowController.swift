@@ -232,6 +232,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         field.translatesAutoresizingMaskIntoConstraints = false
         field.widthAnchor.constraint(equalToConstant: 178).isActive = true
         field.identifier = NSUserInterfaceItemIdentifier("removed-word-input")
+        field.target = self
+        field.action = #selector(addWord(_:))
         addRow.addArrangedSubview(field)
 
         let add = Design.pushButton("Add", target: self, action: #selector(addWord(_:)))
@@ -507,7 +509,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleConnector", boolValue: sender.state == .on, index: sender.tag))
     }
 
-    @objc private func addWord(_ sender: NSButton) {
+    @objc private func addWord(_ sender: AnyObject) {
         guard let field = findSubview(identifier: "removed-word-input", in: content) as? NSTextField else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }

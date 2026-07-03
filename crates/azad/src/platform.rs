@@ -52,7 +52,7 @@ const OVERLAY_WIDTH_MAX: f64 = 680.0;
 const OVERLAY_HEIGHT_MIN: f64 = 64.0;
 const OVERLAY_HEIGHT_MAX: f64 = 540.0;
 const OVERLAY_STACK_GAP: f64 = 10.0;
-const OVERLAY_CARD_RADIUS: f64 = 8.0;
+const OVERLAY_CARD_RADIUS: f64 = 18.0;
 const OVERLAY_BORDER_THICKNESS: f64 = 2.0;
 const OVERLAY_BUSY_RING_THICKNESS: f64 = 3.4;
 const OVERLAY_PAD_X: f64 = 12.0;
@@ -3071,12 +3071,12 @@ const HISTORY_BODY_MAX_LINES: usize = 2;
 const HISTORY_ROW_PAD_Y: f64 = 6.0;
 const HISTORY_ROW_GAP: f64 = 2.0;
 const HISTORY_BG_X_INSET: f64 = 4.0;
-// `OVERLAY_CARD_RADIUS - 8` so the inner highlight follows the outer card's
+// The inner highlight is inset 8 pt from the card edge, so this follows the outer card's
 // rounded curve concentrically (the bg is inset 8 pt from the card edge:
 // `OVERLAY_PAD_X (12) - HISTORY_BG_X_INSET (4) = 8`). Smaller values leave a
 // visible gap between the highlight corner and the card corner; larger values
 // clip past the curve.
-const HISTORY_BG_RADIUS: f64 = 6.0;
+const HISTORY_BG_RADIUS: f64 = OVERLAY_CARD_RADIUS - 8.0;
 // Symmetric padding inside the highlight bg between its left/right edges and
 // the entry text. Keeps the text from butting against the rounded bg corner.
 const HISTORY_TEXT_INNER_PAD_X: f64 = 12.0;
