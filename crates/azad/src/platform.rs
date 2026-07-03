@@ -63,7 +63,7 @@ const OVERLAY_TEXT_LINE_HEIGHT: f64 = 20.0;
 const OVERLAY_WAVE_BG_HEIGHT: f64 = 84.0;
 const OVERLAY_WAVE_BAR_COUNT: usize = 96;
 const OVERLAY_WAVE_BAR_MIN_HEIGHT: f64 = 3.0;
-const OVERLAY_WAVE_EDGE_INSET: f64 = OVERLAY_CARD_RADIUS - OVERLAY_PAD_X;
+const OVERLAY_WAVE_EDGE_INSET: f64 = 16.0;
 const OVERLAY_RAW_BADGE_FONT_SIZE: f64 = 12.0;
 const OVERLAY_RAW_BADGE_WIDTH: f64 = 44.0;
 const OVERLAY_RAW_BADGE_HEIGHT: f64 = 16.0;
@@ -2965,7 +2965,7 @@ unsafe fn render_overlay_text(
     OVERLAY_PAD_BOTTOM
   };
   let meter_height = body_text_height.max(OVERLAY_WAVE_BG_HEIGHT).min(available_height).max(1.0);
-  let meter_y = OVERLAY_PAD_BOTTOM;
+  let meter_y = ((height - meter_height) * 0.5).max(0.0);
   let body_frame =
     NSRect::new(NSPoint::new(OVERLAY_PAD_X, body_y), NSSize::new(content_width, body_text_height));
   let meter_frame =
@@ -4427,7 +4427,7 @@ unsafe fn render_activity_wave(refs: OverlayRefs, activity: &[f32], width: f64, 
     let _: () = msg_send![*bar, setHidden: if samples_len == 0 { YES } else { NO }];
 
     let hue = 0.48 + (dramatic * 0.10);
-    let alpha = 0.024 + (dramatic * 0.09);
+    let alpha = 0.018 + (dramatic * 0.065);
     let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
       nil,
       (0.10 + hue * 0.08).clamp(0.0, 1.0),
