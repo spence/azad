@@ -12,6 +12,8 @@ enum PreviewSurface: String {
     case settingsPermissions = "settings-permissions"
     case settingsDebug = "settings-debug"
     case settingsConnectors = "settings-connectors"
+    case menuCollapsed = "menu-collapsed"
+    case menuExpanded = "menu-expanded"
 
     var isOnboarding: Bool {
         switch self {
@@ -34,6 +36,15 @@ enum PreviewSurface: String {
             return .connectors
         default:
             return .general
+        }
+    }
+
+    var isMenu: Bool {
+        switch self {
+        case .menuCollapsed, .menuExpanded:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -67,7 +78,7 @@ func parseOptions() -> PreviewOptions {
             }
         case "--help", "-h":
             print("usage: azad-ui-preview [--surface <name>] [--screenshot <path>] [--quit-after <seconds>]")
-            print("surfaces: onboarding-fresh, onboarding-ready, settings-general, settings-models, settings-permissions, settings-debug, settings-connectors")
+            print("surfaces: onboarding-fresh, onboarding-ready, settings-general, settings-models, settings-permissions, settings-debug, settings-connectors, menu-collapsed, menu-expanded")
             exit(0)
         default:
             break
@@ -157,7 +168,9 @@ func configurePreviewIcon() {
 }
 
 let encoder = JSONEncoder()
-if options.surface.isOnboarding {
+if options.surface.isMenu {
+    showMenuPreview(expanded: options.surface == .menuExpanded)
+} else if options.surface.isOnboarding {
     let model = onboardingModel(ready: options.surface == .onboardingReady)
     let json = String(data: try encoder.encode(model), encoding: .utf8)!
     json.withCString { _ = azadUIShowOnboarding($0) }
@@ -182,6 +195,152 @@ if let screenshotPath = options.screenshotPath {
 }
 
 app.run()
+
+class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+final class MenuPreviewPanel: FlippedView {
+    private let expanded: Bool
+    private let panelWidth: CGFloat = 280
+    private let rowHeight: CGFloat = 24
+    private let headerHeight: CGFloat = 28
+    private let leading: CGFloat = 14
+    private let iconSize: CGFloat = 16
+    private let labelOffsetY: CGFloat = 1
+    private let devices = [
+        "Loop120 by Shokz",
+        "BlackHole 2ch",
+        "daedalus Microphone",
+        "LG UltraFine Display Audio",
+        "MacBook Pro Microphone",
+    ]
+
+    init(expanded: Bool) {
+        self.expanded = expanded
+        let height: CGFloat = expanded ? 296 : 152
+        super.init(frame: NSRect(x: 0, y: 0, width: panelWidth, height: height))
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedWhite: 0.055, alpha: 1).cgColor
+        layer?.cornerRadius = 12
+        layer?.borderColor = NSColor(calibratedWhite: 1, alpha: 0.32).cgColor
+        layer?.borderWidth = 1
+        build()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func build() {
+        add(label("Listen", x: 16, y: 22, width: 160, size: 15, weight: .regular))
+        add(switchView(on: true, x: panelWidth - 44, y: 20))
+        add(separator(y: 58))
+
+        let deviceTitle = expanded ? "Loop120 by Shokz" : "MacBook Pro Microphone"
+        add(symbol("mic", x: leading, y: 72, size: 16))
+        add(label(deviceTitle, x: deviceTitleX, y: 71 + labelOffsetY, width: 204, size: 14, weight: .semibold))
+        add(symbol(expanded ? "chevron.down" : "chevron.right", x: panelWidth - 28, y: 75, size: 10, color: PreviewStyle.secondaryText))
+
+        var bottomSeparatorY: CGFloat = 98
+        if expanded {
+            var y: CGFloat = 100
+            for (idx, device) in devices.enumerated() {
+                if idx == 0 {
+                    add(label("✓", x: leading, y: y + labelOffsetY, width: iconSize, size: 14, weight: .semibold))
+                }
+                add(label(device, x: deviceTitleX, y: y + labelOffsetY, width: 220, size: 14, weight: .semibold))
+                y += rowHeight
+            }
+            bottomSeparatorY = y + 6
+        }
+
+        add(separator(y: bottomSeparatorY))
+        add(label("Settings...", x: 16, y: bottomSeparatorY + 17, width: 170, size: 14, weight: .semibold))
+        add(label("Quit Azad", x: 16, y: bottomSeparatorY + 41, width: 170, size: 14, weight: .semibold))
+    }
+
+    private var deviceTitleX: CGFloat {
+        leading + iconSize + 1
+    }
+
+    private func add(_ view: NSView) {
+        addSubview(view)
+    }
+
+    private func label(_ text: String, x: CGFloat, y: CGFloat, width: CGFloat, size: CGFloat, weight: NSFont.Weight) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.frame = NSRect(x: x, y: y, width: width, height: 20)
+        label.font = .systemFont(ofSize: size, weight: weight)
+        label.textColor = PreviewStyle.text
+        label.backgroundColor = .clear
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }
+
+    private func symbol(_ name: String, x: CGFloat, y: CGFloat, size: CGFloat, color: NSColor = PreviewStyle.secondaryText) -> NSImageView {
+        let config = NSImage.SymbolConfiguration(pointSize: size, weight: .regular)
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+        let view = NSImageView(image: image ?? NSImage())
+        view.frame = NSRect(x: x, y: y, width: size + 4, height: size + 4)
+        view.contentTintColor = color
+        return view
+    }
+
+    private func separator(y: CGFloat) -> NSView {
+        let view = NSView(frame: NSRect(x: 16, y: y, width: panelWidth - 32, height: 1))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor(calibratedWhite: 1, alpha: 0.14).cgColor
+        return view
+    }
+
+    private func switchView(on: Bool, x: CGFloat, y: CGFloat) -> NSView {
+        let view = NSView(frame: NSRect(x: x, y: y, width: 32, height: 18))
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 9
+        view.layer?.backgroundColor = (on ? NSColor(calibratedRed: 0.02, green: 0.52, blue: 0.55, alpha: 1) : PreviewStyle.control).cgColor
+
+        let thumb = NSView(frame: NSRect(x: on ? 16 : 2, y: 2, width: 14, height: 14))
+        thumb.wantsLayer = true
+        thumb.layer?.cornerRadius = 7
+        thumb.layer?.backgroundColor = NSColor.white.cgColor
+        view.addSubview(thumb)
+        return view
+    }
+}
+
+enum PreviewStyle {
+    static let text = NSColor(calibratedWhite: 0.88, alpha: 1.0)
+    static let secondaryText = NSColor(calibratedWhite: 0.62, alpha: 1.0)
+    static let control = NSColor(calibratedRed: 0.205, green: 0.205, blue: 0.218, alpha: 1.0)
+}
+
+func showMenuPreview(expanded: Bool) {
+    let panel = MenuPreviewPanel(expanded: expanded)
+    let padding: CGFloat = 12
+    let contentSize = NSSize(
+        width: panel.frame.width + padding * 2,
+        height: panel.frame.height + padding * 2
+    )
+    let contentView = FlippedView(frame: NSRect(origin: .zero, size: contentSize))
+    contentView.wantsLayer = true
+    contentView.layer?.backgroundColor = NSColor.clear.cgColor
+    panel.frame.origin = NSPoint(x: padding, y: padding)
+    contentView.addSubview(panel)
+
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: contentSize),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.hasShadow = false
+    window.contentView = contentView
+    window.center()
+    window.makeKeyAndOrderFront(nil)
+}
 
 enum ScreenshotError: Error {
     case noVisibleWindow

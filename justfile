@@ -32,6 +32,16 @@ swift-build:
     crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-ui target/swift/azad-ui
     crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-mlx-asr target/swift/azad-mlx-asr
 
+ui-snapshots:
+    crates/azad-mlx-asr/scripts/swift-build-release.sh crates/azad-ui target/swift/azad-ui
+    @mkdir -p target/ui-snapshots
+    @for surface in onboarding-fresh onboarding-ready settings-general settings-models settings-permissions settings-debug settings-connectors menu-collapsed menu-expanded; do \
+      target/swift/azad-ui/release/azad-ui-preview \
+        --surface "$surface" \
+        --screenshot "target/ui-snapshots/$surface.png" \
+        --quit-after 0.5; \
+    done
+
 verify:
     just doctor
     just fmt-check
