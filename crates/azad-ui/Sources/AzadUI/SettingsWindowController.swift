@@ -29,7 +29,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         self.model = model
         selectedTab = model.selectedTab
         render()
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

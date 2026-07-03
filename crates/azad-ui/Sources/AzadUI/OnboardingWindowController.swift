@@ -27,7 +27,6 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     func show(model: OnboardingViewModel) {
         self.model = model
         render(model)
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
         showWindow(nil)

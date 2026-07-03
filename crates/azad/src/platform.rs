@@ -412,7 +412,6 @@ pub fn set_device_menu(model: DeviceMenuModel) {
 pub fn show_settings_window(model: SettingsViewModel) {
   unsafe {
     let app = NSApp();
-    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
     let _: () = msg_send![app, activateIgnoringOtherApps: YES];
   }
   crate::ui_bridge::show_settings_window(&model);
@@ -421,7 +420,6 @@ pub fn show_settings_window(model: SettingsViewModel) {
 pub fn show_onboarding_window(model: OnboardingViewModel) {
   unsafe {
     let app = NSApp();
-    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
     let _: () = msg_send![app, activateIgnoringOtherApps: YES];
   }
   crate::ui_bridge::show_onboarding_window(&model);
