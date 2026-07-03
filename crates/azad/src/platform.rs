@@ -79,6 +79,7 @@ const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 10.0;
 const DEVICE_HEADER_TRAILING: f64 = 12.0;
 const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
 const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
+const DEVICE_HEADER_LABEL_HEIGHT: f64 = 18.0;
 const DEVICE_HEADER_EXTRA_TOP_PADDING: f64 = 1.0;
 const DEVICE_HEADER_EXTRA_SIDE_MARGIN: f64 = 2.0;
 const ALWAYS_LISTENING_ROW_HEIGHT: f64 = 30.0;
@@ -1620,7 +1621,7 @@ fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
       .initWithTitle_action_keyEquivalent_(
         NSString::alloc(nil).init_str("Settings..."),
         sel!(openSettings:),
-        NSString::alloc(nil).init_str(","),
+        NSString::alloc(nil).init_str(""),
       )
       .autorelease();
     settings_item.setTarget_(delegate);
@@ -1630,7 +1631,7 @@ fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
       .initWithTitle_action_keyEquivalent_(
         NSString::alloc(nil).init_str("Quit Azad"),
         sel!(quit:),
-        NSString::alloc(nil).init_str("q"),
+        NSString::alloc(nil).init_str(""),
       )
       .autorelease();
     quit_item.setTarget_(delegate);
@@ -1695,6 +1696,10 @@ unsafe fn always_listening_track_color(view: id, enabled: bool) -> id {
   }
 
   base_color
+}
+
+fn centered_menu_axis_offset(container: f64, item: f64) -> f64 {
+  ((container - item) * 0.5).max(0.0)
 }
 
 fn always_listening_thumb_frame(enabled: bool) -> NSRect {
@@ -1986,8 +1991,7 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
   let text_color: id = msg_send![class!(NSColor), labelColor];
 
   let icon_x = DEVICE_HEADER_TEXT_LEADING;
-  let icon_y =
-    (DEVICE_HEADER_HEIGHT - DEVICE_HEADER_ICON_SIZE) * 0.5 + DEVICE_HEADER_EXTRA_TOP_PADDING;
+  let icon_y = centered_menu_axis_offset(DEVICE_HEADER_HEIGHT, DEVICE_HEADER_ICON_SIZE);
   let icon_frame = NSRect::new(
     NSPoint::new(icon_x, icon_y),
     NSSize::new(DEVICE_HEADER_ICON_SIZE, DEVICE_HEADER_ICON_SIZE),
@@ -2009,8 +2013,11 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
     - DEVICE_HEADER_CHEVRON_SIZE
     - DEVICE_HEADER_LABEL_TO_CHEVRON_GAP;
   let title_label_frame = NSRect::new(
-    NSPoint::new(title_x, 2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
-    NSSize::new(title_width, 18.0),
+    NSPoint::new(
+      title_x,
+      centered_menu_axis_offset(DEVICE_HEADER_HEIGHT, DEVICE_HEADER_LABEL_HEIGHT),
+    ),
+    NSSize::new(title_width, DEVICE_HEADER_LABEL_HEIGHT),
   );
   let title_label: id = msg_send![class!(NSTextField), alloc];
   let title_label: id = msg_send![title_label, initWithFrame: title_label_frame];
@@ -2025,8 +2032,7 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
   let _: () = msg_send![title_label, setTextColor: text_color];
 
   let chevron_x = DEVICE_HEADER_WIDTH - DEVICE_HEADER_TRAILING - DEVICE_HEADER_CHEVRON_SIZE;
-  let chevron_y =
-    (DEVICE_HEADER_HEIGHT - DEVICE_HEADER_CHEVRON_SIZE) * 0.5 + DEVICE_HEADER_EXTRA_TOP_PADDING;
+  let chevron_y = centered_menu_axis_offset(DEVICE_HEADER_HEIGHT, DEVICE_HEADER_CHEVRON_SIZE);
   let chevron_frame = NSRect::new(
     NSPoint::new(chevron_x, chevron_y),
     NSSize::new(DEVICE_HEADER_CHEVRON_SIZE, DEVICE_HEADER_CHEVRON_SIZE),
