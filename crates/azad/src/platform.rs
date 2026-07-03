@@ -2892,17 +2892,7 @@ unsafe fn render_overlay_text(
   let screen = overlay_screen_frame_for_window(current_frame);
   let width = overlay_width_for_screen(screen);
   let content_width = (width - OVERLAY_PAD_X * 2.0).max(1.0);
-  let display_text = if body_text.trim().is_empty() {
-    if busy_phase.is_some() {
-      "Finalizing"
-    } else if show_hold_badge {
-      "Listening"
-    } else {
-      body_text
-    }
-  } else {
-    body_text
-  };
+  let display_text = overlay_display_text(body_text, busy_phase.is_some());
 
   // Space reserved at the top of the card for the connector chip, folded into the
   // body height budget so the transcription drops below it.
@@ -3048,6 +3038,10 @@ unsafe fn render_overlay_text(
   let _: () = msg_send![refs.label, setStringValue: NSString::alloc(nil).init_str(&rendered_body)];
   hide_overlay_notice_accessory(refs);
   render_activity_wave(refs, activity, meter_frame.size.width, meter_frame.size.height);
+}
+
+fn overlay_display_text(body_text: &str, finalizing: bool) -> &str {
+  if body_text.trim().is_empty() && finalizing { "Finalizing" } else { body_text }
 }
 
 unsafe fn hide_overlay_notice_accessory(refs: OverlayRefs) {
@@ -6168,4 +6162,20 @@ unsafe fn nsstring_to_string(value: id) -> Option<String> {
   }
 
   Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::overlay_display_text;
+
+  #[test]
+  fn empty_overlay_body_stays_empty_while_holding_to_listen() {
+    assert_eq!(overlay_display_text("", false), "");
+    assert_eq!(overlay_display_text("   ", false), "   ");
+  }
+
+  #[test]
+  fn empty_overlay_body_shows_finalizing_when_busy() {
+    assert_eq!(overlay_display_text("", true), "Finalizing");
+  }
 }
