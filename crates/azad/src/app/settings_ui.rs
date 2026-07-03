@@ -65,6 +65,7 @@ impl AppController {
     eprintln!("AZAD_ONBOARDING get-started: completing onboarding");
     self.onboarding_complete = true;
     self.onboarding_active = false;
+    self.last_onboarding_view_model = None;
     preferred_store::save_onboarding_complete(true);
     platform::close_onboarding_window();
     self.ensure_session();

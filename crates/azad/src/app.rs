@@ -322,6 +322,7 @@ struct AppController {
   onboarding_complete: bool,
   pending_onboarding: bool,
   onboarding_active: bool,
+  last_onboarding_view_model: Option<platform::OnboardingViewModel>,
   pending_first_launch_settings: bool,
   download_handle: Option<DownloadHandle>,
   download_progress: (u64, u64),
@@ -596,6 +597,7 @@ impl AppController {
       onboarding_complete: preferred_store::load_onboarding_complete().unwrap_or(false),
       pending_onboarding: false,
       onboarding_active: false,
+      last_onboarding_view_model: None,
       pending_first_launch_settings: false,
       download_handle: None,
       download_progress: (0, 0),
@@ -1333,9 +1335,14 @@ impl AppController {
     preferred_store::save_preferred_device_id(&device_id);
 
     if let Some(controller) = &self.device_controller {
-      if let Err(err) = controller.set_preferred(Some(device_id)) {
-        eprintln!("Azad: failed to set preferred device: {err}");
-      }
+      let controller = controller.clone();
+      let _ = std::thread::Builder::new()
+        .name("azad-device-select".to_string())
+        .spawn(move || {
+          if let Err(err) = controller.set_preferred(Some(device_id)) {
+            eprintln!("Azad: failed to set preferred device: {err}");
+          }
+        });
     }
   }
 
@@ -2136,13 +2143,19 @@ impl AppController {
       self.pending_onboarding = false;
       self.onboarding_active = true;
       eprintln!("AZAD_ONBOARDING showing welcome window");
-      platform::show_onboarding_window(self.onboarding_view_model());
+      let model = self.onboarding_view_model();
+      platform::show_onboarding_window(model.clone());
+      self.last_onboarding_view_model = Some(model);
     }
     if self.onboarding_active {
       // Push the dynamic state (download status, the "Get started" gate, and
       // permission indicators) so the welcome window updates live as the
       // download progresses and the user grants access in System Settings.
-      platform::update_onboarding_window(self.onboarding_view_model());
+      let model = self.onboarding_view_model();
+      if onboarding_view_model_changed(&self.last_onboarding_view_model, &model) {
+        platform::update_onboarding_window(model.clone());
+        self.last_onboarding_view_model = Some(model);
+      }
     }
     if platform::settings_window_is_open() {
       platform::refresh_settings_permissions(
@@ -3235,6 +3248,13 @@ fn should_update_selected_device(
   current_device_id != Some(selected_device_id)
 }
 
+fn onboarding_view_model_changed(
+  previous: &Option<platform::OnboardingViewModel>,
+  next: &platform::OnboardingViewModel,
+) -> bool {
+  previous.as_ref() != Some(next)
+}
+
 #[cfg(test)]
 mod tests {
   use std::time::{Duration, Instant};
@@ -3255,9 +3275,12 @@ mod tests {
   };
   use super::{
     AppController, AzadConfig, EngineState, HotkeyEffect, LISTEN_TOGGLE_NOTICE_DURATION_MS,
-    should_update_selected_device,
+    onboarding_view_model_changed, should_update_selected_device,
   };
   use crate::speech::{SpeechEvent, SpeechSession};
+  use crate::ui_model::{
+    OnboardingViewModel, UiDeviceOption, UiModelPack, UiModelStatus, UiPermissionStatus,
+  };
 
   #[test]
   fn raw_finalize_hotkey_forces_overlay_hide_even_during_manual_hold() {
@@ -3296,6 +3319,58 @@ mod tests {
   #[test]
   fn menu_device_selection_updates_when_current_device_unknown() {
     assert!(should_update_selected_device(None, "mic-a"));
+  }
+
+  fn test_onboarding_model() -> OnboardingViewModel {
+    OnboardingViewModel {
+      always_listening_enabled: true,
+      history_enabled: true,
+      paste_method_index: 0,
+      append_trailing_space_on_paste: true,
+      overlay_position_index: 0,
+      run_on_startup_enabled: false,
+      accessibility_status: UiPermissionStatus::Granted,
+      microphone_status: UiPermissionStatus::Granted,
+      model: UiModelPack {
+        id: "nemotron-3.5-mlx-bf16-v1".to_string(),
+        welcome_name: "Nemotron-3.5 ASR Streaming".to_string(),
+        settings_name: "NVIDIA Nemotron-3.5 ASR Streaming 0.6B".to_string(),
+        description: "On-device streaming speech-to-text".to_string(),
+        size_label: "1.2 GB".to_string(),
+        status: UiModelStatus::Ready,
+        progress_pct: 100,
+        bytes_done_label: "1.2 GB".to_string(),
+        bytes_total_label: "1.2 GB".to_string(),
+        error_message: String::new(),
+      },
+      get_started_enabled: true,
+      devices: vec![UiDeviceOption {
+        id: "default".to_string(),
+        label: "MacBook Pro Microphone".to_string(),
+      }],
+      selected_device_index: Some(0),
+      listen_modifiers: 4,
+    }
+  }
+
+  #[test]
+  fn onboarding_view_model_changed_when_no_previous_model() {
+    let model = test_onboarding_model();
+    assert!(onboarding_view_model_changed(&None, &model));
+  }
+
+  #[test]
+  fn onboarding_view_model_unchanged_skips_render() {
+    let model = test_onboarding_model();
+    assert!(!onboarding_view_model_changed(&Some(model.clone()), &model));
+  }
+
+  #[test]
+  fn onboarding_view_model_permission_change_triggers_render() {
+    let previous = test_onboarding_model();
+    let mut next = previous.clone();
+    next.microphone_status = UiPermissionStatus::NotGranted;
+    assert!(onboarding_view_model_changed(&Some(previous), &next));
   }
 
   #[test]

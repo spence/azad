@@ -13,6 +13,7 @@ pub enum DeviceEvent {
   Error(String),
 }
 
+#[derive(Clone)]
 pub struct DeviceController {
   handle: Arc<dyn DeviceControllerHandle>,
 }

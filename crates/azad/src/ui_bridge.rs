@@ -202,7 +202,6 @@ fn handle_ui_event(event: UiEvent) {
   match app_event_for_ui_event(&event) {
     UiEventAction::Send(app_event) => {
       crate::app::send_event(app_event);
-      crate::app::drain_events();
     }
     UiEventAction::OpenPermission(permission) => open_permission_settings(permission),
     UiEventAction::Ignore => {}
