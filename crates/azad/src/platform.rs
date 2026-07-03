@@ -17,6 +17,7 @@ use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use core_graphics::event::CGEventFlags;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use objc::Encode;
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
@@ -75,13 +76,13 @@ const DEVICE_HEADER_MIN_WIDTH: f64 = 220.0;
 const DEVICE_HEADER_HEIGHT: f64 = 28.0;
 const DEVICE_HEADER_TEXT_LEADING: f64 = 14.0;
 const DEVICE_HEADER_ICON_SIZE: f64 = 16.0;
-const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 0.0;
+const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 1.0;
 const DEVICE_HEADER_TRAILING: f64 = 12.0;
 const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
 const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
 const DEVICE_HEADER_LABEL_HEIGHT: f64 = 18.0;
 const DEVICE_MENU_ROW_HEIGHT: f64 = 24.0;
-const DEVICE_MENU_LABEL_DOWN_OFFSET: f64 = 2.0;
+const DEVICE_MENU_LABEL_DOWN_OFFSET: f64 = 1.0;
 const DEVICE_HEADER_EXTRA_TOP_PADDING: f64 = 1.0;
 const DEVICE_HEADER_EXTRA_SIDE_MARGIN: f64 = 2.0;
 const ALWAYS_LISTENING_ROW_HEIGHT: f64 = 30.0;
@@ -168,6 +169,7 @@ static OVERLAY_POSITION: AtomicU8 = AtomicU8::new(0);
 static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static DEVICE_HEADER_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
+static DEVICE_ROW_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static SEARCH_FIELD_DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 // Carbon-fallback id for the listen hotkey. Mutable (AtomicU32, 0 = unset) so
 // the modifier combination can be re-registered live. Tap path is primary; this
@@ -1043,6 +1045,41 @@ fn register_device_header_view_class() -> &'static Class {
   })
 }
 
+fn register_device_row_view_class() -> &'static Class {
+  DEVICE_ROW_VIEW_CLASS.get_or_init(|| unsafe {
+    let superclass = register_device_header_view_class();
+    let mut decl =
+      ClassDecl::new("AzadDeviceRowView", superclass).expect("failed to declare device row view");
+
+    decl.add_ivar::<id>("highlightView");
+    decl.add_ivar::<id>("checkLabel");
+    decl.add_ivar::<id>("titleLabel");
+    decl.add_ivar::<id>("trackingArea");
+    decl.add_ivar::<i64>("deviceTag");
+    decl.add_ivar::<u8>("rowEnabled");
+
+    decl.add_method(
+      sel!(hitTest:),
+      device_row_view_hit_test as extern "C" fn(&Object, Sel, NSPoint) -> id,
+    );
+    decl.add_method(
+      sel!(updateTrackingAreas),
+      device_row_view_update_tracking_areas as extern "C" fn(&Object, Sel),
+    );
+    decl.add_method(
+      sel!(mouseEntered:),
+      device_row_view_mouse_entered as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(
+      sel!(mouseExited:),
+      device_row_view_mouse_exited as extern "C" fn(&Object, Sel, id),
+    );
+    decl.add_method(sel!(mouseUp:), device_row_view_mouse_up as extern "C" fn(&Object, Sel, id));
+
+    decl.register()
+  })
+}
+
 unsafe fn menu_window_content_width_for_view(view: id) -> Option<f64> {
   if view == nil {
     return None;
@@ -1113,6 +1150,128 @@ extern "C" fn device_header_view_did_move_to_superview(this: &Object, _: Sel) {
   }
 }
 
+extern "C" fn device_row_view_hit_test(this: &Object, _: Sel, point: NSPoint) -> id {
+  unsafe {
+    if *this.get_ivar::<u8>("rowEnabled") == 0 {
+      return nil;
+    }
+
+    let view_id = this as *const Object as id;
+    let bounds: NSRect = msg_send![view_id, bounds];
+    if point_is_in_rect(point, bounds) { view_id } else { nil }
+  }
+}
+
+extern "C" fn device_row_view_update_tracking_areas(this: &Object, _: Sel) {
+  unsafe {
+    let view_id = this as *const Object as id;
+    let _: () = msg_send![super(view_id, class!(NSView)), updateTrackingAreas];
+
+    let existing: id = *this.get_ivar("trackingArea");
+    if existing != nil {
+      let _: () = msg_send![view_id, removeTrackingArea: existing];
+    }
+
+    if *this.get_ivar::<u8>("rowEnabled") == 0 {
+      set_objc_ivar(view_id, "trackingArea", nil as id);
+      return;
+    }
+
+    let bounds: NSRect = msg_send![view_id, bounds];
+    let options: u64 = 1 | 128 | 512; // entered/exited, activeAlways, inVisibleRect
+    let area: id = msg_send![class!(NSTrackingArea), alloc];
+    let area: id = msg_send![
+      area,
+      initWithRect: bounds
+      options: options
+      owner: view_id
+      userInfo: nil
+    ];
+    let _: () = msg_send![view_id, addTrackingArea: area];
+    set_objc_ivar(view_id, "trackingArea", area);
+  }
+}
+
+extern "C" fn device_row_view_mouse_entered(this: &Object, _: Sel, _: id) {
+  unsafe {
+    let view_id = this as *const Object as id;
+    set_device_row_highlighted(view_id, true);
+  }
+}
+
+extern "C" fn device_row_view_mouse_exited(this: &Object, _: Sel, _: id) {
+  unsafe {
+    let view_id = this as *const Object as id;
+    set_device_row_highlighted(view_id, false);
+  }
+}
+
+extern "C" fn device_row_view_mouse_up(this: &Object, _: Sel, _: id) {
+  unsafe {
+    if *this.get_ivar::<u8>("rowEnabled") == 0 {
+      return;
+    }
+    let tag = *this.get_ivar::<i64>("deviceTag");
+    select_device_by_tag(tag);
+  }
+}
+
+fn point_is_in_rect(point: NSPoint, rect: NSRect) -> bool {
+  point.x >= rect.origin.x
+    && point.x < rect.origin.x + rect.size.width
+    && point.y >= rect.origin.y
+    && point.y < rect.origin.y + rect.size.height
+}
+
+unsafe fn set_objc_ivar<T: Encode>(obj: id, name: &str, value: T) {
+  let class = &*objc::runtime::object_getClass(obj);
+  let ivar = class
+    .instance_variable(name)
+    .unwrap_or_else(|| panic!("Ivar {name} not found on class {:?}", class));
+  assert!(ivar.type_encoding() == T::encode());
+  let ptr = (obj as *mut u8).offset(ivar.offset()) as *mut T;
+  std::ptr::write(ptr, value);
+}
+
+unsafe fn set_device_row_highlighted(view: id, highlighted: bool) {
+  if view == nil {
+    return;
+  }
+
+  let obj = &*view;
+  if *obj.get_ivar::<u8>("rowEnabled") == 0 {
+    return;
+  }
+
+  let highlight_view: id = *obj.get_ivar("highlightView");
+  if highlight_view != nil {
+    if highlighted {
+      let layer: id = msg_send![highlight_view, layer];
+      if layer != nil {
+        let highlight_color = resolved_menu_highlight_color_for_view(highlight_view);
+        let highlight_cg_color: id = msg_send![highlight_color, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: highlight_cg_color];
+      }
+    }
+    let _: () = msg_send![highlight_view, setHidden: if highlighted { NO } else { YES }];
+  }
+
+  let color: id = if highlighted {
+    msg_send![class!(NSColor), selectedMenuItemTextColor]
+  } else {
+    msg_send![class!(NSColor), labelColor]
+  };
+
+  let check_label: id = *obj.get_ivar("checkLabel");
+  if check_label != nil {
+    let _: () = msg_send![check_label, setTextColor: color];
+  }
+  let title_label: id = *obj.get_ivar("titleLabel");
+  if title_label != nil {
+    let _: () = msg_send![title_label, setTextColor: color];
+  }
+}
+
 extern "C" fn toggle_always_listening(_: &Object, _: Sel, _: id) {
   crate::app::send_event(AppEvent::MenuToggleAlwaysListening);
   crate::app::drain_events();
@@ -1143,13 +1302,19 @@ extern "C" fn open_settings(_: &Object, _: Sel, _: id) {
 extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
   unsafe {
     let tag: i64 = msg_send![sender, tag];
-    if tag < 0 {
-      return;
-    }
+    select_device_by_tag(tag);
+  }
+}
 
-    let selected = DEVICE_ROW_IDS.with(|rows| rows.borrow().get(tag as usize).cloned());
-    if let Some(device_id) = selected {
-      crate::app::send_event(AppEvent::MenuSelectDevice(device_id));
+fn select_device_by_tag(tag: i64) {
+  if tag < 0 {
+    return;
+  }
+
+  let selected = DEVICE_ROW_IDS.with(|rows| rows.borrow().get(tag as usize).cloned());
+  if let Some(device_id) = selected {
+    crate::app::send_event(AppEvent::MenuSelectDevice(device_id));
+    unsafe {
       if let Some(menu) = STATUS_MENU_REF.with(|slot| *slot.borrow()) {
         let _: () = msg_send![menu, cancelTracking];
       }
@@ -2118,13 +2283,13 @@ fn clear_device_rows(menu: id) {
   DEVICE_ROW_IDS.with(|rows| rows.borrow_mut().clear());
 }
 
-unsafe fn insert_device_rows(menu: id, delegate: id, model: &DeviceMenuModel, mut insert_at: i64) {
+unsafe fn insert_device_rows(menu: id, _delegate: id, model: &DeviceMenuModel, mut insert_at: i64) {
   if !model.expanded {
     return;
   }
 
   if model.rows.is_empty() {
-    let placeholder_item = make_device_row_item(delegate, "No input devices", false, -1, false);
+    let placeholder_item = make_device_row_item("No input devices", false, -1, false);
     let _: () = msg_send![menu, insertItem: placeholder_item atIndex: insert_at];
     return;
   }
@@ -2136,19 +2301,13 @@ unsafe fn insert_device_rows(menu: id, delegate: id, model: &DeviceMenuModel, mu
       (rows.len() - 1) as i64
     });
 
-    let row_item = make_device_row_item(delegate, &row.label, row.checked, tag, true);
+    let row_item = make_device_row_item(&row.label, row.checked, tag, true);
     let _: () = msg_send![menu, insertItem: row_item atIndex: insert_at];
     insert_at += 1;
   }
 }
 
-unsafe fn make_device_row_item(
-  delegate: id,
-  label: &str,
-  checked: bool,
-  tag: i64,
-  enabled: bool,
-) -> id {
+unsafe fn make_device_row_item(label: &str, checked: bool, tag: i64, enabled: bool) -> id {
   let item = NSMenuItem::alloc(nil)
     .initWithTitle_action_keyEquivalent_(
       NSString::alloc(nil).init_str(""),
@@ -2160,10 +2319,28 @@ unsafe fn make_device_row_item(
 
   let row_frame =
     NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(DEVICE_HEADER_WIDTH, DEVICE_MENU_ROW_HEIGHT));
-  let row_view_class = register_device_header_view_class();
+  let row_view_class = register_device_row_view_class();
   let view: id = msg_send![row_view_class, alloc];
   let view: id = msg_send![view, initWithFrame: row_frame];
   let _: () = msg_send![view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+
+  let highlight_frame = NSRect::new(
+    NSPoint::new(3.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN, 1.0),
+    NSSize::new(
+      DEVICE_HEADER_WIDTH - (6.0 + DEVICE_HEADER_EXTRA_SIDE_MARGIN * 2.0),
+      DEVICE_MENU_ROW_HEIGHT - 2.0,
+    ),
+  );
+  let highlight_view: id = msg_send![class!(NSView), alloc];
+  let highlight_view: id = msg_send![highlight_view, initWithFrame: highlight_frame];
+  let _: () = msg_send![highlight_view, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
+  let _: () = msg_send![highlight_view, setWantsLayer: YES];
+  let highlight_layer: id = msg_send![highlight_view, layer];
+  let highlight_color: id = msg_send![class!(NSColor), selectedMenuItemColor];
+  let highlight_cg_color: id = msg_send![highlight_color, CGColor];
+  let _: () = msg_send![highlight_layer, setBackgroundColor: highlight_cg_color];
+  let _: () = msg_send![highlight_layer, setCornerRadius: 4.0f64];
+  let _: () = msg_send![highlight_view, setHidden: YES];
 
   let font: id = msg_send![class!(NSFont), menuFontOfSize: 0.0f64];
   let text_color: id = if enabled {
@@ -2209,21 +2386,17 @@ unsafe fn make_device_row_item(
   let _: () = msg_send![title_label, setFont: font];
   let _: () = msg_send![title_label, setTextColor: text_color];
 
+  let _: () = msg_send![view, addSubview: highlight_view];
   let _: () = msg_send![view, addSubview: check_label];
   let _: () = msg_send![view, addSubview: title_label];
 
-  if enabled {
-    let row_button: id = msg_send![class!(NSButton), alloc];
-    let row_button: id = msg_send![row_button, initWithFrame: row_frame];
-    let _: () =
-      msg_send![row_button, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE];
-    let _: () = msg_send![row_button, setBordered: NO];
-    let _: () = msg_send![row_button, setTitle: NSString::alloc(nil).init_str("")];
-    let _: () = msg_send![row_button, setTarget: delegate];
-    let _: () = msg_send![row_button, setAction: sel!(selectDevice:)];
-    let _: () = msg_send![row_button, setTag: tag];
-    let _: () = msg_send![view, addSubview: row_button];
-  }
+  set_objc_ivar(view, "highlightView", highlight_view);
+  set_objc_ivar(view, "checkLabel", check_label);
+  set_objc_ivar(view, "titleLabel", title_label);
+  set_objc_ivar(view, "trackingArea", nil as id);
+  set_objc_ivar(view, "deviceTag", tag);
+  set_objc_ivar(view, "rowEnabled", if enabled { 1_u8 } else { 0_u8 });
+  let _: () = msg_send![view, updateTrackingAreas];
 
   let _: () = msg_send![item, setView: view];
   item
