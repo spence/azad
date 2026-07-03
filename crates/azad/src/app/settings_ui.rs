@@ -6,12 +6,54 @@ use crate::models::{self, PackStatus};
 use crate::platform::{self, ConnectorRowVM, SettingsTab, SettingsViewModel};
 use crate::preferred_store;
 use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
+use crate::ui_model::{UiDeviceOption, UiModelPack, UiModelStatus, UiPermissionStatus};
 
 use super::AppController;
 
 fn updated_listen_modifier_mask(current: u8, bit: u8, enabled: bool) -> u8 {
   let next = if enabled { current | bit } else { current & !bit };
   if next == 0 { current } else { next }
+}
+
+fn ui_permission_status(status: platform::PermissionStatus) -> UiPermissionStatus {
+  match status {
+    platform::PermissionStatus::Granted => UiPermissionStatus::Granted,
+    platform::PermissionStatus::NotDetermined | platform::PermissionStatus::Denied => {
+      UiPermissionStatus::NotGranted
+    }
+  }
+}
+
+fn ui_model_pack(
+  pack: &models::ModelPackDef,
+  pack_status: PackStatus,
+  bytes_done: u64,
+  bytes_total: u64,
+) -> UiModelPack {
+  let status = match pack_status {
+    PackStatus::NotDownloaded => UiModelStatus::NotDownloaded,
+    PackStatus::Downloading { .. } => UiModelStatus::Downloading,
+    PackStatus::Ready => UiModelStatus::Ready,
+    PackStatus::Incomplete => UiModelStatus::Failed,
+  };
+  let progress_pct = match pack_status {
+    PackStatus::Downloading { progress_pct } => progress_pct,
+    PackStatus::Ready => 100,
+    _ => 0,
+  };
+  let total = if bytes_total > 0 { bytes_total } else { pack.total_size_bytes };
+  UiModelPack {
+    id: pack.id.to_string(),
+    welcome_name: "Nemotron-3.5 ASR Streaming".to_string(),
+    settings_name: "NVIDIA Nemotron-3.5 ASR Streaming 0.6B".to_string(),
+    description: "On-device streaming speech-to-text · English".to_string(),
+    size_label: models::format_size(pack.total_size_bytes),
+    status,
+    progress_pct,
+    bytes_done_label: models::format_size(bytes_done),
+    bytes_total_label: models::format_size(total),
+    error_message: "Couldn't verify model files".to_string(),
+  }
 }
 
 impl AppController {
@@ -89,29 +131,18 @@ impl AppController {
   pub(super) fn onboarding_view_model(&self) -> platform::OnboardingViewModel {
     let downloading = self.download_handle.is_some();
     let pack = models::pack_by_id(&self.active_pack_id).unwrap_or_else(models::default_pack);
-    let header = format!("{} · {}", pack.display_name, models::format_size(pack.total_size_bytes));
-    let path = models::pack_dir(&self.active_pack_id)
-      .map(|p| {
-        let s = p.display().to_string();
-        match std::env::var_os("HOME").map(|h| h.to_string_lossy().into_owned()) {
-          Some(home) => s.strip_prefix(&home).map(|rest| format!("~{rest}")).unwrap_or(s),
-          None => s,
-        }
-      })
-      .unwrap_or_default();
-    let model_status_text = if downloading {
+    let pack_status = if downloading {
       let pct = if self.download_progress.1 > 0 {
         ((self.download_progress.0 as f64 / self.download_progress.1 as f64) * 100.0) as u8
       } else {
         0
       };
-      format!("{header}\nDownloading… {pct}%")
+      PackStatus::Downloading { progress_pct: pct }
     } else if self.models_ready {
-      format!("{header}\n✓ Installed at {path}")
+      PackStatus::Ready
     } else {
-      format!("{header}\nNot downloaded yet")
+      models::check_pack_status(pack)
     };
-    let download_enabled = !self.models_ready && !downloading;
     let accessibility_status = platform::accessibility_authorization();
     let microphone_status = platform::microphone_authorization();
     let get_started_enabled = (self.models_ready || downloading)
@@ -119,12 +150,15 @@ impl AppController {
       && microphone_status == platform::PermissionStatus::Granted;
     let (devices, selected_device_index) = match &self.device_snapshot {
       Some(snapshot) => {
-        let devices: Vec<(String, String)> =
-          snapshot.devices.iter().map(|d| (d.id.clone(), d.name.clone())).collect();
+        let devices: Vec<UiDeviceOption> = snapshot
+          .devices
+          .iter()
+          .map(|d| UiDeviceOption { id: d.id.clone(), label: d.name.clone() })
+          .collect();
         let selected = snapshot
           .current_id
           .as_deref()
-          .and_then(|cur| devices.iter().position(|(id, _)| id == cur));
+          .and_then(|cur| devices.iter().position(|d| d.id == cur));
         (devices, selected)
       }
       None => (Vec::new(), None),
@@ -132,14 +166,13 @@ impl AppController {
     platform::OnboardingViewModel {
       always_listening_enabled: self.always_listening_enabled,
       history_enabled: self.history_enabled,
-      paste_method: self.paste_method,
+      paste_method_index: self.paste_method.ui_index(),
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
-      overlay_position: self.overlay_position,
+      overlay_position_index: self.overlay_position.ui_index(),
       run_on_startup_enabled: self.run_on_startup_enabled,
-      accessibility_status,
-      microphone_status,
-      model_status_text,
-      download_enabled,
+      accessibility_status: ui_permission_status(accessibility_status),
+      microphone_status: ui_permission_status(microphone_status),
+      model: ui_model_pack(pack, pack_status, self.download_progress.0, self.download_progress.1),
       get_started_enabled,
       devices,
       selected_device_index,
@@ -311,28 +344,28 @@ impl AppController {
 
     SettingsViewModel {
       selected_tab: SettingsTab::General,
-      accessibility_status: platform::accessibility_authorization(),
-      microphone_status: platform::microphone_authorization(),
+      accessibility_status: ui_permission_status(platform::accessibility_authorization()),
+      microphone_status: ui_permission_status(platform::microphone_authorization()),
       run_on_startup_enabled: self.run_on_startup_enabled,
-      paste_method: self.paste_method,
-      auto_submit_mode: self.auto_submit_mode,
-      overlay_position: self.overlay_position,
+      paste_method_index: self.paste_method.ui_index(),
+      auto_submit_index: self.auto_submit_mode.ui_index(),
+      overlay_position_index: self.overlay_position.ui_index(),
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
       listen_modifiers: platform::listen_modifiers(),
       debug_stats_enabled: self.debug_stats_enabled,
       metrics_text,
-      model_pack_display_name: pack.display_name.to_string(),
-      model_pack_description: pack.description.to_string(),
-      model_pack_size_label: models::format_size(pack.total_size_bytes),
-      model_pack_status: pack_status,
-      model_download_bytes_done: self.download_progress.0,
-      model_download_bytes_total: self.download_progress.1,
+      model: ui_model_pack(pack, pack_status, self.download_progress.0, self.download_progress.1),
       removed_words: self.removed_words.clone(),
       connectors: self
         .connectors
         .iter()
-        .map(|c| ConnectorRowVM { display_name: c.display_name.to_string(), enabled: c.enabled })
+        .map(|c| ConnectorRowVM {
+          display_name: c.display_name.to_string(),
+          trigger: c.trigger.to_string(),
+          enabled: c.enabled,
+        })
         .collect(),
+      build_info: format!("build {} · {}", env!("AZAD_BUILD_GIT_SHA"), env!("AZAD_BUILD_TIME")),
     }
   }
 }

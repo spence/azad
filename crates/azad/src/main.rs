@@ -19,6 +19,8 @@ mod settings;
 mod single_instance;
 mod speech;
 mod transcript_history;
+mod ui_bridge;
+mod ui_model;
 
 fn main() {
   let _single_instance_guard = match single_instance::acquire_primary_instance_lock() {

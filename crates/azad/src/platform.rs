@@ -23,7 +23,8 @@ use objc::{class, msg_send, sel, sel_impl};
 
 use crate::app::AppEvent;
 use crate::gateway::ConvStatus;
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
+use crate::settings::OverlayPosition;
+pub use crate::ui_model::{ConnectorRowVM, OnboardingViewModel, SettingsTab, SettingsViewModel};
 
 mod hotkeys;
 mod paste;
@@ -73,6 +74,8 @@ const DEVICE_HEADER_WIDTH: f64 = 280.0;
 const DEVICE_HEADER_MIN_WIDTH: f64 = 220.0;
 const DEVICE_HEADER_HEIGHT: f64 = 28.0;
 const DEVICE_HEADER_TEXT_LEADING: f64 = 14.0;
+const DEVICE_HEADER_ICON_SIZE: f64 = 16.0;
+const DEVICE_HEADER_ICON_TO_LABEL_GAP: f64 = 10.0;
 const DEVICE_HEADER_TRAILING: f64 = 12.0;
 const DEVICE_HEADER_CHEVRON_SIZE: f64 = 10.0;
 const DEVICE_HEADER_LABEL_TO_CHEVRON_GAP: f64 = 8.0;
@@ -92,32 +95,6 @@ const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
 const DEVICE_MENU_TEXT_SAFETY_PADDING: f64 = 10.0;
 const DEVICE_MENU_SCREEN_EDGE_MARGIN: f64 = 24.0;
 const DEVICE_HEADER_MENU_COMPENSATION: f64 = 22.0;
-const SETTINGS_WINDOW_WIDTH: f64 = 860.0;
-const SETTINGS_WINDOW_HEIGHT: f64 = 520.0;
-const SETTINGS_INSET_X: f64 = 20.0;
-const SETTINGS_TOP_MARGIN: f64 = 76.0;
-const SETTINGS_CONTROL_HEIGHT: f64 = 24.0;
-const SETTINGS_REFRESH_WIDTH: f64 = 90.0;
-const SETTINGS_METRICS_TOP_GAP: f64 = 14.0;
-const SETTINGS_SIDEBAR_WIDTH: f64 = 154.0;
-const SETTINGS_SIDEBAR_ROW_HEIGHT: f64 = 30.0;
-const SETTINGS_SIDEBAR_TO_CONTENT_GAP: f64 = 12.0;
-const ONBOARDING_WINDOW_WIDTH: f64 = 700.0;
-const ONBOARDING_WINDOW_HEIGHT: f64 = 720.0;
-const ONBOARDING_PAD_X: f64 = 44.0;
-const ONBOARDING_LABEL_WIDTH: f64 = 170.0;
-const ONBOARDING_CONTROL_X: f64 = ONBOARDING_PAD_X + ONBOARDING_LABEL_WIDTH + 12.0;
-const ONBOARDING_CONTROL_WIDTH: f64 =
-  ONBOARDING_WINDOW_WIDTH - ONBOARDING_CONTROL_X - ONBOARDING_PAD_X;
-const ONBOARDING_ROW_HEIGHT: f64 = 26.0;
-const SETTINGS_LABEL_WIDTH: f64 = 180.0;
-const SETTINGS_POPUP_WIDTH: f64 = 220.0;
-const SETTINGS_CONTROL_VERTICAL_GAP: f64 = 14.0;
-const SETTINGS_HEADER_TITLE_SIZE: f64 = 17.0;
-const SETTINGS_HEADER_SUBTITLE_SIZE: f64 = 12.0;
-const SETTINGS_MODIFIER_WIDTH: f64 = 52.0;
-const SETTINGS_MODIFIER_GAP: f64 = 6.0;
-const SETTINGS_SPACE_HINT_WIDTH: f64 = 80.0;
 const LISTEN_NOTICE_CARD_ALPHA: f64 = 0.92;
 const LISTEN_NOTICE_WAVE_BASE_ALPHA: f64 = 0.060;
 const LISTEN_NOTICE_WAVE_PEAK_ALPHA: f64 = 0.170;
@@ -166,7 +143,6 @@ const OVERLAY_CONV_ERROR_B: f64 = 0.22;
 const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
 const NS_VIEW_WIDTH_SIZABLE: u64 = 1 << 1;
 const NS_VIEW_HEIGHT_SIZABLE: u64 = 1 << 4;
-const NS_VIEW_MAX_Y_MARGIN: u64 = 1 << 5;
 const NSEVENT_MODIFIER_FLAG_OPTION: u64 = 1 << 19;
 const HOLD_HOTKEY_KEY: Code = Code::Space;
 
@@ -268,6 +244,7 @@ thread_local! {
     static DEVICE_HEADER_VIEW_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_BUTTON_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_HIGHLIGHT_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static DEVICE_HEADER_ICON_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_LABEL_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_CHEVRON_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_OPEN_MAX_WIDTH: RefCell<Option<f64>> = const { RefCell::new(None) };
@@ -275,9 +252,6 @@ thread_local! {
     static DEVICE_ROW_IDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static DEVICE_MENU_MODEL: RefCell<DeviceMenuModel> = RefCell::new(DeviceMenuModel::default());
     static HOTKEY_MANAGER_REF: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
-    static SETTINGS_WINDOW_REFS: RefCell<Option<SettingsWindowRefs>> = const { RefCell::new(None) };
-    static ONBOARDING_WINDOW_REFS: RefCell<Option<OnboardingWindowRefs>> = const { RefCell::new(None) };
-    static SETTINGS_LAST_MODEL: RefCell<Option<SettingsViewModel>> = const { RefCell::new(None) };
     // Short-TTL cache of the active-window display frame so ActiveWindow mode
     // doesn't do synchronous Accessibility IPC on every streaming reposition.
     static ACTIVE_WINDOW_SCREEN_CACHE: RefCell<Option<(NSRect, Instant)>> =
@@ -363,89 +337,6 @@ pub const AUTOCOMPLETE_MAX_ITEMS: usize = 9;
 const AUTOCOMPLETE_TEXT_ALPHA: f64 = 0.45;
 const AUTOCOMPLETE_FOCUSED_BG_ALPHA: f64 = 0.08;
 
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
-struct SettingsWindowRefs {
-  window: id,
-  tab_list_view: id,
-  general_container: id,
-  models_container: id,
-  permissions_container: id,
-  perm_accessibility_status: id,
-  perm_microphone_status: id,
-  debug_container: id,
-  connectors_container: id,
-  connectors_checkboxes_view: id,
-  run_on_startup_checkbox: id,
-  paste_method_popup: id,
-  auto_submit_popup: id,
-  overlay_position_popup: id,
-  listen_mod_shift: id,
-  listen_mod_control: id,
-  listen_mod_option: id,
-  listen_mod_command: id,
-  append_trailing_space_checkbox: id,
-  removed_words_tags_view: id,
-  removed_words_input: id,
-  removed_words_add_button: id,
-  debug_checkbox: id,
-  metrics_text_view: id,
-  models_name_label: id,
-  models_desc_label: id,
-  models_status_label: id,
-  models_progress_indicator: id,
-  models_download_button: id,
-  models_cancel_button: id,
-}
-
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
-struct OnboardingWindowRefs {
-  window: id,
-  get_started_button: id,
-  model_status_label: id,
-  download_button: id,
-  trigger_popup: id,
-  listen_mod_shift: id,
-  listen_mod_control: id,
-  listen_mod_option: id,
-  listen_mod_command: id,
-  history_checkbox: id,
-  insert_popup: id,
-  append_trailing_space_checkbox: id,
-  overlay_position_popup: id,
-  login_checkbox: id,
-  device_popup: id,
-  perm_accessibility_status: id,
-  perm_microphone_status: id,
-}
-
-/// State pushed to the first-run onboarding window so its controls reflect the
-/// current preferences. Fields are added as sections land.
-#[derive(Debug, Clone, Default)]
-pub struct OnboardingViewModel {
-  pub always_listening_enabled: bool,
-  pub history_enabled: bool,
-  pub paste_method: PasteMethod,
-  pub append_trailing_space_on_paste: bool,
-  pub overlay_position: OverlayPosition,
-  pub run_on_startup_enabled: bool,
-  pub accessibility_status: PermissionStatus,
-  pub microphone_status: PermissionStatus,
-  pub model_status_text: String,
-  /// Download button enabled only when the model is absent (not ready, not
-  /// already downloading).
-  pub download_enabled: bool,
-  /// "Get started" is enabled only once Download has been clicked (or the model
-  /// is already present) AND Microphone + Accessibility are granted.
-  pub get_started_enabled: bool,
-  /// Input devices as (id, display name); the picker is populated from these.
-  pub devices: Vec<(String, String)>,
-  pub selected_device_index: Option<usize>,
-  /// Listen-hotkey modifier mask (platform MOD_* bits); drives the checkboxes.
-  pub listen_modifiers: u8,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct DeviceMenuModel {
   pub always_listening_enabled: bool,
@@ -459,48 +350,6 @@ pub struct DeviceMenuRow {
   pub id: String,
   pub label: String,
   pub checked: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct SettingsViewModel {
-  pub selected_tab: SettingsTab,
-  pub accessibility_status: PermissionStatus,
-  pub microphone_status: PermissionStatus,
-  pub run_on_startup_enabled: bool,
-  pub paste_method: PasteMethod,
-  pub auto_submit_mode: AutoSubmitMode,
-  pub overlay_position: OverlayPosition,
-  pub append_trailing_space_on_paste: bool,
-  pub listen_modifiers: u8,
-  pub debug_stats_enabled: bool,
-  pub metrics_text: String,
-  pub model_pack_display_name: String,
-  pub model_pack_description: String,
-  pub model_pack_size_label: String,
-  pub model_pack_status: crate::models::PackStatus,
-  pub model_download_bytes_done: u64,
-  pub model_download_bytes_total: u64,
-  pub removed_words: Vec<String>,
-  pub connectors: Vec<ConnectorRowVM>,
-}
-
-/// One row in the Settings → Connectors tab. The toggle handler keys off the row
-/// index (matching `AppController::connectors` order), so the row only carries
-/// what it renders.
-#[derive(Debug, Clone)]
-pub struct ConnectorRowVM {
-  pub display_name: String,
-  pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SettingsTab {
-  #[default]
-  General,
-  Models,
-  Permissions,
-  Debug,
-  Connectors,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -555,147 +404,40 @@ pub fn set_device_menu(model: DeviceMenuModel) {
 
 pub fn show_settings_window(model: SettingsViewModel) {
   unsafe {
-    let refs = ensure_settings_window();
-    let tab = model.selected_tab;
-    apply_settings_view_model(refs, &model);
-    apply_settings_selected_tab(refs, tab);
     let app = NSApp();
-    // Become a regular app so macOS grants activation and shows the window
-    // in front. Reverted to Accessory when the settings window closes.
     app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
     let _: () = msg_send![app, activateIgnoringOtherApps: YES];
-    let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
   }
+  crate::ui_bridge::show_settings_window(&model);
 }
 
 pub fn show_onboarding_window(model: OnboardingViewModel) {
   unsafe {
-    let refs = ensure_onboarding_window();
-    apply_onboarding_view_model(refs, &model);
     let app = NSApp();
     app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
     let _: () = msg_send![app, activateIgnoringOtherApps: YES];
-    let _: () = msg_send![refs.window, makeKeyAndOrderFront: nil];
   }
+  crate::ui_bridge::show_onboarding_window(&model);
 }
 
-unsafe fn apply_onboarding_view_model(refs: OnboardingWindowRefs, model: &OnboardingViewModel) {
-  let trigger_index: i64 = if model.always_listening_enabled { 0 } else { 1 };
-  let _: () = msg_send![refs.trigger_popup, selectItemAtIndex: trigger_index];
-  let history_state: i64 = if model.history_enabled { 1 } else { 0 };
-  let _: () = msg_send![refs.history_checkbox, setState: history_state];
-  let _: () = msg_send![refs.insert_popup, selectItemAtIndex: model.paste_method.ui_index()];
-  let trailing_space_state: i64 = if model.append_trailing_space_on_paste { 1 } else { 0 };
-  let _: () = msg_send![refs.append_trailing_space_checkbox, setState: trailing_space_state];
-  let _: () =
-    msg_send![refs.overlay_position_popup, selectItemAtIndex: model.overlay_position.ui_index()];
-  let login_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
-  let _: () = msg_send![refs.login_checkbox, setState: login_state];
-  let _: () = msg_send![refs.device_popup, removeAllItems];
-  for (_id, name) in &model.devices {
-    let _: () = msg_send![refs.device_popup, addItemWithTitle: NSString::alloc(nil).init_str(name)];
-  }
-  if let Some(idx) = model.selected_device_index {
-    let _: () = msg_send![refs.device_popup, selectItemAtIndex: idx as i64];
-  }
-  sync_listen_mod_checkboxes(refs, model.listen_modifiers);
-  apply_onboarding_dynamic(refs, model);
-}
-
-unsafe fn sync_listen_mod_checkboxes(refs: OnboardingWindowRefs, mask: u8) {
-  let on = |bit: u8| -> i64 { if mask & bit != 0 { 1 } else { 0 } };
-  let _: () = msg_send![refs.listen_mod_shift, setState: on(MOD_SHIFT)];
-  let _: () = msg_send![refs.listen_mod_control, setState: on(MOD_CONTROL)];
-  let _: () = msg_send![refs.listen_mod_option, setState: on(MOD_OPTION)];
-  let _: () = msg_send![refs.listen_mod_command, setState: on(MOD_COMMAND)];
-}
-
-/// Re-sync the listen-modifier checkboxes to `mask` — used after a toggle so a
-/// rejected change (e.g. unchecking the last modifier) snaps back visually.
 pub fn sync_onboarding_listen_modifiers(mask: u8) {
-  if let Some(refs) = current_onboarding_window() {
-    unsafe {
-      sync_listen_mod_checkboxes(refs, mask);
-    }
-  }
+  crate::ui_bridge::sync_listen_modifiers(mask);
 }
 
-unsafe fn sync_settings_listen_mod_checkboxes(refs: SettingsWindowRefs, mask: u8) {
-  let on = |bit: u8| -> i64 { if mask & bit != 0 { 1 } else { 0 } };
-  let _: () = msg_send![refs.listen_mod_shift, setState: on(MOD_SHIFT)];
-  let _: () = msg_send![refs.listen_mod_control, setState: on(MOD_CONTROL)];
-  let _: () = msg_send![refs.listen_mod_option, setState: on(MOD_OPTION)];
-  let _: () = msg_send![refs.listen_mod_command, setState: on(MOD_COMMAND)];
-}
-
-/// Re-sync Settings shortcut checkboxes after live preference changes or a
-/// rejected last-modifier toggle.
 pub fn sync_settings_listen_modifiers(mask: u8) {
-  if let Some(refs) = current_settings_window() {
-    unsafe {
-      sync_settings_listen_mod_checkboxes(refs, mask);
-    }
-  }
+  crate::ui_bridge::sync_listen_modifiers(mask);
 }
 
 pub fn close_onboarding_window() {
-  let refs = ONBOARDING_WINDOW_REFS.with(|store| store.borrow_mut().take());
-  if let Some(refs) = refs {
-    unsafe {
-      let _: () = msg_send![refs.window, orderOut: nil];
-      let app = NSApp();
-      app.setActivationPolicy_(
-        NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
-      );
-    }
+  crate::ui_bridge::close_onboarding_window();
+  unsafe {
+    let app = NSApp();
+    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
   }
 }
 
-unsafe fn ensure_onboarding_window() -> OnboardingWindowRefs {
-  if let Some(existing) = ONBOARDING_WINDOW_REFS.with(|store| *store.borrow()) {
-    return existing;
-  }
-  let refs = create_onboarding_window();
-  ONBOARDING_WINDOW_REFS.with(|store| {
-    store.borrow_mut().replace(refs);
-  });
-  refs
-}
-
-fn current_onboarding_window() -> Option<OnboardingWindowRefs> {
-  ONBOARDING_WINDOW_REFS.with(|store| *store.borrow())
-}
-
-/// Refresh the dynamic parts of the welcome window (model status, the
-/// "Get started" gate, and permission indicators) while it's open, so they
-/// update live as the download progresses and the user grants access. Leaves
-/// the user-controlled popups and checkboxes untouched.
 pub fn update_onboarding_window(model: OnboardingViewModel) {
-  if let Some(refs) = current_onboarding_window() {
-    unsafe {
-      apply_onboarding_dynamic(refs, &model);
-    }
-  }
-}
-
-unsafe fn apply_onboarding_dynamic(refs: OnboardingWindowRefs, model: &OnboardingViewModel) {
-  let status = NSString::alloc(nil).init_str(&model.model_status_text);
-  let _: () = msg_send![refs.model_status_label, setStringValue: status];
-  let _: () =
-    msg_send![refs.download_button, setEnabled: if model.download_enabled { YES } else { NO }];
-  let _: () = msg_send![refs.get_started_button, setEnabled: if model.get_started_enabled { YES } else { NO }];
-  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status);
-  set_permission_status_label(refs.perm_microphone_status, model.microphone_status);
-}
-
-unsafe fn set_permission_status_label(label: id, status: PermissionStatus) {
-  let (text, r, g, b) = match status {
-    PermissionStatus::Granted => ("● Granted", 0.20, 0.65, 0.30),
-    _ => ("○ Not granted", 0.85, 0.45, 0.10),
-  };
-  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
-  let color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, r, g, b, 1.0);
-  let _: () = msg_send![label, setTextColor: color];
+  crate::ui_bridge::update_onboarding_window(&model);
 }
 
 unsafe fn design_color(r: f64, g: f64, b: f64, a: f64) -> id {
@@ -708,529 +450,26 @@ unsafe fn design_color(r: f64, g: f64, b: f64, a: f64) -> id {
   )
 }
 
-unsafe fn apply_view_fill(view: id, color: id, radius: f64) {
-  if view == nil || color == nil {
-    return;
-  }
-  let _: () = msg_send![view, setWantsLayer: YES];
-  let layer: id = msg_send![view, layer];
-  if layer != nil {
-    let cg_color: id = msg_send![color, CGColor];
-    let _: () = msg_send![layer, setBackgroundColor: cg_color];
-    let _: () = msg_send![layer, setCornerRadius: radius];
-    let _: () = msg_send![layer, setMasksToBounds: YES];
-  }
-}
-
-unsafe fn apply_view_border(view: id, color: id, width: f64) {
-  if view == nil || color == nil {
-    return;
-  }
-  let _: () = msg_send![view, setWantsLayer: YES];
-  let layer: id = msg_send![view, layer];
-  if layer != nil {
-    let cg_color: id = msg_send![color, CGColor];
-    let _: () = msg_send![layer, setBorderColor: cg_color];
-    let _: () = msg_send![layer, setBorderWidth: width.max(0.0)];
-  }
-}
-
-unsafe fn make_design_panel(frame: NSRect, fill: id, border: id) -> id {
-  let view: id = msg_send![class!(NSView), alloc];
-  let view: id = msg_send![view, initWithFrame: frame];
-  apply_view_fill(view, fill, 8.0);
-  apply_view_border(view, border, 1.0);
-  view
-}
-
-unsafe fn set_label_color(label: id, color: id) {
-  if label != nil && color != nil {
-    let _: () = msg_send![label, setTextColor: color];
-  }
-}
-
-unsafe fn make_onboarding_label(text: &str, frame: NSRect, font_size: f64, bold: bool) -> id {
-  let label: id = msg_send![class!(NSTextField), alloc];
-  let label: id = msg_send![label, initWithFrame: frame];
-  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str(text)];
-  let _: () = msg_send![label, setBezeled: NO];
-  let _: () = msg_send![label, setDrawsBackground: NO];
-  let _: () = msg_send![label, setEditable: NO];
-  let _: () = msg_send![label, setSelectable: NO];
-  let font: id = if bold {
-    msg_send![class!(NSFont), boldSystemFontOfSize: font_size]
-  } else {
-    msg_send![class!(NSFont), systemFontOfSize: font_size]
-  };
-  let _: () = msg_send![label, setFont: font];
-  label
-}
-
-unsafe fn add_settings_tab_header(
-  container: id,
-  title: &str,
-  subtitle: &str,
-  content_width: f64,
-  content_height: f64,
-) {
-  let title_frame =
-    NSRect::new(NSPoint::new(0.0, content_height - 32.0), NSSize::new(content_width, 24.0));
-  let title_label = make_onboarding_label(title, title_frame, SETTINGS_HEADER_TITLE_SIZE, true);
-  let _: () = msg_send![container, addSubview: title_label];
-
-  let subtitle_frame =
-    NSRect::new(NSPoint::new(0.0, content_height - 53.0), NSSize::new(content_width, 18.0));
-  let subtitle_label =
-    make_onboarding_label(subtitle, subtitle_frame, SETTINGS_HEADER_SUBTITLE_SIZE, false);
-  let secondary: id = msg_send![class!(NSColor), secondaryLabelColor];
-  set_label_color(subtitle_label, secondary);
-  let _: () = msg_send![container, addSubview: subtitle_label];
-
-  let rule_frame =
-    NSRect::new(NSPoint::new(0.0, content_height - 66.0), NSSize::new(content_width, 1.0));
-  let rule = make_design_panel(
-    rule_frame,
-    design_color(0.56, 0.60, 0.66, 0.28),
-    design_color(0.56, 0.60, 0.66, 0.0),
-  );
-  let _: () = msg_send![container, addSubview: rule];
-}
-
-unsafe fn make_onboarding_row_label(text: &str, y: f64) -> id {
-  let frame = NSRect::new(
-    NSPoint::new(ONBOARDING_PAD_X, y),
-    NSSize::new(ONBOARDING_LABEL_WIDTH, ONBOARDING_ROW_HEIGHT),
-  );
-  let label = make_onboarding_label(text, frame, 13.0, false);
-  let secondary: id = msg_send![class!(NSColor), secondaryLabelColor];
-  set_label_color(label, secondary);
-  label
-}
-
-unsafe fn make_onboarding_popup(items: &[&str], y: f64, action: Sel) -> id {
-  let frame = NSRect::new(
-    NSPoint::new(ONBOARDING_CONTROL_X, y - 2.0),
-    NSSize::new(ONBOARDING_CONTROL_WIDTH, ONBOARDING_ROW_HEIGHT + 4.0),
-  );
-  let popup: id = msg_send![class!(NSPopUpButton), alloc];
-  let popup: id = msg_send![popup, initWithFrame: frame pullsDown: NO];
-  for item in items {
-    let _: () = msg_send![popup, addItemWithTitle: NSString::alloc(nil).init_str(item)];
-  }
-  let _: () = msg_send![popup, setAction: action];
-  popup
-}
-
-unsafe fn make_onboarding_checkbox(title: &str, y: f64, action: Sel) -> id {
-  let frame = NSRect::new(
-    NSPoint::new(ONBOARDING_CONTROL_X, y),
-    NSSize::new(ONBOARDING_CONTROL_WIDTH, ONBOARDING_ROW_HEIGHT),
-  );
-  let checkbox: id = msg_send![class!(NSButton), alloc];
-  let checkbox: id = msg_send![checkbox, initWithFrame: frame];
-  let _: () = msg_send![checkbox, setButtonType: 3usize];
-  let _: () = msg_send![checkbox, setTitle: NSString::alloc(nil).init_str(title)];
-  let _: () = msg_send![checkbox, setAction: action];
-  checkbox
-}
-
-/// A small modifier checkbox for the listen-shortcut row, tagged with its MOD_*
-/// bit so one handler routes all four. Target is set with the other controls.
-unsafe fn make_onboarding_mod_checkbox(
-  content_view: id,
-  title: &str,
-  x: f64,
-  y: f64,
-  tag: i64,
-) -> id {
-  let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(52.0, ONBOARDING_ROW_HEIGHT));
-  let cb: id = msg_send![class!(NSButton), alloc];
-  let cb: id = msg_send![cb, initWithFrame: frame];
-  let _: () = msg_send![cb, setButtonType: 3usize];
-  let _: () = msg_send![cb, setTitle: NSString::alloc(nil).init_str(title)];
-  let _: () = msg_send![cb, setTag: tag];
-  let _: () = msg_send![cb, setAction: sel!(onboardingToggleListenModifier:)];
-  let _: () = msg_send![content_view, addSubview: cb];
-  cb
-}
-
-unsafe fn make_settings_mod_checkbox(container: id, title: &str, x: f64, y: f64, tag: i64) -> id {
-  let frame =
-    NSRect::new(NSPoint::new(x, y), NSSize::new(SETTINGS_MODIFIER_WIDTH, SETTINGS_CONTROL_HEIGHT));
-  let cb: id = msg_send![class!(NSButton), alloc];
-  let cb: id = msg_send![cb, initWithFrame: frame];
-  let _: () = msg_send![cb, setButtonType: 3usize];
-  let _: () = msg_send![cb, setTitle: NSString::alloc(nil).init_str(title)];
-  let _: () = msg_send![cb, setTag: tag];
-  let _: () = msg_send![cb, setAction: sel!(settingsToggleListenModifier:)];
-  let _: () = msg_send![container, addSubview: cb];
-  cb
-}
-
-/// A permission row: name on the left, a live status label, and an "Open
-/// Settings" button tagged so one handler can route to the right pane. Returns
-/// the status-label id so the caller can refresh it live.
-unsafe fn make_onboarding_permission_row(
-  content_view: id,
-  delegate: id,
-  label_text: &str,
-  y: f64,
-  tag: i64,
-) -> id {
-  let label_frame =
-    NSRect::new(NSPoint::new(ONBOARDING_PAD_X, y), NSSize::new(150.0, ONBOARDING_ROW_HEIGHT));
-  let label = make_onboarding_label(label_text, label_frame, 13.0, false);
-  let _: () = msg_send![content_view, addSubview: label];
-
-  let status_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_PAD_X + 160.0, y),
-    NSSize::new(150.0, ONBOARDING_ROW_HEIGHT),
-  );
-  let status_label = make_onboarding_label("…", status_frame, 13.0, false);
-  let _: () = msg_send![content_view, addSubview: status_label];
-
-  let button_w = 110.0;
-  let button_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X - button_w, y - 2.0),
-    NSSize::new(button_w, ONBOARDING_ROW_HEIGHT + 4.0),
-  );
-  let button: id = msg_send![class!(NSButton), alloc];
-  let button: id = msg_send![button, initWithFrame: button_frame];
-  let _: () = msg_send![button, setTitle: NSString::alloc(nil).init_str("Open Settings")];
-  let _: () = msg_send![button, setBezelStyle: 1usize];
-  let _: () = msg_send![button, setButtonType: 0usize];
-  let _: () = msg_send![button, setTag: tag];
-  let _: () = msg_send![button, setAction: sel!(onboardingOpenPermission:)];
-  if delegate != nil {
-    let _: () = msg_send![button, setTarget: delegate];
-  }
-  let _: () = msg_send![content_view, addSubview: button];
-
-  status_label
-}
-
-unsafe fn create_onboarding_window() -> OnboardingWindowRefs {
-  let frame = main_screen_frame();
-  let x = frame.origin.x + (frame.size.width - ONBOARDING_WINDOW_WIDTH) * 0.5;
-  let y = frame.origin.y + (frame.size.height - ONBOARDING_WINDOW_HEIGHT) * 0.5;
-  let window_frame =
-    NSRect::new(NSPoint::new(x, y), NSSize::new(ONBOARDING_WINDOW_WIDTH, ONBOARDING_WINDOW_HEIGHT));
-
-  // Chromeless: a titled window with its title bar and traffic-light buttons
-  // hidden, content drawn full-height (FullSizeContentView = 1 << 15), and
-  // movement disabled — so it reads as a custom welcome panel, not a normal
-  // window the user can drag, minimize, or close. Setup completes via
-  // "Get started", never by dismissing it.
-  let style_mask: u64 = NSWindowStyleMask::NSTitledWindowMask.bits() | (1u64 << 15);
-  let window: id = msg_send![class!(NSWindow), alloc];
-  let window: id = msg_send![window, initWithContentRect: window_frame
-                                                styleMask: style_mask
-                                                  backing: NSBackingStoreType::NSBackingStoreBuffered
-                                                    defer: NO];
-  let _: () = msg_send![window, setReleasedWhenClosed: NO];
-  let _: () = msg_send![window, setTitleVisibility: 1isize]; // NSWindowTitleHidden
-  let _: () = msg_send![window, setTitlebarAppearsTransparent: YES];
-  let bg = design_color(0.945, 0.950, 0.940, 1.0);
-  let _: () = msg_send![window, setBackgroundColor: bg];
-  // Chromeless but draggable: no title bar to grab, so let the user move it by
-  // dragging anywhere on the background (clicks on controls still work normally).
-  let _: () = msg_send![window, setMovableByWindowBackground: YES];
-  // Hide close / miniaturize / zoom (NSWindowButton 0 / 1 / 2).
-  for button_kind in [0isize, 1isize, 2isize] {
-    let btn: id = msg_send![window, standardWindowButton: button_kind];
-    if btn != nil {
-      let _: () = msg_send![btn, setHidden: YES];
-    }
-  }
-
-  let content_view: id = msg_send![window, contentView];
-  apply_view_fill(content_view, bg, 0.0);
-
-  let panel_fill = design_color(1.0, 1.0, 0.985, 0.76);
-  let panel_border = design_color(0.56, 0.60, 0.66, 0.22);
-  let setup_panel = make_design_panel(
-    NSRect::new(NSPoint::new(24.0, 286.0), NSSize::new(ONBOARDING_WINDOW_WIDTH - 48.0, 368.0)),
-    panel_fill,
-    panel_border,
-  );
-  let _: () = msg_send![content_view, addSubview: setup_panel];
-  let permissions_panel = make_design_panel(
-    NSRect::new(NSPoint::new(24.0, 72.0), NSSize::new(ONBOARDING_WINDOW_WIDTH - 48.0, 214.0)),
-    panel_fill,
-    panel_border,
-  );
-  let _: () = msg_send![content_view, addSubview: permissions_panel];
-  let accent = make_design_panel(
-    NSRect::new(
-      NSPoint::new(ONBOARDING_PAD_X, ONBOARDING_WINDOW_HEIGHT - 92.0),
-      NSSize::new(132.0, 3.0),
-    ),
-    design_color(0.02, 0.48, 0.55, 0.95),
-    design_color(0.02, 0.48, 0.55, 0.0),
-  );
-  let _: () = msg_send![content_view, addSubview: accent];
-
-  let full_w = ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0;
-  let heading = make_onboarding_label(
-    "Welcome to Azad",
-    NSRect::new(
-      NSPoint::new(ONBOARDING_PAD_X, ONBOARDING_WINDOW_HEIGHT - 48.0),
-      NSSize::new(full_w, 30.0),
-    ),
-    22.0,
-    true,
-  );
-  set_label_color(heading, design_color(0.08, 0.10, 0.12, 1.0));
-  let _: () = msg_send![content_view, addSubview: heading];
-  let subhead = make_onboarding_label(
-    "Finish the local model, permissions, and input defaults to start dictating.",
-    NSRect::new(
-      NSPoint::new(ONBOARDING_PAD_X, ONBOARDING_WINDOW_HEIGHT - 72.0),
-      NSSize::new(full_w, 18.0),
-    ),
-    13.0,
-    false,
-  );
-  let secondary: id = msg_send![class!(NSColor), secondaryLabelColor];
-  set_label_color(subhead, secondary);
-  let _: () = msg_send![content_view, addSubview: subhead];
-
-  // Model section: a two-line status (name · size, then location/progress); the
-  // Download button is disabled once the model is present.
-  let model_y = ONBOARDING_WINDOW_HEIGHT - 116.0;
-  let model_label = make_onboarding_row_label("Model", model_y + 9.0);
-  let _: () = msg_send![content_view, addSubview: model_label];
-  let model_status_label: id = {
-    let frame = NSRect::new(
-      NSPoint::new(ONBOARDING_PAD_X + 84.0, model_y - 4.0),
-      NSSize::new(full_w - 84.0 - 122.0, 42.0),
-    );
-    let l: id = msg_send![class!(NSTextField), alloc];
-    let l: id = msg_send![l, initWithFrame: frame];
-    let _: () = msg_send![l, setStringValue: NSString::alloc(nil).init_str("…")];
-    let _: () = msg_send![l, setBezeled: NO];
-    let _: () = msg_send![l, setDrawsBackground: NO];
-    let _: () = msg_send![l, setEditable: NO];
-    let _: () = msg_send![l, setSelectable: NO];
-    let _: () = msg_send![l, setUsesSingleLineMode: NO];
-    let font: id = msg_send![class!(NSFont), systemFontOfSize: 12.0];
-    let _: () = msg_send![l, setFont: font];
-    let _: () = msg_send![content_view, addSubview: l];
-    l
-  };
-  let download_button: id = {
-    let w = 110.0;
-    let frame = NSRect::new(
-      NSPoint::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X - w, model_y + 5.0),
-      NSSize::new(w, ONBOARDING_ROW_HEIGHT + 4.0),
-    );
-    let b: id = msg_send![class!(NSButton), alloc];
-    let b: id = msg_send![b, initWithFrame: frame];
-    let _: () = msg_send![b, setTitle: NSString::alloc(nil).init_str("Download")];
-    let _: () = msg_send![b, setBezelStyle: 1usize];
-    let _: () = msg_send![b, setButtonType: 0usize];
-    let _: () = msg_send![b, setAction: sel!(onboardingDownloadModel:)];
-    let _: () = msg_send![content_view, addSubview: b];
-    b
-  };
-
-  let trigger_y = model_y - 50.0;
-  let trigger_label = make_onboarding_row_label("Start listening", trigger_y);
-  let _: () = msg_send![content_view, addSubview: trigger_label];
-  let trigger_popup = make_onboarding_popup(
-    &["Automatically", "Manually (hold shortcut)"],
-    trigger_y,
-    sel!(onboardingSetTrigger:),
-  );
-  let _: () = msg_send![content_view, addSubview: trigger_popup];
-
-  // Listen shortcut: Space is fixed; the user picks the modifier combination
-  // (>=1 required). History stays built-in (hold + Up), so it isn't shown here.
-  let shortcut_y = trigger_y - 40.0;
-  let shortcut_label = make_onboarding_row_label("Listen shortcut", shortcut_y);
-  let _: () = msg_send![content_view, addSubview: shortcut_label];
-  let listen_mod_shift = make_onboarding_mod_checkbox(
-    content_view,
-    "⇧",
-    ONBOARDING_CONTROL_X,
-    shortcut_y,
-    MOD_SHIFT as i64,
-  );
-  let listen_mod_control = make_onboarding_mod_checkbox(
-    content_view,
-    "⌃",
-    ONBOARDING_CONTROL_X + 52.0,
-    shortcut_y,
-    MOD_CONTROL as i64,
-  );
-  let listen_mod_option = make_onboarding_mod_checkbox(
-    content_view,
-    "⌥",
-    ONBOARDING_CONTROL_X + 104.0,
-    shortcut_y,
-    MOD_OPTION as i64,
-  );
-  let listen_mod_command = make_onboarding_mod_checkbox(
-    content_view,
-    "⌘",
-    ONBOARDING_CONTROL_X + 156.0,
-    shortcut_y,
-    MOD_COMMAND as i64,
-  );
-  // Vertically center against the checkbox glyphs (the checkboxes center their
-  // titles; a full-height top-aligned label sits too high).
-  let space_hint_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_CONTROL_X + 214.0, shortcut_y + 5.0),
-    NSSize::new(80.0, 16.0),
-  );
-  let space_hint = make_onboarding_label("+ Space", space_hint_frame, 12.0, false);
-  let _: () = msg_send![content_view, addSubview: space_hint];
-
-  let history_y = shortcut_y - 40.0;
-  let history_label = make_onboarding_row_label("History", history_y);
-  let _: () = msg_send![content_view, addSubview: history_label];
-  let history_checkbox = make_onboarding_checkbox(
-    "Keep a searchable history of dictations",
-    history_y,
-    sel!(onboardingToggleHistory:),
-  );
-  let _: () = msg_send![content_view, addSubview: history_checkbox];
-
-  let insert_y = history_y - 40.0;
-  let insert_label = make_onboarding_row_label("Insert text by", insert_y);
-  let _: () = msg_send![content_view, addSubview: insert_label];
-  let insert_popup = make_onboarding_popup(
-    &["Paste", "Direct", "Direct + copy to clipboard"],
-    insert_y,
-    sel!(settingsSelectPasteMethod:),
-  );
-  let _: () = msg_send![content_view, addSubview: insert_popup];
-
-  let trailing_space_y = insert_y - 40.0;
-  let trailing_space_label = make_onboarding_row_label("Trailing space", trailing_space_y);
-  let _: () = msg_send![content_view, addSubview: trailing_space_label];
-  let append_trailing_space_checkbox = make_onboarding_checkbox(
-    "Append a space after each insert",
-    trailing_space_y,
-    sel!(onboardingToggleAppendTrailingSpace:),
-  );
-  let _: () = msg_send![content_view, addSubview: append_trailing_space_checkbox];
-
-  let overlay_position_y = trailing_space_y - 40.0;
-  let overlay_position_label = make_onboarding_row_label("Overlay position", overlay_position_y);
-  let _: () = msg_send![content_view, addSubview: overlay_position_label];
-  let overlay_position_popup = make_onboarding_popup(
-    &["Follow cursor", "Primary display", "Active window"],
-    overlay_position_y,
-    sel!(onboardingSetOverlayPosition:),
-  );
-  let _: () = msg_send![content_view, addSubview: overlay_position_popup];
-
-  let login_y = overlay_position_y - 40.0;
-  let login_label = make_onboarding_row_label("Startup", login_y);
-  let _: () = msg_send![content_view, addSubview: login_label];
-  let login_checkbox = make_onboarding_checkbox(
-    "Open Azad automatically at login",
-    login_y,
-    sel!(onboardingToggleLogin:),
-  );
-  let _: () = msg_send![content_view, addSubview: login_checkbox];
-
-  let delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()).unwrap_or(nil);
-
-  // Permissions section.
-  let perms_header_y = login_y - 42.0;
-  let perms_header_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_PAD_X, perms_header_y),
-    NSSize::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0, ONBOARDING_ROW_HEIGHT),
-  );
-  let perms_header = make_onboarding_label("Permissions", perms_header_frame, 15.0, true);
-  let _: () = msg_send![content_view, addSubview: perms_header];
-
-  let perm_accessibility_status = make_onboarding_permission_row(
-    content_view,
-    delegate,
-    "Accessibility",
-    perms_header_y - 30.0,
-    0,
-  );
-  let perm_microphone_status =
-    make_onboarding_permission_row(content_view, delegate, "Microphone", perms_header_y - 60.0, 1);
-
-  let hint_frame = NSRect::new(
-    NSPoint::new(ONBOARDING_PAD_X, perms_header_y - 82.0),
-    NSSize::new(ONBOARDING_WINDOW_WIDTH - ONBOARDING_PAD_X * 2.0, 18.0),
-  );
-  let hint = make_onboarding_label(
-    "Microphone and Accessibility are required to use Azad.",
-    hint_frame,
-    11.0,
-    false,
-  );
-  let _: () = msg_send![content_view, addSubview: hint];
-
-  // Microphone device picker.
-  let device_y = perms_header_y - 116.0;
-  let device_label = make_onboarding_row_label("Microphone device", device_y);
-  let _: () = msg_send![content_view, addSubview: device_label];
-  let device_popup = make_onboarding_popup(&[], device_y, sel!(onboardingSelectDevice:));
-  let _: () = msg_send![content_view, addSubview: device_popup];
-
-  let button_w = 160.0;
-  let button_frame = NSRect::new(
-    NSPoint::new((ONBOARDING_WINDOW_WIDTH - button_w) * 0.5, device_y - 44.0),
-    NSSize::new(button_w, 34.0),
-  );
-  let get_started_button: id = msg_send![class!(NSButton), alloc];
-  let get_started_button: id = msg_send![get_started_button, initWithFrame: button_frame];
-  let _: () = msg_send![get_started_button, setTitle: NSString::alloc(nil).init_str("Get started")];
-  let _: () = msg_send![get_started_button, setBezelStyle: 1usize];
-  let _: () = msg_send![get_started_button, setButtonType: 0usize];
-  let _: () = msg_send![get_started_button, setKeyEquivalent: NSString::alloc(nil).init_str("\r")];
-  let _: () = msg_send![get_started_button, setAction: sel!(onboardingGetStarted:)];
-  let _: () = msg_send![content_view, addSubview: get_started_button];
-
-  if delegate != nil {
-    let _: () = msg_send![get_started_button, setTarget: delegate];
-    let _: () = msg_send![download_button, setTarget: delegate];
-    let _: () = msg_send![trigger_popup, setTarget: delegate];
-    let _: () = msg_send![listen_mod_shift, setTarget: delegate];
-    let _: () = msg_send![listen_mod_control, setTarget: delegate];
-    let _: () = msg_send![listen_mod_option, setTarget: delegate];
-    let _: () = msg_send![listen_mod_command, setTarget: delegate];
-    let _: () = msg_send![history_checkbox, setTarget: delegate];
-    let _: () = msg_send![insert_popup, setTarget: delegate];
-    let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
-    let _: () = msg_send![overlay_position_popup, setTarget: delegate];
-    let _: () = msg_send![login_checkbox, setTarget: delegate];
-    let _: () = msg_send![device_popup, setTarget: delegate];
-  }
-
-  OnboardingWindowRefs {
-    window,
-    get_started_button,
-    model_status_label,
-    download_button,
-    trigger_popup,
-    listen_mod_shift,
-    listen_mod_control,
-    listen_mod_option,
-    listen_mod_command,
-    history_checkbox,
-    insert_popup,
-    append_trailing_space_checkbox,
-    overlay_position_popup,
-    login_checkbox,
-    device_popup,
-    perm_accessibility_status,
-    perm_microphone_status,
-  }
-}
-
 pub fn update_settings_window(model: SettingsViewModel) {
-  if let Some(refs) = current_settings_window() {
-    unsafe {
-      apply_settings_view_model(refs, &model);
+  crate::ui_bridge::update_settings_window(&model);
+}
+
+pub fn settings_window_is_open() -> bool {
+  crate::ui_bridge::settings_window_is_open()
+}
+
+pub fn refresh_settings_permissions(accessibility: PermissionStatus, microphone: PermissionStatus) {
+  crate::ui_bridge::refresh_settings_permissions(
+    permission_status_for_ui(accessibility),
+    permission_status_for_ui(microphone),
+  );
+}
+
+fn permission_status_for_ui(status: PermissionStatus) -> crate::ui_model::UiPermissionStatus {
+  match status {
+    PermissionStatus::Granted => crate::ui_model::UiPermissionStatus::Granted,
+    PermissionStatus::Denied | PermissionStatus::NotDetermined => {
+      crate::ui_model::UiPermissionStatus::NotGranted
     }
   }
 }
@@ -1699,111 +938,6 @@ fn register_delegate_class() -> &'static Class {
     decl.add_method(sel!(tick:), tick as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(toggleDevices:), toggle_devices as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(openSettings:), open_settings as extern "C" fn(&Object, Sel, id));
-    decl.add_method(
-      sel!(onboardingGetStarted:),
-      onboarding_get_started as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingSetTrigger:),
-      onboarding_set_trigger as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingToggleHistory:),
-      onboarding_toggle_history as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingToggleAppendTrailingSpace:),
-      onboarding_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingSetOverlayPosition:),
-      onboarding_set_overlay_position as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingToggleLogin:),
-      onboarding_toggle_login as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingOpenPermission:),
-      onboarding_open_permission as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingDownloadModel:),
-      onboarding_download_model as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingSelectDevice:),
-      onboarding_select_device as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(onboardingToggleListenModifier:),
-      onboarding_toggle_listen_modifier as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsToggleRunOnStartup:),
-      settings_toggle_run_on_startup as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsToggleDebug:),
-      settings_toggle_debug as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsToggleConnector:),
-      settings_toggle_connector as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsSelectPasteMethod:),
-      settings_select_paste_method as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsSelectAutoSubmit:),
-      settings_select_auto_submit as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsSelectOverlayPosition:),
-      settings_select_overlay_position as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsToggleAppendTrailingSpace:),
-      settings_toggle_append_trailing_space as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsToggleListenModifier:),
-      settings_toggle_listen_modifier as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsAddRemovedWord:),
-      settings_add_removed_word as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsRemoveRemovedWord:),
-      settings_remove_removed_word as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(windowWillClose:),
-      settings_window_will_close as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(sel!(settingsRefresh:), settings_refresh as extern "C" fn(&Object, Sel, id));
-    decl.add_method(
-      sel!(settingsDownloadModel:),
-      settings_download_model as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(settingsCancelDownload:),
-      settings_cancel_download as extern "C" fn(&Object, Sel, id),
-    );
-    decl.add_method(
-      sel!(numberOfRowsInTableView:),
-      settings_tab_rows as extern "C" fn(&Object, Sel, id) -> isize,
-    );
-    decl.add_method(
-      sel!(tableView:viewForTableColumn:row:),
-      settings_tab_row_view as extern "C" fn(&Object, Sel, id, id, isize) -> id,
-    );
-    decl.add_method(
-      sel!(tableViewSelectionDidChange:),
-      settings_tab_selection_did_change as extern "C" fn(&Object, Sel, id),
-    );
     decl.add_method(sel!(selectDevice:), select_device as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(menuWillOpen:), menu_will_open as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(menuDidClose:), menu_did_close as extern "C" fn(&Object, Sel, id));
@@ -2001,392 +1135,6 @@ extern "C" fn toggle_devices(this: &Object, _: Sel, _: id) {
 extern "C" fn open_settings(_: &Object, _: Sel, _: id) {
   crate::app::send_event(AppEvent::MenuOpenSettings);
   crate::app::drain_events();
-}
-
-extern "C" fn onboarding_get_started(_: &Object, _: Sel, _: id) {
-  crate::app::send_event(AppEvent::OnboardingGetStarted);
-  crate::app::drain_events();
-}
-
-extern "C" fn onboarding_set_trigger(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let index: i64 = msg_send![sender, indexOfSelectedItem];
-    // Item 0 = Automatically (always listening), 1 = Manually.
-    crate::app::send_event(AppEvent::OnboardingSetTrigger(index == 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn onboarding_toggle_history(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::OnboardingToggleHistory(state != 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn onboarding_toggle_append_trailing_space(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::OnboardingToggleAppendTrailingSpace(state != 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn onboarding_set_overlay_position(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let index: i64 = msg_send![sender, indexOfSelectedItem];
-    crate::app::send_event(AppEvent::OnboardingSetOverlayPosition(OverlayPosition::from_ui_index(
-      index,
-    )));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn onboarding_toggle_login(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::OnboardingToggleLogin(state != 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn onboarding_download_model(_: &Object, _: Sel, _: id) {
-  crate::app::send_event(AppEvent::OnboardingDownloadModel);
-  crate::app::drain_events();
-}
-
-extern "C" fn onboarding_select_device(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let index: i64 = msg_send![sender, indexOfSelectedItem];
-    if index < 0 {
-      return;
-    }
-    crate::app::send_event(AppEvent::OnboardingSelectDevice(index as usize));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn onboarding_toggle_listen_modifier(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let tag: i64 = msg_send![sender, tag];
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::OnboardingSetListenModifier {
-      bit: tag as u8,
-      enabled: state != 0,
-    });
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn onboarding_open_permission(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let tag: i64 = msg_send![sender, tag];
-    let anchor = match tag {
-      0 => "Privacy_Accessibility",
-      1 => "Privacy_Microphone",
-      _ => return,
-    };
-    let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
-    let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
-  }
-}
-
-extern "C" fn settings_toggle_run_on_startup(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::SettingsToggleRunOnStartup(state != 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_toggle_debug(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::SettingsToggleDebugStats(state != 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_toggle_connector(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let index: isize = msg_send![sender, tag];
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::SettingsToggleConnector {
-      index: index as usize,
-      enabled: state != 0,
-    });
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_select_paste_method(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let index: i64 = msg_send![sender, indexOfSelectedItem];
-    crate::app::send_event(AppEvent::SettingsSelectPasteMethod(PasteMethod::from_ui_index(index)));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_select_auto_submit(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let index: i64 = msg_send![sender, indexOfSelectedItem];
-    crate::app::send_event(AppEvent::SettingsSelectAutoSubmit(AutoSubmitMode::from_ui_index(
-      index,
-    )));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_select_overlay_position(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let index: i64 = msg_send![sender, indexOfSelectedItem];
-    crate::app::send_event(AppEvent::SettingsSelectOverlayPosition(
-      OverlayPosition::from_ui_index(index),
-    ));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_toggle_append_trailing_space(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::SettingsToggleAppendTrailingSpace(state != 0));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_toggle_listen_modifier(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let tag: i64 = msg_send![sender, tag];
-    let state: i64 = msg_send![sender, state];
-    crate::app::send_event(AppEvent::SettingsSetListenModifier {
-      bit: tag as u8,
-      enabled: state != 0,
-    });
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_add_removed_word(_: &Object, _: Sel, _: id) {
-  if let Some(refs) = current_settings_window() {
-    unsafe {
-      let value: id = msg_send![refs.removed_words_input, stringValue];
-      if let Some(text) = nsstring_to_string(value) {
-        if !text.is_empty() {
-          let _: () = msg_send![
-              refs.removed_words_input,
-              setStringValue: NSString::alloc(nil).init_str("")
-          ];
-          crate::app::send_event(AppEvent::SettingsAddRemovedWord(text));
-          crate::app::drain_events();
-        }
-      }
-    }
-  }
-}
-
-extern "C" fn settings_remove_removed_word(_: &Object, _: Sel, sender: id) {
-  unsafe {
-    if sender == nil {
-      return;
-    }
-    let tag: isize = msg_send![sender, tag];
-    let model = SETTINGS_LAST_MODEL.with(|m| m.borrow().clone());
-    if let Some(model) = model {
-      if let Some(word) = model.removed_words.get(tag as usize) {
-        crate::app::send_event(AppEvent::SettingsRemoveRemovedWord(word.clone()));
-        crate::app::drain_events();
-      }
-    }
-  }
-}
-
-extern "C" fn settings_refresh(_: &Object, _: Sel, _: id) {
-  crate::app::send_event(AppEvent::SettingsRefresh);
-  crate::app::drain_events();
-}
-
-extern "C" fn settings_download_model(_: &Object, _: Sel, _: id) {
-  if let Some(refs) = current_settings_window() {
-    let pack_id = unsafe {
-      let tag: isize = msg_send![refs.models_download_button, tag];
-      settings_pack_id_for_tag(tag)
-    };
-    crate::app::send_event(AppEvent::SettingsDownloadModel(pack_id));
-    crate::app::drain_events();
-  }
-}
-
-extern "C" fn settings_cancel_download(_: &Object, _: Sel, _: id) {
-  crate::app::send_event(AppEvent::SettingsCancelDownload);
-  crate::app::drain_events();
-}
-
-fn settings_pack_id_for_tag(_tag: isize) -> String {
-  crate::models::default_pack().id.to_string()
-}
-
-extern "C" fn settings_tab_rows(_: &Object, _: Sel, _: id) -> isize {
-  5
-}
-
-unsafe fn settings_tab_label(row: isize) -> &'static str {
-  match row {
-    1 => "Models",
-    2 => "Permissions",
-    3 => "Debug",
-    4 => "Connectors",
-    _ => "General",
-  }
-}
-
-unsafe fn settings_tab_from_row(row: isize) -> SettingsTab {
-  match row {
-    1 => SettingsTab::Models,
-    2 => SettingsTab::Permissions,
-    3 => SettingsTab::Debug,
-    4 => SettingsTab::Connectors,
-    _ => SettingsTab::General,
-  }
-}
-
-unsafe fn settings_row_for_tab(tab: SettingsTab) -> isize {
-  match tab {
-    SettingsTab::General => 0,
-    SettingsTab::Models => 1,
-    SettingsTab::Permissions => 2,
-    SettingsTab::Debug => 3,
-    SettingsTab::Connectors => 4,
-  }
-}
-
-extern "C" fn settings_tab_row_view(_: &Object, _: Sel, table_view: id, _: id, row: isize) -> id {
-  unsafe {
-    if table_view == nil {
-      return nil;
-    }
-
-    let identifier = NSString::alloc(nil).init_str("AzadSettingsTabCell");
-    let mut cell: id = msg_send![table_view, makeViewWithIdentifier: identifier owner: nil];
-    if cell == nil {
-      let row_height: f64 = msg_send![table_view, rowHeight];
-      let bounds: NSRect = msg_send![table_view, bounds];
-      let width = bounds.size.width.max(SETTINGS_SIDEBAR_WIDTH);
-
-      let created: id = msg_send![class!(NSTableCellView), alloc];
-      cell = msg_send![created, initWithFrame: NSRect::new(
-          NSPoint::new(0.0, 0.0),
-          NSSize::new(width, row_height.max(SETTINGS_SIDEBAR_ROW_HEIGHT))
-      )];
-      let _: () = msg_send![cell, setIdentifier: identifier];
-
-      let text: id = msg_send![class!(NSTextField), alloc];
-      let text: id = msg_send![text, initWithFrame: NSRect::new(
-          NSPoint::new(10.0, 4.0),
-          NSSize::new((width - 20.0).max(1.0), (row_height - 8.0).max(1.0))
-      )];
-      let _: () = msg_send![text, setBezeled: NO];
-      let _: () = msg_send![text, setDrawsBackground: NO];
-      let _: () = msg_send![text, setEditable: NO];
-      let _: () = msg_send![text, setSelectable: NO];
-      let _: () = msg_send![text, setAlignment: 0usize];
-      let _: () = msg_send![text, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
-      let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
-      if font != nil {
-        let _: () = msg_send![text, setFont: font];
-      }
-      let _: () = msg_send![cell, addSubview: text];
-      let _: () = msg_send![cell, setTextField: text];
-    }
-
-    let text_field: id = msg_send![cell, textField];
-    if text_field != nil {
-      let label = NSString::alloc(nil).init_str(settings_tab_label(row));
-      let _: () = msg_send![text_field, setStringValue: label];
-    }
-    cell
-  }
-}
-
-extern "C" fn settings_tab_selection_did_change(_: &Object, _: Sel, notification: id) {
-  unsafe {
-    if notification == nil {
-      return;
-    }
-    let table_view: id = msg_send![notification, object];
-    if table_view == nil {
-      return;
-    }
-    let row: isize = msg_send![table_view, selectedRow];
-    if row < 0 {
-      return;
-    }
-    if let Some(refs) = current_settings_window() {
-      if refs.tab_list_view != table_view {
-        return;
-      }
-      apply_settings_selected_tab(refs, settings_tab_from_row(row));
-    }
-  }
-}
-
-extern "C" fn settings_window_will_close(_: &Object, _: Sel, _: id) {
-  SETTINGS_WINDOW_REFS.with(|store| {
-    store.borrow_mut().take();
-  });
-  unsafe {
-    let app = NSApp();
-    app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
-  }
 }
 
 extern "C" fn select_device(_: &Object, _: Sel, sender: id) {
@@ -2741,7 +1489,7 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
     let mut max_width = DEVICE_HEADER_MIN_WIDTH;
 
     max_width = max_width.max(always_listening_row_width(font));
-    max_width = max_width.max(menu_row_width_for_text("Quit", font, 0, false));
+    max_width = max_width.max(menu_row_width_for_text("Quit Azad", font, 0, false));
     max_width = max_width.max(menu_row_width_for_text("Settings...", font, 0, false));
 
     if model.expanded {
@@ -2762,7 +1510,7 @@ fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
 }
 
 unsafe fn always_listening_row_width(font: id) -> f64 {
-  let text_width = measure_text_width("Listen Mode", font);
+  let text_width = measure_text_width("Listen", font);
   ALWAYS_LISTENING_LABEL_LEADING
     + text_width
     + ALWAYS_LISTENING_LABEL_TO_SWITCH_GAP
@@ -2827,6 +1575,8 @@ unsafe fn device_header_width_for_label(label: &str, font: id) -> f64 {
   let text_width = measure_text_width(label, font);
   let mut width = text_width
     + DEVICE_HEADER_TEXT_LEADING
+    + DEVICE_HEADER_ICON_SIZE
+    + DEVICE_HEADER_ICON_TO_LABEL_GAP
     + DEVICE_HEADER_LABEL_TO_CHEVRON_GAP
     + DEVICE_HEADER_CHEVRON_SIZE
     + DEVICE_HEADER_TRAILING
@@ -2878,7 +1628,7 @@ fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
 
     let quit_item = NSMenuItem::alloc(nil)
       .initWithTitle_action_keyEquivalent_(
-        NSString::alloc(nil).init_str("Quit"),
+        NSString::alloc(nil).init_str("Quit Azad"),
         sel!(quit:),
         NSString::alloc(nil).init_str("q"),
       )
@@ -2963,9 +1713,9 @@ fn always_listening_thumb_frame(enabled: bool) -> NSRect {
 
 fn device_header_label(model: &DeviceMenuModel) -> String {
   if model.header_label.trim().is_empty() {
-    "Input: No Device".to_string()
+    "No Device".to_string()
   } else {
-    format!("Input: {}", model.header_label)
+    model.header_label.clone()
   }
 }
 
@@ -2976,6 +1726,21 @@ fn device_header_chevron_image_name(model: &DeviceMenuModel) -> &'static str {
 unsafe fn device_header_chevron_image(model: &DeviceMenuModel) -> id {
   let image_name = NSString::alloc(nil).init_str(device_header_chevron_image_name(model));
   msg_send![class!(NSImage), imageNamed: image_name]
+}
+
+unsafe fn system_symbol_image(name: &str, fallback_name: &str) -> id {
+  let image_class = class!(NSImage);
+  let symbol_name = NSString::alloc(nil).init_str(name);
+  let supports_symbols: i8 = msg_send![image_class, respondsToSelector: sel!(imageWithSystemSymbolName:accessibilityDescription:)];
+  if supports_symbols != 0 {
+    let image: id =
+      msg_send![image_class, imageWithSystemSymbolName: symbol_name accessibilityDescription: nil];
+    if image != nil {
+      return image;
+    }
+  }
+  let fallback = NSString::alloc(nil).init_str(fallback_name);
+  msg_send![image_class, imageNamed: fallback]
 }
 
 unsafe fn set_image_view_tint_if_supported(image_view: id, tint_color: id) {
@@ -3041,6 +1806,17 @@ fn set_device_header_highlighted(is_highlighted: bool) {
       }
     });
 
+    DEVICE_HEADER_ICON_REF.with(|slot| {
+      if let Some(image_view) = *slot.borrow() {
+        let tint: id = if is_highlighted {
+          msg_send![class!(NSColor), selectedMenuItemTextColor]
+        } else {
+          msg_send![class!(NSColor), secondaryLabelColor]
+        };
+        set_image_view_tint_if_supported(image_view, tint);
+      }
+    });
+
     DEVICE_HEADER_CHEVRON_REF.with(|slot| {
       if let Some(image_view) = *slot.borrow() {
         let tint: id = if is_highlighted {
@@ -3091,7 +1867,7 @@ unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
   let label: id = msg_send![class!(NSTextField), alloc];
   let label: id = msg_send![label, initWithFrame: label_frame];
   let _: () = msg_send![label, setAutoresizingMask: NS_VIEW_WIDTH_SIZABLE];
-  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("Listen Mode")];
+  let _: () = msg_send![label, setStringValue: NSString::alloc(nil).init_str("Listen")];
   let _: () = msg_send![label, setBezeled: NO];
   let _: () = msg_send![label, setDrawsBackground: NO];
   let _: () = msg_send![label, setEditable: NO];
@@ -3209,13 +1985,31 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
   let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
   let text_color: id = msg_send![class!(NSColor), labelColor];
 
+  let icon_x = DEVICE_HEADER_TEXT_LEADING;
+  let icon_y =
+    (DEVICE_HEADER_HEIGHT - DEVICE_HEADER_ICON_SIZE) * 0.5 + DEVICE_HEADER_EXTRA_TOP_PADDING;
+  let icon_frame = NSRect::new(
+    NSPoint::new(icon_x, icon_y),
+    NSSize::new(DEVICE_HEADER_ICON_SIZE, DEVICE_HEADER_ICON_SIZE),
+  );
+  let icon_view: id = msg_send![class!(NSImageView), alloc];
+  let icon_view: id = msg_send![icon_view, initWithFrame: icon_frame];
+  let _: () =
+    msg_send![icon_view, setImage: system_symbol_image("mic", "NSTouchBarAudioInputTemplate")];
+  let icon_tint: id = msg_send![class!(NSColor), secondaryLabelColor];
+  set_image_view_tint_if_supported(icon_view, icon_tint);
+
+  let title_x =
+    DEVICE_HEADER_TEXT_LEADING + DEVICE_HEADER_ICON_SIZE + DEVICE_HEADER_ICON_TO_LABEL_GAP;
   let title_width = DEVICE_HEADER_WIDTH
     - DEVICE_HEADER_TEXT_LEADING
+    - DEVICE_HEADER_ICON_SIZE
+    - DEVICE_HEADER_ICON_TO_LABEL_GAP
     - DEVICE_HEADER_TRAILING
     - DEVICE_HEADER_CHEVRON_SIZE
     - DEVICE_HEADER_LABEL_TO_CHEVRON_GAP;
   let title_label_frame = NSRect::new(
-    NSPoint::new(DEVICE_HEADER_TEXT_LEADING, 2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
+    NSPoint::new(title_x, 2.0 + DEVICE_HEADER_EXTRA_TOP_PADDING),
     NSSize::new(title_width, 18.0),
   );
   let title_label: id = msg_send![class!(NSTextField), alloc];
@@ -3245,6 +2039,7 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
   set_image_view_tint_if_supported(chevron_view, chevron_tint);
 
   let _: () = msg_send![view, addSubview: highlight_view];
+  let _: () = msg_send![view, addSubview: icon_view];
   let _: () = msg_send![view, addSubview: title_label];
   let _: () = msg_send![view, addSubview: chevron_view];
   // Add the button last so the entire row is a single click target.
@@ -3259,6 +2054,9 @@ unsafe fn make_device_header_item(delegate: id, model: &DeviceMenuModel) -> id {
   });
   DEVICE_HEADER_HIGHLIGHT_REF.with(|slot| {
     slot.borrow_mut().replace(highlight_view);
+  });
+  DEVICE_HEADER_ICON_REF.with(|slot| {
+    slot.borrow_mut().replace(icon_view);
   });
   DEVICE_HEADER_LABEL_REF.with(|slot| {
     slot.borrow_mut().replace(title_label);
@@ -3408,246 +2206,6 @@ unsafe fn position_overlay_top_relative_to_bottom(top: OverlayRefs, bottom: Over
   }
 }
 
-unsafe fn ensure_settings_window() -> SettingsWindowRefs {
-  if let Some(existing) = current_settings_window() {
-    return existing;
-  }
-
-  let refs = create_settings_window();
-  SETTINGS_WINDOW_REFS.with(|store| {
-    store.borrow_mut().replace(refs);
-  });
-  refs
-}
-
-fn current_settings_window() -> Option<SettingsWindowRefs> {
-  SETTINGS_WINDOW_REFS.with(|store| *store.borrow())
-}
-
-pub fn settings_window_is_open() -> bool {
-  current_settings_window().is_some()
-}
-
-/// Live-refresh the Settings → Permissions indicators while the window is open,
-/// so they flip as the user grants access in System Settings.
-pub fn refresh_settings_permissions(accessibility: PermissionStatus, microphone: PermissionStatus) {
-  if let Some(refs) = current_settings_window() {
-    unsafe {
-      set_permission_status_label(refs.perm_accessibility_status, accessibility);
-      set_permission_status_label(refs.perm_microphone_status, microphone);
-    }
-  }
-}
-
-unsafe fn apply_settings_selected_tab(refs: SettingsWindowRefs, tab: SettingsTab) {
-  let (general_hidden, models_hidden, permissions_hidden, debug_hidden, connectors_hidden) =
-    match tab {
-      SettingsTab::General => (NO, YES, YES, YES, YES),
-      SettingsTab::Models => (YES, NO, YES, YES, YES),
-      SettingsTab::Permissions => (YES, YES, NO, YES, YES),
-      SettingsTab::Debug => (YES, YES, YES, NO, YES),
-      SettingsTab::Connectors => (YES, YES, YES, YES, NO),
-    };
-  let _: () = msg_send![refs.general_container, setHidden: general_hidden];
-  let _: () = msg_send![refs.models_container, setHidden: models_hidden];
-  let _: () = msg_send![refs.permissions_container, setHidden: permissions_hidden];
-  let _: () = msg_send![refs.debug_container, setHidden: debug_hidden];
-  let _: () = msg_send![refs.connectors_container, setHidden: connectors_hidden];
-
-  if refs.tab_list_view != nil {
-    let row = settings_row_for_tab(tab);
-    if row >= 0 {
-      let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
-      if selected_row != row {
-        let selection: id = msg_send![class!(NSIndexSet), indexSetWithIndex: row as usize];
-        let _: () = msg_send![
-            refs.tab_list_view,
-            selectRowIndexes: selection
-            byExtendingSelection: NO
-        ];
-      }
-    }
-  }
-}
-
-unsafe fn apply_settings_view_model(refs: SettingsWindowRefs, model: &SettingsViewModel) {
-  set_permission_status_label(refs.perm_accessibility_status, model.accessibility_status);
-  set_permission_status_label(refs.perm_microphone_status, model.microphone_status);
-  let run_on_startup_state: i64 = if model.run_on_startup_enabled { 1 } else { 0 };
-  let _: () = msg_send![refs.run_on_startup_checkbox, setState: run_on_startup_state];
-
-  let _: () = msg_send![
-      refs.paste_method_popup,
-      selectItemAtIndex: model.paste_method.ui_index()
-  ];
-  let _: () = msg_send![
-      refs.auto_submit_popup,
-      selectItemAtIndex: model.auto_submit_mode.ui_index()
-  ];
-  let _: () = msg_send![
-      refs.overlay_position_popup,
-      selectItemAtIndex: model.overlay_position.ui_index()
-  ];
-  let append_trailing_space_state: i64 = if model.append_trailing_space_on_paste { 1 } else { 0 };
-  let _: () = msg_send![
-      refs.append_trailing_space_checkbox,
-      setState: append_trailing_space_state
-  ];
-  sync_settings_listen_mod_checkboxes(refs, model.listen_modifiers);
-
-  let debug_checkbox_state: i64 = if model.debug_stats_enabled { 1 } else { 0 };
-  let _: () = msg_send![refs.debug_checkbox, setState: debug_checkbox_state];
-
-  let metrics = NSString::alloc(nil).init_str(&model.metrics_text);
-  let _: () = msg_send![refs.metrics_text_view, setString: metrics];
-
-  apply_removed_words_tags(refs, &model.removed_words);
-  apply_connector_rows(refs, &model.connectors);
-  apply_models_view_state(refs, model);
-
-  SETTINGS_LAST_MODEL.with(|m| m.borrow_mut().replace(model.clone()));
-
-  let selected_row: isize = msg_send![refs.tab_list_view, selectedRow];
-  if selected_row >= 0 {
-    apply_settings_selected_tab(refs, settings_tab_from_row(selected_row));
-  } else {
-    apply_settings_selected_tab(refs, model.selected_tab);
-  }
-}
-
-unsafe fn apply_removed_words_tags(refs: SettingsWindowRefs, words: &[String]) {
-  let container = refs.removed_words_tags_view;
-  if container == nil {
-    return;
-  }
-
-  // Remove all existing tag subviews
-  loop {
-    let subviews: id = msg_send![container, subviews];
-    let count: usize = msg_send![subviews, count];
-    if count == 0 {
-      break;
-    }
-    let child: id = msg_send![subviews, objectAtIndex: 0usize];
-    let _: () = msg_send![child, removeFromSuperview];
-  }
-
-  let mut x = 0.0f64;
-  let tag_height = 22.0f64;
-  for (i, word) in words.iter().enumerate() {
-    let title = format!("{word}  \u{00d7}");
-    let title_ns = NSString::alloc(nil).init_str(&title);
-
-    let button: id = msg_send![class!(NSButton), alloc];
-    let initial_frame = NSRect::new(NSPoint::new(x, 0.0), NSSize::new(80.0, tag_height));
-    let button: id = msg_send![button, initWithFrame: initial_frame];
-    let _: () = msg_send![button, setBezelStyle: 1usize];
-    let _: () = msg_send![button, setTitle: title_ns];
-    let _: () = msg_send![button, setTag: i as isize];
-    let _: () = msg_send![button, setAction: sel!(settingsRemoveRemovedWord:)];
-
-    STATUS_DELEGATE_REF.with(|r| {
-      if let Some(delegate) = *r.borrow() {
-        let _: () = msg_send![button, setTarget: delegate];
-      }
-    });
-
-    let _: () = msg_send![button, sizeToFit];
-    let fitted: NSRect = msg_send![button, frame];
-    let _: () = msg_send![button, setFrame: NSRect::new(
-      NSPoint::new(x, 0.0),
-      NSSize::new(fitted.size.width, tag_height),
-    )];
-    let _: () = msg_send![container, addSubview: button];
-    x += fitted.size.width + 6.0;
-  }
-}
-
-unsafe fn apply_connector_rows(refs: SettingsWindowRefs, connectors: &[ConnectorRowVM]) {
-  let container = refs.connectors_checkboxes_view;
-  if container == nil {
-    return;
-  }
-
-  loop {
-    let subviews: id = msg_send![container, subviews];
-    let count: usize = msg_send![subviews, count];
-    if count == 0 {
-      break;
-    }
-    let child: id = msg_send![subviews, objectAtIndex: 0usize];
-    let _: () = msg_send![child, removeFromSuperview];
-  }
-
-  let container_frame: NSRect = msg_send![container, frame];
-  let row_stride = SETTINGS_CONTROL_HEIGHT + 6.0;
-  for (i, c) in connectors.iter().enumerate() {
-    let y = container_frame.size.height - (i as f64 + 1.0) * row_stride;
-    let frame = NSRect::new(
-      NSPoint::new(0.0, y),
-      NSSize::new(container_frame.size.width, SETTINGS_CONTROL_HEIGHT),
-    );
-    let checkbox: id = msg_send![class!(NSButton), alloc];
-    let checkbox: id = msg_send![checkbox, initWithFrame: frame];
-    let _: () = msg_send![checkbox, setButtonType: 3usize];
-    let _: () = msg_send![checkbox, setTitle: NSString::alloc(nil).init_str(&c.display_name)];
-    let state: i64 = if c.enabled { 1 } else { 0 };
-    let _: () = msg_send![checkbox, setState: state];
-    let _: () = msg_send![checkbox, setTag: i as isize];
-    let _: () = msg_send![checkbox, setAction: sel!(settingsToggleConnector:)];
-    STATUS_DELEGATE_REF.with(|r| {
-      if let Some(delegate) = *r.borrow() {
-        let _: () = msg_send![checkbox, setTarget: delegate];
-      }
-    });
-    let _: () = msg_send![container, addSubview: checkbox];
-  }
-}
-
-unsafe fn apply_models_view_state(refs: SettingsWindowRefs, model: &SettingsViewModel) {
-  use crate::models::{PackStatus, format_size};
-
-  let name_ns = NSString::alloc(nil).init_str(&model.model_pack_display_name);
-  let _: () = msg_send![refs.models_name_label, setStringValue: name_ns];
-  let desc_ns = NSString::alloc(nil).init_str(&model.model_pack_description);
-  let _: () = msg_send![refs.models_desc_label, setStringValue: desc_ns];
-
-  let (status_text, show_download, show_cancel, show_progress, progress_value) =
-    match &model.model_pack_status {
-      PackStatus::Ready => ("Installed".to_string(), false, false, false, 0.0),
-      PackStatus::NotDownloaded => {
-        let label = format!("Not downloaded ({})", model.model_pack_size_label);
-        (label, true, false, false, 0.0)
-      }
-      PackStatus::Incomplete => {
-        let label = format!("Incomplete ({})", model.model_pack_size_label);
-        (label, true, false, false, 0.0)
-      }
-      PackStatus::Downloading { progress_pct } => {
-        let done = format_size(model.model_download_bytes_done);
-        let total = format_size(model.model_download_bytes_total);
-        let label = format!("Downloading... {done} / {total} ({progress_pct}%)");
-        (label, false, true, true, *progress_pct as f64)
-      }
-    };
-
-  let status_ns = NSString::alloc(nil).init_str(&status_text);
-  let _: () = msg_send![refs.models_status_label, setStringValue: status_ns];
-
-  let _: () =
-    msg_send![refs.models_download_button, setHidden: if show_download { NO } else { YES }];
-  let _: () = msg_send![refs.models_cancel_button, setHidden: if show_cancel { NO } else { YES }];
-  let _: () =
-    msg_send![refs.models_progress_indicator, setHidden: if show_progress { NO } else { YES }];
-
-  if show_progress {
-    let _: () = msg_send![refs.models_progress_indicator, setDoubleValue: progress_value];
-  }
-}
-
-/// Lay out the pinned connector chip at the top of the card. Shared by the speech and
-/// conversation renderers so the chip is byte-identical in both. Empty `connector_tag`
-/// hides the chip.
 unsafe fn layout_connector_chip(
   refs: OverlayRefs,
   connector_tag: &str,
@@ -5712,717 +4270,6 @@ unsafe fn apply_busy_border_style(
   let end = NSPoint::new(0.5 + dx * 0.5, 0.5 + dy * 0.5);
   let _: () = msg_send![refs.busy_gradient_layer, setStartPoint: center];
   let _: () = msg_send![refs.busy_gradient_layer, setEndPoint: end];
-}
-
-unsafe fn create_settings_window() -> SettingsWindowRefs {
-  let frame = main_screen_frame();
-  let x = frame.origin.x + (frame.size.width - SETTINGS_WINDOW_WIDTH) * 0.5;
-  let y = frame.origin.y + (frame.size.height - SETTINGS_WINDOW_HEIGHT) * 0.5;
-  let window_frame =
-    NSRect::new(NSPoint::new(x, y), NSSize::new(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT));
-
-  let style = NSWindowStyleMask::NSTitledWindowMask
-    | NSWindowStyleMask::NSClosableWindowMask
-    | NSWindowStyleMask::NSMiniaturizableWindowMask;
-  let window: id = msg_send![class!(NSWindow), alloc];
-  let window: id = msg_send![window, initWithContentRect: window_frame
-                                                styleMask: style
-                                                  backing: NSBackingStoreType::NSBackingStoreBuffered
-                                                    defer: NO];
-  let _: () = msg_send![window, setReleasedWhenClosed: NO];
-  let _: () = msg_send![window, setTitle: NSString::alloc(nil).init_str("Azad Settings")];
-
-  let content_view: id = msg_send![window, contentView];
-  let settings_bg = design_color(0.950, 0.954, 0.948, 1.0);
-  let _: () = msg_send![window, setBackgroundColor: settings_bg];
-  apply_view_fill(content_view, settings_bg, 0.0);
-
-  let body_frame = NSRect::new(
-    NSPoint::new(SETTINGS_INSET_X, SETTINGS_INSET_X),
-    NSSize::new(
-      SETTINGS_WINDOW_WIDTH - (SETTINGS_INSET_X * 2.0),
-      SETTINGS_WINDOW_HEIGHT - (SETTINGS_INSET_X * 2.0),
-    ),
-  );
-  let body_view: id = msg_send![class!(NSView), alloc];
-  let body_view: id = msg_send![body_view, initWithFrame: body_frame];
-  let _: () = msg_send![
-      body_view,
-      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-  ];
-  let _: () = msg_send![content_view, addSubview: body_view];
-  apply_view_fill(body_view, design_color(1.0, 1.0, 0.990, 0.54), 8.0);
-  apply_view_border(body_view, design_color(0.56, 0.60, 0.66, 0.18), 1.0);
-
-  let sidebar_height = body_frame.size.height.max(220.0);
-  let sidebar_frame =
-    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SETTINGS_SIDEBAR_WIDTH, sidebar_height));
-  let sidebar_scroll: id = msg_send![class!(NSScrollView), alloc];
-  let sidebar_scroll: id = msg_send![sidebar_scroll, initWithFrame: sidebar_frame];
-  let _: () = msg_send![sidebar_scroll, setHasVerticalScroller: NO];
-  let _: () = msg_send![sidebar_scroll, setBorderType: 0usize];
-  let _: () = msg_send![sidebar_scroll, setDrawsBackground: NO];
-  let _: () = msg_send![body_view, addSubview: sidebar_scroll];
-
-  let tab_list_view: id = msg_send![class!(NSTableView), alloc];
-  let tab_list_view: id = msg_send![tab_list_view, initWithFrame: sidebar_frame];
-  let _: () = msg_send![tab_list_view, setHeaderView: nil];
-  let _: () = msg_send![tab_list_view, setUsesAlternatingRowBackgroundColors: NO];
-  let _: () = msg_send![tab_list_view, setAllowsMultipleSelection: NO];
-  let _: () = msg_send![tab_list_view, setAllowsEmptySelection: NO];
-  let _: () = msg_send![tab_list_view, setRowHeight: SETTINGS_SIDEBAR_ROW_HEIGHT];
-  let _: () = msg_send![tab_list_view, setIntercellSpacing: NSSize::new(0.0, 2.0)];
-  let _: () = msg_send![tab_list_view, setBackgroundColor: NSColor::clearColor(nil)];
-  let supports_style: i8 = msg_send![tab_list_view, respondsToSelector: sel!(setStyle:)];
-  if supports_style != 0 {
-    // NSTableViewStyleSourceList
-    let _: () = msg_send![tab_list_view, setStyle: 3usize];
-  } else {
-    // NSTableViewSelectionHighlightStyleSourceList
-    let _: () = msg_send![tab_list_view, setSelectionHighlightStyle: 1isize];
-  }
-
-  let tab_column_identifier = NSString::alloc(nil).init_str("azad-settings-tabs-column");
-  let tab_column: id = msg_send![class!(NSTableColumn), alloc];
-  let tab_column: id = msg_send![tab_column, initWithIdentifier: tab_column_identifier];
-  let _: () = msg_send![tab_column, setWidth: SETTINGS_SIDEBAR_WIDTH];
-  let _: () = msg_send![tab_column, setMinWidth: SETTINGS_SIDEBAR_WIDTH];
-  let _: () = msg_send![tab_column, setMaxWidth: SETTINGS_SIDEBAR_WIDTH];
-  let _: () = msg_send![tab_list_view, addTableColumn: tab_column];
-
-  let content_origin_x = SETTINGS_SIDEBAR_WIDTH + SETTINGS_SIDEBAR_TO_CONTENT_GAP;
-  let content_height = body_frame.size.height.max(220.0);
-  let content_width = (body_frame.size.width - content_origin_x).max(420.0);
-  let content_frame =
-    NSRect::new(NSPoint::new(content_origin_x, 0.0), NSSize::new(content_width, content_height));
-  let divider = make_design_panel(
-    NSRect::new(
-      NSPoint::new(SETTINGS_SIDEBAR_WIDTH + SETTINGS_SIDEBAR_TO_CONTENT_GAP * 0.5, 0.0),
-      NSSize::new(1.0, content_height),
-    ),
-    design_color(0.56, 0.60, 0.66, 0.22),
-    design_color(0.56, 0.60, 0.66, 0.0),
-  );
-  let _: () = msg_send![body_view, addSubview: divider];
-
-  let general_container: id = msg_send![class!(NSView), alloc];
-  let general_container: id = msg_send![general_container, initWithFrame: content_frame];
-  let _: () = msg_send![
-      general_container,
-      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-  ];
-  let models_container: id = msg_send![class!(NSView), alloc];
-  let models_container: id = msg_send![models_container, initWithFrame: content_frame];
-  let _: () = msg_send![
-      models_container,
-      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-  ];
-  let permissions_container: id = msg_send![class!(NSView), alloc];
-  let permissions_container: id = msg_send![permissions_container, initWithFrame: content_frame];
-  let _: () = msg_send![
-      permissions_container,
-      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-  ];
-  add_settings_tab_header(
-    general_container,
-    "General",
-    "Control how Azad starts listening, inserts text, and cleans output.",
-    content_width,
-    content_height,
-  );
-  add_settings_tab_header(
-    models_container,
-    "Models",
-    "Manage the local speech model pack used for transcription.",
-    content_width,
-    content_height,
-  );
-  add_settings_tab_header(
-    permissions_container,
-    "Permissions",
-    "Grant macOS access for microphone capture and text insertion.",
-    content_width,
-    content_height,
-  );
-  let perm_delegate = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()).unwrap_or(nil);
-  let perm_top = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-  let perm_accessibility_status = make_onboarding_permission_row(
-    permissions_container,
-    perm_delegate,
-    "Accessibility",
-    perm_top,
-    0,
-  );
-  let perm_microphone_status = make_onboarding_permission_row(
-    permissions_container,
-    perm_delegate,
-    "Microphone",
-    perm_top - 38.0,
-    1,
-  );
-  let perm_hint_frame =
-    NSRect::new(NSPoint::new(0.0, perm_top - 76.0), NSSize::new(content_width, 18.0));
-  let perm_hint = make_onboarding_label(
-    "Required to capture audio and insert text. Click Open Settings to grant.",
-    perm_hint_frame,
-    11.0,
-    false,
-  );
-  let _: () = msg_send![permissions_container, addSubview: perm_hint];
-  let debug_container: id = msg_send![class!(NSView), alloc];
-  let debug_container: id = msg_send![debug_container, initWithFrame: content_frame];
-  let _: () = msg_send![
-      debug_container,
-      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-  ];
-  add_settings_tab_header(
-    debug_container,
-    "Debug",
-    "Inspect recent runtime metrics and enable detailed statistics.",
-    content_width,
-    content_height,
-  );
-
-  let connectors_container: id = msg_send![class!(NSView), alloc];
-  let connectors_container: id = msg_send![connectors_container, initWithFrame: content_frame];
-  let _: () = msg_send![
-      connectors_container,
-      setAutoresizingMask: (NS_VIEW_WIDTH_SIZABLE | NS_VIEW_HEIGHT_SIZABLE)
-  ];
-  add_settings_tab_header(
-    connectors_container,
-    "Connectors",
-    "Route specific spoken phrases into external assistant workflows.",
-    content_width,
-    content_height,
-  );
-  let connectors_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-  let connectors_hint_frame = NSRect::new(
-    NSPoint::new(0.0, connectors_top_y),
-    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let connectors_hint: id = msg_send![class!(NSTextField), alloc];
-  let connectors_hint: id = msg_send![connectors_hint, initWithFrame: connectors_hint_frame];
-  let _: () = msg_send![
-      connectors_hint,
-      setStringValue: NSString::alloc(nil).init_str(
-        "Open an utterance with a connector\u{2019}s phrase (e.g. \u{201c}hey claude\u{201d}) to tag it."
-      )
-  ];
-  let _: () = msg_send![connectors_hint, setBezeled: NO];
-  let _: () = msg_send![connectors_hint, setDrawsBackground: NO];
-  let _: () = msg_send![connectors_hint, setEditable: NO];
-  let _: () = msg_send![connectors_hint, setSelectable: NO];
-  let _: () = msg_send![connectors_hint, setAlignment: 0isize];
-  let _: () = msg_send![connectors_container, addSubview: connectors_hint];
-
-  let connectors_checkboxes_height =
-    (connectors_top_y - SETTINGS_CONTROL_VERTICAL_GAP).max(SETTINGS_CONTROL_HEIGHT);
-  let connectors_checkboxes_frame =
-    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(content_width, connectors_checkboxes_height));
-  let connectors_checkboxes_view: id = msg_send![class!(NSView), alloc];
-  let connectors_checkboxes_view: id =
-    msg_send![connectors_checkboxes_view, initWithFrame: connectors_checkboxes_frame];
-  let _: () = msg_send![connectors_container, addSubview: connectors_checkboxes_view];
-
-  let general_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-  let run_on_startup_frame = NSRect::new(
-    NSPoint::new(0.0, general_top_y),
-    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let run_on_startup_checkbox: id = msg_send![class!(NSButton), alloc];
-  let run_on_startup_checkbox: id =
-    msg_send![run_on_startup_checkbox, initWithFrame: run_on_startup_frame];
-  let _: () = msg_send![run_on_startup_checkbox, setButtonType: 3usize];
-  let _: () = msg_send![
-      run_on_startup_checkbox,
-      setTitle: NSString::alloc(nil).init_str("Run Azad on startup")
-  ];
-  let _: () = msg_send![
-      run_on_startup_checkbox,
-      setAction: sel!(settingsToggleRunOnStartup:)
-  ];
-  let _: () = msg_send![general_container, addSubview: run_on_startup_checkbox];
-
-  let paste_method_y = general_top_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let paste_method_label_frame = NSRect::new(
-    NSPoint::new(0.0, paste_method_y),
-    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
-  );
-  let paste_method_label: id = msg_send![class!(NSTextField), alloc];
-  let paste_method_label: id =
-    msg_send![paste_method_label, initWithFrame: paste_method_label_frame];
-  let _: () =
-    msg_send![paste_method_label, setStringValue: NSString::alloc(nil).init_str("Insert method")];
-  let _: () = msg_send![paste_method_label, setBezeled: NO];
-  let _: () = msg_send![paste_method_label, setDrawsBackground: NO];
-  let _: () = msg_send![paste_method_label, setEditable: NO];
-  let _: () = msg_send![paste_method_label, setSelectable: NO];
-  let _: () = msg_send![paste_method_label, setAlignment: 0isize];
-  let _: () = msg_send![general_container, addSubview: paste_method_label];
-
-  let paste_method_popup_x = SETTINGS_LABEL_WIDTH + 10.0;
-  let paste_method_popup_frame = NSRect::new(
-    NSPoint::new(paste_method_popup_x, paste_method_y - 2.0),
-    NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
-  );
-  let paste_method_popup: id = msg_send![class!(NSPopUpButton), alloc];
-  let paste_method_popup: id =
-    msg_send![paste_method_popup, initWithFrame: paste_method_popup_frame pullsDown: NO];
-  let _: () =
-    msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Paste")];
-  let _: () =
-    msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct")];
-  let _: () = msg_send![paste_method_popup, addItemWithTitle: NSString::alloc(nil).init_str("Direct + copy to clipboard")];
-  let _: () = msg_send![paste_method_popup, setAction: sel!(settingsSelectPasteMethod:)];
-  let _: () = msg_send![general_container, addSubview: paste_method_popup];
-
-  let auto_submit_y = paste_method_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let auto_submit_label_frame = NSRect::new(
-    NSPoint::new(0.0, auto_submit_y),
-    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
-  );
-  let auto_submit_label: id = msg_send![class!(NSTextField), alloc];
-  let auto_submit_label: id = msg_send![auto_submit_label, initWithFrame: auto_submit_label_frame];
-  let _: () =
-    msg_send![auto_submit_label, setStringValue: NSString::alloc(nil).init_str("Auto submit")];
-  let _: () = msg_send![auto_submit_label, setBezeled: NO];
-  let _: () = msg_send![auto_submit_label, setDrawsBackground: NO];
-  let _: () = msg_send![auto_submit_label, setEditable: NO];
-  let _: () = msg_send![auto_submit_label, setSelectable: NO];
-  let _: () = msg_send![auto_submit_label, setAlignment: 0isize];
-  let _: () = msg_send![general_container, addSubview: auto_submit_label];
-
-  let auto_submit_popup_frame = NSRect::new(
-    NSPoint::new(paste_method_popup_x, auto_submit_y - 2.0),
-    NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
-  );
-  let auto_submit_popup: id = msg_send![class!(NSPopUpButton), alloc];
-  let auto_submit_popup: id =
-    msg_send![auto_submit_popup, initWithFrame: auto_submit_popup_frame pullsDown: NO];
-  let _: () = msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Off")];
-  let _: () =
-    msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Enter")];
-  let _: () =
-    msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Ctrl+Enter")];
-  let _: () =
-    msg_send![auto_submit_popup, addItemWithTitle: NSString::alloc(nil).init_str("Shift+Enter")];
-  let _: () = msg_send![auto_submit_popup, setAction: sel!(settingsSelectAutoSubmit:)];
-  let _: () = msg_send![general_container, addSubview: auto_submit_popup];
-
-  let overlay_position_y = auto_submit_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let overlay_position_label_frame = NSRect::new(
-    NSPoint::new(0.0, overlay_position_y),
-    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
-  );
-  let overlay_position_label: id = msg_send![class!(NSTextField), alloc];
-  let overlay_position_label: id =
-    msg_send![overlay_position_label, initWithFrame: overlay_position_label_frame];
-  let _: () = msg_send![
-      overlay_position_label,
-      setStringValue: NSString::alloc(nil).init_str("Overlay position")
-  ];
-  let _: () = msg_send![overlay_position_label, setBezeled: NO];
-  let _: () = msg_send![overlay_position_label, setDrawsBackground: NO];
-  let _: () = msg_send![overlay_position_label, setEditable: NO];
-  let _: () = msg_send![overlay_position_label, setSelectable: NO];
-  let _: () = msg_send![overlay_position_label, setAlignment: 0isize];
-  let _: () = msg_send![general_container, addSubview: overlay_position_label];
-
-  let overlay_position_popup_frame = NSRect::new(
-    NSPoint::new(paste_method_popup_x, overlay_position_y - 2.0),
-    NSSize::new(SETTINGS_POPUP_WIDTH, SETTINGS_CONTROL_HEIGHT + 4.0),
-  );
-  let overlay_position_popup: id = msg_send![class!(NSPopUpButton), alloc];
-  let overlay_position_popup: id =
-    msg_send![overlay_position_popup, initWithFrame: overlay_position_popup_frame pullsDown: NO];
-  let _: () = msg_send![overlay_position_popup, addItemWithTitle: NSString::alloc(nil).init_str("Follow cursor")];
-  let _: () = msg_send![overlay_position_popup, addItemWithTitle: NSString::alloc(nil).init_str("Primary display")];
-  let _: () = msg_send![overlay_position_popup, addItemWithTitle: NSString::alloc(nil).init_str("Active window")];
-  let _: () = msg_send![overlay_position_popup, setAction: sel!(settingsSelectOverlayPosition:)];
-  let _: () = msg_send![general_container, addSubview: overlay_position_popup];
-
-  let listen_shortcut_y =
-    overlay_position_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let listen_shortcut_label_frame = NSRect::new(
-    NSPoint::new(0.0, listen_shortcut_y),
-    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
-  );
-  let listen_shortcut_label: id = msg_send![class!(NSTextField), alloc];
-  let listen_shortcut_label: id =
-    msg_send![listen_shortcut_label, initWithFrame: listen_shortcut_label_frame];
-  let _: () = msg_send![
-      listen_shortcut_label,
-      setStringValue: NSString::alloc(nil).init_str("Listen shortcut")
-  ];
-  let _: () = msg_send![listen_shortcut_label, setBezeled: NO];
-  let _: () = msg_send![listen_shortcut_label, setDrawsBackground: NO];
-  let _: () = msg_send![listen_shortcut_label, setEditable: NO];
-  let _: () = msg_send![listen_shortcut_label, setSelectable: NO];
-  let _: () = msg_send![listen_shortcut_label, setAlignment: 0isize];
-  let _: () = msg_send![general_container, addSubview: listen_shortcut_label];
-
-  let listen_mod_x = paste_method_popup_x;
-  let listen_mod_shift = make_settings_mod_checkbox(
-    general_container,
-    "⇧",
-    listen_mod_x,
-    listen_shortcut_y,
-    MOD_SHIFT as i64,
-  );
-  let listen_mod_control = make_settings_mod_checkbox(
-    general_container,
-    "⌃",
-    listen_mod_x + SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP,
-    listen_shortcut_y,
-    MOD_CONTROL as i64,
-  );
-  let listen_mod_option = make_settings_mod_checkbox(
-    general_container,
-    "⌥",
-    listen_mod_x + (SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP) * 2.0,
-    listen_shortcut_y,
-    MOD_OPTION as i64,
-  );
-  let listen_mod_command = make_settings_mod_checkbox(
-    general_container,
-    "⌘",
-    listen_mod_x + (SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP) * 3.0,
-    listen_shortcut_y,
-    MOD_COMMAND as i64,
-  );
-  let space_hint_frame = NSRect::new(
-    NSPoint::new(
-      listen_mod_x + (SETTINGS_MODIFIER_WIDTH + SETTINGS_MODIFIER_GAP) * 4.0 + 4.0,
-      listen_shortcut_y + 4.0,
-    ),
-    NSSize::new(SETTINGS_SPACE_HINT_WIDTH, SETTINGS_CONTROL_HEIGHT),
-  );
-  let space_hint = make_onboarding_label("+ Space", space_hint_frame, 12.0, false);
-  let _: () = msg_send![general_container, addSubview: space_hint];
-
-  let append_trailing_space_y =
-    listen_shortcut_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let append_trailing_space_frame = NSRect::new(
-    NSPoint::new(0.0, append_trailing_space_y),
-    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let append_trailing_space_checkbox: id = msg_send![class!(NSButton), alloc];
-  let append_trailing_space_checkbox: id = msg_send![
-      append_trailing_space_checkbox,
-      initWithFrame: append_trailing_space_frame
-  ];
-  let _: () = msg_send![append_trailing_space_checkbox, setButtonType: 3usize];
-  let _: () = msg_send![
-      append_trailing_space_checkbox,
-      setTitle: NSString::alloc(nil).init_str("Append trailing space after paste")
-  ];
-  let _: () = msg_send![
-      append_trailing_space_checkbox,
-      setAction: sel!(settingsToggleAppendTrailingSpace:)
-  ];
-  let _: () = msg_send![general_container, addSubview: append_trailing_space_checkbox];
-
-  // -- Removed words --
-  let removed_words_y =
-    append_trailing_space_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let removed_words_label_frame = NSRect::new(
-    NSPoint::new(0.0, removed_words_y),
-    NSSize::new(SETTINGS_LABEL_WIDTH, SETTINGS_CONTROL_HEIGHT),
-  );
-  let removed_words_label: id = msg_send![class!(NSTextField), alloc];
-  let removed_words_label: id =
-    msg_send![removed_words_label, initWithFrame: removed_words_label_frame];
-  let _: () = msg_send![
-      removed_words_label,
-      setStringValue: NSString::alloc(nil).init_str("Removed words")
-  ];
-  let _: () = msg_send![removed_words_label, setBezeled: NO];
-  let _: () = msg_send![removed_words_label, setDrawsBackground: NO];
-  let _: () = msg_send![removed_words_label, setEditable: NO];
-  let _: () = msg_send![removed_words_label, setSelectable: NO];
-  let _: () = msg_send![removed_words_label, setAlignment: 0isize];
-  let _: () = msg_send![general_container, addSubview: removed_words_label];
-
-  let tags_x = SETTINGS_LABEL_WIDTH + 10.0;
-  let tags_width = content_width - tags_x;
-  let removed_words_tags_frame = NSRect::new(
-    NSPoint::new(tags_x, removed_words_y),
-    NSSize::new(tags_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let removed_words_tags_view: id = msg_send![class!(NSView), alloc];
-  let removed_words_tags_view: id =
-    msg_send![removed_words_tags_view, initWithFrame: removed_words_tags_frame];
-  let _: () = msg_send![general_container, addSubview: removed_words_tags_view];
-
-  let input_y = removed_words_y - SETTINGS_CONTROL_HEIGHT - 6.0;
-  let input_width = 160.0f64;
-  let removed_words_input_frame =
-    NSRect::new(NSPoint::new(tags_x, input_y), NSSize::new(input_width, SETTINGS_CONTROL_HEIGHT));
-  let removed_words_input: id = msg_send![class!(NSTextField), alloc];
-  let removed_words_input: id =
-    msg_send![removed_words_input, initWithFrame: removed_words_input_frame];
-  let _: () = msg_send![
-      removed_words_input,
-      setPlaceholderString: NSString::alloc(nil).init_str("Enter word")
-  ];
-  let _: () = msg_send![general_container, addSubview: removed_words_input];
-
-  let add_button_frame = NSRect::new(
-    NSPoint::new(tags_x + input_width + 8.0, input_y),
-    NSSize::new(60.0, SETTINGS_CONTROL_HEIGHT),
-  );
-  let removed_words_add_button: id = msg_send![class!(NSButton), alloc];
-  let removed_words_add_button: id =
-    msg_send![removed_words_add_button, initWithFrame: add_button_frame];
-  let _: () = msg_send![removed_words_add_button, setBezelStyle: 1usize];
-  let _: () = msg_send![
-      removed_words_add_button,
-      setTitle: NSString::alloc(nil).init_str("Add")
-  ];
-  let _: () = msg_send![removed_words_add_button, setAction: sel!(settingsAddRemovedWord:)];
-  let _: () = msg_send![general_container, addSubview: removed_words_add_button];
-
-  // -- Models tab content --
-  let models_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-
-  let models_name_frame = NSRect::new(
-    NSPoint::new(0.0, models_top_y),
-    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let models_name_label: id = msg_send![class!(NSTextField), alloc];
-  let models_name_label: id = msg_send![models_name_label, initWithFrame: models_name_frame];
-  let _: () = msg_send![models_name_label, setStringValue: NSString::alloc(nil).init_str("")];
-  let _: () = msg_send![models_name_label, setBezeled: NO];
-  let _: () = msg_send![models_name_label, setDrawsBackground: NO];
-  let _: () = msg_send![models_name_label, setEditable: NO];
-  let _: () = msg_send![models_name_label, setSelectable: NO];
-  let bold_font: id = msg_send![class!(NSFont), boldSystemFontOfSize: 14.0f64];
-  if bold_font != nil {
-    let _: () = msg_send![models_name_label, setFont: bold_font];
-  }
-  let _: () = msg_send![models_container, addSubview: models_name_label];
-
-  let models_desc_y = models_top_y - SETTINGS_CONTROL_HEIGHT - 4.0;
-  let models_desc_frame = NSRect::new(
-    NSPoint::new(0.0, models_desc_y),
-    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let models_desc_label: id = msg_send![class!(NSTextField), alloc];
-  let models_desc_label: id = msg_send![models_desc_label, initWithFrame: models_desc_frame];
-  let _: () = msg_send![models_desc_label, setStringValue: NSString::alloc(nil).init_str("")];
-  let _: () = msg_send![models_desc_label, setBezeled: NO];
-  let _: () = msg_send![models_desc_label, setDrawsBackground: NO];
-  let _: () = msg_send![models_desc_label, setEditable: NO];
-  let _: () = msg_send![models_desc_label, setSelectable: NO];
-  let secondary_color: id = msg_send![class!(NSColor), secondaryLabelColor];
-  let _: () = msg_send![models_desc_label, setTextColor: secondary_color];
-  let _: () = msg_send![models_container, addSubview: models_desc_label];
-
-  let models_status_y = models_desc_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let models_status_frame = NSRect::new(
-    NSPoint::new(0.0, models_status_y),
-    NSSize::new(content_width, SETTINGS_CONTROL_HEIGHT),
-  );
-  let models_status_label: id = msg_send![class!(NSTextField), alloc];
-  let models_status_label: id = msg_send![models_status_label, initWithFrame: models_status_frame];
-  let _: () = msg_send![
-      models_status_label,
-      setStringValue: NSString::alloc(nil).init_str("Checking...")
-  ];
-  let _: () = msg_send![models_status_label, setBezeled: NO];
-  let _: () = msg_send![models_status_label, setDrawsBackground: NO];
-  let _: () = msg_send![models_status_label, setEditable: NO];
-  let _: () = msg_send![models_status_label, setSelectable: NO];
-  let _: () = msg_send![models_container, addSubview: models_status_label];
-
-  let models_progress_y = models_status_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let models_progress_frame =
-    NSRect::new(NSPoint::new(0.0, models_progress_y + 4.0), NSSize::new(content_width, 16.0));
-  let models_progress_indicator: id = msg_send![class!(NSProgressIndicator), alloc];
-  let models_progress_indicator: id =
-    msg_send![models_progress_indicator, initWithFrame: models_progress_frame];
-  let _: () = msg_send![models_progress_indicator, setStyle: 0isize]; // NSProgressIndicatorStyleBar
-  let _: () = msg_send![models_progress_indicator, setIndeterminate: NO];
-  let _: () = msg_send![models_progress_indicator, setMinValue: 0.0f64];
-  let _: () = msg_send![models_progress_indicator, setMaxValue: 100.0f64];
-  let _: () = msg_send![models_progress_indicator, setDoubleValue: 0.0f64];
-  let _: () = msg_send![models_progress_indicator, setHidden: YES];
-  let _: () = msg_send![models_container, addSubview: models_progress_indicator];
-
-  let models_button_y = models_progress_y - SETTINGS_CONTROL_HEIGHT - SETTINGS_CONTROL_VERTICAL_GAP;
-  let models_download_frame =
-    NSRect::new(NSPoint::new(0.0, models_button_y), NSSize::new(120.0, SETTINGS_CONTROL_HEIGHT));
-  let models_download_button: id = msg_send![class!(NSButton), alloc];
-  let models_download_button: id =
-    msg_send![models_download_button, initWithFrame: models_download_frame];
-  let _: () = msg_send![models_download_button, setBezelStyle: 1usize];
-  let _: () = msg_send![
-      models_download_button,
-      setTitle: NSString::alloc(nil).init_str("Download")
-  ];
-  let _: () = msg_send![models_download_button, setAction: sel!(settingsDownloadModel:)];
-  let _: () = msg_send![models_download_button, setTag: 0isize];
-  let _: () = msg_send![models_container, addSubview: models_download_button];
-
-  let models_cancel_frame =
-    NSRect::new(NSPoint::new(130.0, models_button_y), NSSize::new(90.0, SETTINGS_CONTROL_HEIGHT));
-  let models_cancel_button: id = msg_send![class!(NSButton), alloc];
-  let models_cancel_button: id =
-    msg_send![models_cancel_button, initWithFrame: models_cancel_frame];
-  let _: () = msg_send![models_cancel_button, setBezelStyle: 1usize];
-  let _: () = msg_send![
-      models_cancel_button,
-      setTitle: NSString::alloc(nil).init_str("Cancel")
-  ];
-  let _: () = msg_send![models_cancel_button, setAction: sel!(settingsCancelDownload:)];
-  let _: () = msg_send![models_cancel_button, setHidden: YES];
-  let _: () = msg_send![models_container, addSubview: models_cancel_button];
-
-  // -- Debug tab content --
-  let debug_top_y = content_height - SETTINGS_TOP_MARGIN - SETTINGS_CONTROL_HEIGHT;
-  let debug_checkbox_frame =
-    NSRect::new(NSPoint::new(0.0, debug_top_y), NSSize::new(320.0, SETTINGS_CONTROL_HEIGHT));
-  let debug_checkbox: id = msg_send![class!(NSButton), alloc];
-  let debug_checkbox: id = msg_send![debug_checkbox, initWithFrame: debug_checkbox_frame];
-  let _: () = msg_send![debug_checkbox, setButtonType: 3usize];
-  let _: () = msg_send![
-      debug_checkbox,
-      setTitle: NSString::alloc(nil).init_str("Enable debug statistics")
-  ];
-  let _: () = msg_send![debug_checkbox, setAction: sel!(settingsToggleDebug:)];
-
-  let refresh_x = content_width - SETTINGS_REFRESH_WIDTH;
-  let refresh_frame = NSRect::new(
-    NSPoint::new(refresh_x, debug_top_y),
-    NSSize::new(SETTINGS_REFRESH_WIDTH, SETTINGS_CONTROL_HEIGHT),
-  );
-  let refresh_button: id = msg_send![class!(NSButton), alloc];
-  let refresh_button: id = msg_send![refresh_button, initWithFrame: refresh_frame];
-  let _: () = msg_send![refresh_button, setBezelStyle: 1usize];
-  let _: () = msg_send![refresh_button, setTitle: NSString::alloc(nil).init_str("Refresh")];
-  let _: () = msg_send![refresh_button, setAction: sel!(settingsRefresh:)];
-
-  let metrics_height = (debug_top_y - SETTINGS_METRICS_TOP_GAP).max(SETTINGS_CONTROL_HEIGHT * 2.0);
-  let scroll_frame =
-    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(content_width, metrics_height));
-  let scroll_view: id = msg_send![class!(NSScrollView), alloc];
-  let scroll_view: id = msg_send![scroll_view, initWithFrame: scroll_frame];
-  let _: () = msg_send![scroll_view, setHasVerticalScroller: YES];
-
-  let text_frame = NSRect::new(
-    NSPoint::new(0.0, 0.0),
-    NSSize::new(scroll_frame.size.width, scroll_frame.size.height),
-  );
-  let metrics_text_view: id = msg_send![class!(NSTextView), alloc];
-  let metrics_text_view: id = msg_send![metrics_text_view, initWithFrame: text_frame];
-  let _: () = msg_send![metrics_text_view, setEditable: NO];
-  let _: () = msg_send![metrics_text_view, setSelectable: YES];
-  let _: () = msg_send![metrics_text_view, setRichText: NO];
-  let mono_font: id = msg_send![class!(NSFont), userFixedPitchFontOfSize: 12.0f64];
-  if mono_font != nil {
-    let _: () = msg_send![metrics_text_view, setFont: mono_font];
-  }
-  let _: () = msg_send![metrics_text_view, setString: NSString::alloc(nil).init_str("")];
-  let _: () = msg_send![scroll_view, setDocumentView: metrics_text_view];
-
-  if let Some(delegate) = STATUS_DELEGATE_REF.with(|slot| *slot.borrow()) {
-    let _: () = msg_send![window, setDelegate: delegate];
-    let _: () = msg_send![tab_list_view, setDelegate: delegate];
-    let _: () = msg_send![tab_list_view, setDataSource: delegate];
-    let _: () = msg_send![run_on_startup_checkbox, setTarget: delegate];
-    let _: () = msg_send![paste_method_popup, setTarget: delegate];
-    let _: () = msg_send![auto_submit_popup, setTarget: delegate];
-    let _: () = msg_send![overlay_position_popup, setTarget: delegate];
-    let _: () = msg_send![listen_mod_shift, setTarget: delegate];
-    let _: () = msg_send![listen_mod_control, setTarget: delegate];
-    let _: () = msg_send![listen_mod_option, setTarget: delegate];
-    let _: () = msg_send![listen_mod_command, setTarget: delegate];
-    let _: () = msg_send![append_trailing_space_checkbox, setTarget: delegate];
-    let _: () = msg_send![removed_words_add_button, setTarget: delegate];
-    let _: () = msg_send![models_download_button, setTarget: delegate];
-    let _: () = msg_send![models_cancel_button, setTarget: delegate];
-    let _: () = msg_send![debug_checkbox, setTarget: delegate];
-    let _: () = msg_send![refresh_button, setTarget: delegate];
-  }
-
-  let _: () = msg_send![sidebar_scroll, setDocumentView: tab_list_view];
-  let _: () = msg_send![body_view, addSubview: general_container];
-  let _: () = msg_send![body_view, addSubview: models_container];
-  let _: () = msg_send![body_view, addSubview: permissions_container];
-  let _: () = msg_send![debug_container, addSubview: debug_checkbox];
-  let _: () = msg_send![debug_container, addSubview: refresh_button];
-  let _: () = msg_send![debug_container, addSubview: scroll_view];
-  let _: () = msg_send![body_view, addSubview: debug_container];
-  let _: () = msg_send![body_view, addSubview: connectors_container];
-  let _: () = msg_send![tab_list_view, reloadData];
-
-  // Build-info footer (bottom-right corner of the window). Tiny dim text so
-  // it sits visually behind the controls, selectable so the user can copy
-  // the git SHA when filing reports. Values come from `build.rs` via
-  // `cargo:rustc-env`. Anchored in `content_view` (not `body_view`) so it
-  // sits in the window's bottom inset margin and doesn't compete for space
-  // with the tab content.
-  let build_info_text = format!("{} · {}", env!("AZAD_BUILD_GIT_SHA"), env!("AZAD_BUILD_TIME"));
-  let build_info_str = NSString::alloc(nil).init_str(&build_info_text);
-  let build_info_label: id = msg_send![class!(NSTextField), alloc];
-  let build_info_w: f64 = 280.0;
-  let build_info_h: f64 = 14.0;
-  let build_info_frame = NSRect::new(
-    NSPoint::new(SETTINGS_WINDOW_WIDTH - build_info_w - 8.0, 4.0),
-    NSSize::new(build_info_w, build_info_h),
-  );
-  let build_info_label: id = msg_send![build_info_label, initWithFrame: build_info_frame];
-  let _: () = msg_send![build_info_label, setStringValue: build_info_str];
-  let _: () = msg_send![build_info_label, setBezeled: NO];
-  let _: () = msg_send![build_info_label, setDrawsBackground: NO];
-  let _: () = msg_send![build_info_label, setEditable: NO];
-  let _: () = msg_send![build_info_label, setSelectable: YES];
-  let _: () = msg_send![build_info_label, setAlignment: 2isize]; // right
-  let build_info_font: id = msg_send![class!(NSFont), systemFontOfSize: 10.0f64];
-  let _: () = msg_send![build_info_label, setFont: build_info_font];
-  let build_info_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, 0.5, 0.5, 0.5, 1.0);
-  let _: () = msg_send![build_info_label, setTextColor: build_info_color];
-  let _: () = msg_send![
-      build_info_label,
-      setAutoresizingMask: NS_VIEW_MIN_X_MARGIN | NS_VIEW_MAX_Y_MARGIN
-  ];
-  let _: () = msg_send![content_view, addSubview: build_info_label];
-
-  let refs = SettingsWindowRefs {
-    window,
-    tab_list_view,
-    general_container,
-    models_container,
-    permissions_container,
-    perm_accessibility_status,
-    perm_microphone_status,
-    debug_container,
-    connectors_container,
-    connectors_checkboxes_view,
-    run_on_startup_checkbox,
-    paste_method_popup,
-    auto_submit_popup,
-    overlay_position_popup,
-    listen_mod_shift,
-    listen_mod_control,
-    listen_mod_option,
-    listen_mod_command,
-    append_trailing_space_checkbox,
-    removed_words_tags_view,
-    removed_words_input,
-    removed_words_add_button,
-    debug_checkbox,
-    metrics_text_view,
-    models_name_label,
-    models_desc_label,
-    models_status_label,
-    models_progress_indicator,
-    models_download_button,
-    models_cancel_button,
-  };
-  apply_settings_selected_tab(refs, SettingsTab::General);
-  refs
 }
 
 unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
