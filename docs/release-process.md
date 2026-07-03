@@ -14,5 +14,14 @@ Required release secrets:
 - `APPLE_TEAM_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 
+Store these as GitHub Actions secrets, preferably on a protected `release`
+environment with required reviewers. Do not commit certificates, passwords,
+exported keychains, or notarization profiles to the repository.
+
+The workflow expects `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64` to be a base64
+encoded `.p12` export of a Developer ID Application certificate. The `.p12`
+password goes in `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`. `APPLE_KEYCHAIN_PASSWORD`
+is any strong temporary password used only for the ephemeral CI keychain.
+
 For local release builds, `.codesign.env` provides defaults and explicit
 environment variables override values from that file.

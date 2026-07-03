@@ -11,6 +11,7 @@ permissions:
 jobs:
   macos-dmg:
     runs-on: macos-latest
+    environment: release
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +23,36 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           echo "AZAD_VERSION=$version" >> "$GITHUB_ENV"
           echo "DMG_PATH=dist/Azad-${version}.dmg" >> "$GITHUB_ENV"
+
+      - name: Check release secrets
+        env:
+          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 \
+            APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD \
+            APPLE_KEYCHAIN_PASSWORD \
+            APPLE_ID \
+            APPLE_TEAM_ID \
+            APPLE_APP_SPECIFIC_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "Missing required GitHub Actions release secrets:"
+            printf '  %s\n' "${missing[@]}"
+            echo "Add them to the repository or protected release environment before publishing a signed release."
+            exit 1
+          fi
 
       - name: Import Developer ID certificate
         env:
