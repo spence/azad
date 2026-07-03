@@ -146,3 +146,26 @@ Use `just reset-permissions` to reset prompts during development.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Changelog
+
+### 0.2.0
+
+- Replaced Parakeet ASR with [Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) on MLX for streaming and finalization.
+- Replaced ggml VAD with [Silero VAD v6.2.1 CoreML](https://huggingface.co/aufklarer/Silero-VAD-v6.2.1-CoreML).
+- Removed idle CPU spinning by blocking audio capture instead of polling, based on Andrew Schreiber's closed PR [#1](https://github.com/spence/azad/pull/1).
+- Cleaned up the project for public source installs with owned crates, no submodules, and focused app/ASR/platform modules.
+
+### 0.1.1
+
+- Added "Hey Claude" support through the external Local Agent Gateway project.
+- Added streamed Claude replies, follow-up turns, and gateway error handling in the overlay.
+- Added transcript history lookup with keyboard navigation, search, expansion, timestamps, and paste-on-Enter.
+- Added configurable listen modifiers, removed-words settings, and trailing-space paste behavior.
+
+### 0.1.0
+
+- Initial macOS menu bar dictation release with local capture, overlay feedback, paste automation, and model downloads.
+- Used [Parakeet realtime EOU 120M ONNX](https://huggingface.co/altunenes/parakeet-rs) for streaming/end-of-utterance text.
+- Used [Parakeet TDT 0.6B v3 ONNX](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx) for finalization.
+- Used [Silero VAD v6.2.0 ggml](https://huggingface.co/ggml-org/whisper-vad) through the old whisper.cpp-era runtime path.

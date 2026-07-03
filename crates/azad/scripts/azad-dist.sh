@@ -47,7 +47,7 @@ for var in \
 done
 
 LABEL="ai.azad"
-VERSION="${AZAD_VERSION:-0.1.0}"
+VERSION="${AZAD_VERSION:-0.2.0}"
 SIGNING_IDENTITY="${AZAD_SIGNING_IDENTITY:-}"
 NOTARIZATION_PROFILE="${AZAD_NOTARIZATION_PROFILE:-azad-notarization}"
 
@@ -74,7 +74,7 @@ Required environment variables:
   AZAD_SIGNING_IDENTITY    Developer ID Application identity (name or hash)
 
 Optional environment variables:
-  AZAD_VERSION             Version string (default: 0.1.0)
+  AZAD_VERSION             Version string (default: 0.2.0)
   AZAD_NOTARIZATION_PROFILE  notarytool credential profile (default: azad-notarization)
                              Create with: xcrun notarytool store-credentials "azad-notarization"
   AZAD_CONFIG              Local env file (default: <workspace>/.codesign.env)
