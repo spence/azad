@@ -87,6 +87,7 @@ pub struct SettingsViewModel {
   pub auto_submit_index: i64,
   pub overlay_position_index: i64,
   pub append_trailing_space_on_paste: bool,
+  pub deduplicate_words_on_paste: bool,
   pub listen_modifiers: u8,
   pub debug_stats_enabled: bool,
   pub metrics_text: String,

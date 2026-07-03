@@ -135,6 +135,7 @@ public struct SettingsViewModel: Codable {
     public let autoSubmitIndex: Int
     public let overlayPositionIndex: Int
     public let appendTrailingSpaceOnPaste: Bool
+    public let deduplicateWordsOnPaste: Bool
     public let listenModifiers: UInt8
     public let debugStatsEnabled: Bool
     public let metricsText: String
@@ -152,6 +153,7 @@ public struct SettingsViewModel: Codable {
         autoSubmitIndex: Int,
         overlayPositionIndex: Int,
         appendTrailingSpaceOnPaste: Bool,
+        deduplicateWordsOnPaste: Bool,
         listenModifiers: UInt8,
         debugStatsEnabled: Bool,
         metricsText: String,
@@ -168,6 +170,7 @@ public struct SettingsViewModel: Codable {
         self.autoSubmitIndex = autoSubmitIndex
         self.overlayPositionIndex = overlayPositionIndex
         self.appendTrailingSpaceOnPaste = appendTrailingSpaceOnPaste
+        self.deduplicateWordsOnPaste = deduplicateWordsOnPaste
         self.listenModifiers = listenModifiers
         self.debugStatsEnabled = debugStatsEnabled
         self.metricsText = metricsText

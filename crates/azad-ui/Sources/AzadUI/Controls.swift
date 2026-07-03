@@ -162,22 +162,28 @@ final class PermissionCard: NSView {
         target: AnyObject?,
         action: Selector?,
         compactGranted: Bool = false,
-        showMissingHint: Bool = true
+        showMissingHint: Bool = true,
+        framed: Bool = true
     ) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.backgroundColor = Design.panel.cgColor
-        layer?.cornerRadius = 8
-        layer?.borderColor = Design.border.cgColor
-        layer?.borderWidth = 1
+        if framed {
+            wantsLayer = true
+            layer?.backgroundColor = Design.panel.cgColor
+            layer?.cornerRadius = 8
+            layer?.borderColor = Design.border.cgColor
+            layer?.borderWidth = 1
+        }
 
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
-        stack.pinToSuperview(NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14))
+        let insets = framed
+            ? NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+            : NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        stack.pinToSuperview(insets)
 
         addPermissionRow(
             to: stack,

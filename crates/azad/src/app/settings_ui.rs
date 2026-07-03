@@ -239,6 +239,12 @@ impl AppController {
     platform::update_settings_window(self.settings_view_model());
   }
 
+  pub(super) fn handle_settings_toggle_deduplicate_words(&mut self, enabled: bool) {
+    self.deduplicate_words_on_paste = enabled;
+    preferred_store::save_deduplicate_words_on_paste(enabled);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
   pub(super) fn handle_settings_toggle_connector(&mut self, index: usize, enabled: bool) {
     let Some(connector) = self.connectors.get_mut(index) else {
       return;
@@ -351,6 +357,7 @@ impl AppController {
       auto_submit_index: self.auto_submit_mode.ui_index(),
       overlay_position_index: self.overlay_position.ui_index(),
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
+      deduplicate_words_on_paste: self.deduplicate_words_on_paste,
       listen_modifiers: platform::listen_modifiers(),
       debug_stats_enabled: self.debug_stats_enabled,
       metrics_text,

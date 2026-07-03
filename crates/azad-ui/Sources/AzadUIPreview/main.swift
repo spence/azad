@@ -136,6 +136,7 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         autoSubmitIndex: 0,
         overlayPositionIndex: 0,
         appendTrailingSpaceOnPaste: true,
+        deduplicateWordsOnPaste: true,
         listenModifiers: 4,
         debugStatsEnabled: true,
         metricsText: """

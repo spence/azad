@@ -132,8 +132,12 @@ impl AppController {
 
   pub(super) fn paste_from_history(&mut self) {
     if let Some(text) = self.selected_history_entry_text() {
-      let paste_text =
-        build_paste_text(&text, self.append_trailing_space_on_paste, &self.removed_words);
+      let paste_text = build_paste_text(
+        &text,
+        self.append_trailing_space_on_paste,
+        &self.removed_words,
+        self.deduplicate_words_on_paste,
+      );
       // Release search key capture before firing synthetic paste keystrokes so
       // the focused app receives the chord instead of the history search field.
       platform::set_overlay_key_input_enabled(false);

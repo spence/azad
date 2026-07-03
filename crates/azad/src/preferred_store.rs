@@ -15,6 +15,7 @@ const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
 const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
 const OVERLAY_POSITION_KEY: &str = "AzadOverlayPosition";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
+const DEDUPLICATE_WORDS_KEY: &str = "AzadDeduplicateWordsOnPaste";
 const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
 const ENABLED_CONNECTORS_KEY: &str = "AzadEnabledConnectors";
@@ -359,6 +360,37 @@ pub fn save_append_trailing_space_on_paste(enabled: bool) {
     }
 
     let key = NSString::alloc(nil).init_str(APPEND_TRAILING_SPACE_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn load_deduplicate_words_on_paste() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return true;
+    }
+
+    let key = NSString::alloc(nil).init_str(DEDUPLICATE_WORDS_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return true;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
+}
+
+pub fn save_deduplicate_words_on_paste(enabled: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(DEDUPLICATE_WORDS_KEY);
     let value = if enabled { YES } else { NO };
     let _: () = msg_send![defaults, setBool: value forKey: key];
   }

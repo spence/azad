@@ -267,6 +267,9 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
     ("settings", "toggleAppendTrailingSpace") => {
       UiEventAction::Send(AppEvent::SettingsToggleAppendTrailingSpace(bool_value()))
     }
+    ("settings", "toggleDeduplicateWords") => {
+      UiEventAction::Send(AppEvent::SettingsToggleDeduplicateWords(bool_value()))
+    }
     ("settings", "setListenModifier") => UiEventAction::Send(AppEvent::SettingsSetListenModifier {
       bit: event.bit.unwrap_or(0),
       enabled: bool_value(),
@@ -324,6 +327,24 @@ mod tests {
     };
     match app_event_for_ui_event(&event) {
       UiEventAction::Send(AppEvent::SettingsSelectPasteMethod(PasteMethod::DirectTyping)) => {}
+      _ => panic!("unexpected event mapping"),
+    }
+  }
+
+  #[test]
+  fn settings_deduplicate_words_event_maps_to_app_event() {
+    let event = UiEvent {
+      surface: "settings".to_string(),
+      action: "toggleDeduplicateWords".to_string(),
+      bool_value: Some(false),
+      index: None,
+      bit: None,
+      value: None,
+      pack_id: None,
+      permission: None,
+    };
+    match app_event_for_ui_event(&event) {
+      UiEventAction::Send(AppEvent::SettingsToggleDeduplicateWords(false)) => {}
       _ => panic!("unexpected event mapping"),
     }
   }

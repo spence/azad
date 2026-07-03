@@ -85,6 +85,7 @@ pub enum AppEvent {
   SettingsSelectAutoSubmit(AutoSubmitMode),
   SettingsSelectOverlayPosition(OverlayPosition),
   SettingsToggleAppendTrailingSpace(bool),
+  SettingsToggleDeduplicateWords(bool),
   SettingsSetListenModifier {
     bit: u8,
     enabled: bool,
@@ -303,6 +304,7 @@ struct AppController {
   paste_method: PasteMethod,
   auto_submit_mode: AutoSubmitMode,
   append_trailing_space_on_paste: bool,
+  deduplicate_words_on_paste: bool,
   overlay_position: OverlayPosition,
   debug_stats_enabled: bool,
   turn_started_at: HashMap<u64, Instant>,
@@ -517,6 +519,7 @@ impl AppController {
     let paste_method = preferred_store::load_paste_method();
     let auto_submit_mode = preferred_store::load_auto_submit_mode();
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
+    let deduplicate_words_on_paste = preferred_store::load_deduplicate_words_on_paste();
     let overlay_position = preferred_store::load_overlay_position();
     let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
     platform::set_overlay_debug_logs_enabled(debug_stats_enabled);
@@ -578,6 +581,7 @@ impl AppController {
       paste_method,
       auto_submit_mode,
       append_trailing_space_on_paste,
+      deduplicate_words_on_paste,
       overlay_position,
       debug_stats_enabled,
       turn_started_at: HashMap::new(),
@@ -795,6 +799,9 @@ impl AppController {
       }
       AppEvent::SettingsToggleAppendTrailingSpace(enabled) => {
         self.handle_settings_toggle_append_trailing_space(enabled)
+      }
+      AppEvent::SettingsToggleDeduplicateWords(enabled) => {
+        self.handle_settings_toggle_deduplicate_words(enabled)
       }
       AppEvent::SettingsSetListenModifier { bit, enabled } => {
         self.handle_settings_set_listen_modifier(bit, enabled)
@@ -2783,8 +2790,12 @@ impl AppController {
   fn try_paste(&mut self, turn_id: u64, mode: TranscriptMode, text: &str) -> bool {
     let text = self.strip_active_trigger(text);
     let text = text.as_str();
-    let paste_text =
-      build_paste_text(text, self.append_trailing_space_on_paste, &self.removed_words);
+    let paste_text = build_paste_text(
+      text,
+      self.append_trailing_space_on_paste,
+      &self.removed_words,
+      self.deduplicate_words_on_paste,
+    );
 
     if !matches!(self.paste_method, PasteMethod::ClipboardPaste) {
       let payload_json =

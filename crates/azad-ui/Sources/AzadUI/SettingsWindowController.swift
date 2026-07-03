@@ -58,6 +58,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             autoSubmitIndex: model.autoSubmitIndex,
             overlayPositionIndex: model.overlayPositionIndex,
             appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
+            deduplicateWordsOnPaste: model.deduplicateWordsOnPaste,
             listenModifiers: model.listenModifiers,
             debugStatsEnabled: model.debugStatsEnabled,
             metricsText: model.metricsText,
@@ -194,6 +195,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
 
         stack.addArrangedSubview(FormRow(label: "Trailing space", control: Design.checkbox("Append trailing space after paste", checked: model.appendTrailingSpaceOnPaste, target: self, action: #selector(toggleTrailingSpace(_:)))))
+        stack.addArrangedSubview(FormRow(label: "Repeated words", control: Design.checkbox("Collapse adjacent duplicate words", checked: model.deduplicateWordsOnPaste, target: self, action: #selector(toggleDeduplicateWords(_:)))))
 
         stack.addArrangedSubview(removedWordsRow(model))
         return stack
@@ -259,15 +261,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func modelsPane(_ model: SettingsViewModel) -> NSView {
-        let pane = cardPane(height: 150)
-        let stack = pane.stack
+        let stack = paneStack()
         let title = Design.label("\(model.model.settingsName) ↗", size: 15, weight: .semibold, color: Design.blue)
         stack.addArrangedSubview(title)
         stack.addArrangedSubview(Design.label(model.model.description, size: 13, color: Design.secondaryText))
         let row = ModelRowView(model: model.model, compact: false, target: self, downloadAction: #selector(downloadModel), cancelAction: #selector(cancelDownload))
         stack.addArrangedSubview(row)
         row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return pane.root
+        return stack
     }
 
     private func permissionsPane(_ model: SettingsViewModel) -> NSView {
@@ -280,7 +281,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             target: self,
             action: #selector(openPermission(_:)),
             compactGranted: false,
-            showMissingHint: false
+            showMissingHint: false,
+            framed: false
         )
         root.addSubview(card)
 
@@ -291,10 +293,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             card.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             card.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             card.topAnchor.constraint(equalTo: root.topAnchor),
-            card.heightAnchor.constraint(equalToConstant: 86),
+            card.heightAnchor.constraint(equalToConstant: 72),
             hint.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             hint.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            hint.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 18),
+            hint.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 12),
         ])
         return root
     }
@@ -332,7 +334,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         text.isSelectable = true
         text.drawsBackground = false
         text.textColor = Design.secondaryText
-        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        text.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         text.string = model.metricsText
         scroll.documentView = text
         metricsPanel.addSubview(scroll)
@@ -425,25 +427,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return container
     }
 
-    private func cardPane(height: CGFloat) -> (root: NSView, panel: NSView, stack: NSStackView) {
-        let root = NSView()
-        root.translatesAutoresizingMaskIntoConstraints = false
-
-        let panel = Design.roundedPanel()
-        root.addSubview(panel)
-        NSLayoutConstraint.activate([
-            panel.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            panel.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            panel.topAnchor.constraint(equalTo: root.topAnchor),
-            panel.heightAnchor.constraint(equalToConstant: height),
-        ])
-
-        let stack = paneStack()
-        panel.addSubview(stack)
-        stack.pinToSuperview(NSEdgeInsets(top: 24, left: 30, bottom: 24, right: 30))
-        return (root, panel, stack)
-    }
-
     private func paneStack() -> NSStackView {
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -476,6 +459,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleTrailingSpace(_ sender: NSButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleAppendTrailingSpace", boolValue: sender.state == .on))
+    }
+
+    @objc private func toggleDeduplicateWords(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleDeduplicateWords", boolValue: sender.state == .on))
     }
 
     @objc private func toggleModifier(_ sender: KeycapButton) {

@@ -2,13 +2,16 @@ pub(super) fn build_paste_text(
   text: &str,
   append_trailing_space: bool,
   removed_words: &[String],
+  deduplicate_words: bool,
 ) -> String {
   let mut paste_text = if removed_words.is_empty() {
     text.to_string()
   } else {
     strip_removed_words(text, removed_words)
   };
-  paste_text = collapse_consecutive_duplicates(&paste_text);
+  if deduplicate_words {
+    paste_text = collapse_consecutive_duplicates(&paste_text);
+  }
   if append_trailing_space && !paste_text.chars().last().is_some_and(|ch| ch.is_whitespace()) {
     paste_text.push(' ');
   }
@@ -107,44 +110,44 @@ mod tests {
 
   #[test]
   fn build_paste_text_appends_trailing_space_when_enabled() {
-    assert_eq!(build_paste_text("hello", true, &[]), "hello ");
-    assert_eq!(build_paste_text("hello ", true, &[]), "hello ");
+    assert_eq!(build_paste_text("hello", true, &[], true), "hello ");
+    assert_eq!(build_paste_text("hello ", true, &[], true), "hello ");
   }
 
   #[test]
   fn build_paste_text_preserves_input_when_trailing_space_is_disabled() {
-    assert_eq!(build_paste_text("hello", false, &[]), "hello");
-    assert_eq!(build_paste_text("hello ", false, &[]), "hello ");
+    assert_eq!(build_paste_text("hello", false, &[], true), "hello");
+    assert_eq!(build_paste_text("hello ", false, &[], true), "hello ");
   }
 
   #[test]
   fn build_paste_text_strips_removed_words() {
     let words = vec!["um".to_string(), "ah".to_string()];
     assert_eq!(
-      build_paste_text("um I think ah this is right um", false, &words),
+      build_paste_text("um I think ah this is right um", false, &words, true),
       "I think this is right"
     );
-    assert_eq!(build_paste_text("Um hello Ah world", false, &words), "hello world");
+    assert_eq!(build_paste_text("Um hello Ah world", false, &words, true), "hello world");
   }
 
   #[test]
   fn build_paste_text_strips_removed_word_at_boundaries() {
     let words = vec!["um".to_string()];
-    assert_eq!(build_paste_text("um", false, &words), "");
-    assert_eq!(build_paste_text("um hello", false, &words), "hello");
-    assert_eq!(build_paste_text("hello um", false, &words), "hello");
-    assert_eq!(build_paste_text("yummy", false, &words), "yummy");
+    assert_eq!(build_paste_text("um", false, &words, true), "");
+    assert_eq!(build_paste_text("um hello", false, &words, true), "hello");
+    assert_eq!(build_paste_text("hello um", false, &words, true), "hello");
+    assert_eq!(build_paste_text("yummy", false, &words, true), "yummy");
   }
 
   #[test]
   fn build_paste_text_strips_removed_words_with_punctuation() {
     let words = vec!["um".to_string(), "ah".to_string()];
     assert_eq!(
-      build_paste_text("Um, I think this is right.", false, &words),
+      build_paste_text("Um, I think this is right.", false, &words, true),
       "I think this is right."
     );
-    assert_eq!(build_paste_text("Ah. Hello world.", false, &words), "Hello world.");
-    assert_eq!(build_paste_text("um, ah, hello", false, &words), "hello");
+    assert_eq!(build_paste_text("Ah. Hello world.", false, &words, true), "Hello world.");
+    assert_eq!(build_paste_text("um, ah, hello", false, &words, true), "hello");
   }
 
   #[test]
@@ -222,6 +225,12 @@ mod tests {
     // input first becomes "the the cat" (filler stripped), then "the cat"
     // (dedup'd). Pins ordering inside `build_paste_text`.
     let words = vec!["um".to_string()];
-    assert_eq!(build_paste_text("um the the cat", false, &words), "the cat");
+    assert_eq!(build_paste_text("um the the cat", false, &words, true), "the cat");
+  }
+
+  #[test]
+  fn build_paste_text_can_preserve_duplicate_words() {
+    let words = vec!["um".to_string()];
+    assert_eq!(build_paste_text("um no no", false, &words, false), "no no");
   }
 }
