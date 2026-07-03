@@ -87,7 +87,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sidebar.orientation = .vertical
         sidebar.alignment = .leading
         sidebar.spacing = 8
-        sidebar.edgeInsets = NSEdgeInsets(top: 16, left: 14, bottom: 16, right: 12)
+        sidebar.edgeInsets = NSEdgeInsets(top: 16, left: 12, bottom: 16, right: 14)
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         sidebar.wantsLayer = true
         sidebar.layer?.backgroundColor = Design.panel.cgColor
@@ -160,8 +160,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             (.general, "sun.max", "General"),
             (.models, "arrow.down.circle", "Models"),
             (.permissions, "lock", "Permissions"),
-            (.debug, "chart.bar", "Debug"),
             (.connectors, "link", "Connectors"),
+            (.debug, "chart.bar", "Debug"),
         ]
         for row in rows {
             let button = SidebarButton(tab: row.0, icon: row.1, title: row.2, selected: row.0 == selectedTab, target: self, action: #selector(selectTab(_:)))
@@ -492,8 +492,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 final class SidebarButton: NSButton {
     let tab: SettingsTab
-    private let iconView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "")
+    private let iconView = PassthroughImageView()
+    private let titleLabel = PassthroughTextField(labelWithString: "")
 
     init(tab: SettingsTab, icon: String, title: String, selected: Bool, target: AnyObject?, action: Selector?) {
         self.tab = tab
@@ -521,11 +521,11 @@ final class SidebarButton: NSButton {
         addSubview(titleLabel)
 
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -535,8 +535,20 @@ final class SidebarButton: NSButton {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func mouseDown(with event: NSEvent) {
+        performClick(nil)
+    }
+}
+
+final class PassthroughImageView: NSImageView {
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        nil
+    }
+}
+
+final class PassthroughTextField: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }
 

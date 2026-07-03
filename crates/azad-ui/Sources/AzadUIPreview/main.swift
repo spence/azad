@@ -202,13 +202,13 @@ class FlippedView: NSView {
 
 final class MenuPreviewPanel: FlippedView {
     private let expanded: Bool
-    private let panelWidth: CGFloat = 280
+    private let panelWidth: CGFloat
     private let rowHeight: CGFloat = 24
     private let headerHeight: CGFloat = 28
     private let leading: CGFloat = 14
     private let iconSize: CGFloat = 16
     private let labelOffsetY: CGFloat = 1
-    private let devices = [
+    private static let devices = [
         "Loop120 by Shokz",
         "BlackHole 2ch",
         "daedalus Microphone",
@@ -218,7 +218,8 @@ final class MenuPreviewPanel: FlippedView {
 
     init(expanded: Bool) {
         self.expanded = expanded
-        let height: CGFloat = expanded ? 296 : 152
+        self.panelWidth = Self.width(expanded: expanded)
+        let height: CGFloat = expanded ? 296 : 168
         super.init(frame: NSRect(x: 0, y: 0, width: panelWidth, height: height))
         wantsLayer = true
         layer?.backgroundColor = NSColor(calibratedWhite: 0.055, alpha: 1).cgColor
@@ -239,17 +240,17 @@ final class MenuPreviewPanel: FlippedView {
 
         let deviceTitle = expanded ? "Loop120 by Shokz" : "MacBook Pro Microphone"
         add(symbol("mic", x: leading, y: 72, size: 16))
-        add(label(deviceTitle, x: deviceTitleX, y: 71 + labelOffsetY, width: 204, size: 14, weight: .semibold))
+        add(label(deviceTitle, x: deviceTitleX, y: 71 + labelOffsetY, width: panelWidth - deviceTitleX - 36, size: 14, weight: .semibold))
         add(symbol(expanded ? "chevron.down" : "chevron.right", x: panelWidth - 28, y: 75, size: 10, color: PreviewStyle.secondaryText))
 
         var bottomSeparatorY: CGFloat = 98
         if expanded {
             var y: CGFloat = 100
-            for (idx, device) in devices.enumerated() {
+            for (idx, device) in Self.devices.enumerated() {
                 if idx == 0 {
-                    add(label("✓", x: leading, y: y + labelOffsetY, width: iconSize, size: 14, weight: .semibold))
+                    add(symbol("checkmark", x: leading, y: y + labelOffsetY, size: 14, color: PreviewStyle.text))
                 }
-                add(label(device, x: deviceTitleX, y: y + labelOffsetY, width: 220, size: 14, weight: .semibold))
+                add(label(device, x: deviceTitleX, y: y + labelOffsetY, width: panelWidth - deviceTitleX - 18, size: 14, weight: .semibold))
                 y += rowHeight
             }
             bottomSeparatorY = y + 6
@@ -262,6 +263,21 @@ final class MenuPreviewPanel: FlippedView {
 
     private var deviceTitleX: CGFloat {
         leading + iconSize + 1
+    }
+
+    private static func width(expanded: Bool) -> CGFloat {
+        let labels = expanded ? devices : ["MacBook Pro Microphone"]
+        let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        let labelWidth = labels.map { textWidth($0, font: font) }.max() ?? 0
+        let deviceTitleX: CGFloat = 31
+        let headerWidth = deviceTitleX + labelWidth + 8 + 10 + 12 + 10
+        let actionWidth = max(textWidth("Settings...", font: font), textWidth("Quit Azad", font: font)) + 32
+        let listenWidth = textWidth("Listen", font: font) + 16 + 10 + 32 + 12 + 10
+        return max(220, ceil(max(headerWidth, actionWidth, listenWidth) * 1.10))
+    }
+
+    private static func textWidth(_ text: String, font: NSFont) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
     }
 
     private func add(_ view: NSView) {

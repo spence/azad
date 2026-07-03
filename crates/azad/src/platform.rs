@@ -71,8 +71,8 @@ const OVERLAY_RAW_BADGE_BOTTOM_INSET: f64 = 9.0;
 const OVERLAY_HOLD_BADGE_WIDTH: f64 = 46.0;
 const OVERLAY_HOLD_BADGE_HEIGHT: f64 = 16.0;
 const OVERLAY_BADGE_GAP: f64 = 8.0;
-const DEVICE_HEADER_WIDTH: f64 = 280.0;
 const DEVICE_HEADER_MIN_WIDTH: f64 = 220.0;
+const DEVICE_HEADER_WIDTH: f64 = DEVICE_HEADER_MIN_WIDTH;
 const DEVICE_HEADER_HEIGHT: f64 = 28.0;
 const DEVICE_HEADER_TEXT_LEADING: f64 = 14.0;
 const DEVICE_HEADER_ICON_SIZE: f64 = 16.0;
@@ -97,8 +97,8 @@ const DEVICE_MENU_ROW_CHROME_WIDTH: f64 = 46.0;
 const DEVICE_MENU_INDENT_LEVEL_WIDTH: f64 = 16.0;
 const DEVICE_MENU_CHECKMARK_WIDTH: f64 = 18.0;
 const DEVICE_MENU_TEXT_SAFETY_PADDING: f64 = 10.0;
+const DEVICE_MENU_WIDTH_RIGHT_PADDING_RATIO: f64 = 0.10;
 const DEVICE_MENU_SCREEN_EDGE_MARGIN: f64 = 24.0;
-const DEVICE_HEADER_MENU_COMPENSATION: f64 = 22.0;
 const LISTEN_NOTICE_CARD_ALPHA: f64 = 0.92;
 const LISTEN_NOTICE_WAVE_BASE_ALPHA: f64 = 0.060;
 const LISTEN_NOTICE_WAVE_PEAK_ALPHA: f64 = 0.170;
@@ -244,6 +244,7 @@ thread_local! {
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static SEARCH_FIELD_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static ALWAYS_LISTENING_VIEW_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_TRACK_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_THUMB_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static DEVICE_HEADER_VIEW_REF: RefCell<Option<id>> = const { RefCell::new(None) };
@@ -255,6 +256,7 @@ thread_local! {
     static DEVICE_HEADER_OPEN_MAX_WIDTH: RefCell<Option<f64>> = const { RefCell::new(None) };
     static DEVICE_MENU_OPEN_MAX_WIDTH: RefCell<Option<f64>> = const { RefCell::new(None) };
     static DEVICE_ROW_IDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static DEVICE_ROW_VIEW_REFS: RefCell<Vec<id>> = const { RefCell::new(Vec::new()) };
     static DEVICE_MENU_MODEL: RefCell<DeviceMenuModel> = RefCell::new(DeviceMenuModel::default());
     static HOTKEY_MANAGER_REF: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
     // Short-TTL cache of the active-window display frame so ActiveWindow mode
@@ -1052,7 +1054,7 @@ fn register_device_row_view_class() -> &'static Class {
       ClassDecl::new("AzadDeviceRowView", superclass).expect("failed to declare device row view");
 
     decl.add_ivar::<id>("highlightView");
-    decl.add_ivar::<id>("checkLabel");
+    decl.add_ivar::<id>("checkView");
     decl.add_ivar::<id>("titleLabel");
     decl.add_ivar::<id>("trackingArea");
     decl.add_ivar::<i64>("deviceTag");
@@ -1262,9 +1264,9 @@ unsafe fn set_device_row_highlighted(view: id, highlighted: bool) {
     msg_send![class!(NSColor), labelColor]
   };
 
-  let check_label: id = *obj.get_ivar("checkLabel");
-  if check_label != nil {
-    let _: () = msg_send![check_label, setTextColor: color];
+  let check_view: id = *obj.get_ivar("checkView");
+  if check_view != nil {
+    set_image_view_tint_if_supported(check_view, color);
   }
   let title_label: id = *obj.get_ivar("titleLabel");
   if title_label != nil {
@@ -1568,8 +1570,9 @@ fn reset_device_menu_open_width_sticky_state() {
 
 fn adjusted_header_row_width(base_width: f64) -> f64 {
   let max_width = menu_screen_width_cap();
-  let adjusted = (base_width + DEVICE_HEADER_MENU_COMPENSATION).min(max_width);
-  if adjusted.is_finite() && adjusted > 0.0 { adjusted } else { base_width }
+  let min_width = DEVICE_HEADER_MIN_WIDTH.min(max_width);
+  let adjusted = base_width.max(min_width).min(max_width);
+  if adjusted.is_finite() && adjusted > 0.0 { adjusted } else { min_width }
 }
 
 fn schedule_menu_layout_sync(delegate: id) {
@@ -1637,16 +1640,42 @@ fn relayout_device_header_row(view_width: f64) {
   if !view_width.is_finite() || view_width <= 0.0 {
     return;
   }
-  let view_height = DEVICE_HEADER_HEIGHT;
 
   unsafe {
+    ALWAYS_LISTENING_VIEW_REF.with(|slot| {
+      if let Some(view) = *slot.borrow() {
+        let _: () = msg_send![
+            view,
+            setFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(view_width, ALWAYS_LISTENING_ROW_HEIGHT)
+            )
+        ];
+      }
+    });
+
     DEVICE_HEADER_VIEW_REF.with(|slot| {
       if let Some(view) = *slot.borrow() {
         let _: () = msg_send![
             view,
             setFrame: NSRect::new(
                 NSPoint::new(0.0, 0.0),
-                NSSize::new(view_width, view_height)
+                NSSize::new(view_width, DEVICE_HEADER_HEIGHT)
+            )
+        ];
+      }
+    });
+
+    DEVICE_ROW_VIEW_REFS.with(|rows| {
+      for view in rows.borrow().iter().copied() {
+        if view == nil {
+          continue;
+        }
+        let _: () = msg_send![
+            view,
+            setFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(view_width, DEVICE_MENU_ROW_HEIGHT)
             )
         ];
       }
@@ -1657,27 +1686,38 @@ fn relayout_device_header_row(view_width: f64) {
 fn compute_device_menu_target_width(model: &DeviceMenuModel) -> f64 {
   unsafe {
     let font = menu_row_font();
-    let mut max_width = DEVICE_HEADER_MIN_WIDTH;
+    let mut content_width: f64 = 0.0;
 
-    max_width = max_width.max(always_listening_row_width(font));
-    max_width = max_width.max(menu_row_width_for_text("Quit Azad", font, 0, false));
-    max_width = max_width.max(menu_row_width_for_text("Settings...", font, 0, false));
+    content_width = content_width.max(always_listening_row_width(font));
+    content_width = content_width.max(menu_row_width_for_text("Quit Azad", font, 0, false));
+    content_width = content_width.max(menu_row_width_for_text("Settings...", font, 0, false));
 
     if model.expanded {
       if model.rows.is_empty() {
-        max_width = max_width.max(device_menu_row_width_for_label("No input devices", font));
+        content_width =
+          content_width.max(device_menu_row_width_for_label("No input devices", font));
       } else {
         for row in &model.rows {
-          max_width = max_width.max(device_menu_row_width_for_label(&row.label, font));
+          content_width = content_width.max(device_menu_row_width_for_label(&row.label, font));
         }
       }
     }
 
-    max_width = max_width.max(device_header_width_for_label(&device_header_label(model), font));
+    content_width =
+      content_width.max(device_header_width_for_label(&device_header_label(model), font));
 
     let screen_cap = menu_screen_width_cap();
-    max_width.min(screen_cap)
+    device_menu_width_with_padding(content_width)
+      .max(DEVICE_HEADER_MIN_WIDTH)
+      .min(screen_cap)
   }
+}
+
+fn device_menu_width_with_padding(content_width: f64) -> f64 {
+  if !content_width.is_finite() || content_width <= 0.0 {
+    return DEVICE_HEADER_MIN_WIDTH;
+  }
+  content_width + (content_width * DEVICE_MENU_WIDTH_RIGHT_PADDING_RATIO)
 }
 
 unsafe fn always_listening_row_width(font: id) -> f64 {
@@ -1779,6 +1819,9 @@ fn menu_screen_width_cap() -> f64 {
 }
 
 fn build_menu_fresh(menu: id, delegate: id, model: &DeviceMenuModel) {
+  DEVICE_ROW_IDS.with(|rows| rows.borrow_mut().clear());
+  DEVICE_ROW_VIEW_REFS.with(|rows| rows.borrow_mut().clear());
+
   unsafe {
     let _: () = msg_send![menu, removeAllItems];
 
@@ -2114,6 +2157,9 @@ unsafe fn make_always_listening_item(delegate: id, enabled: bool) -> id {
   let _: () = msg_send![view, addSubview: row_button];
   let _: () = msg_send![item, setView: view];
 
+  ALWAYS_LISTENING_VIEW_REF.with(|slot| {
+    slot.borrow_mut().replace(view);
+  });
   ALWAYS_LISTENING_TRACK_REF.with(|slot| {
     slot.borrow_mut().replace(track_view);
   });
@@ -2281,6 +2327,7 @@ fn clear_device_rows(menu: id) {
   }
 
   DEVICE_ROW_IDS.with(|rows| rows.borrow_mut().clear());
+  DEVICE_ROW_VIEW_REFS.with(|rows| rows.borrow_mut().clear());
 }
 
 unsafe fn insert_device_rows(menu: id, _delegate: id, model: &DeviceMenuModel, mut insert_at: i64) {
@@ -2354,19 +2401,15 @@ unsafe fn make_device_row_item(label: &str, checked: bool, tag: i64, enabled: bo
     NSPoint::new(DEVICE_HEADER_TEXT_LEADING, text_y),
     NSSize::new(DEVICE_HEADER_ICON_SIZE, DEVICE_HEADER_LABEL_HEIGHT),
   );
-  let check_label: id = msg_send![class!(NSTextField), alloc];
-  let check_label: id = msg_send![check_label, initWithFrame: check_frame];
-  let _: () = msg_send![
-    check_label,
-    setStringValue: NSString::alloc(nil).init_str(if checked { "✓" } else { "" })
-  ];
-  let _: () = msg_send![check_label, setBezeled: NO];
-  let _: () = msg_send![check_label, setDrawsBackground: NO];
-  let _: () = msg_send![check_label, setEditable: NO];
-  let _: () = msg_send![check_label, setSelectable: NO];
-  let _: () = msg_send![check_label, setAlignment: 1isize];
-  let _: () = msg_send![check_label, setFont: font];
-  let _: () = msg_send![check_label, setTextColor: text_color];
+  let check_view: id = msg_send![class!(NSImageView), alloc];
+  let check_view: id = msg_send![check_view, initWithFrame: check_frame];
+  if checked {
+    let image = system_symbol_image("checkmark", "NSMenuOnStateTemplate");
+    if image != nil {
+      let _: () = msg_send![check_view, setImage: image];
+    }
+  }
+  set_image_view_tint_if_supported(check_view, text_color);
 
   let title_x = device_header_title_x();
   let title_width = DEVICE_HEADER_WIDTH - title_x - DEVICE_HEADER_TRAILING;
@@ -2387,16 +2430,18 @@ unsafe fn make_device_row_item(label: &str, checked: bool, tag: i64, enabled: bo
   let _: () = msg_send![title_label, setTextColor: text_color];
 
   let _: () = msg_send![view, addSubview: highlight_view];
-  let _: () = msg_send![view, addSubview: check_label];
+  let _: () = msg_send![view, addSubview: check_view];
   let _: () = msg_send![view, addSubview: title_label];
 
   set_objc_ivar(view, "highlightView", highlight_view);
-  set_objc_ivar(view, "checkLabel", check_label);
+  set_objc_ivar(view, "checkView", check_view);
   set_objc_ivar(view, "titleLabel", title_label);
   set_objc_ivar(view, "trackingArea", nil as id);
   set_objc_ivar(view, "deviceTag", tag);
   set_objc_ivar(view, "rowEnabled", if enabled { 1_u8 } else { 0_u8 });
   let _: () = msg_send![view, updateTrackingAreas];
+
+  DEVICE_ROW_VIEW_REFS.with(|rows| rows.borrow_mut().push(view));
 
   let _: () = msg_send![item, setView: view];
   item

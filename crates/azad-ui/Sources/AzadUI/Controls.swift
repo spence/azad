@@ -80,8 +80,8 @@ final class ShortcutView: NSStackView {
             addArrangedSubview(button)
         }
         addArrangedSubview(Design.label("+", size: 13, color: Design.mutedText))
-        let space = Design.label("Space", size: 13, weight: .medium, color: Design.text)
-        space.alignment = .center
+        let space = NSView()
+        space.translatesAutoresizingMaskIntoConstraints = false
         space.wantsLayer = true
         space.layer?.backgroundColor = Design.control.cgColor
         space.layer?.borderColor = Design.border.cgColor
@@ -89,6 +89,14 @@ final class ShortcutView: NSStackView {
         space.layer?.cornerRadius = 6
         space.widthAnchor.constraint(equalToConstant: 78).isActive = true
         space.heightAnchor.constraint(equalToConstant: 30).isActive = true
+
+        let spaceLabel = Design.label("Space", size: 13, weight: .medium, color: Design.text)
+        spaceLabel.alignment = .center
+        space.addSubview(spaceLabel)
+        NSLayoutConstraint.activate([
+            spaceLabel.centerXAnchor.constraint(equalTo: space.centerXAnchor),
+            spaceLabel.centerYAnchor.constraint(equalTo: space.centerYAnchor),
+        ])
         addArrangedSubview(space)
     }
 
