@@ -147,13 +147,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         row.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(row)
 
-        let icon = NSImageView(image: NSImage(named: "NSApplicationIcon") ?? NSImage())
-        icon.wantsLayer = true
-        icon.layer?.cornerRadius = 8
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        row.addArrangedSubview(icon)
+        row.addArrangedSubview(Design.appIconView())
 
         let text = NSStackView()
         text.orientation = .vertical
@@ -256,4 +250,3 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "openPermission", permission: sender.identifier?.rawValue))
     }
 }
-

@@ -229,33 +229,49 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func modelsPane(_ model: SettingsViewModel) -> NSView {
-        let panel = Design.roundedPanel()
-        let stack = paneStack()
-        panel.addSubview(stack)
-        stack.pinToSuperview(NSEdgeInsets(top: 28, left: 30, bottom: 28, right: 30))
+        let pane = cardPane(height: 150)
+        let stack = pane.stack
         let title = Design.label("\(model.model.settingsName) ↗", size: 15, weight: .semibold, color: Design.blue)
         stack.addArrangedSubview(title)
         stack.addArrangedSubview(Design.label(model.model.description, size: 13, color: Design.secondaryText))
         let row = ModelRowView(model: model.model, compact: false, target: self, downloadAction: #selector(downloadModel), cancelAction: #selector(cancelDownload))
         stack.addArrangedSubview(row)
-        return panel
+        row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return pane.root
     }
 
     private func permissionsPane(_ model: SettingsViewModel) -> NSView {
-        let panel = Design.roundedPanel()
-        let stack = paneStack()
-        panel.addSubview(stack)
-        stack.pinToSuperview(NSEdgeInsets(top: 24, left: 30, bottom: 24, right: 30))
-        stack.addArrangedSubview(PermissionCard(accessibility: model.accessibilityStatus, microphone: model.microphoneStatus, target: self, action: #selector(openPermission(_:)), compactGranted: false))
-        stack.addArrangedSubview(Design.label("Required to capture audio and insert text. Click Open Settings to grant.", size: 12, color: Design.mutedText))
-        return panel
+        let root = NSView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let card = PermissionCard(
+            accessibility: model.accessibilityStatus,
+            microphone: model.microphoneStatus,
+            target: self,
+            action: #selector(openPermission(_:)),
+            compactGranted: false,
+            showMissingHint: false
+        )
+        root.addSubview(card)
+
+        let hint = Design.label("Required to capture audio and insert text. Click Open Settings to grant.", size: 12, color: Design.mutedText)
+        root.addSubview(hint)
+
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            card.topAnchor.constraint(equalTo: root.topAnchor),
+            card.heightAnchor.constraint(equalToConstant: 86),
+            hint.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            hint.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            hint.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 18),
+        ])
+        return root
     }
 
     private func debugPane(_ model: SettingsViewModel) -> NSView {
-        let panel = Design.roundedPanel()
-        let stack = paneStack()
-        panel.addSubview(stack)
-        stack.pinToSuperview(NSEdgeInsets(top: 24, left: 30, bottom: 24, right: 30))
+        let pane = cardPane(height: 250)
+        let stack = pane.stack
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -267,12 +283,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         refresh.widthAnchor.constraint(equalToConstant: 88).isActive = true
         row.addArrangedSubview(refresh)
         stack.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.heightAnchor.constraint(equalToConstant: 190).isActive = true
+        scroll.heightAnchor.constraint(equalToConstant: 155).isActive = true
         let text = NSTextView()
         text.isEditable = false
         text.isSelectable = true
@@ -283,14 +300,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         text.string = model.metricsText
         scroll.documentView = text
         stack.addArrangedSubview(scroll)
-        return panel
+        scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return pane.root
     }
 
     private func connectorsPane(_ model: SettingsViewModel) -> NSView {
-        let panel = Design.roundedPanel()
-        let stack = paneStack()
-        panel.addSubview(stack)
-        stack.pinToSuperview(NSEdgeInsets(top: 24, left: 30, bottom: 24, right: 30))
+        let pane = cardPane(height: 205)
+        let stack = pane.stack
         stack.addArrangedSubview(Design.label("Open an utterance with a connector's phrase to tag it.", size: 12, color: Design.mutedText))
 
         for (index, connector) in model.connectors.enumerated() {
@@ -298,6 +314,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 10
+            row.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
             row.translatesAutoresizingMaskIntoConstraints = false
             row.wantsLayer = true
             row.layer?.backgroundColor = Design.panel.cgColor
@@ -306,7 +323,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             row.layer?.cornerRadius = 8
             row.heightAnchor.constraint(equalToConstant: 58).isActive = true
 
-            let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleConnector(_:)))
+            let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
             checkbox.state = connector.enabled ? .on : .off
             checkbox.tag = index
             row.addArrangedSubview(checkbox)
@@ -329,6 +346,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             phrase.heightAnchor.constraint(equalToConstant: 24).isActive = true
             row.addArrangedSubview(phrase)
             stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
         let placeholder = Design.label("Additional connectors appear here", size: 13, color: Design.mutedText)
@@ -339,7 +357,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         placeholder.layer?.cornerRadius = 8
         placeholder.heightAnchor.constraint(equalToConstant: 54).isActive = true
         stack.addArrangedSubview(placeholder)
-        return panel
+        placeholder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return pane.root
+    }
+
+    private func cardPane(height: CGFloat) -> (root: NSView, panel: NSView, stack: NSStackView) {
+        let root = NSView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let panel = Design.roundedPanel()
+        root.addSubview(panel)
+        NSLayoutConstraint.activate([
+            panel.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            panel.topAnchor.constraint(equalTo: root.topAnchor),
+            panel.heightAnchor.constraint(equalToConstant: height),
+        ])
+
+        let stack = paneStack()
+        panel.addSubview(stack)
+        stack.pinToSuperview(NSEdgeInsets(top: 24, left: 30, bottom: 24, right: 30))
+        return (root, panel, stack)
     }
 
     private func paneStack() -> NSStackView {

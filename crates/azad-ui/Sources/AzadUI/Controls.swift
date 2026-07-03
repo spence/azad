@@ -8,6 +8,14 @@ let modifierCommand: UInt8 = 8
 final class KeycapButton: NSButton {
     let bit: UInt8
 
+    override var state: NSControl.StateValue {
+        didSet { updateAppearance() }
+    }
+
+    override var isHighlighted: Bool {
+        didSet { updateAppearance() }
+    }
+
     init(title: String, bit: UInt8, mask: UInt8, target: AnyObject?, action: Selector?) {
         self.bit = bit
         super.init(frame: .zero)
@@ -15,17 +23,38 @@ final class KeycapButton: NSButton {
         self.target = target
         self.action = action
         setButtonType(.toggle)
-        bezelStyle = .rounded
+        isBordered = false
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        layer?.borderWidth = 1
         controlSize = .large
         font = .systemFont(ofSize: 15, weight: .medium)
         state = (mask & bit) != 0 ? .on : .off
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(equalToConstant: 34).isActive = true
         heightAnchor.constraint(equalToConstant: 30).isActive = true
+        updateAppearance()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    private func updateAppearance() {
+        let selected = state == .on
+        let background = selected
+            ? (isHighlighted ? Design.blue.withAlphaComponent(0.82) : Design.blue)
+            : Design.control
+        let foreground = selected ? NSColor.white : Design.text
+        layer?.backgroundColor = background.cgColor
+        layer?.borderColor = selected ? Design.blue.cgColor : Design.border.cgColor
+        attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+                .foregroundColor: foreground,
+            ]
+        )
     }
 }
 
@@ -119,7 +148,14 @@ final class StatusTextView: NSStackView {
 }
 
 final class PermissionCard: NSView {
-    init(accessibility: PermissionStatus, microphone: PermissionStatus, target: AnyObject?, action: Selector?, compactGranted: Bool = false) {
+    init(
+        accessibility: PermissionStatus,
+        microphone: PermissionStatus,
+        target: AnyObject?,
+        action: Selector?,
+        compactGranted: Bool = false,
+        showMissingHint: Bool = true
+    ) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -157,7 +193,7 @@ final class PermissionCard: NSView {
             showButton: !compactGranted && microphone != .granted
         )
 
-        if !compactGranted && (accessibility != .granted || microphone != .granted) {
+        if showMissingHint && !compactGranted && (accessibility != .granted || microphone != .granted) {
             let hint = Design.label("Microphone and Accessibility are required to use Azad.", size: 12, color: Design.mutedText)
             hint.translatesAutoresizingMaskIntoConstraints = false
             stack.addArrangedSubview(hint)
@@ -223,8 +259,10 @@ final class ModelRowView: NSView {
         textStack.spacing = 2
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = Design.label(compact ? "\(model.welcomeName) ↗" : "\(model.settingsName) ↗", size: 13, weight: .medium, color: Design.blue)
-        textStack.addArrangedSubview(title)
+        if compact {
+            let title = Design.label("\(model.welcomeName) ↗", size: 13, weight: .medium, color: Design.blue)
+            textStack.addArrangedSubview(title)
+        }
 
         switch model.status {
         case .notDownloaded:
@@ -278,4 +316,3 @@ final class ModelRowView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 }
-

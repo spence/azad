@@ -1,5 +1,56 @@
 import AppKit
 
+private final class AzadUIBundleToken {}
+
+final class PrimaryActionButton: NSButton {
+    override var isEnabled: Bool {
+        didSet { updateAppearance() }
+    }
+
+    override var isHighlighted: Bool {
+        didSet { updateAppearance() }
+    }
+
+    init(title: String, target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+        isBordered = false
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        controlSize = .large
+        font = .systemFont(ofSize: 13, weight: .semibold)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 34).isActive = true
+        updateAppearance()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func updateAppearance() {
+        let background: NSColor
+        let foreground: NSColor
+        if isEnabled {
+            background = isHighlighted ? Design.blue.withAlphaComponent(0.82) : Design.blue
+            foreground = .white
+        } else {
+            background = Design.control
+            foreground = Design.mutedText
+        }
+        layer?.backgroundColor = background.cgColor
+        attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: foreground,
+            ]
+        )
+    }
+}
+
 enum Design {
     static let window = NSColor(calibratedRed: 0.132, green: 0.132, blue: 0.145, alpha: 1.0)
     static let panel = NSColor(calibratedRed: 0.112, green: 0.112, blue: 0.124, alpha: 1.0)
@@ -48,7 +99,14 @@ enum Design {
         let button = NSButton(checkboxWithTitle: title, target: target, action: action)
         button.state = checked ? .on : .off
         button.font = .systemFont(ofSize: 13)
-        button.contentTintColor = Design.text
+        button.contentTintColor = Design.blue
+        button.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13),
+                .foregroundColor: Design.text,
+            ]
+        )
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
     }
@@ -63,10 +121,7 @@ enum Design {
     }
 
     static func primaryButton(_ title: String, target: AnyObject?, action: Selector?) -> NSButton {
-        let button = pushButton(title, target: target, action: action)
-        button.bezelColor = .systemBlue
-        button.contentTintColor = .white
-        return button
+        PrimaryActionButton(title: title, target: target, action: action)
     }
 
     static func symbol(_ name: String, pointSize: CGFloat = 15, color: NSColor = Design.secondaryText) -> NSImageView {
@@ -78,6 +133,29 @@ enum Design {
         view.widthAnchor.constraint(equalToConstant: pointSize + 4).isActive = true
         view.heightAnchor.constraint(equalToConstant: pointSize + 4).isActive = true
         return view
+    }
+
+    static func appIconView(size: CGFloat = 32) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = Design.control.cgColor
+        container.layer?.cornerRadius = 8
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.widthAnchor.constraint(equalToConstant: size).isActive = true
+        container.heightAnchor.constraint(equalToConstant: size).isActive = true
+
+        let imageView = NSImageView(image: appIconImage())
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(imageView)
+        NSLayoutConstraint.activate([
+            imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
+            imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6),
+            imageView.topAnchor.constraint(equalTo: container.topAnchor, constant: 5),
+            imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -5),
+        ])
+
+        return container
     }
 
     static func roundedPanel(radius: CGFloat = 8) -> NSView {
@@ -99,6 +177,18 @@ enum Design {
         view.heightAnchor.constraint(equalToConstant: 1).isActive = true
         return view
     }
+
+    private static func appIconImage() -> NSImage {
+        if let url = Bundle.main.url(forResource: "azad-white", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        if let url = Bundle(for: AzadUIBundleToken.self).url(forResource: "azad-white", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return NSApp.applicationIconImage
+    }
 }
 
 extension NSView {
@@ -113,4 +203,3 @@ extension NSView {
         ])
     }
 }
-
