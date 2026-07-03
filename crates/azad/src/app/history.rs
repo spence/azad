@@ -1,7 +1,8 @@
 use crate::input_log::InputLogEvent;
 use crate::platform;
+use azad_text::{PasteTextOptions, build_paste_text};
 
-use super::{AppController, build_paste_text};
+use super::AppController;
 
 const HISTORY_SEARCH_LIMIT: usize = 1000;
 
@@ -134,9 +135,12 @@ impl AppController {
     if let Some(text) = self.selected_history_entry_text() {
       let paste_text = build_paste_text(
         &text,
-        self.append_trailing_space_on_paste,
-        &self.removed_words,
-        self.deduplicate_words_on_paste,
+        PasteTextOptions {
+          append_trailing_space: self.append_trailing_space_on_paste,
+          removed_words: &self.removed_words,
+          deduplicate_words: self.deduplicate_words_on_paste,
+          convert_number_words: self.convert_number_words_on_paste,
+        },
       );
       // Release search key capture before firing synthetic paste keystrokes so
       // the focused app receives the chord instead of the history search field.

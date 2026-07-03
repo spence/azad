@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum SettingsTab {
   #[default]
   General,
+  Text,
   Models,
   Permissions,
   Debug,
@@ -89,6 +90,7 @@ pub struct SettingsViewModel {
   pub overlay_position_index: i64,
   pub append_trailing_space_on_paste: bool,
   pub deduplicate_words_on_paste: bool,
+  pub convert_number_words_on_paste: bool,
   pub listen_modifiers: u8,
   pub debug_stats_enabled: bool,
   pub metrics_text: String,

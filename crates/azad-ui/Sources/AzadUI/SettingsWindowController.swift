@@ -58,6 +58,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             overlayPositionIndex: model.overlayPositionIndex,
             appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
             deduplicateWordsOnPaste: model.deduplicateWordsOnPaste,
+            convertNumberWordsOnPaste: model.convertNumberWordsOnPaste,
             listenModifiers: model.listenModifiers,
             debugStatsEnabled: model.debugStatsEnabled,
             metricsText: model.metricsText,
@@ -133,6 +134,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         switch selectedTab {
         case .general:
             pane = generalPane(model)
+        case .text:
+            pane = textPane(model)
         case .models:
             pane = modelsPane(model)
         case .permissions:
@@ -161,6 +164,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         let rows: [(SettingsTab, String, String)] = [
             (.general, "sun.max", "General"),
+            (.text, "textformat", "Text"),
             (.models, "arrow.down.circle", "Models"),
             (.permissions, "lock", "Permissions"),
             (.connectors, "link", "Connectors"),
@@ -193,8 +197,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         shortcutView = shortcut
         stack.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
 
+        return stack
+    }
+
+    private func textPane(_ model: SettingsViewModel) -> NSView {
+        let stack = paneStack()
+
         stack.addArrangedSubview(FormRow(label: "Trailing space", control: Design.checkbox("Append trailing space after paste", checked: model.appendTrailingSpaceOnPaste, target: self, action: #selector(toggleTrailingSpace(_:)))))
         stack.addArrangedSubview(FormRow(label: "Repeated words", control: Design.checkbox("Collapse adjacent duplicate words", checked: model.deduplicateWordsOnPaste, target: self, action: #selector(toggleDeduplicateWords(_:)))))
+        stack.addArrangedSubview(FormRow(label: "Numbers", control: Design.checkbox("Convert spoken numbers to digits", checked: model.convertNumberWordsOnPaste, target: self, action: #selector(toggleConvertNumberWords(_:)))))
 
         stack.addArrangedSubview(removedWordsRow(model))
         return stack
@@ -462,6 +473,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleDeduplicateWords(_ sender: NSButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleDeduplicateWords", boolValue: sender.state == .on))
+    }
+
+    @objc private func toggleConvertNumberWords(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleConvertNumberWords", boolValue: sender.state == .on))
     }
 
     @objc private func toggleModifier(_ sender: KeycapButton) {

@@ -269,6 +269,9 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
     ("settings", "toggleDeduplicateWords") => {
       UiEventAction::Send(AppEvent::SettingsToggleDeduplicateWords(bool_value()))
     }
+    ("settings", "toggleConvertNumberWords") => {
+      UiEventAction::Send(AppEvent::SettingsToggleConvertNumberWords(bool_value()))
+    }
     ("settings", "setListenModifier") => UiEventAction::Send(AppEvent::SettingsSetListenModifier {
       bit: event.bit.unwrap_or(0),
       enabled: bool_value(),
@@ -344,6 +347,24 @@ mod tests {
     };
     match app_event_for_ui_event(&event) {
       UiEventAction::Send(AppEvent::SettingsToggleDeduplicateWords(false)) => {}
+      _ => panic!("unexpected event mapping"),
+    }
+  }
+
+  #[test]
+  fn settings_convert_number_words_event_maps_to_app_event() {
+    let event = UiEvent {
+      surface: "settings".to_string(),
+      action: "toggleConvertNumberWords".to_string(),
+      bool_value: Some(true),
+      index: None,
+      bit: None,
+      value: None,
+      pack_id: None,
+      permission: None,
+    };
+    match app_event_for_ui_event(&event) {
+      UiEventAction::Send(AppEvent::SettingsToggleConvertNumberWords(true)) => {}
       _ => panic!("unexpected event mapping"),
     }
   }

@@ -2,6 +2,7 @@ import Foundation
 
 public enum SettingsTab: String, Codable, CaseIterable {
     case general
+    case text
     case models
     case permissions
     case debug
@@ -139,6 +140,7 @@ public struct SettingsViewModel: Codable {
     public let overlayPositionIndex: Int
     public let appendTrailingSpaceOnPaste: Bool
     public let deduplicateWordsOnPaste: Bool
+    public let convertNumberWordsOnPaste: Bool
     public let listenModifiers: UInt8
     public let debugStatsEnabled: Bool
     public let metricsText: String
@@ -157,6 +159,7 @@ public struct SettingsViewModel: Codable {
         overlayPositionIndex: Int,
         appendTrailingSpaceOnPaste: Bool,
         deduplicateWordsOnPaste: Bool,
+        convertNumberWordsOnPaste: Bool,
         listenModifiers: UInt8,
         debugStatsEnabled: Bool,
         metricsText: String,
@@ -174,6 +177,7 @@ public struct SettingsViewModel: Codable {
         self.overlayPositionIndex = overlayPositionIndex
         self.appendTrailingSpaceOnPaste = appendTrailingSpaceOnPaste
         self.deduplicateWordsOnPaste = deduplicateWordsOnPaste
+        self.convertNumberWordsOnPaste = convertNumberWordsOnPaste
         self.listenModifiers = listenModifiers
         self.debugStatsEnabled = debugStatsEnabled
         self.metricsText = metricsText

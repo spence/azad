@@ -131,6 +131,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "azad-asr",
+ "azad-text",
  "cocoa",
  "core-graphics 0.24.0",
  "enigo",
@@ -162,6 +163,10 @@ dependencies = [
  "serde_json",
  "symphonia",
 ]
+
+[[package]]
+name = "azad-text"
+version = "0.2.0"
 
 [[package]]
 name = "base64"

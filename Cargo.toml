@@ -2,6 +2,7 @@
 members = [
     "crates/azad",
     "crates/azad-asr",
+    "crates/azad-text",
 ]
 default-members = ["crates/azad"]
 resolver = "2"

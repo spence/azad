@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use asr::devices::DeviceStateSnapshot;
 use asr::pipeline::{DebugStatsEvent, EngineState};
+use azad_text::{PasteTextOptions, build_paste_text};
 
 use crate::config::AzadConfig;
 use crate::connectors;
@@ -25,7 +26,6 @@ use crate::transcript_history::TranscriptIndex;
 mod history;
 mod policy;
 mod settings_ui;
-mod text;
 
 use policy::{
   DraftOverlayAction, ListenToggleNotice, ManualHoldReleaseAction, SessionRecoveryState,
@@ -39,8 +39,6 @@ use policy::{
   split_overlay_visible_with_vad_hint_for_state, split_top_completion_for_state,
   turn_started_should_arm_pending,
 };
-use text::build_paste_text;
-
 const DEVICE_SWITCH_RESTART_DEBOUNCE_MS: u64 = 250;
 const OVERLAY_ACTIVITY_HISTORY_LEN: usize = 96;
 const OVERLAY_ACTIVITY_IDLE_TIMEOUT_MS: u64 = 220;
@@ -86,6 +84,7 @@ pub enum AppEvent {
   SettingsSelectOverlayPosition(OverlayPosition),
   SettingsToggleAppendTrailingSpace(bool),
   SettingsToggleDeduplicateWords(bool),
+  SettingsToggleConvertNumberWords(bool),
   SettingsSetListenModifier {
     bit: u8,
     enabled: bool,
@@ -308,6 +307,7 @@ struct AppController {
   auto_submit_mode: AutoSubmitMode,
   append_trailing_space_on_paste: bool,
   deduplicate_words_on_paste: bool,
+  convert_number_words_on_paste: bool,
   overlay_position: OverlayPosition,
   debug_stats_enabled: bool,
   turn_started_at: HashMap<u64, Instant>,
@@ -524,6 +524,7 @@ impl AppController {
     let auto_submit_mode = preferred_store::load_auto_submit_mode();
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
     let deduplicate_words_on_paste = preferred_store::load_deduplicate_words_on_paste();
+    let convert_number_words_on_paste = preferred_store::load_convert_number_words_on_paste();
     let overlay_position = preferred_store::load_overlay_position();
     let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
     platform::set_overlay_debug_logs_enabled(debug_stats_enabled);
@@ -586,6 +587,7 @@ impl AppController {
       auto_submit_mode,
       append_trailing_space_on_paste,
       deduplicate_words_on_paste,
+      convert_number_words_on_paste,
       overlay_position,
       debug_stats_enabled,
       turn_started_at: HashMap::new(),
@@ -807,6 +809,9 @@ impl AppController {
       }
       AppEvent::SettingsToggleDeduplicateWords(enabled) => {
         self.handle_settings_toggle_deduplicate_words(enabled)
+      }
+      AppEvent::SettingsToggleConvertNumberWords(enabled) => {
+        self.handle_settings_toggle_convert_number_words(enabled)
       }
       AppEvent::SettingsSetListenModifier { bit, enabled } => {
         self.handle_settings_set_listen_modifier(bit, enabled)
@@ -2809,9 +2814,12 @@ impl AppController {
     let text = text.as_str();
     let paste_text = build_paste_text(
       text,
-      self.append_trailing_space_on_paste,
-      &self.removed_words,
-      self.deduplicate_words_on_paste,
+      PasteTextOptions {
+        append_trailing_space: self.append_trailing_space_on_paste,
+        removed_words: &self.removed_words,
+        deduplicate_words: self.deduplicate_words_on_paste,
+        convert_number_words: self.convert_number_words_on_paste,
+      },
     );
 
     if !matches!(self.paste_method, PasteMethod::ClipboardPaste) {
