@@ -10,13 +10,20 @@ permissions:
 
 jobs:
   macos-dmg:
-    runs-on: macos-latest
+    runs-on: macos-26
     environment: release
     steps:
       - uses: actions/checkout@v4
 
       - name: Install tools
         run: brew install just cmake
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          swift --version
+          xcodebuild -version
 
       - name: Set version
         run: |

@@ -5,6 +5,9 @@ workflow imports a Developer ID certificate from GitHub Actions secrets, signs
 the app with hardened runtime, notarizes/staples the app and DMG, verifies the
 result, and uploads the DMG to the GitHub Release.
 
+The workflow runs on GitHub's `macos-26` hosted runner because the checked-in
+Swift MLX packages require Swift tools 6.2.
+
 Required release secrets:
 
 - `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`
