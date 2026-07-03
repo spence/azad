@@ -106,6 +106,12 @@ MIT. See [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.3.0
+
+- Rebuilt onboarding, settings, and menu-bar surfaces with native Swift/AppKit UI.
+- Added spoken-number-to-digit conversion for final text output.
+- Added a dedicated text setting tab for transformations.
+
 ### 0.2.0
 
 - Replaced Parakeet ASR with [Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) on MLX for streaming and finalization.
