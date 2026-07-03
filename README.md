@@ -3,6 +3,8 @@
 Azad is a macOS menu bar dictation app with local VAD, streaming ASR, final-pass
 refinement, overlay feedback, and paste automation.
 
+![Azad speech overlay](docs/images/readme-overlay.png)
+
 ## Install
 
 For normal use, install the signed and notarized DMG from GitHub Releases. That
