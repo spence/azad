@@ -413,9 +413,11 @@ impl PipelineControls {
         *slot = now;
       }
       // Wake the audio consumer so it resumes/pauses the CPAL stream promptly
-      // rather than after the next backstop timeout; this keeps press-to-capture
-      // latency instant despite the consumer blocking on `wake`.
-      self.wake.notify_all();
+      // rather than after the next backstop timeout. The paused-capture waiter
+      // checks `capture_enabled` while holding this same lock; taking it here
+      // prevents a capture-enable notify from landing between that check and
+      // the wait call.
+      self.notify_control_wake();
       if self.debug_stats_enabled() {
         let loc = std::panic::Location::caller();
         eprintln!(
@@ -439,11 +441,28 @@ impl PipelineControls {
     self.wake.notify_one();
   }
 
+  pub fn notify_control_wake(&self) {
+    if let Ok(_guard) = self.wake_lock.lock() {
+      self.wake.notify_all();
+    } else {
+      self.wake.notify_all();
+    }
+  }
+
   /// Block until the next `notify_audio`/`set_capture_enabled` signal, or until
   /// `backstop` elapses (whichever comes first). The consumer re-checks its own
   /// predicate after returning, so spurious and timed-out wakeups are benign.
   pub fn wait_for_wake(&self, backstop: Duration) {
     if let Ok(guard) = self.wake_lock.lock() {
+      let _ = self.wake.wait_timeout(guard, backstop);
+    }
+  }
+
+  pub fn wait_for_capture_enable_or_wake(&self, backstop: Duration) {
+    if let Ok(guard) = self.wake_lock.lock() {
+      if self.capture_enabled() {
+        return;
+      }
       let _ = self.wake.wait_timeout(guard, backstop);
     }
   }
@@ -4086,6 +4105,50 @@ mod tests {
       let next = next_capture_enabled.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
       controls.set_capture_enabled(next);
     });
+    let elapsed = rx.recv_timeout(std::time::Duration::from_secs(6)).unwrap();
+    handle.join().unwrap();
+
+    assert!(elapsed < std::time::Duration::from_secs(3));
+  }
+
+  #[test]
+  fn pipeline_controls_capture_enable_wakes_paused_waiter_before_backstop() {
+    let controls = std::sync::Arc::new(PipelineControls::default());
+    controls.set_capture_enabled(false);
+    let waiter_controls = controls.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter_done = done.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+      let start = std::time::Instant::now();
+      waiter_controls.wait_for_capture_enable_or_wake(std::time::Duration::from_secs(5));
+      tx.send(start.elapsed()).unwrap();
+      waiter_done.store(true, std::sync::atomic::Ordering::Release);
+    });
+
+    wake_until_waiter_returns(&controls, &done, |controls| controls.set_capture_enabled(true));
+    let elapsed = rx.recv_timeout(std::time::Duration::from_secs(6)).unwrap();
+    handle.join().unwrap();
+
+    assert!(elapsed < std::time::Duration::from_secs(3));
+  }
+
+  #[test]
+  fn pipeline_controls_control_wake_wakes_paused_waiter_before_backstop() {
+    let controls = std::sync::Arc::new(PipelineControls::default());
+    controls.set_capture_enabled(false);
+    let waiter_controls = controls.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter_done = done.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+      let start = std::time::Instant::now();
+      waiter_controls.wait_for_capture_enable_or_wake(std::time::Duration::from_secs(5));
+      tx.send(start.elapsed()).unwrap();
+      waiter_done.store(true, std::sync::atomic::Ordering::Release);
+    });
+
+    wake_until_waiter_returns(&controls, &done, |controls| controls.notify_control_wake());
     let elapsed = rx.recv_timeout(std::time::Duration::from_secs(6)).unwrap();
     handle.join().unwrap();
 

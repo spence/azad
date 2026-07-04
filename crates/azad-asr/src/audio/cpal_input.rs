@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 
 const PREFERRED_INPUT_BUFFER_FRAMES: u32 = 2048;
 
-/// Upper bound on how long `read_chunk` blocks between wake signals. The
-/// consumer is normally woken by the CPAL callback on audio or by
-/// `set_capture_enabled` on a state flip; this timeout bounds lost wakeups and
-/// CLI replay paths without `PipelineControls`.
-const WAKE_BACKSTOP: Duration = Duration::from_millis(50);
+/// Upper bound on how long `read_chunk` blocks between audio wake signals while
+/// capture is active. Audio callbacks normally wake the consumer immediately;
+/// this only bounds lost callback notifications and CLI replay paths without
+/// `PipelineControls`.
+const AUDIO_WAKE_BACKSTOP: Duration = Duration::from_millis(50);
+const CAPTURE_PAUSED_WAKE_BACKSTOP: Duration = Duration::from_secs(1);
 
 fn preferred_fixed_buffer_frames(range_min: u32, range_max: u32) -> Option<u32> {
   if range_min == 0 || range_max == 0 || range_min > range_max {
@@ -336,10 +337,17 @@ impl CpalInput {
   /// Block until the CPAL callback pushes samples, capture state flips, or the
   /// backstop elapses. Falls back to a short sleep when no `PipelineControls`
   /// is wired, which is the case for CLI replay.
-  fn wait_wake(&self) {
+  fn wait_wake(&self, backstop: Duration) {
     match self.capture_enabled.as_ref() {
-      Some(controls) => controls.wait_for_wake(WAKE_BACKSTOP),
+      Some(controls) => controls.wait_for_wake(backstop),
       None => std::thread::sleep(Duration::from_millis(5)),
+    }
+  }
+
+  fn wait_capture_paused(&self) {
+    match self.capture_enabled.as_ref() {
+      Some(controls) => controls.wait_for_capture_enable_or_wake(CAPTURE_PAUSED_WAKE_BACKSTOP),
+      None => std::thread::sleep(AUDIO_WAKE_BACKSTOP),
     }
   }
 
@@ -378,7 +386,7 @@ impl AudioInput for CpalInput {
         // Paused stream produces no callback signal; `set_capture_enabled`
         // wakes us the instant capture is re-enabled, and the backstop bounds
         // how long we linger before re-checking shutdown/state.
-        self.wait_wake();
+        self.wait_capture_paused();
         continue;
       }
 
@@ -400,7 +408,7 @@ impl AudioInput for CpalInput {
         }
         // Woken by the CPAL callback as soon as a buffer lands; the backstop is
         // just a lost-wakeup safety net.
-        self.wait_wake();
+        self.wait_wake(AUDIO_WAKE_BACKSTOP);
       }
       if !self.capture_active {
         continue;

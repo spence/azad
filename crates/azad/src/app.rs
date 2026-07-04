@@ -169,6 +169,9 @@ static TERMINATION_SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
 /// and a restart fixed it" report, the tail of the log tells us the last observed values of
 /// `capture_enabled`, `always_listening`, `manual_hold_active`, etc.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const FAST_TICK_INTERVAL: Duration = Duration::from_millis(50);
+const INTERACTIVE_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const IDLE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 pub fn run() {
   let (tx, rx) = mpsc::channel::<AppEvent>();
@@ -251,7 +254,9 @@ fn spawn_heartbeat_thread() {
 
 pub fn send_event(event: AppEvent) {
   if let Some(tx) = EVENT_TX.get() {
-    let _ = tx.send(event);
+    if tx.send(event).is_ok() {
+      platform::wake_event_loop();
+    }
   }
 }
 
@@ -270,12 +275,12 @@ pub fn set_download_paused_immediate(paused: bool) -> bool {
   true
 }
 
-pub fn drain_events() {
+pub fn drain_events() -> Duration {
   let Some(rx) = EVENT_RX.get() else {
-    return;
+    return IDLE_TICK_INTERVAL;
   };
   let Some(controller_mutex) = CONTROLLER.get() else {
-    return;
+    return IDLE_TICK_INTERVAL;
   };
 
   let mut pending = Vec::new();
@@ -298,6 +303,7 @@ pub fn drain_events() {
     controller.handle_event(event);
   }
   controller.on_tick();
+  controller.next_tick_interval(platform::settings_window_is_open())
 }
 
 struct AppController {
@@ -2555,6 +2561,40 @@ impl AppController {
     )
   }
 
+  fn next_tick_interval(&self, settings_open: bool) -> Duration {
+    if self.needs_fast_tick() {
+      return FAST_TICK_INTERVAL;
+    }
+    if self.needs_interactive_tick(settings_open) {
+      return INTERACTIVE_TICK_INTERVAL;
+    }
+    IDLE_TICK_INTERVAL
+  }
+
+  fn needs_fast_tick(&self) -> bool {
+    let gateway_busy = self
+      .gateway_conv
+      .as_ref()
+      .is_some_and(|c| matches!(c.status, ConvStatus::Thinking | ConvStatus::Streaming));
+    self.manual_hold_active
+      || self.overlay_visible
+      || self.history_browsing
+      || self.finalizing_deadline.is_some()
+      || self.accessibility_notice_deadline.is_some()
+      || self.pending_always_listening_enabled.is_some()
+      || self.pending_device_switch_deadline.is_some()
+      || gateway_busy
+  }
+
+  fn needs_interactive_tick(&self, settings_open: bool) -> bool {
+    self.pending_onboarding
+      || self.onboarding_active
+      || settings_open
+      || self.pending_first_launch_settings
+      || self.download_handle.is_some()
+      || self.download_progress_dirty
+  }
+
   #[track_caller]
   fn render_finalizing_overlay_state(&mut self) {
     if self.accessibility_notice_deadline.is_some() {
@@ -3514,9 +3554,10 @@ mod tests {
     turn_started_should_arm_pending,
   };
   use super::{
-    AppController, AzadConfig, EngineState, HotkeyEffect, LISTEN_TOGGLE_NOTICE_DURATION_MS,
-    ShutdownSnapshotOutcome, effective_removed_words, effective_run_on_startup_enabled,
-    onboarding_view_model_changed, should_start_device_controller, should_update_selected_device,
+    AppController, AzadConfig, EngineState, FAST_TICK_INTERVAL, HotkeyEffect, IDLE_TICK_INTERVAL,
+    INTERACTIVE_TICK_INTERVAL, LISTEN_TOGGLE_NOTICE_DURATION_MS, ShutdownSnapshotOutcome,
+    effective_removed_words, effective_run_on_startup_enabled, onboarding_view_model_changed,
+    should_start_device_controller, should_update_selected_device,
     start_min_rms_db_for_activation_level,
   };
   use crate::speech::{SpeechEvent, SpeechSession};
@@ -3524,6 +3565,52 @@ mod tests {
   use crate::ui_model::{
     OnboardingViewModel, UiDeviceOption, UiModelPack, UiModelStatus, UiPermissionStatus,
   };
+
+  #[test]
+  fn idle_tick_interval_slows_when_listen_is_off_and_no_ui_work_is_active() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.always_listening_enabled = false;
+    controller.manual_hold_active = false;
+    controller.overlay_visible = false;
+    controller.history_browsing = false;
+    controller.finalizing_deadline = None;
+    controller.accessibility_notice_deadline = None;
+    controller.pending_always_listening_enabled = None;
+    controller.pending_device_switch_deadline = None;
+    controller.onboarding_active = false;
+    controller.pending_onboarding = false;
+    controller.pending_first_launch_settings = false;
+    controller.download_progress_dirty = false;
+
+    assert_eq!(controller.next_tick_interval(false), IDLE_TICK_INTERVAL);
+  }
+
+  #[test]
+  fn tick_interval_stays_fast_for_visible_or_time_sensitive_work() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.always_listening_enabled = false;
+    controller.overlay_visible = true;
+    assert_eq!(controller.next_tick_interval(false), FAST_TICK_INTERVAL);
+
+    controller.overlay_visible = false;
+    controller.manual_hold_active = true;
+    assert_eq!(controller.next_tick_interval(false), FAST_TICK_INTERVAL);
+
+    controller.manual_hold_active = false;
+    controller.pending_device_switch_deadline = Some(Instant::now());
+    assert_eq!(controller.next_tick_interval(false), FAST_TICK_INTERVAL);
+  }
+
+  #[test]
+  fn tick_interval_uses_interactive_cadence_for_setup_surfaces() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.always_listening_enabled = false;
+    controller.onboarding_active = true;
+    assert_eq!(controller.next_tick_interval(false), INTERACTIVE_TICK_INTERVAL);
+
+    controller.onboarding_active = false;
+    assert_eq!(controller.next_tick_interval(true), INTERACTIVE_TICK_INTERVAL);
+  }
 
   #[test]
   fn raw_finalize_hotkey_forces_overlay_hide_even_during_manual_hold() {

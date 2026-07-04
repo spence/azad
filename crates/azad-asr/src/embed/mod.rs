@@ -205,6 +205,7 @@ impl SessionHandle for LiveSessionHandle {
       SessionControl::CancelSession => {
         self.controls.set_manual_hold_active(false);
         self.shutdown.store(true, Ordering::Relaxed);
+        self.controls.notify_control_wake();
       }
     }
     Ok(())
@@ -212,6 +213,7 @@ impl SessionHandle for LiveSessionHandle {
 
   fn shutdown(&self) -> Result<()> {
     self.shutdown.store(true, Ordering::Relaxed);
+    self.controls.notify_control_wake();
     Ok(())
   }
 

@@ -205,6 +205,8 @@ static OVERLAY_DEBUG_LOGS_ENABLED: AtomicBool = AtomicBool::new(false);
 // frame. Reset on history-mode entry so the very first tick doesn't false-fire
 // from a pre-existing held button.
 static MOUSE_BUTTON_PREV_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STATUS_DELEGATE_PTR: AtomicUsize = AtomicUsize::new(0);
+static MAIN_EVENT_DRAIN_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
 // Whether the overlay panel may become the key window. Off by default so
 // the panel never steals focus from the user's foreground app. Flipped on
@@ -246,6 +248,7 @@ thread_local! {
     static STATUS_ITEM_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static EVENT_TICK_TIMER_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static SEARCH_FIELD_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_VIEW_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_TRACK_REF: RefCell<Option<id>> = const { RefCell::new(None) };
@@ -389,6 +392,7 @@ pub fn run_app() {
     STATUS_DELEGATE_REF.with(|r| {
       r.borrow_mut().replace(delegate);
     });
+    STATUS_DELEGATE_PTR.store(delegate as usize, Ordering::Release);
 
     setup_status_bar(delegate);
     // Seed the configured listen-hotkey modifiers before installing the hotkeys,
@@ -404,6 +408,30 @@ pub fn run_app() {
 
     let _: () = msg_send![app, setDelegate: delegate];
     app.run();
+  }
+}
+
+pub fn wake_event_loop() {
+  if MAIN_EVENT_DRAIN_SCHEDULED
+    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+    .is_err()
+  {
+    return;
+  }
+
+  let delegate = STATUS_DELEGATE_PTR.load(Ordering::Acquire) as id;
+  if delegate == nil {
+    MAIN_EVENT_DRAIN_SCHEDULED.store(false, Ordering::Release);
+    return;
+  }
+
+  unsafe {
+    let _: () = msg_send![
+      delegate,
+      performSelectorOnMainThread: sel!(tick:)
+      withObject: nil
+      waitUntilDone: NO
+    ];
   }
 }
 
@@ -1314,7 +1342,17 @@ extern "C" fn quit(_: &Object, _: Sel, _: id) {
 }
 
 extern "C" fn tick(_: &Object, _: Sel, _: id) {
-  crate::app::drain_events();
+  MAIN_EVENT_DRAIN_SCHEDULED.store(false, Ordering::Release);
+  unsafe {
+    invalidate_event_tick_timer();
+  }
+  let next_interval = crate::app::drain_events();
+  let delegate = STATUS_DELEGATE_PTR.load(Ordering::Acquire) as id;
+  if delegate != nil {
+    unsafe {
+      schedule_event_tick_timer(delegate, next_interval);
+    }
+  }
 }
 
 extern "C" fn toggle_devices(this: &Object, _: Sel, _: id) {
@@ -1478,24 +1516,40 @@ unsafe fn setup_status_bar(delegate: id) {
     slot.borrow_mut().replace(menu);
   });
 
-  // Poll app events on the main thread.
-  let timer: id = msg_send![
-      class!(NSTimer),
-      scheduledTimerWithTimeInterval: 0.05f64
-      target: delegate
-      selector: sel!(tick:)
-      userInfo: nil
-      repeats: YES
-  ];
-  let run_loop: id = msg_send![class!(NSRunLoop), mainRunLoop];
-  let tracking_mode = NSString::alloc(nil).init_str("NSEventTrackingRunLoopMode");
-  // Also run while the menu is open and tracking mouse hover.
-  let _: () = msg_send![run_loop, addTimer: timer forMode: tracking_mode];
+  schedule_event_tick_timer(delegate, crate::app::FAST_TICK_INTERVAL);
 
   let delegate_obj = &mut *delegate;
   delegate_obj.set_ivar("statusItem", status_item);
 
   rebuild_status_menu();
+}
+
+unsafe fn schedule_event_tick_timer(delegate: id, interval: Duration) {
+  invalidate_event_tick_timer();
+
+  let seconds = interval.as_secs_f64().max(0.001);
+  let timer: id = msg_send![
+      class!(NSTimer),
+      scheduledTimerWithTimeInterval: seconds
+      target: delegate
+      selector: sel!(tick:)
+      userInfo: nil
+      repeats: NO
+  ];
+  let run_loop: id = msg_send![class!(NSRunLoop), mainRunLoop];
+  let tracking_mode = NSString::alloc(nil).init_str("NSEventTrackingRunLoopMode");
+  let _: () = msg_send![run_loop, addTimer: timer forMode: tracking_mode];
+  EVENT_TICK_TIMER_REF.with(|slot| {
+    slot.borrow_mut().replace(timer);
+  });
+}
+
+unsafe fn invalidate_event_tick_timer() {
+  EVENT_TICK_TIMER_REF.with(|slot| {
+    if let Some(timer) = slot.borrow_mut().take() {
+      let _: () = msg_send![timer, invalidate];
+    }
+  });
 }
 
 unsafe fn apply_status_item_visibility(status_item: id, visible: bool) {
