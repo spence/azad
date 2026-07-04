@@ -13,7 +13,7 @@ Project documentation is organized by ownership boundary.
 
 ## App
 
-- [Azad README](../crates/azad/README.md): launchd app workflow and app-specific commands.
+- [Azad README](../crates/azad/README.md): macOS app workflow and app-specific commands.
 - [Azad specification](../crates/azad/SPECIFICATION.md): app architecture, interaction state, overlay, paste, settings, and lifecycle contracts.
 - [Keyboard workflow](../crates/azad/docs/keyboard-workflow.md): user-facing keyboard behavior.
 - [Keyboard state machine](../crates/azad/docs/keyboard-shortcut-state-machine.md): engineering contract for hotkey/listen-mode transitions.

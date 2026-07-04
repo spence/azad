@@ -3,6 +3,9 @@ set -euo pipefail
 
 CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$(cd "${CRATE_DIR}/../.." && pwd)"
+WORKSPACE_VERSION="$(
+  awk -F '"' '/^version =/ { print $2; exit }' "${ROOT_DIR}/Cargo.toml"
+)"
 
 capture_env_var() {
   local name="$1"
@@ -87,14 +90,14 @@ usage() {
 Usage: scripts/azad-dev.sh <command>
 
 Commands:
-  install      Build Azad and install/update ~/Applications/Azad.app + LaunchAgent plist
-  start        Start (or restart) Azad via launchctl
-  stop         Stop Azad via launchctl
-  restart      Stop then start Azad via launchctl
-  status       Print launchctl status for Azad
+  install      Build Azad and install/update ~/Applications/Azad.app
+  start        Start Azad
+  stop         Stop Azad
+  restart      Stop then start Azad
+  status       Print Azad runtime status
   logs         Tail Azad stdout/stderr logs
   reset-permissions  Reset macOS TCC permissions for Azad (Microphone + Accessibility)
-  uninstall    Remove LaunchAgent plist and stop service (keeps app bundle)
+  uninstall    Stop Azad and remove LaunchAgent plist if present (keeps app bundle)
 USAGE
 }
 
@@ -308,7 +311,7 @@ write_info_plist() {
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.0</string>
+  <string>${WORKSPACE_VERSION}</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSUIElement</key>
@@ -322,51 +325,48 @@ write_info_plist() {
 EOF
 }
 
-write_launch_agent_plist() {
-  mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
+remove_launch_agent_plist_if_present() {
+  if is_loaded; then
+    launchctl bootout "$SERVICE_TARGET" >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$PLIST_PATH" ]]; then
+    rm -f "$PLIST_PATH"
+    echo "Removed LaunchAgent plist: $PLIST_PATH"
+  fi
+}
 
-  cat >"$PLIST_PATH" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${APP_MACOS_DIR}/azad</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>LimitLoadToSessionType</key>
-  <array>
-    <string>Aqua</string>
-  </array>
-  <key>ProcessType</key>
-  <string>Interactive</string>
-  <key>Nice</key>
-  <integer>-10</integer>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>AZAD_ASSETS_DIR</key>
-    <string>${APP_RESOURCES_DIR}</string>
-    <key>TOON_SHOW_PARTIALS</key>
-    <string>${TOON_SHOW_PARTIALS}</string>
-    <key>AZAD_NATIVE_ENGINE_LOGS</key>
-    <string>${AZAD_NATIVE_ENGINE_LOGS}</string>
-  </dict>
-  <key>StandardOutPath</key>
-  <string>${STDOUT_LOG}</string>
-  <key>StandardErrorPath</key>
-  <string>${STDERR_LOG}</string>
-</dict>
-</plist>
-EOF
+standalone_pid() {
+  local bundle_bin="${APP_MACOS_DIR}/azad"
+  pgrep -f "${bundle_bin}" 2>/dev/null || true
+}
+
+start_standalone() {
+  mkdir -p "$LOG_DIR"
+  local bundle_bin="${APP_MACOS_DIR}/azad"
+  local pid
+  pid="$(standalone_pid | head -n 1)"
+  if [[ -n "$pid" ]]; then
+    echo "Azad already running standalone: pid $pid"
+    return 0
+  fi
+
+  AZAD_ASSETS_DIR="$APP_RESOURCES_DIR" \
+  TOON_SHOW_PARTIALS="$TOON_SHOW_PARTIALS" \
+  AZAD_NATIVE_ENGINE_LOGS="$AZAD_NATIVE_ENGINE_LOGS" \
+    nohup "$bundle_bin" >>"$STDOUT_LOG" 2>>"$STDERR_LOG" &
+
+  local attempt
+  for attempt in $(seq 1 20); do
+    pid="$(standalone_pid | head -n 1)"
+    if [[ -n "$pid" ]]; then
+      echo "Started standalone Azad: pid $pid"
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "error: Azad did not start standalone" >&2
+  return 1
 }
 
 is_loaded() {
@@ -441,11 +441,9 @@ cmd_install() {
   install -m 644 "${CRATE_DIR}/assets/azad.icns" "${APP_RESOURCES_DIR}/azad.icns"
   install -m 644 "${CRATE_DIR}/assets/claude.svg" "${APP_RESOURCES_DIR}/claude.svg"
   write_info_plist
-  write_launch_agent_plist
   codesign_app_if_configured
 
   echo "Installed Azad app bundle at: $APP_DIR"
-  echo "Installed LaunchAgent plist at: $PLIST_PATH"
   if [[ "$APP_STABLE_SIGNED" == "1" ]]; then
     echo "Permissions are preserved across install/restart unless you run: just reset-permissions"
   elif [[ "$APP_SIGNED" == "1" ]]; then
@@ -459,8 +457,8 @@ cmd_install() {
 cmd_start() {
   cleanup_legacy_service
   if [[ ! -f "$PLIST_PATH" ]]; then
-    echo "error: LaunchAgent plist not found at $PLIST_PATH (run just install first)" >&2
-    exit 1
+    start_standalone
+    return
   fi
 
   bootstrap_until_loaded
@@ -513,8 +511,11 @@ cmd_restart() {
 cmd_status() {
   if is_loaded; then
     launchctl print "$SERVICE_TARGET"
+  elif [[ -n "$(standalone_pid | head -n 1)" ]]; then
+    echo "Azad standalone process(es):"
+    standalone_pid
   else
-    echo "Service not loaded: $SERVICE_TARGET"
+    echo "Azad is not running"
     exit 1
   fi
 }

@@ -3,6 +3,9 @@ set -euo pipefail
 
 CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$(cd "${CRATE_DIR}/../.." && pwd)"
+WORKSPACE_VERSION="$(
+  awk -F '"' '/^version =/ { print $2; exit }' "${ROOT_DIR}/Cargo.toml"
+)"
 
 capture_env_var() {
   local name="$1"
@@ -47,7 +50,7 @@ for var in \
 done
 
 LABEL="ai.azad"
-VERSION="${AZAD_VERSION:-0.2.0}"
+VERSION="${AZAD_VERSION:-$WORKSPACE_VERSION}"
 SIGNING_IDENTITY="${AZAD_SIGNING_IDENTITY:-}"
 NOTARIZATION_PROFILE="${AZAD_NOTARIZATION_PROFILE:-azad-notarization}"
 
@@ -77,7 +80,7 @@ Required environment variables:
   AZAD_SIGNING_IDENTITY    Developer ID Application identity (name or hash)
 
 Optional environment variables:
-  AZAD_VERSION             Version string (default: 0.2.0)
+  AZAD_VERSION             Version string (default: workspace version)
   AZAD_NOTARIZATION_PROFILE  notarytool credential profile (default: azad-notarization)
                              Create with: xcrun notarytool store-credentials "azad-notarization"
   AZAD_RELEASE_CONFIG      Local env file (default: <workspace>/.release.env)
@@ -238,6 +241,8 @@ echo "==> Building MLX ASR helper"
 build_mlx_helper
 
 echo "==> Assembling app bundle"
+mkdir -p "$DIST_DIR"
+touch "${DIST_DIR}/.metadata_never_index"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 
@@ -337,5 +342,5 @@ xcrun stapler staple "$DMG_PATH"
 
 echo ""
 echo "Distribution complete:"
-echo "  App:  $APP_DIR"
 echo "  DMG:  $DMG_PATH"
+rm -rf "$APP_DIR"

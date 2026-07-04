@@ -162,7 +162,7 @@ Current rows and controls:
 - Preferences selected during onboarding persist immediately.
 - `Get started` is enabled only when a model is ready or downloading and both
   permissions are granted.
-- Startup opt-in creates or updates the LaunchAgent preference.
+- Startup opt-in creates or removes the login LaunchAgent.
 - Clearing the last listen modifier is rejected; the UI syncs back to the last
   valid modifier set.
 
@@ -311,7 +311,7 @@ Current controls:
 - Model status text.
 - Progress bar while downloading.
 - `Download` button.
-- `Cancel` button while downloading.
+- `Pause` / `Resume` button while downloading.
 
 Current model states:
 

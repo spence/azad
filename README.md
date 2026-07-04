@@ -73,9 +73,9 @@ just test                   # cargo test --workspace
 just clippy                 # cargo clippy --workspace --all-targets -- -D warnings
 just swift-build            # build bundled Swift UI + MLX/CoreML helper
 just install                # build and install ~/Applications/Azad.app
-just start                  # start launchd service
-just restart                # restart launchd service
-just status                 # print launchd status
+just start                  # start Azad
+just restart                # restart Azad
+just status                 # print runtime status
 just logs                   # tail app logs
 just dist                   # maintainer-only signed/notarized DMG build
 ```

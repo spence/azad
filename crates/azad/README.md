@@ -1,6 +1,7 @@
-# Azad (macOS background app)
+# Azad (macOS app)
 
-Development workflow now targets a launchd-managed app instance.
+Development workflow installs a local app bundle and starts it directly unless
+the user has explicitly enabled startup/login behavior.
 
 For normal non-development installs, use the signed and notarized DMG from
 GitHub Releases. The commands below are for source development.
@@ -8,19 +9,19 @@ GitHub Releases. The commands below are for source development.
 ## Commands
 
 ```bash
-just install   # build + install ~/Applications/Azad.app and LaunchAgent plist
-just start     # start/restart via launchctl
-just stop      # stop via launchctl
+just install   # build + install ~/Applications/Azad.app
+just start     # start Azad
+just stop      # stop Azad
 just restart   # stop + start
-just status    # launchctl print
+just status    # print runtime status
 just logs      # tail stdout/stderr logs
-just uninstall # remove LaunchAgent plist (keeps app bundle)
+just uninstall # stop Azad and remove LaunchAgent plist if present
 ```
 
 ## Defaults
 
 - App bundle: `~/Applications/Azad.app`
-- LaunchAgent: `~/Library/LaunchAgents/ai.azad.plist`
+- Startup LaunchAgent, only after user opt-in: `~/Library/LaunchAgents/ai.azad.plist`
 - Logs: `~/Library/Logs/Azad/{stdout,stderr}.log`
 
 ## Prerequisites
