@@ -900,6 +900,17 @@ mod tests {
     }
 
     #[test]
+    fn build_paste_text_converts_curated_emotion_emoji_aliases() {
+        assert_eq!(
+            build_paste_text(
+                "sad emoji angry emoji anxious emoji shocked emoji love emoji bored emoji meh emoji",
+                emoji_options(false, &[], true, false)
+            ),
+            "😢 😠 😟 😱 ❤️ 🥱 😐"
+        );
+    }
+
+    #[test]
     fn build_paste_text_converts_plural_emoji_trigger() {
         assert_eq!(
             build_paste_text(
