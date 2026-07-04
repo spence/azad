@@ -11,21 +11,45 @@ pub struct PasteTextOptions<'a> {
     pub lowercase_except_uppercase_words: bool,
 }
 
-pub fn build_paste_text(text: &str, options: PasteTextOptions<'_>) -> String {
-    let mut paste_text = if options.removed_words.is_empty() {
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayTextOptions<'a> {
+    pub removed_words: &'a [String],
+    pub deduplicate_words: bool,
+    pub convert_number_words: bool,
+    pub lowercase_except_uppercase_words: bool,
+}
+
+impl<'a> PasteTextOptions<'a> {
+    fn display_options(&self) -> DisplayTextOptions<'a> {
+        DisplayTextOptions {
+            removed_words: self.removed_words,
+            deduplicate_words: self.deduplicate_words,
+            convert_number_words: self.convert_number_words,
+            lowercase_except_uppercase_words: self.lowercase_except_uppercase_words,
+        }
+    }
+}
+
+pub fn build_display_text(text: &str, options: DisplayTextOptions<'_>) -> String {
+    let mut display_text = if options.removed_words.is_empty() {
         text.to_string()
     } else {
         strip_removed_words(text, options.removed_words)
     };
     if options.convert_number_words {
-        paste_text = replace_english_number_words(&paste_text);
+        display_text = replace_english_number_words(&display_text);
     }
     if options.deduplicate_words {
-        paste_text = collapse_consecutive_duplicates(&paste_text);
+        display_text = collapse_consecutive_duplicates(&display_text);
     }
     if options.lowercase_except_uppercase_words {
-        paste_text = lowercase_except_uppercase_words(&paste_text);
+        display_text = lowercase_except_uppercase_words(&display_text);
     }
+    display_text
+}
+
+pub fn build_paste_text(text: &str, options: PasteTextOptions<'_>) -> String {
+    let mut paste_text = build_display_text(text, options.display_options());
     if options.append_trailing_space
         && !paste_text
             .chars()
@@ -501,7 +525,10 @@ fn scale_value(word: &str) -> Option<u128> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PasteTextOptions, build_paste_text, collapse_consecutive_duplicates};
+    use super::{
+        DisplayTextOptions, PasteTextOptions, build_display_text, build_paste_text,
+        collapse_consecutive_duplicates,
+    };
 
     fn options<'a>(
         append_trailing_space: bool,
@@ -533,6 +560,20 @@ mod tests {
         }
     }
 
+    fn display_options<'a>(
+        removed_words: &'a [String],
+        deduplicate_words: bool,
+        convert_number_words: bool,
+        lowercase_except_uppercase_words: bool,
+    ) -> DisplayTextOptions<'a> {
+        DisplayTextOptions {
+            removed_words,
+            deduplicate_words,
+            convert_number_words,
+            lowercase_except_uppercase_words,
+        }
+    }
+
     #[test]
     fn build_paste_text_appends_trailing_space_when_enabled() {
         assert_eq!(
@@ -541,6 +582,26 @@ mod tests {
         );
         assert_eq!(
             build_paste_text("hello ", options(true, &[], true, false)),
+            "hello "
+        );
+    }
+
+    #[test]
+    fn build_display_text_applies_transforms_without_trailing_space() {
+        let words = vec!["um".to_string()];
+        assert_eq!(
+            build_display_text(
+                "Um The the API has Twenty One tabs",
+                display_options(&words, true, true, true)
+            ),
+            "the API has 21 tabs"
+        );
+    }
+
+    #[test]
+    fn build_display_text_preserves_untransformed_trailing_whitespace() {
+        assert_eq!(
+            build_display_text("hello ", display_options(&[], true, false, false)),
             "hello "
         );
     }

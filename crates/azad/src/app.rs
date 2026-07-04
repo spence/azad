@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use asr::devices::DeviceStateSnapshot;
 use asr::pipeline::{DebugStatsEvent, EngineState};
-use azad_text::{PasteTextOptions, build_paste_text};
+use azad_text::{DisplayTextOptions, PasteTextOptions, build_display_text, build_paste_text};
 
 use crate::config::AzadConfig;
 use crate::connectors;
@@ -2528,6 +2528,25 @@ impl AppController {
     }
   }
 
+  fn stream_display_text(&self, text: &str) -> String {
+    let text = self.strip_active_trigger(text);
+    self.stream_display_text_without_trigger_strip(&text)
+  }
+
+  fn stream_display_text_without_trigger_strip(&self, text: &str) -> String {
+    let removed_words =
+      effective_removed_words(&self.removed_words, self.remove_hesitations_on_paste);
+    build_display_text(
+      text,
+      DisplayTextOptions {
+        removed_words: &removed_words,
+        deduplicate_words: self.deduplicate_words_on_paste,
+        convert_number_words: self.convert_number_words_on_paste,
+        lowercase_except_uppercase_words: self.lowercase_except_uppercase_words_on_paste,
+      },
+    )
+  }
+
   #[track_caller]
   fn render_finalizing_overlay_state(&mut self) {
     if self.accessibility_notice_deadline.is_some() {
@@ -2557,14 +2576,16 @@ impl AppController {
     }
 
     if self.split_overlay_visible() {
+      let top_text = self.stream_display_text(&self.finalizing_draft);
+      let body_text = self.stream_display_text(&self.latest_draft);
       platform::show_overlay_top();
       platform::set_overlay_top_stream_content(
-        &self.strip_active_trigger(&self.finalizing_draft),
+        &top_text,
         &self.finalizing_activity_history,
         Some(self.busy_border_phase),
       );
       platform::set_overlay_stream_content(
-        &self.strip_active_trigger(&self.latest_draft),
+        &body_text,
         &self.activity_history,
         None,
         self.raw_badge_visible(),
@@ -2576,9 +2597,10 @@ impl AppController {
       return;
     }
 
+    let body_text = self.stream_display_text(&self.finalizing_draft);
     platform::hide_overlay_top();
     platform::set_overlay_stream_content(
-      &self.strip_active_trigger(&self.finalizing_draft),
+      &body_text,
       &self.finalizing_activity_history,
       Some(self.busy_border_phase),
       self.raw_badge_visible(),
@@ -2602,19 +2624,16 @@ impl AppController {
     let held_active = self.held_top_overlay_active();
     let live_has_text = !self.latest_draft.trim().is_empty();
     if held_active && live_has_text {
+      let top_text = self.stream_display_text_without_trigger_strip(&self.held_top_draft);
       platform::show_overlay_top();
-      platform::set_overlay_top_stream_content(
-        &self.held_top_draft,
-        &self.finalizing_activity_history,
-        None,
-      );
+      platform::set_overlay_top_stream_content(&top_text, &self.finalizing_activity_history, None);
     } else {
       platform::hide_overlay_top();
     }
     let body_text = if held_active && !live_has_text {
-      self.held_top_draft.clone()
+      self.stream_display_text_without_trigger_strip(&self.held_top_draft)
     } else {
-      self.strip_active_trigger(&self.latest_draft)
+      self.stream_display_text(&self.latest_draft)
     };
     platform::set_overlay_stream_content(
       &body_text,
@@ -2759,12 +2778,13 @@ impl AppController {
       Some(forming) => (forming.as_str(), "", ConvStatus::Done),
       None => (conv.last_query.as_str(), conv.reply.as_str(), conv.status),
     };
+    let query = self.stream_display_text_without_trigger_strip(query);
     let busy_phase = matches!(status, ConvStatus::Thinking | ConvStatus::Streaming)
       .then_some(self.busy_border_phase);
     platform::set_overlay_conversation_content(
       &chip,
       conv.tag_icon,
-      query,
+      &query,
       reply,
       status,
       &conv.error_msg,
@@ -3568,6 +3588,41 @@ mod tests {
   fn effective_removed_words_uses_only_custom_words_when_hesitations_disabled() {
     let custom = vec!["custom".to_string()];
     assert_eq!(effective_removed_words(&custom, false), custom);
+  }
+
+  #[test]
+  fn stream_display_text_applies_transforms_without_mutating_raw_draft() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.latest_draft = "Hey Claude um The the API has Twenty One tabs".to_string();
+    controller.removed_words.clear();
+    controller.remove_hesitations_on_paste = true;
+    controller.deduplicate_words_on_paste = true;
+    controller.convert_number_words_on_paste = true;
+    controller.lowercase_except_uppercase_words_on_paste = true;
+    controller.append_trailing_space_on_paste = true;
+
+    controller.update_active_connector();
+    let display_text = controller.stream_display_text(&controller.latest_draft);
+
+    assert_eq!(display_text, "the API has 21 tabs");
+    assert_eq!(controller.latest_draft, "Hey Claude um The the API has Twenty One tabs");
+    assert_eq!(controller.active_connector.as_ref().map(|c| c.id), Some("claude"));
+  }
+
+  #[test]
+  fn stream_display_text_can_skip_trigger_stripping_for_prestripped_queries() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.removed_words = vec!["actually".to_string()];
+    controller.remove_hesitations_on_paste = true;
+    controller.deduplicate_words_on_paste = true;
+    controller.convert_number_words_on_paste = true;
+    controller.lowercase_except_uppercase_words_on_paste = true;
+    controller.append_trailing_space_on_paste = true;
+
+    let display_text = controller
+      .stream_display_text_without_trigger_strip("actually NASA has Twenty One API calls");
+
+    assert_eq!(display_text, "NASA has 21 API calls");
   }
 
   #[test]
