@@ -90,6 +90,7 @@ pub enum AppEvent {
   SettingsToggleAppendTrailingSpace(bool),
   SettingsToggleDeduplicateWords(bool),
   SettingsToggleConvertNumberWords(bool),
+  SettingsToggleConvertSpokenEmoji(bool),
   SettingsToggleLowercaseExceptUppercaseWords(bool),
   SettingsToggleRemoveHesitations(bool),
   SettingsSetListenModifier {
@@ -352,6 +353,7 @@ struct AppController {
   append_trailing_space_on_paste: bool,
   deduplicate_words_on_paste: bool,
   convert_number_words_on_paste: bool,
+  convert_spoken_emoji_on_paste: bool,
   lowercase_except_uppercase_words_on_paste: bool,
   remove_hesitations_on_paste: bool,
   overlay_position: OverlayPosition,
@@ -584,6 +586,7 @@ impl AppController {
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
     let deduplicate_words_on_paste = preferred_store::load_deduplicate_words_on_paste();
     let convert_number_words_on_paste = preferred_store::load_convert_number_words_on_paste();
+    let convert_spoken_emoji_on_paste = preferred_store::load_convert_spoken_emoji_on_paste();
     let lowercase_except_uppercase_words_on_paste =
       preferred_store::load_lowercase_except_uppercase_words_on_paste();
     let remove_hesitations_on_paste = preferred_store::load_remove_hesitations_on_paste();
@@ -654,6 +657,7 @@ impl AppController {
       append_trailing_space_on_paste,
       deduplicate_words_on_paste,
       convert_number_words_on_paste,
+      convert_spoken_emoji_on_paste,
       lowercase_except_uppercase_words_on_paste,
       remove_hesitations_on_paste,
       overlay_position,
@@ -941,6 +945,9 @@ impl AppController {
       }
       AppEvent::SettingsToggleConvertNumberWords(enabled) => {
         self.handle_settings_toggle_convert_number_words(enabled)
+      }
+      AppEvent::SettingsToggleConvertSpokenEmoji(enabled) => {
+        self.handle_settings_toggle_convert_spoken_emoji(enabled)
       }
       AppEvent::SettingsToggleLowercaseExceptUppercaseWords(enabled) => {
         self.handle_settings_toggle_lowercase_except_uppercase_words(enabled)
@@ -2542,6 +2549,7 @@ impl AppController {
         removed_words: &removed_words,
         deduplicate_words: self.deduplicate_words_on_paste,
         convert_number_words: self.convert_number_words_on_paste,
+        convert_spoken_emoji: self.convert_spoken_emoji_on_paste,
         lowercase_except_uppercase_words: self.lowercase_except_uppercase_words_on_paste,
       },
     )
@@ -3004,6 +3012,7 @@ impl AppController {
         removed_words: &removed_words,
         deduplicate_words: self.deduplicate_words_on_paste,
         convert_number_words: self.convert_number_words_on_paste,
+        convert_spoken_emoji: self.convert_spoken_emoji_on_paste,
         lowercase_except_uppercase_words: self.lowercase_except_uppercase_words_on_paste,
       },
     );
@@ -3593,19 +3602,24 @@ mod tests {
   #[test]
   fn stream_display_text_applies_transforms_without_mutating_raw_draft() {
     let mut controller = AppController::new(AzadConfig::default());
-    controller.latest_draft = "Hey Claude um The the API has Twenty One tabs".to_string();
+    controller.latest_draft =
+      "Hey Claude um The the API has Twenty One happy emoji tabs".to_string();
     controller.removed_words.clear();
     controller.remove_hesitations_on_paste = true;
     controller.deduplicate_words_on_paste = true;
     controller.convert_number_words_on_paste = true;
+    controller.convert_spoken_emoji_on_paste = true;
     controller.lowercase_except_uppercase_words_on_paste = true;
     controller.append_trailing_space_on_paste = true;
 
     controller.update_active_connector();
     let display_text = controller.stream_display_text(&controller.latest_draft);
 
-    assert_eq!(display_text, "the API has 21 tabs");
-    assert_eq!(controller.latest_draft, "Hey Claude um The the API has Twenty One tabs");
+    assert_eq!(display_text, "the API has 21 😊 tabs");
+    assert_eq!(
+      controller.latest_draft,
+      "Hey Claude um The the API has Twenty One happy emoji tabs"
+    );
     assert_eq!(controller.active_connector.as_ref().map(|c| c.id), Some("claude"));
   }
 
@@ -3616,13 +3630,15 @@ mod tests {
     controller.remove_hesitations_on_paste = true;
     controller.deduplicate_words_on_paste = true;
     controller.convert_number_words_on_paste = true;
+    controller.convert_spoken_emoji_on_paste = true;
     controller.lowercase_except_uppercase_words_on_paste = true;
     controller.append_trailing_space_on_paste = true;
 
-    let display_text = controller
-      .stream_display_text_without_trigger_strip("actually NASA has Twenty One API calls");
+    let display_text = controller.stream_display_text_without_trigger_strip(
+      "actually NASA has Twenty One API calls thumbs up emoji",
+    );
 
-    assert_eq!(display_text, "NASA has 21 API calls");
+    assert_eq!(display_text, "NASA has 21 API calls 👍");
   }
 
   #[test]
@@ -3707,6 +3723,7 @@ mod tests {
     controller.append_trailing_space_on_paste = true;
     controller.deduplicate_words_on_paste = true;
     controller.convert_number_words_on_paste = true;
+    controller.convert_spoken_emoji_on_paste = true;
     controller.lowercase_except_uppercase_words_on_paste = true;
     controller.remove_hesitations_on_paste = true;
 

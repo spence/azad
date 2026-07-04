@@ -349,6 +349,12 @@ impl AppController {
     platform::update_settings_window(self.settings_view_model());
   }
 
+  pub(super) fn handle_settings_toggle_convert_spoken_emoji(&mut self, enabled: bool) {
+    self.convert_spoken_emoji_on_paste = enabled;
+    preferred_store::save_convert_spoken_emoji_on_paste(enabled);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
   pub(super) fn handle_settings_toggle_lowercase_except_uppercase_words(&mut self, enabled: bool) {
     self.lowercase_except_uppercase_words_on_paste = enabled;
     preferred_store::save_lowercase_except_uppercase_words_on_paste(enabled);
@@ -495,6 +501,7 @@ impl AppController {
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
       deduplicate_words_on_paste: self.deduplicate_words_on_paste,
       convert_number_words_on_paste: self.convert_number_words_on_paste,
+      convert_spoken_emoji_on_paste: self.convert_spoken_emoji_on_paste,
       lowercase_except_uppercase_words_on_paste: self.lowercase_except_uppercase_words_on_paste,
       remove_hesitations_on_paste: self.remove_hesitations_on_paste,
       listen_modifiers: platform::listen_modifiers(),

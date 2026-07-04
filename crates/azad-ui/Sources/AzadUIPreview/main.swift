@@ -151,6 +151,7 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         appendTrailingSpaceOnPaste: true,
         deduplicateWordsOnPaste: false,
         convertNumberWordsOnPaste: false,
+        convertSpokenEmojiOnPaste: false,
         lowercaseExceptUppercaseWordsOnPaste: false,
         removeHesitationsOnPaste: true,
         listenModifiers: 4,

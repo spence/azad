@@ -182,6 +182,7 @@ public struct SettingsViewModel: Codable {
     public let appendTrailingSpaceOnPaste: Bool
     public let deduplicateWordsOnPaste: Bool
     public let convertNumberWordsOnPaste: Bool
+    public let convertSpokenEmojiOnPaste: Bool
     public let lowercaseExceptUppercaseWordsOnPaste: Bool
     public let removeHesitationsOnPaste: Bool
     public let listenModifiers: UInt8
@@ -204,6 +205,7 @@ public struct SettingsViewModel: Codable {
         appendTrailingSpaceOnPaste: Bool,
         deduplicateWordsOnPaste: Bool,
         convertNumberWordsOnPaste: Bool,
+        convertSpokenEmojiOnPaste: Bool,
         lowercaseExceptUppercaseWordsOnPaste: Bool,
         removeHesitationsOnPaste: Bool,
         listenModifiers: UInt8,
@@ -225,6 +227,7 @@ public struct SettingsViewModel: Codable {
         self.appendTrailingSpaceOnPaste = appendTrailingSpaceOnPaste
         self.deduplicateWordsOnPaste = deduplicateWordsOnPaste
         self.convertNumberWordsOnPaste = convertNumberWordsOnPaste
+        self.convertSpokenEmojiOnPaste = convertSpokenEmojiOnPaste
         self.lowercaseExceptUppercaseWordsOnPaste = lowercaseExceptUppercaseWordsOnPaste
         self.removeHesitationsOnPaste = removeHesitationsOnPaste
         self.listenModifiers = listenModifiers

@@ -142,6 +142,7 @@ impl AppController {
           removed_words: &removed_words,
           deduplicate_words: self.deduplicate_words_on_paste,
           convert_number_words: self.convert_number_words_on_paste,
+          convert_spoken_emoji: self.convert_spoken_emoji_on_paste,
           lowercase_except_uppercase_words: self.lowercase_except_uppercase_words_on_paste,
         },
       );

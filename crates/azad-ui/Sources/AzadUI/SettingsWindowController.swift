@@ -61,6 +61,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
             deduplicateWordsOnPaste: model.deduplicateWordsOnPaste,
             convertNumberWordsOnPaste: model.convertNumberWordsOnPaste,
+            convertSpokenEmojiOnPaste: model.convertSpokenEmojiOnPaste,
             lowercaseExceptUppercaseWordsOnPaste: model.lowercaseExceptUppercaseWordsOnPaste,
             removeHesitationsOnPaste: model.removeHesitationsOnPaste,
             listenModifiers: model.listenModifiers,
@@ -235,6 +236,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(FormRow(label: "Trailing space", control: Design.checkbox("Append trailing space after paste", checked: model.appendTrailingSpaceOnPaste, target: self, action: #selector(toggleTrailingSpace(_:)))))
         stack.addArrangedSubview(FormRow(label: "Repeated words", control: Design.checkbox("Collapse adjacent duplicate words", checked: model.deduplicateWordsOnPaste, target: self, action: #selector(toggleDeduplicateWords(_:)))))
         stack.addArrangedSubview(FormRow(label: "Numbers", control: Design.checkbox("Convert spoken numbers to digits", checked: model.convertNumberWordsOnPaste, target: self, action: #selector(toggleConvertNumberWords(_:)))))
+        stack.addArrangedSubview(FormRow(label: "Emoji", control: Design.checkbox("Convert spoken emoji names", checked: model.convertSpokenEmojiOnPaste, target: self, action: #selector(toggleConvertSpokenEmoji(_:)))))
         stack.addArrangedSubview(FormRow(label: "Casing", control: Design.checkbox("Lowercase everything except uppercase words", checked: model.lowercaseExceptUppercaseWordsOnPaste, target: self, action: #selector(toggleLowercaseExceptUppercaseWords(_:)))))
 
         stack.addArrangedSubview(removedWordsRow(model))
@@ -493,6 +495,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
                 deduplicateWordsOnPaste: model.deduplicateWordsOnPaste,
                 convertNumberWordsOnPaste: model.convertNumberWordsOnPaste,
+                convertSpokenEmojiOnPaste: model.convertSpokenEmojiOnPaste,
                 lowercaseExceptUppercaseWordsOnPaste: model.lowercaseExceptUppercaseWordsOnPaste,
                 removeHesitationsOnPaste: model.removeHesitationsOnPaste,
                 listenModifiers: model.listenModifiers,
@@ -529,6 +532,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleConvertNumberWords(_ sender: NSButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleConvertNumberWords", boolValue: sender.state == .on))
+    }
+
+    @objc private func toggleConvertSpokenEmoji(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleConvertSpokenEmoji", boolValue: sender.state == .on))
     }
 
     @objc private func toggleLowercaseExceptUppercaseWords(_ sender: NSButton) {

@@ -18,6 +18,7 @@ const OVERLAY_POSITION_KEY: &str = "AzadOverlayPosition";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 const DEDUPLICATE_WORDS_KEY: &str = "AzadDeduplicateWordsOnPaste";
 const CONVERT_NUMBER_WORDS_KEY: &str = "AzadConvertNumberWordsOnPaste";
+const CONVERT_SPOKEN_EMOJI_KEY: &str = "AzadConvertSpokenEmojiOnPaste";
 const LOWERCASE_EXCEPT_UPPERCASE_WORDS_KEY: &str = "AzadLowercaseExceptUppercaseWordsOnPaste";
 const REMOVE_HESITATIONS_KEY: &str = "AzadRemoveHesitationsOnPaste";
 const REMOVED_WORDS_HESITATION_MIGRATION_KEY: &str = "AzadRemovedWordsHesitationMigration";
@@ -484,6 +485,37 @@ pub fn save_convert_number_words_on_paste(enabled: bool) {
     }
 
     let key = NSString::alloc(nil).init_str(CONVERT_NUMBER_WORDS_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn load_convert_spoken_emoji_on_paste() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return false;
+    }
+
+    let key = NSString::alloc(nil).init_str(CONVERT_SPOKEN_EMOJI_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return false;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
+}
+
+pub fn save_convert_spoken_emoji_on_paste(enabled: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(CONVERT_SPOKEN_EMOJI_KEY);
     let value = if enabled { YES } else { NO };
     let _: () = msg_send![defaults, setBool: value forKey: key];
   }

@@ -290,6 +290,9 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
     ("settings", "toggleConvertNumberWords") => {
       UiEventAction::Send(AppEvent::SettingsToggleConvertNumberWords(bool_value()))
     }
+    ("settings", "toggleConvertSpokenEmoji") => {
+      UiEventAction::Send(AppEvent::SettingsToggleConvertSpokenEmoji(bool_value()))
+    }
     ("settings", "toggleLowercaseExceptUppercaseWords") => {
       UiEventAction::Send(AppEvent::SettingsToggleLowercaseExceptUppercaseWords(bool_value()))
     }
@@ -378,6 +381,7 @@ mod tests {
       ("settings", "toggleAppendTrailingSpace"),
       ("settings", "toggleDeduplicateWords"),
       ("settings", "toggleConvertNumberWords"),
+      ("settings", "toggleConvertSpokenEmoji"),
       ("settings", "toggleLowercaseExceptUppercaseWords"),
       ("settings", "toggleRemoveHesitations"),
       ("settings", "setListenModifier"),
@@ -449,6 +453,24 @@ mod tests {
     };
     match app_event_for_ui_event(&event) {
       UiEventAction::Send(AppEvent::SettingsToggleConvertNumberWords(true)) => {}
+      _ => panic!("unexpected event mapping"),
+    }
+  }
+
+  #[test]
+  fn settings_convert_spoken_emoji_event_maps_to_app_event() {
+    let event = UiEvent {
+      surface: "settings".to_string(),
+      action: "toggleConvertSpokenEmoji".to_string(),
+      bool_value: Some(true),
+      index: None,
+      bit: None,
+      value: None,
+      pack_id: None,
+      permission: None,
+    };
+    match app_event_for_ui_event(&event) {
+      UiEventAction::Send(AppEvent::SettingsToggleConvertSpokenEmoji(true)) => {}
       _ => panic!("unexpected event mapping"),
     }
   }

@@ -96,6 +96,7 @@ pub struct SettingsViewModel {
   pub append_trailing_space_on_paste: bool,
   pub deduplicate_words_on_paste: bool,
   pub convert_number_words_on_paste: bool,
+  pub convert_spoken_emoji_on_paste: bool,
   pub lowercase_except_uppercase_words_on_paste: bool,
   pub remove_hesitations_on_paste: bool,
   pub listen_modifiers: u8,

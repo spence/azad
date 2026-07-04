@@ -3,11 +3,18 @@
 // https://github.com/allo-media/text2num-rs/blob/master/src/lang/en/mod.rs
 // Copyright (c) 2021-2024 Groupe Allo-Media.
 
+mod generated {
+    pub(crate) mod emoji_phrases;
+}
+
+use generated::emoji_phrases::{EMOJI_PHRASES, MAX_EMOJI_PHRASE_WORDS};
+
 pub struct PasteTextOptions<'a> {
     pub append_trailing_space: bool,
     pub removed_words: &'a [String],
     pub deduplicate_words: bool,
     pub convert_number_words: bool,
+    pub convert_spoken_emoji: bool,
     pub lowercase_except_uppercase_words: bool,
 }
 
@@ -16,6 +23,7 @@ pub struct DisplayTextOptions<'a> {
     pub removed_words: &'a [String],
     pub deduplicate_words: bool,
     pub convert_number_words: bool,
+    pub convert_spoken_emoji: bool,
     pub lowercase_except_uppercase_words: bool,
 }
 
@@ -25,6 +33,7 @@ impl<'a> PasteTextOptions<'a> {
             removed_words: self.removed_words,
             deduplicate_words: self.deduplicate_words,
             convert_number_words: self.convert_number_words,
+            convert_spoken_emoji: self.convert_spoken_emoji,
             lowercase_except_uppercase_words: self.lowercase_except_uppercase_words,
         }
     }
@@ -38,6 +47,9 @@ pub fn build_display_text(text: &str, options: DisplayTextOptions<'_>) -> String
     };
     if options.convert_number_words {
         display_text = replace_english_number_words(&display_text);
+    }
+    if options.convert_spoken_emoji {
+        display_text = replace_spoken_emoji_names(&display_text);
     }
     if options.deduplicate_words {
         display_text = collapse_consecutive_duplicates(&display_text);
@@ -134,6 +146,128 @@ fn collapse_consecutive_duplicates(text: &str) -> String {
         kept.push(tok);
     }
     kept.join(" ")
+}
+
+fn replace_spoken_emoji_names(text: &str) -> String {
+    let tokens: Vec<TextToken> = tokenize(text).collect();
+    if tokens.is_empty() || !tokens.iter().any(|token| is_emoji_trigger_word(token.text)) {
+        return text.to_string();
+    }
+
+    let replacements = emoji_replacements(&tokens);
+    if replacements.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut replacement_index = 0;
+    while i < tokens.len() {
+        if let Some((start, end, emoji)) = replacements.get(replacement_index).copied() {
+            if i == start {
+                out.push_str(emoji);
+                i = end + 1;
+                replacement_index += 1;
+                continue;
+            }
+        }
+        out.push_str(tokens[i].text);
+        i += 1;
+    }
+    out
+}
+
+fn emoji_replacements<'a>(tokens: &[TextToken<'a>]) -> Vec<(usize, usize, &'static str)> {
+    let mut replacements = Vec::new();
+    let mut covered_until = None;
+    for (trigger_index, token) in tokens.iter().enumerate() {
+        if covered_until.is_some_and(|end| trigger_index <= end)
+            || !is_emoji_trigger_word(token.text)
+        {
+            continue;
+        }
+
+        if let Some((start, emoji)) = emoji_replacement_ending_at(tokens, trigger_index) {
+            replacements.push((start, trigger_index, emoji));
+            covered_until = Some(trigger_index);
+        }
+    }
+    replacements
+}
+
+fn emoji_replacement_ending_at(
+    tokens: &[TextToken<'_>],
+    trigger_index: usize,
+) -> Option<(usize, &'static str)> {
+    let mut word_indices = Vec::new();
+    let mut word_index = trigger_index;
+    loop {
+        word_indices.push(word_index);
+        if word_indices.len() >= MAX_EMOJI_PHRASE_WORDS {
+            break;
+        }
+        let Some(prev_word_index) = previous_whitespace_separated_word(tokens, word_index) else {
+            break;
+        };
+        word_index = prev_word_index;
+    }
+    word_indices.reverse();
+
+    for start_offset in 0..word_indices.len().saturating_sub(1) {
+        let candidate = &word_indices[start_offset..];
+        let key = emoji_phrase_key(tokens, candidate);
+        if let Some(emoji) = EMOJI_PHRASES.get(&key) {
+            return Some((candidate[0], *emoji));
+        }
+    }
+    None
+}
+
+fn previous_whitespace_separated_word(
+    tokens: &[TextToken<'_>],
+    word_index: usize,
+) -> Option<usize> {
+    if word_index < 2 {
+        return None;
+    }
+    let sep_index = word_index - 1;
+    let prev_index = word_index - 2;
+    if tokens[sep_index].is_word
+        || !tokens[sep_index].text.chars().all(char::is_whitespace)
+        || !tokens[prev_index].is_word
+    {
+        return None;
+    }
+    Some(prev_index)
+}
+
+fn emoji_phrase_key(tokens: &[TextToken<'_>], word_indices: &[usize]) -> String {
+    let mut out = String::new();
+    for (position, token_index) in word_indices.iter().copied().enumerate() {
+        if position + 1 == word_indices.len() && is_emoji_trigger_word(tokens[token_index].text) {
+            push_normalized_emoji_phrase_part(&mut out, "emoji");
+        } else {
+            push_normalized_emoji_phrase_part(&mut out, tokens[token_index].text);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn push_normalized_emoji_phrase_part(out: &mut String, part: &str) {
+    for ch in part.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    if !out.ends_with(' ') {
+        out.push(' ');
+    }
+}
+
+fn is_emoji_trigger_word(word: &str) -> bool {
+    word.eq_ignore_ascii_case("emoji") || word.eq_ignore_ascii_case("emojis")
 }
 
 fn is_consecutive_duplicate(prev: &str, curr: &str) -> bool {
@@ -527,7 +661,7 @@ fn scale_value(word: &str) -> Option<u128> {
 mod tests {
     use super::{
         DisplayTextOptions, PasteTextOptions, build_display_text, build_paste_text,
-        collapse_consecutive_duplicates,
+        collapse_consecutive_duplicates, generated::emoji_phrases::EMOJI_PHRASE_COUNT,
     };
 
     fn options<'a>(
@@ -541,6 +675,7 @@ mod tests {
             removed_words,
             deduplicate_words,
             convert_number_words,
+            convert_spoken_emoji: false,
             lowercase_except_uppercase_words: false,
         }
     }
@@ -556,7 +691,24 @@ mod tests {
             removed_words,
             deduplicate_words,
             convert_number_words,
+            convert_spoken_emoji: false,
             lowercase_except_uppercase_words: true,
+        }
+    }
+
+    fn emoji_options<'a>(
+        append_trailing_space: bool,
+        removed_words: &'a [String],
+        deduplicate_words: bool,
+        convert_number_words: bool,
+    ) -> PasteTextOptions<'a> {
+        PasteTextOptions {
+            append_trailing_space,
+            removed_words,
+            deduplicate_words,
+            convert_number_words,
+            convert_spoken_emoji: true,
+            lowercase_except_uppercase_words: false,
         }
     }
 
@@ -570,6 +722,22 @@ mod tests {
             removed_words,
             deduplicate_words,
             convert_number_words,
+            convert_spoken_emoji: false,
+            lowercase_except_uppercase_words,
+        }
+    }
+
+    fn emoji_display_options<'a>(
+        removed_words: &'a [String],
+        deduplicate_words: bool,
+        convert_number_words: bool,
+        lowercase_except_uppercase_words: bool,
+    ) -> DisplayTextOptions<'a> {
+        DisplayTextOptions {
+            removed_words,
+            deduplicate_words,
+            convert_number_words,
+            convert_spoken_emoji: true,
             lowercase_except_uppercase_words,
         }
     }
@@ -705,6 +873,74 @@ mod tests {
                 lowercase_options(false, &[], true, true)
             ),
             "ship 21 API calls."
+        );
+    }
+
+    #[test]
+    fn generated_emoji_phrase_map_has_expected_coverage() {
+        assert!(EMOJI_PHRASE_COUNT >= 3_800);
+    }
+
+    #[test]
+    fn build_paste_text_converts_explicit_spoken_emoji_directives() {
+        assert_eq!(
+            build_paste_text(
+                "Ship it happy emoji and thumbs up emoji.",
+                emoji_options(false, &[], true, false)
+            ),
+            "Ship it 😊 and 👍."
+        );
+        assert_eq!(
+            build_paste_text(
+                "That was face with tears of joy emoji",
+                emoji_options(false, &[], true, false)
+            ),
+            "That was 😂"
+        );
+    }
+
+    #[test]
+    fn build_paste_text_converts_plural_emoji_trigger() {
+        assert_eq!(
+            build_paste_text(
+                "Approved check mark emojis",
+                emoji_options(false, &[], true, false)
+            ),
+            "Approved ✅"
+        );
+    }
+
+    #[test]
+    fn build_paste_text_preserves_plain_words_without_emoji_trigger() {
+        assert_eq!(
+            build_paste_text(
+                "I am happy about the fire drill",
+                emoji_options(false, &[], true, false)
+            ),
+            "I am happy about the fire drill"
+        );
+    }
+
+    #[test]
+    fn build_paste_text_leaves_unknown_emoji_directives_unchanged() {
+        assert_eq!(
+            build_paste_text(
+                "Use impossible widget emoji here",
+                emoji_options(false, &[], true, false)
+            ),
+            "Use impossible widget emoji here"
+        );
+    }
+
+    #[test]
+    fn build_display_text_can_apply_emoji_with_other_transforms() {
+        let words = vec!["um".to_string()];
+        assert_eq!(
+            build_display_text(
+                "Um Ship Twenty One happy emoji API tests",
+                emoji_display_options(&words, true, true, true)
+            ),
+            "ship 21 😊 API tests"
         );
     }
 
