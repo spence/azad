@@ -30,7 +30,6 @@ restore_env_var() {
 }
 
 for var in \
-  AZAD_VERSION \
   AZAD_SIGNING_IDENTITY \
   AZAD_NOTARIZATION_PROFILE; do
   capture_env_var "$var"
@@ -43,14 +42,13 @@ if [[ -f "$RELEASE_CONFIG_FILE" ]]; then
 fi
 
 for var in \
-  AZAD_VERSION \
   AZAD_SIGNING_IDENTITY \
   AZAD_NOTARIZATION_PROFILE; do
   restore_env_var "$var"
 done
 
 LABEL="ai.azad"
-VERSION="${AZAD_VERSION:-$WORKSPACE_VERSION}"
+VERSION="$WORKSPACE_VERSION"
 SIGNING_IDENTITY="${AZAD_SIGNING_IDENTITY:-}"
 NOTARIZATION_PROFILE="${AZAD_NOTARIZATION_PROFILE:-azad-notarization}"
 
@@ -80,7 +78,6 @@ Required environment variables:
   AZAD_SIGNING_IDENTITY    Developer ID Application identity (name or hash)
 
 Optional environment variables:
-  AZAD_VERSION             Version string (default: workspace version)
   AZAD_NOTARIZATION_PROFILE  notarytool credential profile (default: azad-notarization)
                              Create with: xcrun notarytool store-credentials "azad-notarization"
   AZAD_RELEASE_CONFIG      Local env file (default: <workspace>/.release.env)

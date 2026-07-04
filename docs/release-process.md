@@ -15,7 +15,6 @@ cp .release.env.example .release.env
 Set:
 
 ```bash
-AZAD_VERSION="0.3.0"
 AZAD_SIGNING_IDENTITY="<Developer ID Application certificate hash>"
 AZAD_NOTARIZATION_PROFILE="azad-notarization"
 ```
@@ -41,9 +40,13 @@ just dist
 and staples the app, creates `dist/Azad-<version>.dmg`, then signs, notarizes,
 and staples the DMG.
 
+The release version is read from the workspace version in the root
+`Cargo.toml`.
+
 ## Verify
 
 ```bash
+AZAD_VERSION="$(awk -F '"' '/^version =/ { print $2; exit }' Cargo.toml)"
 codesign --verify --deep --strict --verbose=4 dist/Azad.app
 xcrun stapler validate dist/Azad.app
 xcrun stapler validate "dist/Azad-${AZAD_VERSION}.dmg"
@@ -55,6 +58,7 @@ spctl -a -vvv -t open --context context:primary-signature "dist/Azad-${AZAD_VERS
 Create or update a GitHub Release for the matching tag and upload the DMG:
 
 ```bash
+AZAD_VERSION="$(awk -F '"' '/^version =/ { print $2; exit }' Cargo.toml)"
 gh release view "v${AZAD_VERSION}" >/dev/null 2>&1 || \
   gh release create "v${AZAD_VERSION}" --title "Azad v${AZAD_VERSION}" --notes ""
 gh release upload "v${AZAD_VERSION}" "dist/Azad-${AZAD_VERSION}.dmg" --clobber
