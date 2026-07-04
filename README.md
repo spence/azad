@@ -117,6 +117,15 @@ MIT. See [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.4.0
+
+- Added a more reliable model download backend with pause/resume support.
+- Added an activation level setting to reduce accidental starts from quiet speech or room noise.
+- Added a lowercase text transformation that preserves uppercase words.
+- Added spoken emoji name conversion.
+- Applied enabled text transformations to live streaming text.
+- Saved active in-progress dictation drafts to history when Azad shuts down.
+
 ### 0.3.0
 
 - Added light and dark appearance support for native app surfaces.
