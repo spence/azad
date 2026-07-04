@@ -19,6 +19,7 @@ pub struct SessionConfig {
   pub auto_vad_enabled: bool,
   pub capture_enabled: bool,
   pub debug_stats_enabled: bool,
+  pub start_min_rms_db: f32,
   pub native_engine_logs_enabled: bool,
   pub pipeline: PipelineConfig,
 }
@@ -72,13 +73,14 @@ pub enum SessionEvent {
   },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionControl {
   StartOrResumeManualHold,
   ReleaseManualHold,
   SetAutoVadEnabled(bool),
   SetCaptureEnabled(bool),
   SetDebugStatsEnabled(bool),
+  SetStartMinRmsDb(f32),
   FinalizeCurrentTurn,
   CancelCurrentTurn,
   CancelSession,
@@ -113,6 +115,7 @@ pub fn spawn_session(
   controls.set_auto_vad_enabled(cfg.auto_vad_enabled);
   controls.set_capture_enabled(cfg.capture_enabled);
   controls.set_debug_stats_enabled(cfg.debug_stats_enabled);
+  controls.set_start_min_rms_db(cfg.start_min_rms_db);
   let shutdown = Arc::new(AtomicBool::new(false));
 
   let handle: Arc<dyn SessionHandle> = Arc::new(LiveSessionHandle {
@@ -188,6 +191,9 @@ impl SessionHandle for LiveSessionHandle {
       }
       SessionControl::SetDebugStatsEnabled(enabled) => {
         self.controls.set_debug_stats_enabled(enabled);
+      }
+      SessionControl::SetStartMinRmsDb(rms_db) => {
+        self.controls.set_start_min_rms_db(rms_db);
       }
       SessionControl::FinalizeCurrentTurn => {
         self.controls.request_force_finish();

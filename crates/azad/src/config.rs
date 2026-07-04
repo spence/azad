@@ -23,6 +23,7 @@ impl AzadConfig {
     auto_vad_enabled: bool,
     capture_enabled: bool,
     debug_stats_enabled: bool,
+    start_min_rms_db: f32,
   ) -> SessionConfig {
     SessionConfig {
       device_id,
@@ -31,6 +32,7 @@ impl AzadConfig {
       auto_vad_enabled,
       capture_enabled,
       debug_stats_enabled,
+      start_min_rms_db,
       native_engine_logs_enabled: self.native_engine_logs_enabled,
       pipeline: self.pipeline.clone(),
     }

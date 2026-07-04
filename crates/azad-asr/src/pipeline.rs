@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 mod audio_prep;
@@ -366,6 +366,7 @@ pub struct PipelineControls {
   auto_vad_enabled: AtomicBool,
   capture_enabled: AtomicBool,
   debug_stats_enabled: AtomicBool,
+  start_min_rms_db_bits: AtomicU32,
   force_start_requested: AtomicBool,
   force_finish_requested: AtomicBool,
   cancel_turn_requested: AtomicBool,
@@ -467,6 +468,16 @@ impl PipelineControls {
     self.debug_stats_enabled.load(Ordering::Relaxed)
   }
 
+  pub fn set_start_min_rms_db(&self, rms_db: f32) {
+    self
+      .start_min_rms_db_bits
+      .store(rms_db.clamp(-120.0, 0.0).to_bits(), Ordering::Relaxed);
+  }
+
+  pub fn start_min_rms_db(&self) -> f32 {
+    f32::from_bits(self.start_min_rms_db_bits.load(Ordering::Relaxed)).clamp(-120.0, 0.0)
+  }
+
   pub fn request_force_start(&self) {
     self.force_start_requested.store(true, Ordering::Relaxed);
   }
@@ -512,6 +523,7 @@ impl Default for PipelineControls {
       auto_vad_enabled: AtomicBool::new(true),
       capture_enabled: AtomicBool::new(true),
       debug_stats_enabled: AtomicBool::new(false),
+      start_min_rms_db_bits: AtomicU32::new((-60.0f32).to_bits()),
       force_start_requested: AtomicBool::new(false),
       force_finish_requested: AtomicBool::new(false),
       cancel_turn_requested: AtomicBool::new(false),
@@ -777,12 +789,22 @@ struct PipelineCore {
 
   last_health_emit: Instant,
   health_interval: Duration,
+  last_activation_gate_block_log_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnStartReason {
   Vad,
   ManualOverride,
+}
+
+fn activation_level_blocks_start(
+  in_speech: bool,
+  is_speech: bool,
+  rms_db: f32,
+  start_min_rms_db: f32,
+) -> bool {
+  !in_speech && is_speech && rms_db < start_min_rms_db
 }
 
 impl PipelineCore {
@@ -849,6 +871,7 @@ impl PipelineCore {
       pending_active_clear_chunks: 0,
       last_health_emit: Instant::now(),
       health_interval: Duration::from_millis(200),
+      last_activation_gate_block_log_at: None,
     }
   }
 
@@ -961,6 +984,29 @@ impl PipelineCore {
 
     let score = vad_avg.max(self.vad_avg_ema);
     let mut is_speech = score >= effective_thold;
+    let start_min_rms_db = self
+      .controls
+      .as_ref()
+      .map(|c| c.start_min_rms_db())
+      .unwrap_or(HARD_SILENCE_RMS_DB);
+    let activation_level_blocks_start =
+      activation_level_blocks_start(self.in_speech, is_speech, rms_db, start_min_rms_db);
+    if activation_level_blocks_start {
+      let now = Instant::now();
+      let should_log = self
+        .last_activation_gate_block_log_at
+        .map(|last| now.duration_since(last) >= Duration::from_millis(250))
+        .unwrap_or(true);
+      if self.debug_stats_enabled() && should_log {
+        self.last_activation_gate_block_log_at = Some(now);
+        eprintln!(
+          "AZAD_VAD_START_BLOCKED reason=activation_level rms_db={:.1} peak_db={:.1} \
+           min_rms_db={:.1} vad_prob={:.3} vad_ema={:.3} thold={:.3}",
+          rms_db, peak_db, start_min_rms_db, vad_avg, self.vad_avg_ema, effective_thold,
+        );
+      }
+      is_speech = false;
+    }
 
     // Cold-start observability: per-chunk diagnostics for the first 10 s
     // after a wake. Reveals whether the slow-start signature comes from
@@ -3519,11 +3565,11 @@ mod tests {
     DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES, EmptyPartialAction, EouEmission,
     FinalizeTailPlan, FinalizingPulsePlan, INCREMENTAL_LIVE_TAIL_WAIT_FACTOR,
     INCREMENTAL_TAIL_MAX_WAIT_FACTOR, IncrementalPartialSegment, MIDDLE_COVERAGE_TOLERANCE_SAMPLES,
-    PipelineControls, PipelineCore, TAIL_COVERAGE_TOLERANCE_SAMPLES, cap_segment_start,
-    choose_streaming_final_text, debug_recording_stem, empty_partial_action, eou_chars_in_range,
-    eou_corroborates_silence, finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
-    leading_coverage_is_incomplete, middle_coverage_is_incomplete, non_empty_partials,
-    normalize_chunk_case, partial_core_coverage_gap, prune_debug_recordings,
+    PipelineControls, PipelineCore, TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start,
+    cap_segment_start, choose_streaming_final_text, debug_recording_stem, empty_partial_action,
+    eou_chars_in_range, eou_corroborates_silence, finalize_tail_plan, finalizing_pulse_plan,
+    incremental_tail_wait_ms, leading_coverage_is_incomplete, middle_coverage_is_incomplete,
+    non_empty_partials, normalize_chunk_case, partial_core_coverage_gap, prune_debug_recordings,
     samples_to_ms_at_target_sr, stitch_incremental_text, stitch_right_start_cap_from_overlap,
     tail_coverage_is_incomplete,
   };
@@ -3542,6 +3588,14 @@ mod tests {
       is_tail,
       text: text.to_string(),
     }
+  }
+
+  #[test]
+  fn activation_level_blocks_only_idle_start_below_rms_gate() {
+    assert!(activation_level_blocks_start(false, true, -45.0, -40.0));
+    assert!(!activation_level_blocks_start(false, true, -35.0, -40.0));
+    assert!(!activation_level_blocks_start(false, false, -45.0, -40.0));
+    assert!(!activation_level_blocks_start(true, true, -45.0, -40.0));
   }
 
   #[test]

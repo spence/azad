@@ -103,6 +103,10 @@ impl SpeechSession {
     let _ = self.handle.control(SessionControl::SetDebugStatsEnabled(enabled));
   }
 
+  pub fn set_start_min_rms_db(&self, rms_db: f32) {
+    let _ = self.handle.control(SessionControl::SetStartMinRmsDb(rms_db));
+  }
+
   pub fn finalize_current_turn(&self) {
     let _ = self.handle.control(SessionControl::FinalizeCurrentTurn);
   }
