@@ -122,7 +122,7 @@ MIT. See [LICENSE](LICENSE).
 - Added a more reliable model download backend with pause/resume support.
 - Added an activation level setting to reduce accidental starts from quiet speech or room noise.
 - Added a lowercase text transformation that preserves uppercase words.
-- Added spoken emoji name conversion with [curated aliases](crates/azad-text/data/emoji_aliases.toml).
+- Added spoken emoji name conversion with a curated [emoji phrase map](crates/azad-text/data/emoji.toml).
 - Applied enabled text transformations to live streaming text.
 - Saved active in-progress dictation drafts to history when Azad shuts down.
 

@@ -4,7 +4,9 @@
 // Copyright (c) 2021-2024 Groupe Allo-Media.
 
 mod generated {
-    pub(crate) mod emoji_phrases;
+    pub(crate) mod emoji_phrases {
+        include!(concat!(env!("OUT_DIR"), "/emoji_phrases.rs"));
+    }
 }
 
 use generated::emoji_phrases::{EMOJI_PHRASES, MAX_EMOJI_PHRASE_WORDS};
@@ -200,7 +202,7 @@ fn emoji_replacement_ending_at(
     trigger_index: usize,
 ) -> Option<(usize, &'static str)> {
     let mut word_indices = Vec::new();
-    let mut word_index = trigger_index;
+    let mut word_index = previous_whitespace_separated_word(tokens, trigger_index)?;
     loop {
         word_indices.push(word_index);
         if word_indices.len() >= MAX_EMOJI_PHRASE_WORDS {
@@ -213,7 +215,7 @@ fn emoji_replacement_ending_at(
     }
     word_indices.reverse();
 
-    for start_offset in 0..word_indices.len().saturating_sub(1) {
+    for start_offset in 0..word_indices.len() {
         let candidate = &word_indices[start_offset..];
         let key = emoji_phrase_key(tokens, candidate);
         if let Some(emoji) = EMOJI_PHRASES.get(&key) {
@@ -243,12 +245,8 @@ fn previous_whitespace_separated_word(
 
 fn emoji_phrase_key(tokens: &[TextToken<'_>], word_indices: &[usize]) -> String {
     let mut out = String::new();
-    for (position, token_index) in word_indices.iter().copied().enumerate() {
-        if position + 1 == word_indices.len() && is_emoji_trigger_word(tokens[token_index].text) {
-            push_normalized_emoji_phrase_part(&mut out, "emoji");
-        } else {
-            push_normalized_emoji_phrase_part(&mut out, tokens[token_index].text);
-        }
+    for token_index in word_indices.iter().copied() {
+        push_normalized_emoji_phrase_part(&mut out, tokens[token_index].text);
     }
     out.trim().to_string()
 }

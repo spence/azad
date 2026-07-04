@@ -171,6 +171,7 @@ name = "azad-text"
 version = "0.4.0"
 dependencies = [
  "phf",
+ "toml_edit",
 ]
 
 [[package]]

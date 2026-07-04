@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 phf = { version = "0.11", features = ["macros"] }
+
+[build-dependencies]
+toml_edit = { version = "0.25.4", default-features = false, features = ["parse"] }
