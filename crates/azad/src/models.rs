@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
 pub struct ModelPackDef {
@@ -22,6 +22,7 @@ pub enum PackStatus {
   NotDownloaded,
   Downloading { progress_pct: u8 },
   Ready,
+  Resumable { bytes_done: u64, progress_pct: u8 },
   Incomplete,
 }
 
@@ -120,30 +121,85 @@ pub fn pack_dir(pack_id: &str) -> Option<PathBuf> {
 }
 
 pub fn check_pack_status(pack: &ModelPackDef) -> PackStatus {
+  let progress = pack_download_progress(pack);
+  if progress.ready_files == pack.files.len() {
+    PackStatus::Ready
+  } else if progress.bytes_done > 0 {
+    PackStatus::Resumable {
+      bytes_done: progress.bytes_done,
+      progress_pct: progress.progress_pct(pack.total_size_bytes),
+    }
+  } else if progress.has_install_artifacts {
+    PackStatus::Incomplete
+  } else {
+    PackStatus::NotDownloaded
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackDownloadProgress {
+  pub bytes_done: u64,
+  pub ready_files: usize,
+  pub has_install_artifacts: bool,
+}
+
+impl PackDownloadProgress {
+  pub fn progress_pct(self, total_size_bytes: u64) -> u8 {
+    if total_size_bytes == 0 {
+      0
+    } else {
+      ((self.bytes_done as f64 / total_size_bytes as f64) * 100.0).clamp(0.0, 100.0) as u8
+    }
+  }
+}
+
+pub fn pack_download_progress(pack: &ModelPackDef) -> PackDownloadProgress {
   let dir = match pack_dir(pack.id) {
     Some(d) => d,
-    None => return PackStatus::NotDownloaded,
+    None => {
+      return PackDownloadProgress { bytes_done: 0, ready_files: 0, has_install_artifacts: false };
+    }
   };
   if !dir.exists() {
-    return PackStatus::NotDownloaded;
+    return PackDownloadProgress { bytes_done: 0, ready_files: 0, has_install_artifacts: false };
   }
 
-  let mut found = 0;
+  pack_download_progress_in_dir(pack, &dir)
+}
+
+fn pack_download_progress_in_dir(pack: &ModelPackDef, dir: &Path) -> PackDownloadProgress {
+  let mut ready_files = 0;
+  let mut bytes_done = 0;
+  let mut has_install_artifacts = false;
   for file in pack.files {
     let path = dir.join(file.rel_path);
-    let ok = path.metadata().map(|m| m.len() == file.size_bytes).unwrap_or(false);
-    if ok {
-      found += 1;
+    match path.metadata() {
+      Ok(meta) if meta.len() == file.size_bytes => {
+        ready_files += 1;
+        bytes_done += file.size_bytes;
+        has_install_artifacts = true;
+        continue;
+      }
+      Ok(_) => {
+        has_install_artifacts = true;
+      }
+      Err(_) => {}
+    }
+
+    let part_path = PathBuf::from(format!("{}.part", path.display()));
+    match part_path.metadata() {
+      Ok(meta) if meta.len() > 0 && meta.len() <= file.size_bytes => {
+        bytes_done += meta.len();
+        has_install_artifacts = true;
+      }
+      Ok(_) => {
+        has_install_artifacts = true;
+      }
+      Err(_) => {}
     }
   }
 
-  if found == pack.files.len() {
-    PackStatus::Ready
-  } else if found == 0 {
-    PackStatus::NotDownloaded
-  } else {
-    PackStatus::Incomplete
-  }
+  PackDownloadProgress { bytes_done, ready_files, has_install_artifacts }
 }
 
 pub struct ResolvedPipelinePaths {
@@ -251,5 +307,64 @@ mod tests {
     assert!(coreml_vad_model_ready(&dir));
 
     let _ = fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn pack_progress_counts_resumable_part_file() {
+    let dir = temp_model_dir("azad-pack-progress-part");
+    let file = default_pack()
+      .files
+      .iter()
+      .find(|file| file.rel_path == "mlx/model.safetensors")
+      .unwrap();
+    let target = dir.join(file.rel_path);
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(PathBuf::from(format!("{}.part", target.display())), vec![7u8; 4096]).unwrap();
+
+    let progress = pack_download_progress_in_dir(default_pack(), &dir);
+
+    assert_eq!(progress.bytes_done, 4096);
+    assert_eq!(progress.ready_files, 0);
+    assert!(progress.has_install_artifacts);
+
+    let _ = fs::remove_dir_all(dir);
+  }
+
+  #[test]
+  fn pack_status_reports_resumable_progress() {
+    let dir = temp_model_dir("azad-pack-progress-complete");
+    let pack = default_pack();
+    let file = &pack.files[0];
+    let target = dir.join(file.rel_path);
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, vec![1u8; file.size_bytes as usize]).unwrap();
+
+    let progress = pack_download_progress_in_dir(pack, &dir);
+    let status = if progress.ready_files == pack.files.len() {
+      PackStatus::Ready
+    } else if progress.bytes_done > 0 {
+      PackStatus::Resumable {
+        bytes_done: progress.bytes_done,
+        progress_pct: progress.progress_pct(pack.total_size_bytes),
+      }
+    } else if progress.has_install_artifacts {
+      PackStatus::Incomplete
+    } else {
+      PackStatus::NotDownloaded
+    };
+
+    assert!(
+      matches!(status, PackStatus::Resumable { bytes_done, .. } if bytes_done == file.size_bytes)
+    );
+
+    let _ = fs::remove_dir_all(dir);
+  }
+
+  fn temp_model_dir(prefix: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+      "{}-{}",
+      prefix,
+      SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ))
   }
 }
