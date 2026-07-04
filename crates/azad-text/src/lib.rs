@@ -8,6 +8,7 @@ pub struct PasteTextOptions<'a> {
     pub removed_words: &'a [String],
     pub deduplicate_words: bool,
     pub convert_number_words: bool,
+    pub lowercase_except_uppercase_words: bool,
 }
 
 pub fn build_paste_text(text: &str, options: PasteTextOptions<'_>) -> String {
@@ -22,6 +23,9 @@ pub fn build_paste_text(text: &str, options: PasteTextOptions<'_>) -> String {
     if options.deduplicate_words {
         paste_text = collapse_consecutive_duplicates(&paste_text);
     }
+    if options.lowercase_except_uppercase_words {
+        paste_text = lowercase_except_uppercase_words(&paste_text);
+    }
     if options.append_trailing_space
         && !paste_text
             .chars()
@@ -31,6 +35,45 @@ pub fn build_paste_text(text: &str, options: PasteTextOptions<'_>) -> String {
         paste_text.push(' ');
     }
     paste_text
+}
+
+fn lowercase_except_uppercase_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            word.push(ch);
+        } else {
+            flush_lowercase_word(&mut out, &mut word);
+            out.push(ch);
+        }
+    }
+    flush_lowercase_word(&mut out, &mut word);
+    out
+}
+
+fn flush_lowercase_word(out: &mut String, word: &mut String) {
+    if word.is_empty() {
+        return;
+    }
+
+    let mut alpha_count = 0;
+    let mut all_alpha_uppercase = true;
+    for ch in word.chars().filter(|ch| ch.is_alphabetic()) {
+        alpha_count += 1;
+        if !ch.is_uppercase() {
+            all_alpha_uppercase = false;
+            break;
+        }
+    }
+
+    if alpha_count >= 2 && all_alpha_uppercase {
+        out.push_str(word);
+    } else {
+        out.extend(word.chars().flat_map(|ch| ch.to_lowercase()));
+    }
+    word.clear();
 }
 
 fn strip_removed_words(text: &str, removed_words: &[String]) -> String {
@@ -471,6 +514,22 @@ mod tests {
             removed_words,
             deduplicate_words,
             convert_number_words,
+            lowercase_except_uppercase_words: false,
+        }
+    }
+
+    fn lowercase_options<'a>(
+        append_trailing_space: bool,
+        removed_words: &'a [String],
+        deduplicate_words: bool,
+        convert_number_words: bool,
+    ) -> PasteTextOptions<'a> {
+        PasteTextOptions {
+            append_trailing_space,
+            removed_words,
+            deduplicate_words,
+            convert_number_words,
+            lowercase_except_uppercase_words: true,
         }
     }
 
@@ -552,6 +611,39 @@ mod tests {
         assert_eq!(
             build_paste_text("um, ah, hello", options(false, &words, true, false)),
             "hello"
+        );
+    }
+
+    #[test]
+    fn build_paste_text_lowercases_without_removing_punctuation() {
+        assert_eq!(
+            build_paste_text(
+                "Hello, World! This.Is A Test?",
+                lowercase_options(false, &[], true, false)
+            ),
+            "hello, world! this.is a test?"
+        );
+    }
+
+    #[test]
+    fn build_paste_text_preserves_uppercase_words() {
+        assert_eq!(
+            build_paste_text(
+                "I saw NASA launch an API-based HTTP2 test in the USA.",
+                lowercase_options(false, &[], true, false)
+            ),
+            "i saw NASA launch an API-based HTTP2 test in the USA."
+        );
+    }
+
+    #[test]
+    fn build_paste_text_can_lowercase_after_number_conversion() {
+        assert_eq!(
+            build_paste_text(
+                "Ship Twenty One API calls.",
+                lowercase_options(false, &[], true, true)
+            ),
+            "ship 21 API calls."
         );
     }
 
