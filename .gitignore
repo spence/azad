@@ -3,6 +3,7 @@ models/
 dist/
 .DS_Store
 .codesign.env
+.release.env
 
 # Local legacy checkouts; the publishable workspace does not depend on them.
 crates/asr-rs/

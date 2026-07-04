@@ -94,8 +94,8 @@ On Apple silicon, the linker may still leave a per-binary ad-hoc signature on
 the executable. That is not a stable app-bundle signature and should not be used
 for TCC permission preservation.
 
-For local release builds, `.codesign.env` provides defaults and explicit environment
-variables override values from that file.
+Maintainer release builds use `.release.env` and `just dist`; see
+[Release process](docs/release-process.md).
 
 ## Permissions
 

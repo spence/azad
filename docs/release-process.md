@@ -1,30 +1,61 @@
 # Release Process
 
-Public builds are produced from tags by `.github/workflows/release.yml`. The
-workflow imports a Developer ID certificate from GitHub Actions secrets, signs
-the app with hardened runtime, notarizes/staples the app and DMG, verifies the
-result, and uploads the DMG to the GitHub Release.
+Public builds are produced locally by a maintainer, then uploaded to GitHub
+Releases. GitHub Actions verifies source builds, but it does not hold signing
+certificates or Apple notarization credentials.
 
-The workflow runs on GitHub's `macos-26` hosted runner because the checked-in
-Swift MLX packages require Swift tools 6.2.
+## One-Time Maintainer Setup
 
-Required release secrets:
+Create a local release config:
 
-- `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`
-- `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`
-- `APPLE_KEYCHAIN_PASSWORD`
-- `APPLE_ID`
-- `APPLE_TEAM_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
+```bash
+cp .release.env.example .release.env
+```
 
-Store these as GitHub Actions secrets, preferably on a protected `release`
-environment with required reviewers. Do not commit certificates, passwords,
-exported keychains, or notarization profiles to the repository.
+Set:
 
-The workflow expects `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64` to be a base64
-encoded `.p12` export of a Developer ID Application certificate. The `.p12`
-password goes in `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`. `APPLE_KEYCHAIN_PASSWORD`
-is any strong temporary password used only for the ephemeral CI keychain.
+```bash
+AZAD_VERSION="0.3.0"
+AZAD_SIGNING_IDENTITY="<Developer ID Application certificate hash>"
+AZAD_NOTARIZATION_PROFILE="azad-notarization"
+```
 
-For local release builds, `.codesign.env` provides defaults and explicit
-environment variables override values from that file.
+Store Apple notarization credentials in the macOS Keychain:
+
+```bash
+xcrun notarytool store-credentials "azad-notarization" \
+  --apple-id "you@example.com" \
+  --team-id "35A87BDK48"
+```
+
+Paste the Apple app-specific password at the secure prompt. Do not put Apple
+passwords, `.p12` exports, or keychain material in `.release.env`.
+
+## Build
+
+```bash
+just dist
+```
+
+`just dist` builds `dist/Azad.app`, signs it with hardened runtime, notarizes
+and staples the app, creates `dist/Azad-<version>.dmg`, then signs, notarizes,
+and staples the DMG.
+
+## Verify
+
+```bash
+codesign --verify --deep --strict --verbose=4 dist/Azad.app
+xcrun stapler validate dist/Azad.app
+xcrun stapler validate "dist/Azad-${AZAD_VERSION}.dmg"
+spctl -a -vvv -t open --context context:primary-signature "dist/Azad-${AZAD_VERSION}.dmg"
+```
+
+## Upload
+
+Create or update a GitHub Release for the matching tag and upload the DMG:
+
+```bash
+gh release view "v${AZAD_VERSION}" >/dev/null 2>&1 || \
+  gh release create "v${AZAD_VERSION}" --title "Azad v${AZAD_VERSION}" --notes ""
+gh release upload "v${AZAD_VERSION}" "dist/Azad-${AZAD_VERSION}.dmg" --clobber
+```

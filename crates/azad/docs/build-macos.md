@@ -59,7 +59,7 @@ Explicit environment variables override values from `.codesign.env`.
 Maintainer release builds use the separate distribution path:
 
 ```bash
-cp .codesign.env.example .codesign.env
+cp .release.env.example .release.env
 just dist
 ```
 
@@ -67,7 +67,7 @@ just dist
 profile. It signs with hardened runtime, notarizes, staples, and creates
 `dist/Azad-<version>.dmg`.
 
-Explicit environment variables override values from `.codesign.env`.
+Explicit environment variables override values from `.release.env`.
 
 ## Permissions
 

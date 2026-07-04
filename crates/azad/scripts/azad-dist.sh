@@ -33,10 +33,10 @@ for var in \
   capture_env_var "$var"
 done
 
-CONFIG_FILE="${AZAD_CONFIG:-$ROOT_DIR/.codesign.env}"
-if [[ -f "$CONFIG_FILE" ]]; then
-  # Local, ignored shell assignments for release signing/notarization settings.
-  source "$CONFIG_FILE"
+RELEASE_CONFIG_FILE="${AZAD_RELEASE_CONFIG:-$ROOT_DIR/.release.env}"
+if [[ -f "$RELEASE_CONFIG_FILE" ]]; then
+  # Local, ignored shell assignments for official release packaging.
+  source "$RELEASE_CONFIG_FILE"
 fi
 
 for var in \
@@ -80,7 +80,7 @@ Optional environment variables:
   AZAD_VERSION             Version string (default: 0.2.0)
   AZAD_NOTARIZATION_PROFILE  notarytool credential profile (default: azad-notarization)
                              Create with: xcrun notarytool store-credentials "azad-notarization"
-  AZAD_CONFIG              Local env file (default: <workspace>/.codesign.env)
+  AZAD_RELEASE_CONFIG      Local env file (default: <workspace>/.release.env)
 
 USAGE
 }
@@ -211,7 +211,7 @@ build_mlx_metallib() {
 
 if [[ -z "$SIGNING_IDENTITY" ]]; then
   echo "error: set AZAD_SIGNING_IDENTITY to your Developer ID Application identity" >&2
-  echo "error: local release settings can also go in: $CONFIG_FILE" >&2
+  echo "error: local release settings can also go in: $RELEASE_CONFIG_FILE" >&2
   exit 1
 fi
 
@@ -298,6 +298,7 @@ APP_ZIP="${DIST_DIR}/Azad.zip"
 ditto -c -k --keepParent "$APP_DIR" "$APP_ZIP"
 xcrun notarytool submit "$APP_ZIP" \
   --keychain-profile "$NOTARIZATION_PROFILE" \
+  --no-progress \
   --wait
 rm -f "$APP_ZIP"
 
@@ -318,9 +319,17 @@ hdiutil create \
 
 rm -rf "$STAGING_DIR"
 
+echo "==> Signing DMG"
+/usr/bin/codesign \
+  --force \
+  --sign "$SIGNING_IDENTITY" \
+  --timestamp \
+  "$DMG_PATH"
+
 echo "==> Notarizing DMG"
 xcrun notarytool submit "$DMG_PATH" \
   --keychain-profile "$NOTARIZATION_PROFILE" \
+  --no-progress \
   --wait
 
 echo "==> Stapling notarization ticket to DMG"
