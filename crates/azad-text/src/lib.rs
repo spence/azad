@@ -431,11 +431,19 @@ fn number_token_parts(token: &str) -> Option<Vec<String>> {
 }
 
 fn lemmatize(word: &str) -> &str {
-    if word.ends_with('s') && word != "seconds" {
-        word.trim_end_matches('s')
-    } else {
-        word
+    if !word.ends_with('s') {
+        return word;
     }
+    let singular = word.trim_end_matches('s');
+    // Plural quantity/time nouns describe amounts of things, not numbers to
+    // convert: "tens of thousands", "hundreds of people", "wait five seconds".
+    if matches!(
+        singular,
+        "second" | "ten" | "hundred" | "thousand" | "million" | "billion"
+    ) {
+        return word;
+    }
+    singular
 }
 
 fn is_number_part(word: &str) -> bool {
@@ -491,6 +499,12 @@ fn parse_number_words(words: &[String]) -> Option<String> {
 }
 
 fn parse_cardinal(words: &[String]) -> Option<String> {
+    // A trailing "and" belongs to the surrounding sentence ("between five
+    // and six"), not the number. Refusing it here lets the shorter candidate
+    // win, so the connective word is preserved in the output.
+    if words.last().map(String::as_str) == Some("and") {
+        return None;
+    }
     if let Some(digits) = parse_leading_zero_sequence(words) {
         return Some(digits);
     }
@@ -595,9 +609,22 @@ fn parse_digit_word_sequence(words: &[String]) -> Option<String> {
 }
 
 fn decimal_digit(word: &str) -> Option<u8> {
+    // Cardinal forms only. Ordinals ("second", "fourth") stay out of spoken
+    // digit sequences so "give me one second" is not rewritten to "1 2";
+    // they still combine into cardinals via `parse_cardinal` ("twenty
+    // fourth" -> 24).
     match word {
         "zero" | "o" | "nought" => Some(0),
-        _ => unit_value(word).and_then(|value| u8::try_from(value).ok()),
+        "one" => Some(1),
+        "two" => Some(2),
+        "three" => Some(3),
+        "four" => Some(4),
+        "five" => Some(5),
+        "six" => Some(6),
+        "seven" => Some(7),
+        "eight" => Some(8),
+        "nine" => Some(9),
+        _ => None,
     }
 }
 
@@ -1126,6 +1153,65 @@ mod tests {
         assert_eq!(
             build_paste_text("twenty five", options(false, &[], true, false)),
             "twenty five"
+        );
+    }
+
+    #[test]
+    fn number_words_keep_ordinals_out_of_digit_sequences() {
+        assert_eq!(
+            build_paste_text("give me one second", options(false, &[], true, true)),
+            "give me one second"
+        );
+        assert_eq!(
+            build_paste_text("the second one I tried", options(false, &[], true, true)),
+            "the second one I tried"
+        );
+        // Ordinals still combine into cardinals when genuinely numeric.
+        assert_eq!(
+            build_paste_text("the twenty fourth of May", options(false, &[], true, true)),
+            "the 24 of May"
+        );
+    }
+
+    #[test]
+    fn number_words_keep_plural_scale_words() {
+        assert_eq!(
+            build_paste_text(
+                "hundreds of people showed up",
+                options(false, &[], true, true)
+            ),
+            "hundreds of people showed up"
+        );
+        assert_eq!(
+            build_paste_text(
+                "tens of thousands of users",
+                options(false, &[], true, true)
+            ),
+            "tens of thousands of users"
+        );
+        assert_eq!(
+            build_paste_text("millions of requests", options(false, &[], true, true)),
+            "millions of requests"
+        );
+        assert_eq!(
+            build_paste_text("wait five seconds", options(false, &[], true, true)),
+            "wait five seconds"
+        );
+    }
+
+    #[test]
+    fn number_words_do_not_consume_trailing_and() {
+        assert_eq!(
+            build_paste_text("between five and six", options(false, &[], true, true)),
+            "between five and six"
+        );
+        // Interior "and" inside a real number still parses.
+        assert_eq!(
+            build_paste_text(
+                "one thousand two hundred and sixty six dollars",
+                options(false, &[], true, true),
+            ),
+            "1266 dollars"
         );
     }
 }
