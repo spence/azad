@@ -137,18 +137,17 @@ final class StatusTextView: NSStackView {
         super.init(frame: .zero)
         orientation = .horizontal
         alignment = .centerY
-        spacing = 7
+        spacing = 5
         translatesAutoresizingMaskIntoConstraints = false
 
         if let iconName {
-            addArrangedSubview(Design.symbol(iconName, pointSize: 13, color: Design.secondaryText))
+            addArrangedSubview(Design.symbol(iconName, pointSize: 12, color: Design.secondaryText))
         }
 
-        addArrangedSubview(Design.label(text, size: 13, color: Design.text))
-        let dot = status == .granted ? "checkmark.circle.fill" : "circle.fill"
-        let color = status == .granted ? Design.green : Design.orange
-        addArrangedSubview(Design.symbol(dot, pointSize: 12, color: color))
-        addArrangedSubview(Design.label(status == .granted ? "Granted" : "Not granted", size: 13, weight: .medium, color: color))
+        addArrangedSubview(Design.label(text, size: 12, color: Design.text))
+        let color = status.statusColor
+        addArrangedSubview(Design.symbol(status.statusIconName, pointSize: 10, color: color))
+        addArrangedSubview(Design.label(status.statusText, size: 12, weight: .medium, color: color))
     }
 
     required init(coder: NSCoder) {
@@ -196,7 +195,7 @@ final class PermissionCard: NSView {
             permission: "accessibility",
             target: target,
             action: action,
-            showButton: !compactGranted && accessibility != .granted
+            showButton: !compactGranted && !accessibility.isGranted
         )
         stack.addArrangedSubview(Design.separatorView())
         addPermissionRow(
@@ -207,10 +206,10 @@ final class PermissionCard: NSView {
             permission: "microphone",
             target: target,
             action: action,
-            showButton: !compactGranted && microphone != .granted
+            showButton: !compactGranted && !microphone.isGranted
         )
 
-        if showMissingHint && !compactGranted && (accessibility != .granted || microphone != .granted) {
+        if showMissingHint && !compactGranted && (!accessibility.isGranted || !microphone.isGranted) {
             let hint = Design.label("Microphone and Accessibility are required to use Azad.", size: 12, color: Design.mutedText)
             hint.translatesAutoresizingMaskIntoConstraints = false
             stack.addArrangedSubview(hint)
@@ -252,8 +251,8 @@ final class PermissionCard: NSView {
         row.alignment = .centerY
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        row.addArrangedSubview(Design.symbol(icon, pointSize: 12, color: Design.secondaryText))
+        row.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        row.addArrangedSubview(Design.symbol(icon, pointSize: 11, color: Design.secondaryText))
         row.addArrangedSubview(Design.label(label, size: 13, color: Design.text))
         row.addArrangedSubview(NSView())
         row.arrangedSubviews.last?.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -264,9 +263,13 @@ final class PermissionCard: NSView {
         }
         row.addArrangedSubview(statusView)
         if showButton {
-            let button = Design.pushButton("Open Settings", target: target, action: action)
+            let button = Design.pushButton(status.actionTitle, target: target, action: action)
+            button.controlSize = .regular
+            button.font = .systemFont(ofSize: 12, weight: .medium)
             button.identifier = NSUserInterfaceItemIdentifier(permission)
-            button.widthAnchor.constraint(equalToConstant: 120).isActive = true
+            button.tag = status.requestsPermission ? 1 : 0
+            button.widthAnchor.constraint(equalToConstant: 104).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 24).isActive = true
             row.addArrangedSubview(button)
         }
         stack.addArrangedSubview(row)
@@ -275,16 +278,21 @@ final class PermissionCard: NSView {
 
 final class ModelRowView: NSView {
     private let contentStack = NSStackView()
+    private let compactWidth: CGFloat = 358
+    private let compactTextWidth: CGFloat = 248
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: contentStack.fittingSize.height)
     }
 
-    init(model: ModelPack, compact: Bool, target: AnyObject?, downloadAction: Selector?, cancelAction: Selector?) {
+    init(model: ModelPack, compact: Bool, target: AnyObject?, downloadAction: Selector?, downloadControlAction: Selector?) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         setContentHuggingPriority(.required, for: .vertical)
         setContentCompressionResistancePriority(.required, for: .vertical)
+        if compact {
+            widthAnchor.constraint(equalToConstant: compactWidth).isActive = true
+        }
 
         let stack = contentStack
         stack.orientation = compact ? .horizontal : .vertical
@@ -301,6 +309,10 @@ final class ModelRowView: NSView {
         textStack.alignment = .leading
         textStack.spacing = 2
         textStack.translatesAutoresizingMaskIntoConstraints = false
+        if compact {
+            textStack.widthAnchor.constraint(equalToConstant: compactTextWidth).isActive = true
+            textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
 
         if compact {
             let title = Design.linkLabel("\(model.welcomeName) ↗", url: model.pageUrl, size: 13, weight: .medium)
@@ -312,8 +324,19 @@ final class ModelRowView: NSView {
             textStack.addArrangedSubview(Design.label("\(model.sizeLabel) \u{00B7} Not downloaded", size: 12, color: Design.secondaryText))
         case .ready:
             textStack.addArrangedSubview(Design.label("\(model.sizeLabel) \u{00B7} Installed", size: 12, color: Design.secondaryText))
+        case .resumable:
+            textStack.addArrangedSubview(Design.label("\(model.bytesDoneLabel) of \(model.bytesTotalLabel) \u{00B7} Ready to resume", size: 12, color: Design.secondaryText))
+            if compact {
+                let progress = ModelRowView.progressIndicator(model.progressPct, width: compactTextWidth)
+                textStack.addArrangedSubview(progress)
+            }
         case .downloading:
-            textStack.addArrangedSubview(Design.label("Downloading... \(model.bytesDoneLabel) of \(model.bytesTotalLabel) (\(model.progressPct)%)", size: 12, color: Design.secondaryText))
+            let label = model.downloadPaused ? "Paused" : "Downloading..."
+            textStack.addArrangedSubview(Design.label("\(label) \(model.bytesDoneLabel) of \(model.bytesTotalLabel) (\(model.progressPct)%)", size: 12, color: Design.secondaryText))
+            if compact {
+                let progress = ModelRowView.progressIndicator(model.progressPct, width: compactTextWidth)
+                textStack.addArrangedSubview(progress)
+            }
         case .failed:
             textStack.addArrangedSubview(Design.label(model.errorMessage.isEmpty ? "Download failed" : model.errorMessage, size: 12, color: Design.red))
         }
@@ -321,8 +344,17 @@ final class ModelRowView: NSView {
 
         let actionStack: NSStackView
         if compact {
-            stack.addArrangedSubview(NSView())
-            actionStack = stack
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            stack.addArrangedSubview(spacer)
+
+            actionStack = NSStackView()
+            actionStack.orientation = .horizontal
+            actionStack.alignment = .centerY
+            actionStack.spacing = 8
+            actionStack.translatesAutoresizingMaskIntoConstraints = false
+            actionStack.setContentHuggingPriority(.required, for: .horizontal)
+            stack.addArrangedSubview(actionStack)
         } else {
             actionStack = NSStackView()
             actionStack.orientation = .horizontal
@@ -338,17 +370,19 @@ final class ModelRowView: NSView {
             let button = Design.pushButton("Download", target: target, action: downloadAction)
             button.widthAnchor.constraint(equalToConstant: 96).isActive = true
             actionStack.addArrangedSubview(button)
+        case .resumable:
+            if !compact {
+                actionStack.addArrangedSubview(ModelRowView.progressIndicator(model.progressPct, width: 260))
+            }
+            let button = Design.pushButton("Resume", target: target, action: downloadAction)
+            button.widthAnchor.constraint(equalToConstant: 82).isActive = true
+            actionStack.addArrangedSubview(button)
         case .downloading:
-            let progress = NSProgressIndicator()
-            progress.isIndeterminate = false
-            progress.minValue = 0
-            progress.maxValue = 100
-            progress.doubleValue = Double(model.progressPct)
-            progress.controlSize = .small
-            progress.translatesAutoresizingMaskIntoConstraints = false
-            progress.widthAnchor.constraint(equalToConstant: compact ? 160 : 260).isActive = true
-            actionStack.addArrangedSubview(progress)
-            let button = Design.pushButton("Cancel", target: target, action: cancelAction)
+            if !compact {
+                actionStack.addArrangedSubview(ModelRowView.progressIndicator(model.progressPct, width: 260))
+            }
+            let button = Design.pushButton(model.downloadPaused ? "Resume" : "Pause", target: target, action: downloadControlAction)
+            button.tag = model.downloadPaused ? 1 : 0
             button.widthAnchor.constraint(equalToConstant: 82).isActive = true
             actionStack.addArrangedSubview(button)
         case .ready:
@@ -371,5 +405,17 @@ final class ModelRowView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    private static func progressIndicator(_ percent: UInt8, width: CGFloat) -> NSProgressIndicator {
+        let progress = NSProgressIndicator()
+        progress.isIndeterminate = false
+        progress.minValue = 0
+        progress.maxValue = 100
+        progress.doubleValue = Double(percent)
+        progress.controlSize = .small
+        progress.translatesAutoresizingMaskIntoConstraints = false
+        progress.widthAnchor.constraint(equalToConstant: width).isActive = true
+        return progress
     }
 }

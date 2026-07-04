@@ -37,10 +37,6 @@ impl DeviceController {
     Ok(Self { handle })
   }
 
-  pub fn snapshot(&self) -> Result<DeviceStateSnapshot> {
-    self.handle.snapshot()
-  }
-
   pub fn set_preferred(&self, preferred_id: Option<String>) -> Result<()> {
     self.handle.set_preferred(preferred_id)
   }

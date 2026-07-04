@@ -112,6 +112,7 @@ func modelPack(status: ModelStatus, progress: UInt8 = 0) -> ModelPack {
         description: "On-device streaming speech-to-text · English",
         sizeLabel: "1.2 GB",
         status: status,
+        downloadPaused: false,
         progressPct: progress,
         bytesDoneLabel: progress > 0 ? "612 MB" : "0 MB",
         bytesTotalLabel: "1.2 GB",
@@ -143,12 +144,15 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         accessibilityStatus: .granted,
         microphoneStatus: tab == .permissions ? .notGranted : .granted,
         runOnStartupEnabled: true,
+        activationLevel: 0,
         pasteMethodIndex: 0,
         autoSubmitIndex: 0,
         overlayPositionIndex: 0,
         appendTrailingSpaceOnPaste: true,
-        deduplicateWordsOnPaste: true,
-        convertNumberWordsOnPaste: true,
+        deduplicateWordsOnPaste: false,
+        convertNumberWordsOnPaste: false,
+        lowercaseExceptUppercaseWordsOnPaste: false,
+        removeHesitationsOnPaste: true,
         listenModifiers: 4,
         debugStatsEnabled: true,
         metricsText: """
@@ -160,7 +164,7 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         gateway.requests              14
         """,
         model: modelPack(status: tab == .models ? .downloading : .ready, progress: tab == .models ? 51 : 100),
-        removedWords: ["um", "uh", "like", "you know"],
+        removedWords: ["like", "actually", "basically", "literally", "right", "okay"],
         connectors: [ConnectorRow(displayName: "Claude", trigger: "hey claude", enabled: true)],
         buildInfo: "build preview · 2026-07-02 19:41"
     )

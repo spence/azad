@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 public enum SettingsTab: String, Codable, CaseIterable {
@@ -11,13 +12,49 @@ public enum SettingsTab: String, Codable, CaseIterable {
 
 public enum PermissionStatus: String, Codable {
     case granted
+    case denied
+    case notDetermined
     case notGranted
     case unknown
+}
+
+extension PermissionStatus {
+    var isGranted: Bool {
+        self == .granted
+    }
+
+    var statusText: String {
+        switch self {
+        case .granted:
+            "Granted"
+        case .unknown:
+            "Unknown"
+        case .denied, .notDetermined, .notGranted:
+            "Not granted"
+        }
+    }
+
+    var statusIconName: String {
+        isGranted ? "checkmark.circle.fill" : "circle.fill"
+    }
+
+    var statusColor: NSColor {
+        isGranted ? Design.green : Design.orange
+    }
+
+    var actionTitle: String {
+        self == .notDetermined ? "Request" : "Open Settings"
+    }
+
+    var requestsPermission: Bool {
+        self == .notDetermined
+    }
 }
 
 public enum ModelStatus: String, Codable {
     case notDownloaded
     case downloading
+    case resumable
     case ready
     case failed
 }
@@ -30,6 +67,7 @@ public struct ModelPack: Codable {
     public let description: String
     public let sizeLabel: String
     public let status: ModelStatus
+    public let downloadPaused: Bool
     public let progressPct: UInt8
     public let bytesDoneLabel: String
     public let bytesTotalLabel: String
@@ -43,6 +81,7 @@ public struct ModelPack: Codable {
         description: String,
         sizeLabel: String,
         status: ModelStatus,
+        downloadPaused: Bool,
         progressPct: UInt8,
         bytesDoneLabel: String,
         bytesTotalLabel: String,
@@ -55,6 +94,7 @@ public struct ModelPack: Codable {
         self.description = description
         self.sizeLabel = sizeLabel
         self.status = status
+        self.downloadPaused = downloadPaused
         self.progressPct = progressPct
         self.bytesDoneLabel = bytesDoneLabel
         self.bytesTotalLabel = bytesTotalLabel
@@ -135,12 +175,15 @@ public struct SettingsViewModel: Codable {
     public let accessibilityStatus: PermissionStatus
     public let microphoneStatus: PermissionStatus
     public let runOnStartupEnabled: Bool
+    public let activationLevel: Int
     public let pasteMethodIndex: Int
     public let autoSubmitIndex: Int
     public let overlayPositionIndex: Int
     public let appendTrailingSpaceOnPaste: Bool
     public let deduplicateWordsOnPaste: Bool
     public let convertNumberWordsOnPaste: Bool
+    public let lowercaseExceptUppercaseWordsOnPaste: Bool
+    public let removeHesitationsOnPaste: Bool
     public let listenModifiers: UInt8
     public let debugStatsEnabled: Bool
     public let metricsText: String
@@ -154,12 +197,15 @@ public struct SettingsViewModel: Codable {
         accessibilityStatus: PermissionStatus,
         microphoneStatus: PermissionStatus,
         runOnStartupEnabled: Bool,
+        activationLevel: Int,
         pasteMethodIndex: Int,
         autoSubmitIndex: Int,
         overlayPositionIndex: Int,
         appendTrailingSpaceOnPaste: Bool,
         deduplicateWordsOnPaste: Bool,
         convertNumberWordsOnPaste: Bool,
+        lowercaseExceptUppercaseWordsOnPaste: Bool,
+        removeHesitationsOnPaste: Bool,
         listenModifiers: UInt8,
         debugStatsEnabled: Bool,
         metricsText: String,
@@ -172,12 +218,15 @@ public struct SettingsViewModel: Codable {
         self.accessibilityStatus = accessibilityStatus
         self.microphoneStatus = microphoneStatus
         self.runOnStartupEnabled = runOnStartupEnabled
+        self.activationLevel = activationLevel
         self.pasteMethodIndex = pasteMethodIndex
         self.autoSubmitIndex = autoSubmitIndex
         self.overlayPositionIndex = overlayPositionIndex
         self.appendTrailingSpaceOnPaste = appendTrailingSpaceOnPaste
         self.deduplicateWordsOnPaste = deduplicateWordsOnPaste
         self.convertNumberWordsOnPaste = convertNumberWordsOnPaste
+        self.lowercaseExceptUppercaseWordsOnPaste = lowercaseExceptUppercaseWordsOnPaste
+        self.removeHesitationsOnPaste = removeHesitationsOnPaste
         self.listenModifiers = listenModifiers
         self.debugStatsEnabled = debugStatsEnabled
         self.metricsText = metricsText

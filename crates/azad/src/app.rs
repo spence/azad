@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -61,9 +62,12 @@ const GATEWAY_STREAM_TIMEOUT: Duration = Duration::from_secs(25);
 const GATEWAY_NO_ACK_MESSAGE: &str =
   "Gateway didn't respond. Is local-agent-gatewayd running and current? — press Esc.";
 const GATEWAY_STALL_MESSAGE: &str = "Claude stopped responding — press Esc to dismiss.";
+const ACTIVATION_LEVEL_MIN_RMS_DB: f32 = -60.0;
+const ACTIVATION_LEVEL_MAX_RMS_DB: f32 = -20.0;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+  ShutdownRequested,
   HotkeyPressed,
   HotkeyReleased {
     raw_requested: bool,
@@ -79,12 +83,15 @@ pub enum AppEvent {
   MenuClosed,
   SettingsToggleRunOnStartup(bool),
   SettingsToggleDebugStats(bool),
+  SettingsSetActivationLevel(i64),
   SettingsSelectPasteMethod(PasteMethod),
   SettingsSelectAutoSubmit(AutoSubmitMode),
   SettingsSelectOverlayPosition(OverlayPosition),
   SettingsToggleAppendTrailingSpace(bool),
   SettingsToggleDeduplicateWords(bool),
   SettingsToggleConvertNumberWords(bool),
+  SettingsToggleLowercaseExceptUppercaseWords(bool),
+  SettingsToggleRemoveHesitations(bool),
   SettingsSetListenModifier {
     bit: u8,
     enabled: bool,
@@ -97,10 +104,12 @@ pub enum AppEvent {
   SettingsRemoveRemovedWord(String),
   SettingsRefresh,
   SettingsDownloadModel(String),
-  SettingsCancelDownload,
+  SettingsSetDownloadPaused(bool),
+  RequestPermission(String),
   OnboardingGetStarted,
   OnboardingSetTrigger(bool),
   OnboardingToggleHistory(bool),
+  OnboardingSelectPasteMethod(PasteMethod),
   OnboardingToggleAppendTrailingSpace(bool),
   OnboardingSetOverlayPosition(OverlayPosition),
   OnboardingToggleLogin(bool),
@@ -151,6 +160,7 @@ static EVENT_TX: OnceLock<Sender<AppEvent>> = OnceLock::new();
 static EVENT_RX: OnceLock<Mutex<Receiver<AppEvent>>> = OnceLock::new();
 static CONTROLLER: OnceLock<Mutex<AppController>> = OnceLock::new();
 static HOTKEY_CLOCK_START: OnceLock<Instant> = OnceLock::new();
+static TERMINATION_SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 /// Heartbeat log cadence. Only emits while `AzadDebugStatsEnabled` is set, so it's quiet for
 /// normal users. The point is to have a timestamped breadcrumb trail of steady-state flags
@@ -160,11 +170,10 @@ static HOTKEY_CLOCK_START: OnceLock<Instant> = OnceLock::new();
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn run() {
-  platform::check_required_permissions_on_startup();
-
   let (tx, rx) = mpsc::channel::<AppEvent>();
   let _ = EVENT_TX.set(tx);
   let _ = EVENT_RX.set(Mutex::new(rx));
+  install_termination_signal_handlers();
 
   let mut controller = AppController::new(AzadConfig::default());
   controller.bootstrap();
@@ -176,6 +185,21 @@ pub fn run() {
   spawn_heartbeat_thread();
 
   platform::run_app();
+}
+
+extern "C" fn handle_termination_signal(_: libc::c_int) {
+  TERMINATION_SIGNAL_RECEIVED.store(true, Ordering::SeqCst);
+}
+
+fn install_termination_signal_handlers() {
+  unsafe {
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+      let handler = handle_termination_signal as *const () as libc::sighandler_t;
+      if libc::signal(signal, handler) == libc::SIG_ERR {
+        eprintln!("Azad: failed to install termination signal handler for signal {signal}");
+      }
+    }
+  }
 }
 
 fn spawn_heartbeat_thread() {
@@ -230,6 +254,21 @@ pub fn send_event(event: AppEvent) {
   }
 }
 
+pub fn request_shutdown() {
+  send_event(AppEvent::ShutdownRequested);
+}
+
+pub fn set_download_paused_immediate(paused: bool) -> bool {
+  let Some(controller_mutex) = CONTROLLER.get() else {
+    return false;
+  };
+  let Ok(mut controller) = controller_mutex.lock() else {
+    return false;
+  };
+  controller.handle_settings_set_download_paused(paused);
+  true
+}
+
 pub fn drain_events() {
   let Some(rx) = EVENT_RX.get() else {
     return;
@@ -239,6 +278,9 @@ pub fn drain_events() {
   };
 
   let mut pending = Vec::new();
+  if TERMINATION_SIGNAL_RECEIVED.swap(false, Ordering::SeqCst) {
+    pending.push(AppEvent::ShutdownRequested);
+  }
   {
     let rx = rx.lock().unwrap();
     loop {
@@ -262,6 +304,7 @@ struct AppController {
   session: Option<SpeechSession>,
   session_device_id: Option<String>,
   next_session_id: u64,
+  shutdown_started: bool,
 
   device_controller: Option<DeviceController>,
   device_snapshot: Option<DeviceStateSnapshot>,
@@ -302,12 +345,15 @@ struct AppController {
   raw_finalize_requested: bool,
   pending_hold_release_raw_requested: bool,
   run_on_startup_enabled: bool,
+  activation_level: i64,
   history_enabled: bool,
   paste_method: PasteMethod,
   auto_submit_mode: AutoSubmitMode,
   append_trailing_space_on_paste: bool,
   deduplicate_words_on_paste: bool,
   convert_number_words_on_paste: bool,
+  lowercase_except_uppercase_words_on_paste: bool,
+  remove_hesitations_on_paste: bool,
   overlay_position: OverlayPosition,
   debug_stats_enabled: bool,
   turn_started_at: HashMap<u64, Instant>,
@@ -360,6 +406,15 @@ struct AppController {
   // Set from `server.ready` when the daemon announces a protocol this build wasn't written
   // against (e.g. a stale daemon binary). Holds the user-facing error; submits fail closed.
   gateway_protocol_mismatch: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownSnapshotOutcome {
+  Saved { turn_id: u64, char_count: usize },
+  HistoryDisabled,
+  NoTranscriptIndex,
+  NoActiveDraft,
+  AlreadyHandled,
 }
 
 /// The connector latched for the current turn. `clean_query` is the transcription
@@ -518,13 +573,20 @@ fn auto_submit_mode_label(mode: AutoSubmitMode) -> &'static str {
 impl AppController {
   fn new(cfg: AzadConfig) -> Self {
     let always_listening_enabled = preferred_store::load_always_listening_enabled();
-    let run_on_startup_enabled = preferred_store::load_run_on_startup_enabled();
+    let run_on_startup_enabled = effective_run_on_startup_enabled(
+      preferred_store::load_run_on_startup_enabled(),
+      platform::launch_agent_plist_exists(),
+    );
+    let activation_level = preferred_store::load_activation_level();
     let history_enabled = preferred_store::load_history_enabled();
     let paste_method = preferred_store::load_paste_method();
     let auto_submit_mode = preferred_store::load_auto_submit_mode();
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
     let deduplicate_words_on_paste = preferred_store::load_deduplicate_words_on_paste();
     let convert_number_words_on_paste = preferred_store::load_convert_number_words_on_paste();
+    let lowercase_except_uppercase_words_on_paste =
+      preferred_store::load_lowercase_except_uppercase_words_on_paste();
+    let remove_hesitations_on_paste = preferred_store::load_remove_hesitations_on_paste();
     let overlay_position = preferred_store::load_overlay_position();
     let debug_stats_enabled = preferred_store::load_debug_stats_enabled();
     platform::set_overlay_debug_logs_enabled(debug_stats_enabled);
@@ -532,7 +594,9 @@ impl AppController {
       .filter(|id| models::pack_by_id(id).is_some())
       .unwrap_or_else(|| models::default_pack().id.to_string());
     let transcript_index = TranscriptIndex::load();
-    let removed_words = preferred_store::load_removed_words();
+    let removed_words = preferred_store::migrate_hesitations_out_of_removed_words(
+      preferred_store::load_removed_words(),
+    );
     let mut connectors = connectors::builtin_connectors();
     if let Some(enabled_ids) = preferred_store::load_enabled_connector_ids() {
       for c in &mut connectors {
@@ -544,6 +608,7 @@ impl AppController {
       session: None,
       session_device_id: None,
       next_session_id: 1,
+      shutdown_started: false,
       device_controller: None,
       device_snapshot: None,
       device_menu_expanded: false,
@@ -582,12 +647,15 @@ impl AppController {
       raw_finalize_requested: false,
       pending_hold_release_raw_requested: false,
       run_on_startup_enabled,
+      activation_level,
       history_enabled,
       paste_method,
       auto_submit_mode,
       append_trailing_space_on_paste,
       deduplicate_words_on_paste,
       convert_number_words_on_paste,
+      lowercase_except_uppercase_words_on_paste,
+      remove_hesitations_on_paste,
       overlay_position,
       debug_stats_enabled,
       turn_started_at: HashMap::new(),
@@ -639,18 +707,8 @@ impl AppController {
       self.onboarding_complete = true;
       preferred_store::save_onboarding_complete(true);
     }
-    // A returning/onboarded user with no explicit run-on-startup preference keeps
-    // the old on-by-default behavior; a fresh (not-yet-onboarded) user defaults
-    // off and onboarding sets it explicitly. Decoupled from the onboarding seed
-    // above so it still fires for a user whose onboarding flag was set earlier —
-    // it must never silently disable an existing user's auto-start.
-    if self.onboarding_complete && preferred_store::load_run_on_startup_enabled_raw().is_none() {
-      self.run_on_startup_enabled = true;
-      preferred_store::save_run_on_startup_enabled(true);
-    }
-    self.apply_run_on_startup_preference();
     // A fresh profile goes through the welcome flow; a returning user whose
-    // model is somehow missing still gets the legacy first-run Settings popup.
+    // model is somehow missing still gets the model setup view.
     if !self.onboarding_complete {
       self.pending_onboarding = true;
     } else if !self.models_ready {
@@ -669,11 +727,13 @@ impl AppController {
     }
   }
 
-  /// The app may spawn a capture session only once models are present AND the
-  /// user has finished first-run onboarding. Gating session spawning here keeps
-  /// the mic from being grabbed before the user has consented (see 38a76a7).
+  /// The app may spawn a capture session only after setup is complete and both
+  /// required permissions are already granted.
   fn ready_to_run(&self) -> bool {
-    self.models_ready && self.onboarding_complete
+    self.models_ready
+      && self.onboarding_complete
+      && platform::microphone_authorization() == platform::PermissionStatus::Granted
+      && platform::accessibility_authorization() == platform::PermissionStatus::Granted
   }
 
   /// Record a finalized turn to the transcript history, unless the user has
@@ -688,7 +748,76 @@ impl AppController {
     }
   }
 
+  fn record_shutdown_snapshot(&mut self) -> ShutdownSnapshotOutcome {
+    if !self.history_enabled {
+      return ShutdownSnapshotOutcome::HistoryDisabled;
+    }
+    if self.transcript_index.is_none() {
+      return ShutdownSnapshotOutcome::NoTranscriptIndex;
+    }
+    let Some((turn_id, text)) = self.shutdown_snapshot_candidate() else {
+      return ShutdownSnapshotOutcome::NoActiveDraft;
+    };
+    if self.last_pasted_turn_id == Some(turn_id) || self.raw_handled_turn_id == Some(turn_id) {
+      return ShutdownSnapshotOutcome::AlreadyHandled;
+    }
+    let char_count = text.chars().count();
+    if let Some(index) = &mut self.transcript_index {
+      index.append(turn_id, &text, &text);
+    }
+    ShutdownSnapshotOutcome::Saved { turn_id, char_count }
+  }
+
+  fn shutdown_snapshot_candidate(&self) -> Option<(u64, String)> {
+    if self.cancelled || !self.has_active_transcription_turn() {
+      return None;
+    }
+
+    let live_text = self.strip_active_trigger(&self.latest_draft);
+    if let Some(turn_id) = self
+      .current_turn_id
+      .or_else(|| if self.latest_seen_turn_id > 0 { Some(self.latest_seen_turn_id) } else { None })
+    {
+      let text = live_text.trim();
+      if !text.is_empty() {
+        return Some((turn_id, text.to_string()));
+      }
+    }
+
+    let finalizing_text = self.strip_active_trigger(&self.finalizing_draft);
+    if let Some(turn_id) = self.finalizing_turn_id {
+      let text = finalizing_text.trim();
+      if !text.is_empty() {
+        return Some((turn_id, text.to_string()));
+      }
+    }
+
+    if self.held_top_overlay_active() {
+      let held_text = self.strip_active_trigger(&self.held_top_draft);
+      let text = held_text.trim();
+      if !text.is_empty() {
+        let turn_id = self
+          .finalizing_turn_id
+          .or(self.current_turn_id)
+          .unwrap_or(self.latest_seen_turn_id);
+        if turn_id > 0 {
+          return Some((turn_id, text.to_string()));
+        }
+      }
+    }
+
+    None
+  }
+
   fn start_device_controller(&mut self) {
+    let has_controller = self.device_controller.is_some();
+    if !should_start_device_controller(has_controller, platform::microphone_authorization()) {
+      if !has_controller {
+        self.device_snapshot = None;
+      }
+      return;
+    }
+
     let preferred = preferred_store::load_preferred_device_id();
 
     let emit: Arc<dyn Fn(DeviceEvent) + Send + Sync> =
@@ -696,10 +825,6 @@ impl AppController {
 
     match DeviceController::start(preferred, emit) {
       Ok(controller) => {
-        match controller.snapshot() {
-          Ok(snapshot) => self.handle_device_state_changed(snapshot),
-          Err(err) => eprintln!("Azad: initial device snapshot failed: {err}"),
-        }
         self.device_controller = Some(controller);
       }
       Err(err) => {
@@ -780,6 +905,7 @@ impl AppController {
 
   fn handle_event(&mut self, event: AppEvent) {
     match event {
+      AppEvent::ShutdownRequested => self.handle_shutdown_requested(),
       AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
       AppEvent::HotkeyReleased { raw_requested } => self.handle_hotkey_released(raw_requested),
       AppEvent::FinalizeHotkeyPressed { raw_requested } => {
@@ -797,6 +923,9 @@ impl AppController {
       AppEvent::SettingsToggleDebugStats(enabled) => {
         self.handle_settings_toggle_debug_stats(enabled)
       }
+      AppEvent::SettingsSetActivationLevel(value) => {
+        self.handle_settings_set_activation_level(value)
+      }
       AppEvent::SettingsSelectPasteMethod(method) => {
         self.handle_settings_select_paste_method(method)
       }
@@ -813,6 +942,12 @@ impl AppController {
       AppEvent::SettingsToggleConvertNumberWords(enabled) => {
         self.handle_settings_toggle_convert_number_words(enabled)
       }
+      AppEvent::SettingsToggleLowercaseExceptUppercaseWords(enabled) => {
+        self.handle_settings_toggle_lowercase_except_uppercase_words(enabled)
+      }
+      AppEvent::SettingsToggleRemoveHesitations(enabled) => {
+        self.handle_settings_toggle_remove_hesitations(enabled)
+      }
       AppEvent::SettingsSetListenModifier { bit, enabled } => {
         self.handle_settings_set_listen_modifier(bit, enabled)
       }
@@ -823,10 +958,16 @@ impl AppController {
       AppEvent::SettingsRemoveRemovedWord(word) => self.handle_settings_remove_removed_word(word),
       AppEvent::SettingsRefresh => self.handle_settings_refresh(),
       AppEvent::SettingsDownloadModel(pack_id) => self.handle_settings_download_model(&pack_id),
-      AppEvent::SettingsCancelDownload => self.handle_settings_cancel_download(),
+      AppEvent::SettingsSetDownloadPaused(paused) => {
+        self.handle_settings_set_download_paused(paused)
+      }
+      AppEvent::RequestPermission(permission) => self.handle_request_permission(&permission),
       AppEvent::OnboardingGetStarted => self.handle_onboarding_get_started(),
       AppEvent::OnboardingSetTrigger(automatic) => self.handle_onboarding_set_trigger(automatic),
       AppEvent::OnboardingToggleHistory(enabled) => self.handle_onboarding_toggle_history(enabled),
+      AppEvent::OnboardingSelectPasteMethod(method) => {
+        self.handle_onboarding_select_paste_method(method)
+      }
       AppEvent::OnboardingToggleAppendTrailingSpace(enabled) => {
         self.handle_onboarding_toggle_append_trailing_space(enabled)
       }
@@ -862,6 +1003,20 @@ impl AppController {
       AppEvent::Device(ev) => self.handle_device_event(ev),
       AppEvent::Gateway(ev) => self.handle_gateway_event(ev),
     }
+  }
+
+  fn handle_shutdown_requested(&mut self) {
+    if self.shutdown_started {
+      platform::terminate_app();
+      return;
+    }
+    self.shutdown_started = true;
+    let outcome = self.record_shutdown_snapshot();
+    eprintln!("AZAD_SHUTDOWN requested snapshot={outcome:?}");
+    if let Some(session) = &self.session {
+      session.cancel();
+    }
+    platform::terminate_app();
   }
 
   fn start_session(&mut self) {
@@ -917,6 +1072,7 @@ impl AppController {
         self.always_listening_enabled,
         self.always_listening_enabled,
         self.debug_stats_enabled,
+        start_min_rms_db_for_activation_level(self.activation_level),
       ),
       emit,
     ) {
@@ -1559,6 +1715,9 @@ impl AppController {
     if Some(event_session_id) != self.current_session_id() {
       return;
     }
+    if self.shutdown_started {
+      return;
+    }
 
     // History-browse mode owns the overlay. Speech events that would render
     // into the overlay (DraftUpdated, Meter, Finalizing, FinalText), hide it
@@ -2157,6 +2316,8 @@ impl AppController {
       self.last_onboarding_view_model = Some(model);
     }
     if self.onboarding_active {
+      platform::ensure_hotkey_event_tap_if_accessibility_granted();
+      self.start_device_controller();
       // Push the dynamic state (download status, the "Get started" gate, and
       // permission indicators) so the welcome window updates live as the
       // download progresses and the user grants access in System Settings.
@@ -2167,6 +2328,8 @@ impl AppController {
       }
     }
     if platform::settings_window_is_open() {
+      platform::ensure_hotkey_event_tap_if_accessibility_granted();
+      self.start_device_controller();
       platform::refresh_settings_permissions(
         platform::accessibility_authorization(),
         platform::microphone_authorization(),
@@ -2812,13 +2975,16 @@ impl AppController {
   fn try_paste(&mut self, turn_id: u64, mode: TranscriptMode, text: &str) -> bool {
     let text = self.strip_active_trigger(text);
     let text = text.as_str();
+    let removed_words =
+      effective_removed_words(&self.removed_words, self.remove_hesitations_on_paste);
     let paste_text = build_paste_text(
       text,
       PasteTextOptions {
         append_trailing_space: self.append_trailing_space_on_paste,
-        removed_words: &self.removed_words,
+        removed_words: &removed_words,
         deduplicate_words: self.deduplicate_words_on_paste,
         convert_number_words: self.convert_number_words_on_paste,
+        lowercase_except_uppercase_words: self.lowercase_except_uppercase_words_on_paste,
       },
     );
 
@@ -3260,6 +3426,39 @@ fn should_update_selected_device(
   current_device_id != Some(selected_device_id)
 }
 
+fn should_start_device_controller(
+  has_controller: bool,
+  microphone_status: platform::PermissionStatus,
+) -> bool {
+  !has_controller && microphone_status == platform::PermissionStatus::Granted
+}
+
+pub(super) fn effective_removed_words(
+  custom_words: &[String],
+  remove_hesitations: bool,
+) -> Vec<String> {
+  let mut words = Vec::new();
+  if remove_hesitations {
+    words.extend(preferred_store::BUILT_IN_HESITATIONS.iter().map(|word| word.to_string()));
+  }
+  for word in custom_words {
+    if !words.iter().any(|existing| existing.eq_ignore_ascii_case(word)) {
+      words.push(word.clone());
+    }
+  }
+  words
+}
+
+pub(super) fn start_min_rms_db_for_activation_level(value: i64) -> f32 {
+  let normalized = (value.clamp(0, 100) as f32) / 100.0;
+  ACTIVATION_LEVEL_MIN_RMS_DB
+    + normalized * (ACTIVATION_LEVEL_MAX_RMS_DB - ACTIVATION_LEVEL_MIN_RMS_DB)
+}
+
+fn effective_run_on_startup_enabled(preference_enabled: bool, launch_agent_exists: bool) -> bool {
+  preference_enabled && launch_agent_exists
+}
+
 fn onboarding_view_model_changed(
   previous: &Option<platform::OnboardingViewModel>,
   next: &platform::OnboardingViewModel,
@@ -3287,9 +3486,12 @@ mod tests {
   };
   use super::{
     AppController, AzadConfig, EngineState, HotkeyEffect, LISTEN_TOGGLE_NOTICE_DURATION_MS,
-    onboarding_view_model_changed, should_update_selected_device,
+    ShutdownSnapshotOutcome, effective_removed_words, effective_run_on_startup_enabled,
+    onboarding_view_model_changed, should_start_device_controller, should_update_selected_device,
+    start_min_rms_db_for_activation_level,
   };
   use crate::speech::{SpeechEvent, SpeechSession};
+  use crate::transcript_history::TranscriptIndex;
   use crate::ui_model::{
     OnboardingViewModel, UiDeviceOption, UiModelPack, UiModelStatus, UiPermissionStatus,
   };
@@ -3333,6 +3535,134 @@ mod tests {
     assert!(should_update_selected_device(None, "mic-a"));
   }
 
+  #[test]
+  fn device_controller_start_is_gated_by_microphone_permission() {
+    assert!(should_start_device_controller(false, crate::platform::PermissionStatus::Granted));
+    assert!(!should_start_device_controller(false, crate::platform::PermissionStatus::Denied));
+    assert!(!should_start_device_controller(
+      false,
+      crate::platform::PermissionStatus::NotDetermined
+    ));
+    assert!(!should_start_device_controller(true, crate::platform::PermissionStatus::Granted));
+  }
+
+  #[test]
+  fn startup_preference_is_effective_only_when_launch_agent_exists() {
+    assert!(effective_run_on_startup_enabled(true, true));
+    assert!(!effective_run_on_startup_enabled(true, false));
+    assert!(!effective_run_on_startup_enabled(false, true));
+    assert!(!effective_run_on_startup_enabled(false, false));
+  }
+
+  #[test]
+  fn effective_removed_words_adds_built_in_hesitations_when_enabled() {
+    let custom = vec!["custom".to_string(), "UM".to_string()];
+    let words = effective_removed_words(&custom, true);
+    assert!(words.iter().any(|word| word == "um"));
+    assert!(words.iter().any(|word| word == "uh"));
+    assert!(words.iter().any(|word| word == "custom"));
+    assert_eq!(words.iter().filter(|word| word.eq_ignore_ascii_case("um")).count(), 1);
+  }
+
+  #[test]
+  fn effective_removed_words_uses_only_custom_words_when_hesitations_disabled() {
+    let custom = vec!["custom".to_string()];
+    assert_eq!(effective_removed_words(&custom, false), custom);
+  }
+
+  #[test]
+  fn activation_level_maps_to_start_rms_gate_range() {
+    assert!((start_min_rms_db_for_activation_level(0) - -60.0).abs() < f32::EPSILON);
+    assert!((start_min_rms_db_for_activation_level(100) - -20.0).abs() < f32::EPSILON);
+    assert_eq!(start_min_rms_db_for_activation_level(-1), start_min_rms_db_for_activation_level(0));
+    assert_eq!(
+      start_min_rms_db_for_activation_level(101),
+      start_min_rms_db_for_activation_level(100)
+    );
+  }
+
+  fn shutdown_test_controller() -> AppController {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.transcript_index = Some(TranscriptIndex::in_memory_for_tests());
+    controller.history_enabled = true;
+    controller.cancelled = false;
+    controller.overlay_visible = true;
+    controller.engine_state = EngineState::Speech;
+    controller.current_turn_id = Some(42);
+    controller.latest_seen_turn_id = 42;
+    controller.latest_draft = "Keep This Visible Draft".to_string();
+    controller
+  }
+
+  #[test]
+  fn shutdown_snapshot_saves_current_visible_draft_to_history() {
+    let mut controller = shutdown_test_controller();
+
+    let outcome = controller.record_shutdown_snapshot();
+
+    assert_eq!(outcome, ShutdownSnapshotOutcome::Saved { turn_id: 42, char_count: 23 });
+    let hits = controller.transcript_index.as_ref().unwrap().search("", 10);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].final_text, "Keep This Visible Draft");
+  }
+
+  #[test]
+  fn shutdown_snapshot_skips_when_history_is_disabled() {
+    let mut controller = shutdown_test_controller();
+    controller.history_enabled = false;
+
+    let outcome = controller.record_shutdown_snapshot();
+
+    assert_eq!(outcome, ShutdownSnapshotOutcome::HistoryDisabled);
+    assert_eq!(controller.transcript_index.as_ref().unwrap().entry_count(), 0);
+  }
+
+  #[test]
+  fn shutdown_snapshot_skips_already_handled_turn() {
+    let mut controller = shutdown_test_controller();
+    controller.last_pasted_turn_id = Some(42);
+
+    let outcome = controller.record_shutdown_snapshot();
+
+    assert_eq!(outcome, ShutdownSnapshotOutcome::AlreadyHandled);
+    assert_eq!(controller.transcript_index.as_ref().unwrap().entry_count(), 0);
+  }
+
+  #[test]
+  fn shutdown_snapshot_uses_finalizing_draft_when_no_live_draft_exists() {
+    let mut controller = shutdown_test_controller();
+    controller.latest_draft.clear();
+    controller.current_turn_id = None;
+    controller.engine_state = EngineState::Idle;
+    controller.finalizing_turn_id = Some(41);
+    controller.finalizing_draft = "finalizing draft only".to_string();
+
+    let outcome = controller.record_shutdown_snapshot();
+
+    assert_eq!(outcome, ShutdownSnapshotOutcome::Saved { turn_id: 41, char_count: 21 });
+    let hits = controller.transcript_index.as_ref().unwrap().search("", 10);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].final_text, "finalizing draft only");
+  }
+
+  #[test]
+  fn shutdown_snapshot_does_not_apply_paste_text_transformations() {
+    let mut controller = shutdown_test_controller();
+    controller.latest_draft = "NO NO I Said Twenty Three, UM.".to_string();
+    controller.append_trailing_space_on_paste = true;
+    controller.deduplicate_words_on_paste = true;
+    controller.convert_number_words_on_paste = true;
+    controller.lowercase_except_uppercase_words_on_paste = true;
+    controller.remove_hesitations_on_paste = true;
+
+    let outcome = controller.record_shutdown_snapshot();
+
+    assert_eq!(outcome, ShutdownSnapshotOutcome::Saved { turn_id: 42, char_count: 30 });
+    let hits = controller.transcript_index.as_ref().unwrap().search("", 10);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].final_text, "NO NO I Said Twenty Three, UM.");
+  }
+
   fn test_onboarding_model() -> OnboardingViewModel {
     OnboardingViewModel {
       always_listening_enabled: true,
@@ -3352,6 +3682,7 @@ mod tests {
         description: "On-device streaming speech-to-text".to_string(),
         size_label: "1.2 GB".to_string(),
         status: UiModelStatus::Ready,
+        download_paused: false,
         progress_pct: 100,
         bytes_done_label: "1.2 GB".to_string(),
         bytes_total_label: "1.2 GB".to_string(),
@@ -3383,7 +3714,7 @@ mod tests {
   fn onboarding_view_model_permission_change_triggers_render() {
     let previous = test_onboarding_model();
     let mut next = previous.clone();
-    next.microphone_status = UiPermissionStatus::NotGranted;
+    next.microphone_status = UiPermissionStatus::Denied;
     assert!(onboarding_view_model_changed(&Some(previous), &next));
   }
 

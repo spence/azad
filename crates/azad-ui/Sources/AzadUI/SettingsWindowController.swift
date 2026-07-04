@@ -6,6 +6,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let sidebar = ThemedStackView(fill: Design.sidebar)
     private let content = NSView()
     private var shortcutView: ShortcutView?
+    private weak var activationLevelValueLabel: NSTextField?
 
     init() {
         let window = NSWindow(
@@ -53,12 +54,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             accessibilityStatus: accessibility,
             microphoneStatus: microphone,
             runOnStartupEnabled: model.runOnStartupEnabled,
+            activationLevel: model.activationLevel,
             pasteMethodIndex: model.pasteMethodIndex,
             autoSubmitIndex: model.autoSubmitIndex,
             overlayPositionIndex: model.overlayPositionIndex,
             appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
             deduplicateWordsOnPaste: model.deduplicateWordsOnPaste,
             convertNumberWordsOnPaste: model.convertNumberWordsOnPaste,
+            lowercaseExceptUppercaseWordsOnPaste: model.lowercaseExceptUppercaseWordsOnPaste,
+            removeHesitationsOnPaste: model.removeHesitationsOnPaste,
             listenModifiers: model.listenModifiers,
             debugStatsEnabled: model.debugStatsEnabled,
             metricsText: model.metricsText,
@@ -189,7 +193,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         shortcutView = shortcut
         stack.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
 
+        stack.addArrangedSubview(FormRow(label: "Activation level", control: activationLevelControl(model.activationLevel)))
+
         return stack
+    }
+
+    private func activationLevelControl(_ value: Int) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        stack.addArrangedSubview(Design.label("Quiet", size: 12, color: Design.secondaryText))
+
+        let slider = NSSlider(value: Double(value), minValue: 0, maxValue: 100, target: self, action: #selector(setActivationLevel(_:)))
+        slider.isContinuous = true
+        slider.controlSize = .small
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        slider.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        stack.addArrangedSubview(slider)
+
+        stack.addArrangedSubview(Design.label("Loud", size: 12, color: Design.secondaryText))
+        let valueLabel = Design.label(activationLevelLabel(for: value), size: 12, color: Design.secondaryText.withAlphaComponent(0.72))
+        valueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        valueLabel.setContentHuggingPriority(.required, for: .horizontal)
+        stack.addArrangedSubview(valueLabel)
+        activationLevelValueLabel = valueLabel
+        return stack
+    }
+
+    private func activationLevelLabel(for value: Int) -> String {
+        let clamped = max(0, min(100, value))
+        let db = -60.0 + (Double(clamped) / 100.0) * 40.0
+        return "(\(Int(db.rounded())) dB)"
     }
 
     private func textPane(_ model: SettingsViewModel) -> NSView {
@@ -198,6 +235,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(FormRow(label: "Trailing space", control: Design.checkbox("Append trailing space after paste", checked: model.appendTrailingSpaceOnPaste, target: self, action: #selector(toggleTrailingSpace(_:)))))
         stack.addArrangedSubview(FormRow(label: "Repeated words", control: Design.checkbox("Collapse adjacent duplicate words", checked: model.deduplicateWordsOnPaste, target: self, action: #selector(toggleDeduplicateWords(_:)))))
         stack.addArrangedSubview(FormRow(label: "Numbers", control: Design.checkbox("Convert spoken numbers to digits", checked: model.convertNumberWordsOnPaste, target: self, action: #selector(toggleConvertNumberWords(_:)))))
+        stack.addArrangedSubview(FormRow(label: "Casing", control: Design.checkbox("Lowercase everything except uppercase words", checked: model.lowercaseExceptUppercaseWordsOnPaste, target: self, action: #selector(toggleLowercaseExceptUppercaseWords(_:)))))
 
         stack.addArrangedSubview(removedWordsRow(model))
         return stack
@@ -211,12 +249,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         label.alignment = .right
         row.addSubview(label)
 
+        let contentStack = NSStackView()
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 10
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(contentStack)
+
         let addRow = NSStackView()
         addRow.orientation = .horizontal
         addRow.alignment = .centerY
         addRow.spacing = 10
         addRow.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(addRow)
+        contentStack.addArrangedSubview(addRow)
 
         let field = NSTextField()
         field.placeholderString = "Enter word"
@@ -232,34 +277,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         add.widthAnchor.constraint(equalToConstant: 70).isActive = true
         addRow.addArrangedSubview(add)
 
+        let hesitations = Design.checkbox("Hesitations (um, ah, etc.)", checked: model.removeHesitationsOnPaste, target: self, action: #selector(toggleRemoveHesitations(_:)))
+        contentStack.addArrangedSubview(hesitations)
+
+        if !model.removedWords.isEmpty {
+            let chips = WrappingChipsView(words: model.removedWords, target: self, action: #selector(removeWord(_:)))
+            chips.translatesAutoresizingMaskIntoConstraints = false
+            contentStack.addArrangedSubview(chips)
+            chips.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        }
+
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: row.leadingAnchor),
             label.widthAnchor.constraint(equalToConstant: 150),
             label.centerYAnchor.constraint(equalTo: addRow.centerYAnchor),
-            addRow.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 14),
-            addRow.topAnchor.constraint(equalTo: row.topAnchor),
-            addRow.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            contentStack.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 14),
+            contentStack.topAnchor.constraint(equalTo: row.topAnchor),
+            contentStack.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            contentStack.bottomAnchor.constraint(equalTo: row.bottomAnchor),
         ])
-
-        if model.removedWords.isEmpty {
-            addRow.bottomAnchor.constraint(equalTo: row.bottomAnchor).isActive = true
-        } else {
-            let chips = NSStackView()
-            chips.orientation = .horizontal
-            chips.alignment = .centerY
-            chips.spacing = 6
-            chips.translatesAutoresizingMaskIntoConstraints = false
-            for word in model.removedWords {
-                chips.addArrangedSubview(WordChip(word: word, target: self, action: #selector(removeWord(_:))))
-            }
-            row.addSubview(chips)
-            NSLayoutConstraint.activate([
-                chips.leadingAnchor.constraint(equalTo: addRow.leadingAnchor),
-                chips.topAnchor.constraint(equalTo: addRow.bottomAnchor, constant: 8),
-                chips.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor),
-                chips.bottomAnchor.constraint(equalTo: row.bottomAnchor),
-            ])
-        }
 
         return row
     }
@@ -269,7 +305,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let title = Design.linkLabel("\(model.model.settingsName) ↗", url: model.model.pageUrl, size: 15, weight: .semibold)
         stack.addArrangedSubview(title)
         stack.addArrangedSubview(Design.label(model.model.description, size: 13, color: Design.secondaryText))
-        let row = ModelRowView(model: model.model, compact: false, target: self, downloadAction: #selector(downloadModel), cancelAction: #selector(cancelDownload))
+        let row = ModelRowView(model: model.model, compact: false, target: self, downloadAction: #selector(downloadModel), downloadControlAction: #selector(controlDownload(_:)))
         stack.addArrangedSubview(row)
         row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
@@ -290,7 +326,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         root.addSubview(card)
 
-        let hint = Design.label("Required to capture audio and insert text. Click Open Settings to grant.", size: 12, color: Design.mutedText)
+        let hint = Design.label("Required to capture audio and insert text.", size: 12, color: Design.mutedText)
         root.addSubview(hint)
 
         NSLayoutConstraint.activate([
@@ -441,6 +477,36 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleRunOnStartup", boolValue: sender.state == .on))
     }
 
+    @objc private func setActivationLevel(_ sender: NSSlider) {
+        let value = sender.integerValue
+        activationLevelValueLabel?.stringValue = activationLevelLabel(for: value)
+        if let model {
+            self.model = SettingsViewModel(
+                selectedTab: model.selectedTab,
+                accessibilityStatus: model.accessibilityStatus,
+                microphoneStatus: model.microphoneStatus,
+                runOnStartupEnabled: model.runOnStartupEnabled,
+                activationLevel: value,
+                pasteMethodIndex: model.pasteMethodIndex,
+                autoSubmitIndex: model.autoSubmitIndex,
+                overlayPositionIndex: model.overlayPositionIndex,
+                appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
+                deduplicateWordsOnPaste: model.deduplicateWordsOnPaste,
+                convertNumberWordsOnPaste: model.convertNumberWordsOnPaste,
+                lowercaseExceptUppercaseWordsOnPaste: model.lowercaseExceptUppercaseWordsOnPaste,
+                removeHesitationsOnPaste: model.removeHesitationsOnPaste,
+                listenModifiers: model.listenModifiers,
+                debugStatsEnabled: model.debugStatsEnabled,
+                metricsText: model.metricsText,
+                model: model.model,
+                removedWords: model.removedWords,
+                connectors: model.connectors,
+                buildInfo: model.buildInfo
+            )
+        }
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "setActivationLevel", index: value))
+    }
+
     @objc private func selectPasteMethod(_ sender: NSPopUpButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "selectPasteMethod", index: sender.indexOfSelectedItem))
     }
@@ -465,6 +531,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleConvertNumberWords", boolValue: sender.state == .on))
     }
 
+    @objc private func toggleLowercaseExceptUppercaseWords(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleLowercaseExceptUppercaseWords", boolValue: sender.state == .on))
+    }
+
+    @objc private func toggleRemoveHesitations(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleRemoveHesitations", boolValue: sender.state == .on))
+    }
+
     @objc private func toggleModifier(_ sender: KeycapButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "setListenModifier", boolValue: sender.state == .on, bit: sender.bit))
     }
@@ -481,12 +555,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "downloadModel", packId: model?.model.id))
     }
 
-    @objc private func cancelDownload() {
-        AzadUI.shared.emit(UIEvent(surface: "settings", action: "cancelDownload"))
+    @objc private func controlDownload(_ sender: NSButton) {
+        let action = sender.tag == 1 ? "resumeDownload" : "pauseDownload"
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: action))
     }
 
     @objc private func openPermission(_ sender: NSButton) {
-        AzadUI.shared.emit(UIEvent(surface: "settings", action: "openPermission", permission: sender.identifier?.rawValue))
+        guard let permission = sender.identifier?.rawValue else { return }
+        if sender.tag == permissionRequestButtonTag {
+            performNativePermissionRequest(permission) {
+                AzadUI.shared.emit(UIEvent(surface: "settings", action: "requestPermission", permission: permission))
+            }
+            return
+        }
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "openPermission", permission: permission))
     }
 
     @objc private func toggleConnector(_ sender: NSButton) {
@@ -589,6 +671,80 @@ final class PassthroughImageView: NSImageView {
 final class PassthroughTextField: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
+    }
+}
+
+final class WrappingChipsView: NSView {
+    private let horizontalSpacing: CGFloat = 6
+    private let verticalSpacing: CGFloat = 8
+    private var heightConstraint: NSLayoutConstraint?
+    override var isFlipped: Bool { true }
+
+    init(words: [String], target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        for word in words {
+            let chip = WordChip(word: word, target: target, action: action)
+            chip.translatesAutoresizingMaskIntoConstraints = true
+            addSubview(chip)
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        if heightConstraint == nil {
+            let constraint = heightAnchor.constraint(equalToConstant: measuredHeight(for: bounds.width))
+            constraint.isActive = true
+            heightConstraint = constraint
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let size = layoutChips(width: bounds.width, apply: true)
+        if abs((heightConstraint?.constant ?? 0) - size.height) > 0.5 {
+            heightConstraint?.constant = size.height
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight(for: bounds.width))
+    }
+
+    private func measuredHeight(for width: CGFloat) -> CGFloat {
+        layoutChips(width: width > 0 ? width : 320, apply: false).height
+    }
+
+    private func layoutChips(width: CGFloat, apply: Bool) -> NSSize {
+        let maxWidth = max(width, 54)
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var usedWidth: CGFloat = 0
+
+        for chip in subviews {
+            let chipSize = chip.fittingSize
+            let chipWidth = min(max(chipSize.width, 54), maxWidth)
+            let chipHeight = max(chipSize.height, 28)
+            if x > 0, x + chipWidth > maxWidth {
+                x = 0
+                y += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            if apply {
+                chip.frame = NSRect(x: x, y: y, width: chipWidth, height: chipHeight)
+            }
+            x += chipWidth + horizontalSpacing
+            usedWidth = max(usedWidth, min(x - horizontalSpacing, maxWidth))
+            rowHeight = max(rowHeight, chipHeight)
+        }
+
+        return NSSize(width: usedWidth, height: subviews.isEmpty ? 0 : y + rowHeight)
     }
 }
 

@@ -161,10 +161,10 @@ public final class AzadUI: NSObject {
         case .onboarding:
             let quitItem = NSMenuItem(
                 title: "Quit Azad",
-                action: #selector(NSApplication.terminate(_:)),
+                action: #selector(quitAzadFromMenu(_:)),
                 keyEquivalent: "q"
             )
-            quitItem.target = NSApp
+            quitItem.target = self
             appMenu.addItem(quitItem)
         case .settings:
             let closeItem = NSMenuItem(
@@ -183,6 +183,10 @@ public final class AzadUI: NSObject {
         settingsController?.close()
         settingsController = nil
         updateActivationPolicyAfterWindowClose()
+    }
+
+    @objc private func quitAzadFromMenu(_ sender: Any?) {
+        emit(UIEvent(surface: "app", action: "quit"))
     }
 
     func emit(_ event: UIEvent) {

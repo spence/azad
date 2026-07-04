@@ -16,6 +16,8 @@ pub enum SettingsTab {
 #[serde(rename_all = "camelCase")]
 pub enum UiPermissionStatus {
   Granted,
+  Denied,
+  NotDetermined,
   NotGranted,
   Unknown,
 }
@@ -25,6 +27,7 @@ pub enum UiPermissionStatus {
 pub enum UiModelStatus {
   NotDownloaded,
   Downloading,
+  Resumable,
   Ready,
   Failed,
 }
@@ -39,6 +42,7 @@ pub struct UiModelPack {
   pub description: String,
   pub size_label: String,
   pub status: UiModelStatus,
+  pub download_paused: bool,
   pub progress_pct: u8,
   pub bytes_done_label: String,
   pub bytes_total_label: String,
@@ -85,12 +89,15 @@ pub struct SettingsViewModel {
   pub accessibility_status: UiPermissionStatus,
   pub microphone_status: UiPermissionStatus,
   pub run_on_startup_enabled: bool,
+  pub activation_level: i64,
   pub paste_method_index: i64,
   pub auto_submit_index: i64,
   pub overlay_position_index: i64,
   pub append_trailing_space_on_paste: bool,
   pub deduplicate_words_on_paste: bool,
   pub convert_number_words_on_paste: bool,
+  pub lowercase_except_uppercase_words_on_paste: bool,
+  pub remove_hesitations_on_paste: bool,
   pub listen_modifiers: u8,
   pub debug_stats_enabled: bool,
   pub metrics_text: String,
@@ -139,7 +146,7 @@ mod tests {
       append_trailing_space_on_paste: false,
       overlay_position_index: 0,
       run_on_startup_enabled: false,
-      accessibility_status: UiPermissionStatus::NotGranted,
+      accessibility_status: UiPermissionStatus::NotDetermined,
       microphone_status: UiPermissionStatus::Granted,
       model: UiModelPack {
         id: "nemotron".to_string(),
@@ -150,6 +157,7 @@ mod tests {
         description: "On-device streaming speech-to-text · English".to_string(),
         size_label: "1.2 GB".to_string(),
         status: UiModelStatus::Downloading,
+        download_paused: false,
         progress_pct: 51,
         bytes_done_label: "612 MB".to_string(),
         bytes_total_label: "1.2 GB".to_string(),
@@ -166,7 +174,7 @@ mod tests {
     .unwrap();
 
     assert!(json.contains("\"alwaysListeningEnabled\":true"));
-    assert!(json.contains("\"accessibilityStatus\":\"notGranted\""));
+    assert!(json.contains("\"accessibilityStatus\":\"notDetermined\""));
     assert!(json.contains(
       "\"pageUrl\":\"https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b\""
     ));

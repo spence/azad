@@ -81,7 +81,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             form.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 26),
         ])
 
-        let modelRow = ModelRowView(model: model.model, compact: true, target: self, downloadAction: #selector(downloadModel), cancelAction: #selector(cancelDownload))
+        let modelRow = ModelRowView(model: model.model, compact: true, target: self, downloadAction: #selector(downloadModel), downloadControlAction: #selector(controlDownload(_:)))
         form.addArrangedSubview(FormRow(label: "Model", control: modelRow))
 
         let startListening = Design.popup(["Automatically", "Manually"], selected: model.alwaysListeningEnabled ? 0 : 1, target: self, action: #selector(setTrigger(_:)))
@@ -94,8 +94,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
         form.addArrangedSubview(FormRow(label: "History", control: Design.checkbox("Keep a searchable history of dictations", checked: model.historyEnabled, target: self, action: #selector(toggleHistory(_:)))))
 
-        let insertPopup = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: nil)
-        insertPopup.isEnabled = false
+        let insertPopup = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: #selector(setPasteMethod(_:)))
         insertPopup.widthAnchor.constraint(equalToConstant: 182).isActive = true
         form.addArrangedSubview(FormRow(label: "Insert text by", control: insertPopup))
 
@@ -195,10 +194,30 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         if model.getStartedEnabled {
             return "Ready to start dictating."
         }
-        if model.model.status == .notDownloaded || model.model.status == .failed {
+
+        let permissionsMissing = !model.accessibilityStatus.isGranted || !model.microphoneStatus.isGranted
+        let modelMissing = model.model.status == .notDownloaded || model.model.status == .failed
+        let modelResumable = model.model.status == .resumable
+
+        if model.model.status == .downloading && permissionsMissing {
+            return "Grant permissions while the model downloads."
+        }
+        if modelResumable && permissionsMissing {
+            return "Resume the model download and grant permissions to continue."
+        }
+        if modelResumable {
+            return "Resume the model download to continue."
+        }
+        if modelMissing && permissionsMissing {
             return "Download a model and grant permissions to continue."
         }
-        return "Grant permissions to continue."
+        if modelMissing {
+            return "Download the model to continue."
+        }
+        if permissionsMissing {
+            return "Grant permissions to continue."
+        }
+        return "Finish setup to continue."
     }
 
     @objc private func getStarted() {
@@ -215,6 +234,10 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleTrailingSpace(_ sender: NSButton) {
         AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "toggleAppendTrailingSpace", boolValue: sender.state == .on))
+    }
+
+    @objc private func setPasteMethod(_ sender: NSPopUpButton) {
+        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "selectPasteMethod", index: sender.indexOfSelectedItem))
     }
 
     @objc private func setOverlayPosition(_ sender: NSPopUpButton) {
@@ -237,11 +260,19 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "downloadModel", packId: model?.model.id))
     }
 
-    @objc private func cancelDownload() {
-        AzadUI.shared.emit(UIEvent(surface: "settings", action: "cancelDownload"))
+    @objc private func controlDownload(_ sender: NSButton) {
+        let action = sender.tag == 1 ? "resumeDownload" : "pauseDownload"
+        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: action))
     }
 
     @objc private func openPermission(_ sender: NSButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "openPermission", permission: sender.identifier?.rawValue))
+        guard let permission = sender.identifier?.rawValue else { return }
+        if sender.tag == permissionRequestButtonTag {
+            performNativePermissionRequest(permission) {
+                AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "requestPermission", permission: permission))
+            }
+            return
+        }
+        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "openPermission", permission: permission))
     }
 }

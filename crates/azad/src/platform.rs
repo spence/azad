@@ -34,8 +34,8 @@ mod permissions;
 use hotkeys::{SpaceHotkeyAction, current_mod_mask, space_hotkey_decision};
 pub use paste::{PasteResult, insert_text, send_auto_submit};
 pub use permissions::{
-  PermissionStatus, accessibility_authorization, check_required_permissions_on_startup,
-  ensure_accessibility_for_auto_paste, input_monitoring_authorization, microphone_authorization,
+  PermissionStatus, accessibility_authorization, ensure_accessibility_for_auto_paste,
+  input_monitoring_authorization, microphone_authorization, request_accessibility_permission,
 };
 
 const KEYCODE_RETURN: u16 = 0x24;
@@ -217,6 +217,7 @@ static OVERLAY_ACCEPTS_KEY_INPUT: AtomicBool = AtomicBool::new(false);
 // for the listen hotkey. Once claimed, Azad owns that physical Space hold until keyup, even if
 // the user releases the modifier first.
 static EVENT_TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static EVENT_TAP_INSTALL_STARTED: AtomicBool = AtomicBool::new(false);
 static SPACE_HOLD_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 // Tag value stamped onto every synthetic CGEvent Azad posts (via `send_key_chord`). The tap
@@ -399,10 +400,17 @@ pub fn run_app() {
       }
     }
     install_global_hotkeys();
-    install_hotkey_event_tap();
+    ensure_hotkey_event_tap_if_accessibility_granted();
 
     let _: () = msg_send![app, setDelegate: delegate];
     app.run();
+  }
+}
+
+pub fn terminate_app() {
+  unsafe {
+    let app = NSApp();
+    let _: () = msg_send![app, terminate: nil];
   }
 }
 
@@ -474,13 +482,12 @@ pub fn refresh_settings_permissions(accessibility: PermissionStatus, microphone:
 fn permission_status_for_ui(status: PermissionStatus) -> crate::ui_model::UiPermissionStatus {
   match status {
     PermissionStatus::Granted => crate::ui_model::UiPermissionStatus::Granted,
-    PermissionStatus::Denied | PermissionStatus::NotDetermined => {
-      crate::ui_model::UiPermissionStatus::NotGranted
-    }
+    PermissionStatus::Denied => crate::ui_model::UiPermissionStatus::Denied,
+    PermissionStatus::NotDetermined => crate::ui_model::UiPermissionStatus::NotDetermined,
   }
 }
 
-pub fn set_launch_agent_startup_enabled(enabled: bool) -> bool {
+pub fn enable_launch_agent_startup() -> bool {
   let plist_path = match launch_agent_plist_path() {
     Some(path) => path,
     None => {
@@ -490,7 +497,7 @@ pub fn set_launch_agent_startup_enabled(enabled: bool) -> bool {
   };
 
   if !plist_path.exists() {
-    eprintln!("Azad: LaunchAgent plist not found at {} (run install first)", plist_path.display());
+    eprintln!("Azad: LaunchAgent plist not found at {}", plist_path.display());
     return false;
   }
 
@@ -498,7 +505,7 @@ pub fn set_launch_agent_startup_enabled(enabled: bool) -> bool {
     .arg("-replace")
     .arg("RunAtLoad")
     .arg("-bool")
-    .arg(if enabled { "true" } else { "false" })
+    .arg("true")
     .arg(plist_path.as_os_str())
     .output()
   {
@@ -520,6 +527,25 @@ pub fn set_launch_agent_startup_enabled(enabled: bool) -> bool {
     eprintln!("Azad: failed to update RunAtLoad: {stderr}");
   }
   false
+}
+
+pub fn remove_launch_agent_plist_if_present() -> bool {
+  let plist_path = match launch_agent_plist_path() {
+    Some(path) => path,
+    None => {
+      eprintln!("Azad: unable to resolve LaunchAgent plist path for startup removal");
+      return false;
+    }
+  };
+
+  match std::fs::remove_file(&plist_path) {
+    Ok(()) => true,
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+    Err(err) => {
+      eprintln!("Azad: failed to remove LaunchAgent plist at {}: {err}", plist_path.display());
+      false
+    }
+  }
 }
 
 pub fn focus_existing_instance(bundle_id: &str) -> bool {
@@ -574,26 +600,26 @@ pub fn launch_agent_plist_exists() -> bool {
   launch_agent_plist_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-pub fn create_launch_agent_plist_if_missing() {
+pub fn create_launch_agent_plist_if_missing() -> bool {
   let plist_path = match launch_agent_plist_path() {
     Some(p) => p,
-    None => return,
+    None => return false,
   };
   if plist_path.exists() {
-    return;
+    return true;
   }
 
   let exe = match std::env::current_exe() {
     Ok(p) => p,
     Err(e) => {
       eprintln!("Azad: cannot resolve current_exe for LaunchAgent: {e}");
-      return;
+      return false;
     }
   };
 
   let home = match std::env::var_os("HOME") {
     Some(h) => h,
-    None => return,
+    None => return false,
   };
   let log_dir = PathBuf::from(&home).join("Library/Logs/Azad");
   let _ = std::fs::create_dir_all(&log_dir);
@@ -650,8 +676,12 @@ pub fn create_launch_agent_plist_if_missing() {
   if let Some(parent) = plist_path.parent() {
     let _ = std::fs::create_dir_all(parent);
   }
-  if let Err(e) = std::fs::write(&plist_path, plist) {
-    eprintln!("Azad: failed to write LaunchAgent plist: {e}");
+  match std::fs::write(&plist_path, plist) {
+    Ok(()) => true,
+    Err(e) => {
+      eprintln!("Azad: failed to write LaunchAgent plist: {e}");
+      false
+    }
   }
 }
 
@@ -1279,10 +1309,8 @@ extern "C" fn toggle_always_listening(_: &Object, _: Sel, _: id) {
 }
 
 extern "C" fn quit(_: &Object, _: Sel, _: id) {
-  unsafe {
-    let app = NSApp();
-    let _: () = msg_send![app, terminate: nil];
-  }
+  crate::app::request_shutdown();
+  crate::app::drain_events();
 }
 
 extern "C" fn tick(_: &Object, _: Sel, _: id) {
@@ -5449,6 +5477,7 @@ fn install_hotkey_event_tap() {
         std::ptr::null_mut(),
       );
       if tap.is_null() {
+        EVENT_TAP_INSTALL_STARTED.store(false, Ordering::Release);
         eprintln!(
           "Azad: couldn't install HID event tap — grant Accessibility in System Settings so the \
            active tap can claim hotkeys over VNC / screen-sharing clients. Falling back to Carbon."
@@ -5473,6 +5502,21 @@ fn install_hotkey_event_tap() {
       CFRunLoopRun();
     })
     .expect("spawn hotkey-tap thread");
+}
+
+pub fn ensure_hotkey_event_tap_if_accessibility_granted() {
+  if EVENT_TAP_INSTALL_STARTED.load(Ordering::Acquire) {
+    return;
+  }
+  if accessibility_authorization() != PermissionStatus::Granted {
+    return;
+  }
+  if EVENT_TAP_INSTALL_STARTED
+    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+    .is_ok()
+  {
+    install_hotkey_event_tap();
+  }
 }
 
 extern "C" fn event_tap_callback(

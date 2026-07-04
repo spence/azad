@@ -2,7 +2,7 @@ use crate::input_log::InputLogEvent;
 use crate::platform;
 use azad_text::{PasteTextOptions, build_paste_text};
 
-use super::AppController;
+use super::{AppController, effective_removed_words};
 
 const HISTORY_SEARCH_LIMIT: usize = 1000;
 
@@ -133,13 +133,16 @@ impl AppController {
 
   pub(super) fn paste_from_history(&mut self) {
     if let Some(text) = self.selected_history_entry_text() {
+      let removed_words =
+        effective_removed_words(&self.removed_words, self.remove_hesitations_on_paste);
       let paste_text = build_paste_text(
         &text,
         PasteTextOptions {
           append_trailing_space: self.append_trailing_space_on_paste,
-          removed_words: &self.removed_words,
+          removed_words: &removed_words,
           deduplicate_words: self.deduplicate_words_on_paste,
           convert_number_words: self.convert_number_words_on_paste,
+          lowercase_except_uppercase_words: self.lowercase_except_uppercase_words_on_paste,
         },
       );
       // Release search key capture before firing synthetic paste keystrokes so

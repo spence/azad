@@ -18,10 +18,38 @@ fn updated_listen_modifier_mask(current: u8, bit: u8, enabled: bool) -> u8 {
 fn ui_permission_status(status: platform::PermissionStatus) -> UiPermissionStatus {
   match status {
     platform::PermissionStatus::Granted => UiPermissionStatus::Granted,
-    platform::PermissionStatus::NotDetermined | platform::PermissionStatus::Denied => {
-      UiPermissionStatus::NotGranted
-    }
+    platform::PermissionStatus::Denied => UiPermissionStatus::Denied,
+    platform::PermissionStatus::NotDetermined => UiPermissionStatus::NotDetermined,
   }
+}
+
+fn ui_onboarding_accessibility_status(
+  status: platform::PermissionStatus,
+  requested: bool,
+) -> UiPermissionStatus {
+  match status {
+    platform::PermissionStatus::Granted => UiPermissionStatus::Granted,
+    _ if requested => UiPermissionStatus::Denied,
+    _ => UiPermissionStatus::NotDetermined,
+  }
+}
+
+fn onboarding_get_started_enabled(
+  model_ready_or_downloading: bool,
+  accessibility_status: platform::PermissionStatus,
+  microphone_status: platform::PermissionStatus,
+) -> bool {
+  model_ready_or_downloading
+    && accessibility_status == platform::PermissionStatus::Granted
+    && microphone_status == platform::PermissionStatus::Granted
+}
+
+fn should_accept_download_event(
+  active_pack_id: &str,
+  event_pack_id: &str,
+  download_active: bool,
+) -> bool {
+  download_active && active_pack_id == event_pack_id
 }
 
 fn ui_model_pack(
@@ -29,17 +57,24 @@ fn ui_model_pack(
   pack_status: PackStatus,
   bytes_done: u64,
   bytes_total: u64,
+  download_paused: bool,
 ) -> UiModelPack {
   let status = match pack_status {
     PackStatus::NotDownloaded => UiModelStatus::NotDownloaded,
     PackStatus::Downloading { .. } => UiModelStatus::Downloading,
+    PackStatus::Resumable { .. } => UiModelStatus::Resumable,
     PackStatus::Ready => UiModelStatus::Ready,
     PackStatus::Incomplete => UiModelStatus::Failed,
   };
   let progress_pct = match pack_status {
     PackStatus::Downloading { progress_pct } => progress_pct,
+    PackStatus::Resumable { progress_pct, .. } => progress_pct,
     PackStatus::Ready => 100,
     _ => 0,
+  };
+  let bytes_done = match pack_status {
+    PackStatus::Resumable { bytes_done, .. } => bytes_done,
+    _ => bytes_done,
   };
   let total = if bytes_total > 0 { bytes_total } else { pack.total_size_bytes };
   UiModelPack {
@@ -50,6 +85,7 @@ fn ui_model_pack(
     description: "On-device streaming speech-to-text · English".to_string(),
     size_label: models::format_size(pack.total_size_bytes),
     status,
+    download_paused,
     progress_pct,
     bytes_done_label: models::format_size(bytes_done),
     bytes_total_label: models::format_size(total),
@@ -63,6 +99,15 @@ impl AppController {
   }
 
   pub(super) fn handle_onboarding_get_started(&mut self) {
+    if !onboarding_get_started_enabled(
+      self.models_ready || self.download_handle.is_some(),
+      platform::accessibility_authorization(),
+      platform::microphone_authorization(),
+    ) {
+      self.refresh_setup_surfaces();
+      return;
+    }
+
     eprintln!("AZAD_ONBOARDING get-started: completing onboarding");
     self.onboarding_complete = true;
     self.onboarding_active = false;
@@ -73,6 +118,30 @@ impl AppController {
     self.ensure_session();
   }
 
+  pub(super) fn handle_request_permission(&mut self, permission: &str) {
+    match permission {
+      "accessibility" => {
+        preferred_store::save_accessibility_permission_requested(true);
+        platform::request_accessibility_permission();
+      }
+      "microphone" => {}
+      _ => return,
+    }
+    self.start_device_controller();
+    self.refresh_setup_surfaces();
+  }
+
+  fn refresh_setup_surfaces(&mut self) {
+    if self.onboarding_active {
+      let model = self.onboarding_view_model();
+      platform::update_onboarding_window(model.clone());
+      self.last_onboarding_view_model = Some(model);
+    }
+    if platform::settings_window_is_open() {
+      platform::update_settings_window(self.settings_view_model());
+    }
+  }
+
   pub(super) fn handle_onboarding_set_trigger(&mut self, automatic: bool) {
     self.always_listening_enabled = automatic;
     preferred_store::save_always_listening_enabled(automatic);
@@ -81,6 +150,11 @@ impl AppController {
   pub(super) fn handle_onboarding_toggle_history(&mut self, enabled: bool) {
     self.history_enabled = enabled;
     preferred_store::save_history_enabled(enabled);
+  }
+
+  pub(super) fn handle_onboarding_select_paste_method(&mut self, method: PasteMethod) {
+    self.paste_method = method;
+    preferred_store::save_paste_method(method);
   }
 
   pub(super) fn handle_onboarding_toggle_append_trailing_space(&mut self, enabled: bool) {
@@ -127,8 +201,13 @@ impl AppController {
 
   pub(super) fn handle_onboarding_toggle_login(&mut self, enabled: bool) {
     self.run_on_startup_enabled = enabled;
-    preferred_store::save_run_on_startup_enabled(enabled);
-    self.apply_run_on_startup_preference();
+    if self.apply_run_on_startup_preference() {
+      preferred_store::save_run_on_startup_enabled(enabled);
+    } else {
+      self.run_on_startup_enabled = !enabled;
+      eprintln!("Azad: failed to set run-on-startup to {enabled}");
+    }
+    self.refresh_setup_surfaces();
   }
 
   pub(super) fn onboarding_view_model(&self) -> platform::OnboardingViewModel {
@@ -148,9 +227,11 @@ impl AppController {
     };
     let accessibility_status = platform::accessibility_authorization();
     let microphone_status = platform::microphone_authorization();
-    let get_started_enabled = (self.models_ready || downloading)
-      && accessibility_status == platform::PermissionStatus::Granted
-      && microphone_status == platform::PermissionStatus::Granted;
+    let get_started_enabled = onboarding_get_started_enabled(
+      self.models_ready || downloading,
+      accessibility_status,
+      microphone_status,
+    );
     let (devices, selected_device_index) = match &self.device_snapshot {
       Some(snapshot) => {
         let devices: Vec<UiDeviceOption> = snapshot
@@ -173,9 +254,18 @@ impl AppController {
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
       overlay_position_index: self.overlay_position.ui_index(),
       run_on_startup_enabled: self.run_on_startup_enabled,
-      accessibility_status: ui_permission_status(accessibility_status),
+      accessibility_status: ui_onboarding_accessibility_status(
+        accessibility_status,
+        preferred_store::load_accessibility_permission_requested(),
+      ),
       microphone_status: ui_permission_status(microphone_status),
-      model: ui_model_pack(pack, pack_status, self.download_progress.0, self.download_progress.1),
+      model: ui_model_pack(
+        pack,
+        pack_status,
+        self.download_progress.0,
+        self.download_progress.1,
+        self.download_handle.as_ref().is_some_and(|handle| handle.is_paused()),
+      ),
       get_started_enabled,
       devices,
       selected_device_index,
@@ -183,25 +273,20 @@ impl AppController {
     }
   }
 
-  pub(super) fn apply_run_on_startup_preference(&mut self) {
+  pub(super) fn apply_run_on_startup_preference(&self) -> bool {
     if self.run_on_startup_enabled {
-      platform::create_launch_agent_plist_if_missing();
-    }
-    if platform::launch_agent_plist_exists()
-      && !platform::set_launch_agent_startup_enabled(self.run_on_startup_enabled)
-    {
-      eprintln!(
-        "Azad: failed to apply run-on-startup preference (enabled={})",
-        self.run_on_startup_enabled
-      );
+      platform::create_launch_agent_plist_if_missing() && platform::enable_launch_agent_startup()
+    } else {
+      platform::remove_launch_agent_plist_if_present()
     }
   }
 
   pub(super) fn handle_settings_toggle_run_on_startup(&mut self, enabled: bool) {
-    if platform::set_launch_agent_startup_enabled(enabled) {
-      self.run_on_startup_enabled = enabled;
+    self.run_on_startup_enabled = enabled;
+    if self.apply_run_on_startup_preference() {
       preferred_store::save_run_on_startup_enabled(enabled);
     } else {
+      self.run_on_startup_enabled = !enabled;
       eprintln!("Azad: failed to set run-on-startup to {enabled}");
     }
     platform::update_settings_window(self.settings_view_model());
@@ -215,6 +300,16 @@ impl AppController {
       session.set_debug_stats_enabled(enabled);
     }
     platform::update_settings_window(self.settings_view_model());
+  }
+
+  pub(super) fn handle_settings_set_activation_level(&mut self, value: i64) {
+    let value = value.clamp(0, 100);
+    self.activation_level = value;
+    let min_rms_db = super::start_min_rms_db_for_activation_level(value);
+    preferred_store::save_activation_level(value);
+    if let Some(session) = &self.session {
+      session.set_start_min_rms_db(min_rms_db);
+    }
   }
 
   pub(super) fn handle_settings_select_paste_method(&mut self, method: PasteMethod) {
@@ -251,6 +346,18 @@ impl AppController {
   pub(super) fn handle_settings_toggle_convert_number_words(&mut self, enabled: bool) {
     self.convert_number_words_on_paste = enabled;
     preferred_store::save_convert_number_words_on_paste(enabled);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
+  pub(super) fn handle_settings_toggle_lowercase_except_uppercase_words(&mut self, enabled: bool) {
+    self.lowercase_except_uppercase_words_on_paste = enabled;
+    preferred_store::save_lowercase_except_uppercase_words_on_paste(enabled);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
+  pub(super) fn handle_settings_toggle_remove_hesitations(&mut self, enabled: bool) {
+    self.remove_hesitations_on_paste = enabled;
+    preferred_store::save_remove_hesitations_on_paste(enabled);
     platform::update_settings_window(self.settings_view_model());
   }
 
@@ -294,36 +401,51 @@ impl AppController {
     };
     self.active_pack_id = pack_id.to_string();
     preferred_store::save_active_model_pack(pack_id);
-    self.download_progress = (0, pack.total_size_bytes);
+    let progress = models::pack_download_progress(pack);
+    self.download_progress = (progress.bytes_done, pack.total_size_bytes);
     self.download_handle = Some(model_download::start_pack_download(pack));
-    platform::update_settings_window(self.settings_view_model());
+    self.refresh_setup_surfaces();
   }
 
-  pub(super) fn handle_settings_cancel_download(&mut self) {
-    if let Some(handle) = self.download_handle.take() {
-      handle.cancel();
+  pub(super) fn handle_settings_set_download_paused(&mut self, paused: bool) {
+    let Some(handle) = self.download_handle.as_ref() else {
+      return;
+    };
+    if paused {
+      handle.pause();
+      eprintln!("AZAD_MODEL_DOWNLOAD event=paused pack_id={}", self.active_pack_id);
+    } else {
+      handle.resume();
+      eprintln!("AZAD_MODEL_DOWNLOAD event=resumed pack_id={}", self.active_pack_id);
     }
-    self.download_progress = (0, 0);
-    platform::update_settings_window(self.settings_view_model());
+    self.refresh_setup_surfaces();
   }
 
   pub(super) fn handle_model_download_progress(
     &mut self,
-    _pack_id: &str,
+    pack_id: &str,
     bytes_done: u64,
     bytes_total: u64,
   ) {
+    if !should_accept_download_event(&self.active_pack_id, pack_id, self.download_handle.is_some())
+    {
+      return;
+    }
     self.download_progress = (bytes_done, bytes_total);
     self.download_progress_dirty = true;
   }
 
   pub(super) fn handle_model_download_completed(&mut self, pack_id: &str) {
+    if !should_accept_download_event(&self.active_pack_id, pack_id, self.download_handle.is_some())
+    {
+      return;
+    }
     self.download_handle = None;
     self.download_progress = (0, 0);
     self.active_pack_id = pack_id.to_string();
     preferred_store::save_active_model_pack(pack_id);
     self.refresh_models_ready();
-    platform::update_settings_window(self.settings_view_model());
+    self.refresh_setup_surfaces();
     if self.models_ready {
       if !self.onboarding_active {
         self.show_overlay_notice("Model ready", "Azad is ready to dictate", Duration::from_secs(4));
@@ -332,11 +454,15 @@ impl AppController {
     }
   }
 
-  pub(super) fn handle_model_download_error(&mut self, _pack_id: &str, message: &str) {
+  pub(super) fn handle_model_download_error(&mut self, pack_id: &str, message: &str) {
+    if !should_accept_download_event(&self.active_pack_id, pack_id, self.download_handle.is_some())
+    {
+      return;
+    }
     eprintln!("Azad: model download error: {message}");
     self.download_handle = None;
     self.download_progress = (0, 0);
-    platform::update_settings_window(self.settings_view_model());
+    self.refresh_setup_surfaces();
   }
 
   pub(super) fn settings_view_model(&self) -> SettingsViewModel {
@@ -362,16 +488,25 @@ impl AppController {
       accessibility_status: ui_permission_status(platform::accessibility_authorization()),
       microphone_status: ui_permission_status(platform::microphone_authorization()),
       run_on_startup_enabled: self.run_on_startup_enabled,
+      activation_level: self.activation_level,
       paste_method_index: self.paste_method.ui_index(),
       auto_submit_index: self.auto_submit_mode.ui_index(),
       overlay_position_index: self.overlay_position.ui_index(),
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
       deduplicate_words_on_paste: self.deduplicate_words_on_paste,
       convert_number_words_on_paste: self.convert_number_words_on_paste,
+      lowercase_except_uppercase_words_on_paste: self.lowercase_except_uppercase_words_on_paste,
+      remove_hesitations_on_paste: self.remove_hesitations_on_paste,
       listen_modifiers: platform::listen_modifiers(),
       debug_stats_enabled: self.debug_stats_enabled,
       metrics_text,
-      model: ui_model_pack(pack, pack_status, self.download_progress.0, self.download_progress.1),
+      model: ui_model_pack(
+        pack,
+        pack_status,
+        self.download_progress.0,
+        self.download_progress.1,
+        self.download_handle.as_ref().is_some_and(|handle| handle.is_paused()),
+      ),
       removed_words: self.removed_words.clone(),
       connectors: self
         .connectors
@@ -391,7 +526,11 @@ impl AppController {
 mod tests {
   use crate::platform::{MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
 
-  use super::updated_listen_modifier_mask;
+  use super::{
+    onboarding_get_started_enabled, should_accept_download_event,
+    ui_onboarding_accessibility_status, ui_permission_status, updated_listen_modifier_mask,
+  };
+  use crate::ui_model::UiPermissionStatus;
 
   #[test]
   fn listen_modifier_update_adds_and_removes_bits() {
@@ -409,5 +548,64 @@ mod tests {
   fn listen_modifier_update_keeps_last_modifier() {
     assert_eq!(updated_listen_modifier_mask(MOD_SHIFT, MOD_SHIFT, false), MOD_SHIFT);
     assert_eq!(updated_listen_modifier_mask(MOD_OPTION, MOD_OPTION, false), MOD_OPTION);
+  }
+
+  #[test]
+  fn ui_permission_status_preserves_native_state() {
+    assert_eq!(
+      ui_permission_status(crate::platform::PermissionStatus::Granted),
+      UiPermissionStatus::Granted
+    );
+    assert_eq!(
+      ui_permission_status(crate::platform::PermissionStatus::Denied),
+      UiPermissionStatus::Denied
+    );
+    assert_eq!(
+      ui_permission_status(crate::platform::PermissionStatus::NotDetermined),
+      UiPermissionStatus::NotDetermined
+    );
+  }
+
+  #[test]
+  fn onboarding_accessibility_shows_request_until_user_requests_it() {
+    assert_eq!(
+      ui_onboarding_accessibility_status(crate::platform::PermissionStatus::Denied, false),
+      UiPermissionStatus::NotDetermined
+    );
+    assert_eq!(
+      ui_onboarding_accessibility_status(crate::platform::PermissionStatus::Denied, true),
+      UiPermissionStatus::Denied
+    );
+  }
+
+  #[test]
+  fn onboarding_completion_requires_permissions() {
+    assert!(onboarding_get_started_enabled(
+      true,
+      crate::platform::PermissionStatus::Granted,
+      crate::platform::PermissionStatus::Granted,
+    ));
+    assert!(!onboarding_get_started_enabled(
+      true,
+      crate::platform::PermissionStatus::Denied,
+      crate::platform::PermissionStatus::Granted,
+    ));
+    assert!(!onboarding_get_started_enabled(
+      true,
+      crate::platform::PermissionStatus::Granted,
+      crate::platform::PermissionStatus::NotDetermined,
+    ));
+    assert!(!onboarding_get_started_enabled(
+      false,
+      crate::platform::PermissionStatus::Granted,
+      crate::platform::PermissionStatus::Granted,
+    ));
+  }
+
+  #[test]
+  fn download_events_are_ignored_after_cancel_or_pack_switch() {
+    assert!(should_accept_download_event("pack-a", "pack-a", true));
+    assert!(!should_accept_download_event("pack-a", "pack-a", false));
+    assert!(!should_accept_download_event("pack-a", "pack-b", true));
   }
 }

@@ -86,6 +86,13 @@ pub struct TranscriptIndex {
 }
 
 impl TranscriptIndex {
+  #[cfg(test)]
+  pub fn in_memory_for_tests() -> Self {
+    let conn = Connection::open_in_memory().expect("open in-memory transcript history");
+    conn.execute_batch(SCHEMA_DDL).expect("initialize in-memory transcript history");
+    TranscriptIndex { conn, cache: Vec::with_capacity(MAX_ENTRIES) }
+  }
+
   pub fn load() -> Option<Self> {
     let db_path = transcript_db_path()?;
     if let Some(parent) = db_path.parent() {

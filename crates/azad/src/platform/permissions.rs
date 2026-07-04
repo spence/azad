@@ -7,19 +7,18 @@ use objc::{class, msg_send, sel, sel_impl};
 
 static OPENED_ACCESSIBILITY_SETTINGS: AtomicBool = AtomicBool::new(false);
 
-pub fn check_required_permissions_on_startup() {
-  let _ = ensure_accessibility_for_auto_paste();
-}
-
 pub fn ensure_accessibility_for_auto_paste() -> bool {
   if is_accessibility_trusted() {
     return true;
   }
-  maybe_request_accessibility_permission_once();
   eprintln!(
     "Azad: Accessibility permission missing. Enable Azad in System Settings -> Privacy & Security -> Accessibility."
   );
   false
+}
+
+pub fn request_accessibility_permission() {
+  maybe_request_accessibility_permission_once();
 }
 
 fn is_accessibility_trusted() -> bool {

@@ -10,6 +10,7 @@ use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
 const PREFERRED_DEVICE_KEY: &str = "AzadPreferredInputDeviceId";
 const ALWAYS_LISTENING_KEY: &str = "AzadAlwaysListeningEnabled";
 const DEBUG_STATS_ENABLED_KEY: &str = "AzadDebugStatsEnabled";
+const ACTIVATION_LEVEL_KEY: &str = "AzadActivationLevel";
 const RUN_ON_STARTUP_KEY: &str = "AzadRunOnStartup";
 const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
 const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
@@ -17,10 +18,14 @@ const OVERLAY_POSITION_KEY: &str = "AzadOverlayPosition";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
 const DEDUPLICATE_WORDS_KEY: &str = "AzadDeduplicateWordsOnPaste";
 const CONVERT_NUMBER_WORDS_KEY: &str = "AzadConvertNumberWordsOnPaste";
+const LOWERCASE_EXCEPT_UPPERCASE_WORDS_KEY: &str = "AzadLowercaseExceptUppercaseWordsOnPaste";
+const REMOVE_HESITATIONS_KEY: &str = "AzadRemoveHesitationsOnPaste";
+const REMOVED_WORDS_HESITATION_MIGRATION_KEY: &str = "AzadRemovedWordsHesitationMigration";
 const ACTIVE_MODEL_PACK_KEY: &str = "AzadActiveModelPack";
 const REMOVED_WORDS_KEY: &str = "AzadRemovedWords";
 const ENABLED_CONNECTORS_KEY: &str = "AzadEnabledConnectors";
 const ONBOARDING_COMPLETE_KEY: &str = "AzadOnboardingComplete";
+const ACCESSIBILITY_PERMISSION_REQUESTED_KEY: &str = "AzadAccessibilityPermissionRequested";
 const HISTORY_ENABLED_KEY: &str = "AzadHistoryEnabled";
 const LISTEN_MODIFIERS_KEY: &str = "AzadListenModifiers";
 
@@ -112,30 +117,55 @@ pub fn save_debug_stats_enabled(enabled: bool) {
   }
 }
 
-/// `None` when the user has never set a preference (key absent), so the bootstrap
-/// seeding can preserve a returning user's prior auto-start behavior instead of
-/// silently flipping it off under the new opt-in default.
-pub fn load_run_on_startup_enabled_raw() -> Option<bool> {
+pub fn load_activation_level() -> i64 {
   unsafe {
     let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
     if defaults == nil {
-      return None;
+      return 0;
+    }
+
+    let key = NSString::alloc(nil).init_str(ACTIVATION_LEVEL_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return 0;
+    }
+
+    let value: i64 = msg_send![defaults, integerForKey: key];
+    value.clamp(0, 100)
+  }
+}
+
+pub fn save_activation_level(value: i64) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(ACTIVATION_LEVEL_KEY);
+    let value = value.clamp(0, 100);
+    let _: () = msg_send![defaults, setInteger: value forKey: key];
+  }
+}
+
+/// Persisted checkbox state. This value is never used to create a login item
+/// outside the welcome/settings checkbox handlers.
+pub fn load_run_on_startup_enabled() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return false;
     }
 
     let key = NSString::alloc(nil).init_str(RUN_ON_STARTUP_KEY);
     let existing: id = msg_send![defaults, objectForKey: key];
     if existing == nil {
-      return None;
+      return false;
     }
 
     let value: i8 = msg_send![defaults, boolForKey: key];
-    Some(value != 0)
+    value != 0
   }
-}
-
-/// Defaults to OFF: the app must not register a login item unless the user opts in.
-pub fn load_run_on_startup_enabled() -> bool {
-  load_run_on_startup_enabled_raw().unwrap_or(false)
 }
 
 pub fn save_run_on_startup_enabled(enabled: bool) {
@@ -181,6 +211,37 @@ pub fn save_onboarding_complete(complete: bool) {
 
     let key = NSString::alloc(nil).init_str(ONBOARDING_COMPLETE_KEY);
     let value = if complete { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn load_accessibility_permission_requested() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return false;
+    }
+
+    let key = NSString::alloc(nil).init_str(ACCESSIBILITY_PERMISSION_REQUESTED_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return false;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
+}
+
+pub fn save_accessibility_permission_requested(requested: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(ACCESSIBILITY_PERMISSION_REQUESTED_KEY);
+    let value = if requested { YES } else { NO };
     let _: () = msg_send![defaults, setBool: value forKey: key];
   }
 }
@@ -370,13 +431,13 @@ pub fn load_deduplicate_words_on_paste() -> bool {
   unsafe {
     let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
     if defaults == nil {
-      return true;
+      return false;
     }
 
     let key = NSString::alloc(nil).init_str(DEDUPLICATE_WORDS_KEY);
     let existing: id = msg_send![defaults, objectForKey: key];
     if existing == nil {
-      return true;
+      return false;
     }
 
     let value: i8 = msg_send![defaults, boolForKey: key];
@@ -428,6 +489,68 @@ pub fn save_convert_number_words_on_paste(enabled: bool) {
   }
 }
 
+pub fn load_lowercase_except_uppercase_words_on_paste() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return false;
+    }
+
+    let key = NSString::alloc(nil).init_str(LOWERCASE_EXCEPT_UPPERCASE_WORDS_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return false;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
+}
+
+pub fn save_lowercase_except_uppercase_words_on_paste(enabled: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(LOWERCASE_EXCEPT_UPPERCASE_WORDS_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn load_remove_hesitations_on_paste() -> bool {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return true;
+    }
+
+    let key = NSString::alloc(nil).init_str(REMOVE_HESITATIONS_KEY);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return true;
+    }
+
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    value != 0
+  }
+}
+
+pub fn save_remove_hesitations_on_paste(enabled: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(REMOVE_HESITATIONS_KEY);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
 pub fn load_active_model_pack() -> Option<String> {
   unsafe {
     let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
@@ -454,19 +577,52 @@ pub fn save_active_model_pack(pack_id: &str) {
   }
 }
 
-const DEFAULT_REMOVED_WORDS: &[&str] = &["um", "ah"];
+pub const BUILT_IN_HESITATIONS: &[&str] =
+  &["um", "uh", "umm", "uhh", "uhhh", "er", "err", "ah", "ahh", "eh", "hm", "hmm", "mmm"];
+
+fn bool_for_key(key_name: &str) -> Option<bool> {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return None;
+    }
+    let key = NSString::alloc(nil).init_str(key_name);
+    let existing: id = msg_send![defaults, objectForKey: key];
+    if existing == nil {
+      return None;
+    }
+    let value: i8 = msg_send![defaults, boolForKey: key];
+    Some(value != 0)
+  }
+}
+
+fn save_bool_for_key(key_name: &str, enabled: bool) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+    let key = NSString::alloc(nil).init_str(key_name);
+    let value = if enabled { YES } else { NO };
+    let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn is_built_in_hesitation(word: &str) -> bool {
+  BUILT_IN_HESITATIONS.iter().any(|h| h.eq_ignore_ascii_case(word.trim()))
+}
 
 pub fn load_removed_words() -> Vec<String> {
   unsafe {
     let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
     if defaults == nil {
-      return DEFAULT_REMOVED_WORDS.iter().map(|s| s.to_string()).collect();
+      return Vec::new();
     }
 
     let key = NSString::alloc(nil).init_str(REMOVED_WORDS_KEY);
     let existing: id = msg_send![defaults, objectForKey: key];
     if existing == nil {
-      return DEFAULT_REMOVED_WORDS.iter().map(|s| s.to_string()).collect();
+      return Vec::new();
     }
 
     let value: id = msg_send![defaults, stringForKey: key];
@@ -479,6 +635,17 @@ pub fn load_removed_words() -> Vec<String> {
       .filter(|s| !s.is_empty())
       .collect()
   }
+}
+
+pub fn migrate_hesitations_out_of_removed_words(words: Vec<String>) -> Vec<String> {
+  if bool_for_key(REMOVED_WORDS_HESITATION_MIGRATION_KEY).unwrap_or(false) {
+    return words;
+  }
+  let filtered: Vec<String> =
+    words.into_iter().filter(|word| !is_built_in_hesitation(word)).collect();
+  save_removed_words(&filtered);
+  save_bool_for_key(REMOVED_WORDS_HESITATION_MIGRATION_KEY, true);
+  filtered
 }
 
 pub fn save_removed_words(words: &[String]) {
