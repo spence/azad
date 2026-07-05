@@ -117,6 +117,13 @@ MIT. See [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.4.1
+
+- Reduced idle wakeups when listening is off.
+- Fixed listen-off startup so Azad does not open the microphone session until listening starts.
+- Fixed listen wake so stale preroll audio is discarded before transcription begins.
+- Added a startup listen mode setting for Off, On, or previous listen state.
+
 ### 0.4.0
 
 - Added a more reliable model download backend with pause/resume support.
