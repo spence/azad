@@ -226,21 +226,9 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
   match (event.surface.as_str(), event.action.as_str()) {
     ("app", "quit") => UiEventAction::Send(AppEvent::ShutdownRequested),
     ("onboarding", "getStarted") => UiEventAction::Send(AppEvent::OnboardingGetStarted),
-    ("onboarding", "setTrigger") => {
-      UiEventAction::Send(AppEvent::OnboardingSetTrigger(index() == 0))
-    }
-    ("onboarding", "setOverlayPosition") => UiEventAction::Send(
-      AppEvent::OnboardingSetOverlayPosition(OverlayPosition::from_ui_index(index() as i64)),
-    ),
-    ("onboarding", "toggleLogin") => {
-      UiEventAction::Send(AppEvent::OnboardingToggleLogin(bool_value()))
-    }
     ("onboarding", "downloadModel") => UiEventAction::Send(AppEvent::OnboardingDownloadModel),
     ("onboarding", "pauseDownload") => UiEventAction::SetDownloadPausedImmediate(true),
     ("onboarding", "resumeDownload") => UiEventAction::SetDownloadPausedImmediate(false),
-    ("onboarding", "selectDevice") => {
-      UiEventAction::Send(AppEvent::OnboardingSelectDevice(index()))
-    }
     ("onboarding", "setListenModifier") => {
       UiEventAction::Send(AppEvent::OnboardingSetListenModifier {
         bit: event.bit.unwrap_or(0),
@@ -357,13 +345,9 @@ mod tests {
   fn known_welcome_and_settings_controller_events_are_mapped() {
     let actions = [
       ("onboarding", "getStarted"),
-      ("onboarding", "setTrigger"),
-      ("onboarding", "setOverlayPosition"),
-      ("onboarding", "toggleLogin"),
       ("onboarding", "downloadModel"),
       ("onboarding", "pauseDownload"),
       ("onboarding", "resumeDownload"),
-      ("onboarding", "selectDevice"),
       ("onboarding", "setListenModifier"),
       ("onboarding", "requestPermission"),
       ("settings", "toggleRunOnStartup"),

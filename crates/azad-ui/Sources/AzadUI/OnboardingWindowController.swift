@@ -3,10 +3,12 @@ import AppKit
 final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private var model: OnboardingViewModel?
     private var shortcutView: ShortcutView?
+    private static let windowSize = NSSize(width: 540, height: 370)
+    private static let formLabelWidth: CGFloat = 100
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 640),
+            contentRect: NSRect(origin: .zero, size: Self.windowSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -76,27 +78,13 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         form.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(form)
         NSLayoutConstraint.activate([
-            form.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 68),
-            form.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -50),
-            form.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 26),
+            form.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 34),
+            form.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -34),
+            form.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 24),
         ])
 
         let modelRow = ModelRowView(model: model.model, compact: true, target: self, downloadAction: #selector(downloadModel), downloadControlAction: #selector(controlDownload(_:)))
-        form.addArrangedSubview(FormRow(label: "Model", control: modelRow))
-
-        let startListening = Design.popup(["Automatically", "Manually"], selected: model.alwaysListeningEnabled ? 0 : 1, target: self, action: #selector(setTrigger(_:)))
-        startListening.widthAnchor.constraint(equalToConstant: 248).isActive = true
-        form.addArrangedSubview(FormRow(label: "Start listening", control: startListening))
-
-        let shortcut = ShortcutView(mask: model.listenModifiers, target: self, action: #selector(toggleModifier(_:)))
-        shortcutView = shortcut
-        form.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
-
-        let overlayPopup = Design.popup(["Follow cursor", "Primary monitor", "Active window"], selected: model.overlayPositionIndex, target: self, action: #selector(setOverlayPosition(_:)))
-        overlayPopup.widthAnchor.constraint(equalToConstant: 212).isActive = true
-        form.addArrangedSubview(FormRow(label: "Overlay position", control: overlayPopup))
-
-        form.addArrangedSubview(FormRow(label: "Startup", control: Design.checkbox("Open Azad automatically at login", checked: model.runOnStartupEnabled, target: self, action: #selector(toggleLogin(_:)))))
+        form.addArrangedSubview(FormRow(label: "Model", labelWidth: Self.formLabelWidth, control: modelRow))
 
         let permissionCard = PermissionCard(
             accessibility: model.accessibilityStatus,
@@ -105,13 +93,12 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             action: #selector(openPermission(_:)),
             compactGranted: model.accessibilityStatus == .granted && model.microphoneStatus == .granted
         )
-        permissionCard.widthAnchor.constraint(equalToConstant: 410).isActive = true
-        form.addArrangedSubview(FormRow(label: "Permissions", control: permissionCard))
+        permissionCard.widthAnchor.constraint(equalToConstant: 358).isActive = true
+        form.addArrangedSubview(FormRow(label: "Permissions", labelWidth: Self.formLabelWidth, control: permissionCard))
 
-        let devicePopup = Design.popup(model.devices.map(\.label), selected: model.selectedDeviceIndex ?? 0, target: self, action: #selector(selectDevice(_:)))
-        devicePopup.widthAnchor.constraint(equalToConstant: 280).isActive = true
-        devicePopup.isEnabled = !model.devices.isEmpty
-        form.addArrangedSubview(FormRow(label: "Microphone device", control: devicePopup))
+        let shortcut = ShortcutView(mask: model.listenModifiers, target: self, action: #selector(toggleModifier(_:)))
+        shortcutView = shortcut
+        form.addArrangedSubview(FormRow(label: "Listen shortcut", labelWidth: Self.formLabelWidth, control: shortcut))
 
         let footer = makeFooter(model)
         root.addSubview(footer)
@@ -119,7 +106,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             footer.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 70),
+            footer.heightAnchor.constraint(equalToConstant: 78),
         ])
     }
 
@@ -214,22 +201,6 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func getStarted() {
         AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "getStarted"))
-    }
-
-    @objc private func setTrigger(_ sender: NSPopUpButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "setTrigger", index: sender.indexOfSelectedItem))
-    }
-
-    @objc private func setOverlayPosition(_ sender: NSPopUpButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "setOverlayPosition", index: sender.indexOfSelectedItem))
-    }
-
-    @objc private func toggleLogin(_ sender: NSButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "toggleLogin", boolValue: sender.state == .on))
-    }
-
-    @objc private func selectDevice(_ sender: NSPopUpButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "selectDevice", index: sender.indexOfSelectedItem))
     }
 
     @objc private func toggleModifier(_ sender: KeycapButton) {

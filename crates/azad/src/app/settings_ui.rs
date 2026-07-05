@@ -6,7 +6,7 @@ use crate::models::{self, PackStatus};
 use crate::platform::{self, ConnectorRowVM, SettingsTab, SettingsViewModel};
 use crate::preferred_store;
 use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
-use crate::ui_model::{UiDeviceOption, UiModelPack, UiModelStatus, UiPermissionStatus};
+use crate::ui_model::{UiModelPack, UiModelStatus, UiPermissionStatus};
 
 use super::AppController;
 
@@ -142,17 +142,6 @@ impl AppController {
     }
   }
 
-  pub(super) fn handle_onboarding_set_trigger(&mut self, automatic: bool) {
-    self.always_listening_enabled = automatic;
-    preferred_store::save_always_listening_enabled(automatic);
-  }
-
-  pub(super) fn handle_onboarding_set_overlay_position(&mut self, pos: OverlayPosition) {
-    self.overlay_position = pos;
-    preferred_store::save_overlay_position(pos);
-    platform::set_overlay_position(pos);
-  }
-
   pub(super) fn handle_onboarding_set_listen_modifier(&mut self, bit: u8, enabled: bool) {
     self.handle_listen_modifier_change(bit, enabled);
   }
@@ -171,28 +160,6 @@ impl AppController {
     }
     platform::sync_onboarding_listen_modifiers(platform::listen_modifiers());
     platform::sync_settings_listen_modifiers(platform::listen_modifiers());
-  }
-
-  pub(super) fn handle_onboarding_select_device(&mut self, index: usize) {
-    let device_id = self
-      .device_snapshot
-      .as_ref()
-      .and_then(|s| s.devices.get(index))
-      .map(|d| d.id.clone());
-    if let Some(device_id) = device_id {
-      self.handle_menu_select_device(device_id);
-    }
-  }
-
-  pub(super) fn handle_onboarding_toggle_login(&mut self, enabled: bool) {
-    self.run_on_startup_enabled = enabled;
-    if self.apply_run_on_startup_preference() {
-      preferred_store::save_run_on_startup_enabled(enabled);
-    } else {
-      self.run_on_startup_enabled = !enabled;
-      eprintln!("Azad: failed to set run-on-startup to {enabled}");
-    }
-    self.refresh_setup_surfaces();
   }
 
   pub(super) fn onboarding_view_model(&self) -> platform::OnboardingViewModel {
@@ -217,25 +184,7 @@ impl AppController {
       accessibility_status,
       microphone_status,
     );
-    let (devices, selected_device_index) = match &self.device_snapshot {
-      Some(snapshot) => {
-        let devices: Vec<UiDeviceOption> = snapshot
-          .devices
-          .iter()
-          .map(|d| UiDeviceOption { id: d.id.clone(), label: d.name.clone() })
-          .collect();
-        let selected = snapshot
-          .current_id
-          .as_deref()
-          .and_then(|cur| devices.iter().position(|d| d.id == cur));
-        (devices, selected)
-      }
-      None => (Vec::new(), None),
-    };
     platform::OnboardingViewModel {
-      always_listening_enabled: self.always_listening_enabled,
-      overlay_position_index: self.overlay_position.ui_index(),
-      run_on_startup_enabled: self.run_on_startup_enabled,
       accessibility_status: ui_onboarding_accessibility_status(
         accessibility_status,
         preferred_store::load_accessibility_permission_requested(),
@@ -249,8 +198,6 @@ impl AppController {
         self.download_handle.as_ref().is_some_and(|handle| handle.is_paused()),
       ),
       get_started_enabled,
-      devices,
-      selected_device_index,
       listen_modifiers: platform::listen_modifiers(),
     }
   }

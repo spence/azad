@@ -51,23 +51,11 @@ pub struct UiModelPack {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UiDeviceOption {
-  pub id: String,
-  pub label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct OnboardingViewModel {
-  pub always_listening_enabled: bool,
-  pub overlay_position_index: i64,
-  pub run_on_startup_enabled: bool,
   pub accessibility_status: UiPermissionStatus,
   pub microphone_status: UiPermissionStatus,
   pub model: UiModelPack,
   pub get_started_enabled: bool,
-  pub devices: Vec<UiDeviceOption>,
-  pub selected_device_index: Option<usize>,
   pub listen_modifiers: u8,
 }
 
@@ -140,9 +128,6 @@ mod tests {
   #[test]
   fn onboarding_payload_uses_camel_case_state() {
     let json = serde_json::to_string(&OnboardingViewModel {
-      always_listening_enabled: true,
-      overlay_position_index: 2,
-      run_on_startup_enabled: false,
       accessibility_status: UiPermissionStatus::NotDetermined,
       microphone_status: UiPermissionStatus::Granted,
       model: UiModelPack {
@@ -161,16 +146,10 @@ mod tests {
         error_message: String::new(),
       },
       get_started_enabled: true,
-      devices: vec![UiDeviceOption {
-        id: "default".to_string(),
-        label: "MacBook Pro Microphone".to_string(),
-      }],
-      selected_device_index: Some(0),
       listen_modifiers: 4,
     })
     .unwrap();
 
-    assert!(json.contains("\"alwaysListeningEnabled\":true"));
     assert!(json.contains("\"accessibilityStatus\":\"notDetermined\""));
     assert!(json.contains(
       "\"pageUrl\":\"https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b\""

@@ -110,11 +110,7 @@ pub enum AppEvent {
   SettingsSetDownloadPaused(bool),
   RequestPermission(String),
   OnboardingGetStarted,
-  OnboardingSetTrigger(bool),
-  OnboardingSetOverlayPosition(OverlayPosition),
-  OnboardingToggleLogin(bool),
   OnboardingDownloadModel,
-  OnboardingSelectDevice(usize),
   OnboardingSetListenModifier {
     bit: u8,
     enabled: bool,
@@ -983,16 +979,10 @@ impl AppController {
       }
       AppEvent::RequestPermission(permission) => self.handle_request_permission(&permission),
       AppEvent::OnboardingGetStarted => self.handle_onboarding_get_started(),
-      AppEvent::OnboardingSetTrigger(automatic) => self.handle_onboarding_set_trigger(automatic),
-      AppEvent::OnboardingSetOverlayPosition(pos) => {
-        self.handle_onboarding_set_overlay_position(pos)
-      }
-      AppEvent::OnboardingToggleLogin(enabled) => self.handle_onboarding_toggle_login(enabled),
       AppEvent::OnboardingDownloadModel => {
         let pack_id = self.active_pack_id.clone();
         self.handle_settings_download_model(&pack_id);
       }
-      AppEvent::OnboardingSelectDevice(index) => self.handle_onboarding_select_device(index),
       AppEvent::OnboardingSetListenModifier { bit, enabled } => {
         self.handle_onboarding_set_listen_modifier(bit, enabled)
       }
@@ -1141,7 +1131,14 @@ impl AppController {
     }
   }
 
+  fn onboarding_blocks_runtime_input(&self) -> bool {
+    self.pending_onboarding || self.onboarding_active || !self.onboarding_complete
+  }
+
   fn handle_hotkey_pressed(&mut self) {
+    if self.onboarding_blocks_runtime_input() {
+      return;
+    }
     self.log_input_event(InputLogEvent::HotkeyPressed);
     // Pressing opt+space while in history mode dismisses history (without
     // pasting) and starts a fresh dictation turn. The user is signalling
@@ -1165,6 +1162,9 @@ impl AppController {
   }
 
   fn handle_hotkey_released(&mut self, raw_requested: bool) {
+    if self.onboarding_blocks_runtime_input() {
+      return;
+    }
     self.log_input_event(InputLogEvent::HotkeyReleased { raw_requested });
     if self.history_browsing {
       // Once in history mode the user is no longer required to hold opt+space —
@@ -1181,6 +1181,9 @@ impl AppController {
   }
 
   fn handle_finalize_hotkey_pressed(&mut self, raw_requested: bool) {
+    if self.onboarding_blocks_runtime_input() {
+      return;
+    }
     self.log_input_event(InputLogEvent::FinalizeHotkeyPressed { raw_requested });
     if self.history_browsing {
       self.paste_from_history();
@@ -1219,6 +1222,9 @@ impl AppController {
   }
 
   fn handle_menu_toggle_always_listening(&mut self) {
+    if self.onboarding_blocks_runtime_input() {
+      return;
+    }
     self.dispatch_hotkey_input(HotkeyInput::MenuToggleAlwaysListening);
   }
 
@@ -3580,9 +3586,7 @@ mod tests {
   };
   use crate::speech::{SpeechEvent, SpeechSession};
   use crate::transcript_history::TranscriptIndex;
-  use crate::ui_model::{
-    OnboardingViewModel, UiDeviceOption, UiModelPack, UiModelStatus, UiPermissionStatus,
-  };
+  use crate::ui_model::{OnboardingViewModel, UiModelPack, UiModelStatus, UiPermissionStatus};
 
   #[test]
   fn idle_tick_interval_slows_when_listen_is_off_and_no_ui_work_is_active() {
@@ -3628,6 +3632,28 @@ mod tests {
 
     controller.onboarding_active = false;
     assert_eq!(controller.next_tick_interval(true), INTERACTIVE_TICK_INTERVAL);
+  }
+
+  #[test]
+  fn onboarding_blocks_hotkey_overlay_and_state_changes() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.onboarding_complete = false;
+    controller.onboarding_active = true;
+    controller.models_ready = false;
+    controller.overlay_visible = false;
+    controller.manual_hold_active = false;
+    controller.always_listening_enabled = false;
+    controller.raw_finalize_requested = false;
+
+    controller.handle_hotkey_pressed();
+    controller.handle_hotkey_released(true);
+    controller.handle_finalize_hotkey_pressed(true);
+    controller.handle_menu_toggle_always_listening();
+
+    assert!(!controller.overlay_visible);
+    assert!(!controller.manual_hold_active);
+    assert!(!controller.always_listening_enabled);
+    assert!(!controller.raw_finalize_requested);
   }
 
   #[test]
@@ -3854,9 +3880,6 @@ mod tests {
 
   fn test_onboarding_model() -> OnboardingViewModel {
     OnboardingViewModel {
-      always_listening_enabled: true,
-      overlay_position_index: 2,
-      run_on_startup_enabled: false,
       accessibility_status: UiPermissionStatus::Granted,
       microphone_status: UiPermissionStatus::Granted,
       model: UiModelPack {
@@ -3875,11 +3898,6 @@ mod tests {
         error_message: String::new(),
       },
       get_started_enabled: true,
-      devices: vec![UiDeviceOption {
-        id: "default".to_string(),
-        label: "MacBook Pro Microphone".to_string(),
-      }],
-      selected_device_index: Some(0),
       listen_modifiers: 4,
     }
   }
@@ -4121,6 +4139,7 @@ mod tests {
     // After the fix, plain Enter also falls through to the raw path when the
     // engine is `Idle` with a non-empty finalizing_draft.
     let mut controller = AppController::new(AzadConfig::default());
+    controller.onboarding_complete = true;
     controller.models_ready = true;
     controller.overlay_visible = true;
     controller.engine_state = EngineState::Idle;
@@ -4168,6 +4187,7 @@ mod tests {
     // otherwise plain Enter would always race the engine and produce raw output
     // instead of the polished full-pass text.
     let mut controller = AppController::new(AzadConfig::default());
+    controller.onboarding_complete = true;
     controller.models_ready = true;
     controller.overlay_visible = true;
     controller.engine_state = EngineState::Speech;
@@ -4199,6 +4219,7 @@ mod tests {
     // pressing Enter during pre-speech setup (no draft yet) could leak into the
     // raw path and produce an empty paste.
     let mut controller = AppController::new(AzadConfig::default());
+    controller.onboarding_complete = true;
     controller.models_ready = true;
     controller.overlay_visible = true;
     controller.engine_state = EngineState::Idle;

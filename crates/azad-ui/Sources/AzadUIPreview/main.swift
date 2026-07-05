@@ -122,15 +122,10 @@ func modelPack(status: ModelStatus, progress: UInt8 = 0) -> ModelPack {
 
 func onboardingModel(ready: Bool) -> OnboardingViewModel {
     OnboardingViewModel(
-        alwaysListeningEnabled: true,
-        overlayPositionIndex: 2,
-        runOnStartupEnabled: ready,
         accessibilityStatus: ready ? .granted : .notGranted,
         microphoneStatus: ready ? .granted : .notGranted,
         model: modelPack(status: ready ? .ready : .notDownloaded),
         getStartedEnabled: ready,
-        devices: [DeviceOption(id: "default", label: "MacBook Pro Microphone")],
-        selectedDeviceIndex: 0,
         listenModifiers: 4
     )
 }

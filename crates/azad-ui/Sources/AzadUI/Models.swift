@@ -102,49 +102,24 @@ public struct ModelPack: Codable {
     }
 }
 
-public struct DeviceOption: Codable {
-    public let id: String
-    public let label: String
-
-    public init(id: String, label: String) {
-        self.id = id
-        self.label = label
-    }
-}
-
 public struct OnboardingViewModel: Codable {
-    public let alwaysListeningEnabled: Bool
-    public let overlayPositionIndex: Int
-    public let runOnStartupEnabled: Bool
     public let accessibilityStatus: PermissionStatus
     public let microphoneStatus: PermissionStatus
     public let model: ModelPack
     public let getStartedEnabled: Bool
-    public let devices: [DeviceOption]
-    public let selectedDeviceIndex: Int?
     public let listenModifiers: UInt8
 
     public init(
-        alwaysListeningEnabled: Bool,
-        overlayPositionIndex: Int,
-        runOnStartupEnabled: Bool,
         accessibilityStatus: PermissionStatus,
         microphoneStatus: PermissionStatus,
         model: ModelPack,
         getStartedEnabled: Bool,
-        devices: [DeviceOption],
-        selectedDeviceIndex: Int?,
         listenModifiers: UInt8
     ) {
-        self.alwaysListeningEnabled = alwaysListeningEnabled
-        self.overlayPositionIndex = overlayPositionIndex
-        self.runOnStartupEnabled = runOnStartupEnabled
         self.accessibilityStatus = accessibilityStatus
         self.microphoneStatus = microphoneStatus
         self.model = model
         self.getStartedEnabled = getStartedEnabled
-        self.devices = devices
-        self.selectedDeviceIndex = selectedDeviceIndex
         self.listenModifiers = listenModifiers
     }
 }
