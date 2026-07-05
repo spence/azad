@@ -350,10 +350,13 @@ start_standalone() {
     return 0
   fi
 
-  AZAD_ASSETS_DIR="$APP_RESOURCES_DIR" \
-  TOON_SHOW_PARTIALS="$TOON_SHOW_PARTIALS" \
-  AZAD_NATIVE_ENGINE_LOGS="$AZAD_NATIVE_ENGINE_LOGS" \
-    nohup "$bundle_bin" >>"$STDOUT_LOG" 2>>"$STDERR_LOG" &
+  /usr/bin/open \
+    -na "$APP_DIR" \
+    --stdout "$STDOUT_LOG" \
+    --stderr "$STDERR_LOG" \
+    --env "AZAD_ASSETS_DIR=$APP_RESOURCES_DIR" \
+    --env "TOON_SHOW_PARTIALS=$TOON_SHOW_PARTIALS" \
+    --env "AZAD_NATIVE_ENGINE_LOGS=$AZAD_NATIVE_ENGINE_LOGS"
 
   local attempt
   for attempt in $(seq 1 20); do
