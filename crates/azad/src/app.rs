@@ -726,7 +726,7 @@ impl AppController {
     }
     self.start_device_controller();
     self.render_device_menu();
-    self.ensure_session();
+    self.ensure_session_if_capture_should_be_live();
   }
 
   fn refresh_models_ready(&mut self) {
@@ -1112,8 +1112,14 @@ impl AppController {
     if !self.ready_to_run() {
       return;
     }
-    if self.session.is_none() {
+    if self.session.is_none() && self.should_keep_capture_for_followups() {
       self.start_session();
+    }
+  }
+
+  fn ensure_session_if_capture_should_be_live(&mut self) {
+    if self.should_keep_capture_for_followups() {
+      self.ensure_session();
     }
   }
 
@@ -1638,7 +1644,7 @@ impl AppController {
       return;
     }
 
-    if self.session.is_none() {
+    if self.session.is_none() && self.should_keep_capture_for_followups() {
       self.start_session();
     }
 
@@ -2261,7 +2267,7 @@ impl AppController {
         self.busy_border_phase = 0.0;
         self.turn_started_at.clear();
 
-        if should_restart {
+        if should_restart && self.should_keep_capture_for_followups() {
           self.start_session();
 
           if self.manual_hold_active {
@@ -2705,7 +2711,11 @@ impl AppController {
   /// Capture must stay on between turns while a conversation is open so follow-up speech
   /// is heard without re-triggering, on top of the normal always-listening / hold rules.
   fn should_keep_capture_for_followups(&self) -> bool {
-    self.always_listening_enabled || self.manual_hold_active || self.gateway_conv.is_some()
+    should_keep_capture_live(
+      self.always_listening_enabled,
+      self.manual_hold_active,
+      self.gateway_conv.is_some(),
+    )
   }
 
   /// Tag label/icon for a new conversation: the latched connector's, else the built-in
@@ -3535,6 +3545,14 @@ fn onboarding_view_model_changed(
   previous.as_ref() != Some(next)
 }
 
+fn should_keep_capture_live(
+  always_listening_enabled: bool,
+  manual_hold_active: bool,
+  gateway_conversation_active: bool,
+) -> bool {
+  always_listening_enabled || manual_hold_active || gateway_conversation_active
+}
+
 #[cfg(test)]
 mod tests {
   use std::time::{Duration, Instant};
@@ -3557,7 +3575,7 @@ mod tests {
     AppController, AzadConfig, EngineState, FAST_TICK_INTERVAL, HotkeyEffect, IDLE_TICK_INTERVAL,
     INTERACTIVE_TICK_INTERVAL, LISTEN_TOGGLE_NOTICE_DURATION_MS, ShutdownSnapshotOutcome,
     effective_removed_words, effective_run_on_startup_enabled, onboarding_view_model_changed,
-    should_start_device_controller, should_update_selected_device,
+    should_keep_capture_live, should_start_device_controller, should_update_selected_device,
     start_min_rms_db_for_activation_level,
   };
   use crate::speech::{SpeechEvent, SpeechSession};
@@ -3610,6 +3628,18 @@ mod tests {
 
     controller.onboarding_active = false;
     assert_eq!(controller.next_tick_interval(true), INTERACTIVE_TICK_INTERVAL);
+  }
+
+  #[test]
+  fn capture_live_policy_stays_off_for_listen_off_idle_startup() {
+    assert!(!should_keep_capture_live(false, false, false));
+  }
+
+  #[test]
+  fn capture_live_policy_turns_on_for_listen_hold_or_gateway() {
+    assert!(should_keep_capture_live(true, false, false));
+    assert!(should_keep_capture_live(false, true, false));
+    assert!(should_keep_capture_live(false, false, true));
   }
 
   #[test]

@@ -115,7 +115,7 @@ impl AppController {
     preferred_store::save_onboarding_complete(true);
     platform::close_onboarding_window();
     platform::set_status_item_visible(true);
-    self.ensure_session();
+    self.ensure_session_if_capture_should_be_live();
   }
 
   pub(super) fn handle_request_permission(&mut self, permission: &str) {
@@ -456,7 +456,7 @@ impl AppController {
       if !self.onboarding_active {
         self.show_overlay_notice("Model ready", "Azad is ready to dictate", Duration::from_secs(4));
       }
-      self.ensure_session();
+      self.ensure_session_if_capture_should_be_live();
     }
   }
 

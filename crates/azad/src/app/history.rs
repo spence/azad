@@ -275,8 +275,9 @@ impl AppController {
     platform::set_arrow_left_hotkey_enabled(false);
     platform::set_arrow_right_hotkey_enabled(false);
     platform::hide_overlay();
+    let should_capture = self.should_keep_capture_for_followups();
     if let Some(session) = &self.session {
-      session.set_capture_enabled(true);
+      session.set_capture_enabled(should_capture);
     }
   }
 }
