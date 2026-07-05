@@ -92,14 +92,6 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         shortcutView = shortcut
         form.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
 
-        form.addArrangedSubview(FormRow(label: "History", control: Design.checkbox("Keep a searchable history of dictations", checked: model.historyEnabled, target: self, action: #selector(toggleHistory(_:)))))
-
-        let insertPopup = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: #selector(setPasteMethod(_:)))
-        insertPopup.widthAnchor.constraint(equalToConstant: 182).isActive = true
-        form.addArrangedSubview(FormRow(label: "Insert text by", control: insertPopup))
-
-        form.addArrangedSubview(FormRow(label: "Trailing space", control: Design.checkbox("Append a space after each insert", checked: model.appendTrailingSpaceOnPaste, target: self, action: #selector(toggleTrailingSpace(_:)))))
-
         let overlayPopup = Design.popup(["Follow cursor", "Primary monitor", "Active window"], selected: model.overlayPositionIndex, target: self, action: #selector(setOverlayPosition(_:)))
         overlayPopup.widthAnchor.constraint(equalToConstant: 212).isActive = true
         form.addArrangedSubview(FormRow(label: "Overlay position", control: overlayPopup))
@@ -226,18 +218,6 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func setTrigger(_ sender: NSPopUpButton) {
         AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "setTrigger", index: sender.indexOfSelectedItem))
-    }
-
-    @objc private func toggleHistory(_ sender: NSButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "toggleHistory", boolValue: sender.state == .on))
-    }
-
-    @objc private func toggleTrailingSpace(_ sender: NSButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "toggleAppendTrailingSpace", boolValue: sender.state == .on))
-    }
-
-    @objc private func setPasteMethod(_ sender: NSPopUpButton) {
-        AzadUI.shared.emit(UIEvent(surface: "onboarding", action: "selectPasteMethod", index: sender.indexOfSelectedItem))
     }
 
     @objc private func setOverlayPosition(_ sender: NSPopUpButton) {

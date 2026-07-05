@@ -229,15 +229,6 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
     ("onboarding", "setTrigger") => {
       UiEventAction::Send(AppEvent::OnboardingSetTrigger(index() == 0))
     }
-    ("onboarding", "toggleHistory") => {
-      UiEventAction::Send(AppEvent::OnboardingToggleHistory(bool_value()))
-    }
-    ("onboarding", "selectPasteMethod") => UiEventAction::Send(
-      AppEvent::OnboardingSelectPasteMethod(PasteMethod::from_ui_index(index() as i64)),
-    ),
-    ("onboarding", "toggleAppendTrailingSpace") => {
-      UiEventAction::Send(AppEvent::OnboardingToggleAppendTrailingSpace(bool_value()))
-    }
     ("onboarding", "setOverlayPosition") => UiEventAction::Send(
       AppEvent::OnboardingSetOverlayPosition(OverlayPosition::from_ui_index(index() as i64)),
     ),
@@ -284,6 +275,9 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
     ("settings", "selectOverlayPosition") => UiEventAction::Send(
       AppEvent::SettingsSelectOverlayPosition(OverlayPosition::from_ui_index(index() as i64)),
     ),
+    ("settings", "toggleHistory") => {
+      UiEventAction::Send(AppEvent::SettingsToggleHistory(bool_value()))
+    }
     ("settings", "toggleAppendTrailingSpace") => {
       UiEventAction::Send(AppEvent::SettingsToggleAppendTrailingSpace(bool_value()))
     }
@@ -364,9 +358,6 @@ mod tests {
     let actions = [
       ("onboarding", "getStarted"),
       ("onboarding", "setTrigger"),
-      ("onboarding", "toggleHistory"),
-      ("onboarding", "selectPasteMethod"),
-      ("onboarding", "toggleAppendTrailingSpace"),
       ("onboarding", "setOverlayPosition"),
       ("onboarding", "toggleLogin"),
       ("onboarding", "downloadModel"),
@@ -382,6 +373,7 @@ mod tests {
       ("settings", "selectPasteMethod"),
       ("settings", "selectAutoSubmit"),
       ("settings", "selectOverlayPosition"),
+      ("settings", "toggleHistory"),
       ("settings", "toggleAppendTrailingSpace"),
       ("settings", "toggleDeduplicateWords"),
       ("settings", "toggleConvertNumberWords"),
@@ -441,6 +433,24 @@ mod tests {
       UiEventAction::Send(AppEvent::SettingsSelectStartupListenMode(
         StartupListenMode::RestoreLast,
       )) => {}
+      _ => panic!("unexpected event mapping"),
+    }
+  }
+
+  #[test]
+  fn settings_history_event_maps_to_app_event() {
+    let event = UiEvent {
+      surface: "settings".to_string(),
+      action: "toggleHistory".to_string(),
+      bool_value: Some(false),
+      index: None,
+      bit: None,
+      value: None,
+      pack_id: None,
+      permission: None,
+    };
+    match app_event_for_ui_event(&event) {
+      UiEventAction::Send(AppEvent::SettingsToggleHistory(false)) => {}
       _ => panic!("unexpected event mapping"),
     }
   }
@@ -605,26 +615,6 @@ mod tests {
       UiEventAction::Send(AppEvent::RequestPermission(permission)) => {
         assert_eq!(permission, "accessibility")
       }
-      _ => panic!("unexpected event mapping"),
-    }
-  }
-
-  #[test]
-  fn onboarding_paste_method_event_goes_to_controller_queue() {
-    let event = UiEvent {
-      surface: "onboarding".to_string(),
-      action: "selectPasteMethod".to_string(),
-      bool_value: None,
-      index: Some(2),
-      bit: None,
-      value: None,
-      pack_id: None,
-      permission: None,
-    };
-    match app_event_for_ui_event(&event) {
-      UiEventAction::Send(AppEvent::OnboardingSelectPasteMethod(
-        PasteMethod::DirectTypingAndCopyClipboard,
-      )) => {}
       _ => panic!("unexpected event mapping"),
     }
   }

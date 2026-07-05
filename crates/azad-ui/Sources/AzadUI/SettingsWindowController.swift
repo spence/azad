@@ -56,6 +56,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             runOnStartupEnabled: model.runOnStartupEnabled,
             startupListenModeIndex: model.startupListenModeIndex,
             activationLevel: model.activationLevel,
+            historyEnabled: model.historyEnabled,
             pasteMethodIndex: model.pasteMethodIndex,
             autoSubmitIndex: model.autoSubmitIndex,
             overlayPositionIndex: model.overlayPositionIndex,
@@ -185,19 +186,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         shortcutView = shortcut
         stack.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
 
-        stack.addArrangedSubview(FormRow(label: "Activation level", control: activationLevelControl(model.activationLevel)))
+        let paste = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: #selector(selectPasteMethod(_:)))
+        paste.widthAnchor.constraint(equalToConstant: 210).isActive = true
+        stack.addArrangedSubview(FormRow(label: "Insert method", control: paste))
 
         let overlay = Design.popup(["Follow cursor", "Primary monitor", "Active window"], selected: model.overlayPositionIndex, target: self, action: #selector(selectOverlayPosition(_:)))
         overlay.widthAnchor.constraint(equalToConstant: 220).isActive = true
         stack.addArrangedSubview(FormRow(label: "Overlay position", control: overlay))
 
-        let paste = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: #selector(selectPasteMethod(_:)))
-        paste.widthAnchor.constraint(equalToConstant: 210).isActive = true
-        stack.addArrangedSubview(FormRow(label: "Insert method", control: paste))
+        stack.addArrangedSubview(FormRow(label: "History", control: Design.checkbox("Keep a searchable history of dictations", checked: model.historyEnabled, target: self, action: #selector(toggleHistory(_:)))))
 
         let submit = Design.popup(["Off", "Enter", "Ctrl+Enter", "Shift+Enter"], selected: model.autoSubmitIndex, target: self, action: #selector(selectAutoSubmit(_:)))
         submit.widthAnchor.constraint(equalToConstant: 170).isActive = true
         stack.addArrangedSubview(FormRow(label: "Auto submit", control: submit))
+
+        stack.addArrangedSubview(FormRow(label: "Activation level", control: activationLevelControl(model.activationLevel)))
 
         stack.addArrangedSubview(FormRow(label: "Open at login", control: Design.checkbox("Run Azad on startup", checked: model.runOnStartupEnabled, target: self, action: #selector(toggleRunOnStartup(_:)))))
 
@@ -499,6 +502,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 runOnStartupEnabled: model.runOnStartupEnabled,
                 startupListenModeIndex: model.startupListenModeIndex,
                 activationLevel: value,
+                historyEnabled: model.historyEnabled,
                 pasteMethodIndex: model.pasteMethodIndex,
                 autoSubmitIndex: model.autoSubmitIndex,
                 overlayPositionIndex: model.overlayPositionIndex,
@@ -530,6 +534,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func selectOverlayPosition(_ sender: NSPopUpButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "selectOverlayPosition", index: sender.indexOfSelectedItem))
+    }
+
+    @objc private func toggleHistory(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleHistory", boolValue: sender.state == .on))
     }
 
     @objc private func toggleTrailingSpace(_ sender: NSButton) {

@@ -123,10 +123,7 @@ func modelPack(status: ModelStatus, progress: UInt8 = 0) -> ModelPack {
 func onboardingModel(ready: Bool) -> OnboardingViewModel {
     OnboardingViewModel(
         alwaysListeningEnabled: true,
-        historyEnabled: true,
-        pasteMethodIndex: 0,
-        appendTrailingSpaceOnPaste: ready,
-        overlayPositionIndex: 0,
+        overlayPositionIndex: 2,
         runOnStartupEnabled: ready,
         accessibilityStatus: ready ? .granted : .notGranted,
         microphoneStatus: ready ? .granted : .notGranted,
@@ -146,9 +143,10 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         runOnStartupEnabled: true,
         startupListenModeIndex: 2,
         activationLevel: 0,
+        historyEnabled: true,
         pasteMethodIndex: 0,
         autoSubmitIndex: 0,
-        overlayPositionIndex: 0,
+        overlayPositionIndex: 2,
         appendTrailingSpaceOnPaste: true,
         deduplicateWordsOnPaste: false,
         convertNumberWordsOnPaste: false,

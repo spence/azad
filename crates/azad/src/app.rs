@@ -88,6 +88,7 @@ pub enum AppEvent {
   SettingsSelectPasteMethod(PasteMethod),
   SettingsSelectAutoSubmit(AutoSubmitMode),
   SettingsSelectOverlayPosition(OverlayPosition),
+  SettingsToggleHistory(bool),
   SettingsToggleAppendTrailingSpace(bool),
   SettingsToggleDeduplicateWords(bool),
   SettingsToggleConvertNumberWords(bool),
@@ -110,9 +111,6 @@ pub enum AppEvent {
   RequestPermission(String),
   OnboardingGetStarted,
   OnboardingSetTrigger(bool),
-  OnboardingToggleHistory(bool),
-  OnboardingSelectPasteMethod(PasteMethod),
-  OnboardingToggleAppendTrailingSpace(bool),
   OnboardingSetOverlayPosition(OverlayPosition),
   OnboardingToggleLogin(bool),
   OnboardingDownloadModel,
@@ -951,6 +949,7 @@ impl AppController {
       AppEvent::SettingsSelectOverlayPosition(pos) => {
         self.handle_settings_select_overlay_position(pos)
       }
+      AppEvent::SettingsToggleHistory(enabled) => self.handle_settings_toggle_history(enabled),
       AppEvent::SettingsToggleAppendTrailingSpace(enabled) => {
         self.handle_settings_toggle_append_trailing_space(enabled)
       }
@@ -985,13 +984,6 @@ impl AppController {
       AppEvent::RequestPermission(permission) => self.handle_request_permission(&permission),
       AppEvent::OnboardingGetStarted => self.handle_onboarding_get_started(),
       AppEvent::OnboardingSetTrigger(automatic) => self.handle_onboarding_set_trigger(automatic),
-      AppEvent::OnboardingToggleHistory(enabled) => self.handle_onboarding_toggle_history(enabled),
-      AppEvent::OnboardingSelectPasteMethod(method) => {
-        self.handle_onboarding_select_paste_method(method)
-      }
-      AppEvent::OnboardingToggleAppendTrailingSpace(enabled) => {
-        self.handle_onboarding_toggle_append_trailing_space(enabled)
-      }
       AppEvent::OnboardingSetOverlayPosition(pos) => {
         self.handle_onboarding_set_overlay_position(pos)
       }
@@ -3863,10 +3855,7 @@ mod tests {
   fn test_onboarding_model() -> OnboardingViewModel {
     OnboardingViewModel {
       always_listening_enabled: true,
-      history_enabled: true,
-      paste_method_index: 0,
-      append_trailing_space_on_paste: true,
-      overlay_position_index: 0,
+      overlay_position_index: 2,
       run_on_startup_enabled: false,
       accessibility_status: UiPermissionStatus::Granted,
       microphone_status: UiPermissionStatus::Granted,

@@ -147,21 +147,6 @@ impl AppController {
     preferred_store::save_always_listening_enabled(automatic);
   }
 
-  pub(super) fn handle_onboarding_toggle_history(&mut self, enabled: bool) {
-    self.history_enabled = enabled;
-    preferred_store::save_history_enabled(enabled);
-  }
-
-  pub(super) fn handle_onboarding_select_paste_method(&mut self, method: PasteMethod) {
-    self.paste_method = method;
-    preferred_store::save_paste_method(method);
-  }
-
-  pub(super) fn handle_onboarding_toggle_append_trailing_space(&mut self, enabled: bool) {
-    self.append_trailing_space_on_paste = enabled;
-    preferred_store::save_append_trailing_space_on_paste(enabled);
-  }
-
   pub(super) fn handle_onboarding_set_overlay_position(&mut self, pos: OverlayPosition) {
     self.overlay_position = pos;
     preferred_store::save_overlay_position(pos);
@@ -249,9 +234,6 @@ impl AppController {
     };
     platform::OnboardingViewModel {
       always_listening_enabled: self.always_listening_enabled,
-      history_enabled: self.history_enabled,
-      paste_method_index: self.paste_method.ui_index(),
-      append_trailing_space_on_paste: self.append_trailing_space_on_paste,
       overlay_position_index: self.overlay_position.ui_index(),
       run_on_startup_enabled: self.run_on_startup_enabled,
       accessibility_status: ui_onboarding_accessibility_status(
@@ -334,6 +316,12 @@ impl AppController {
     self.overlay_position = pos;
     preferred_store::save_overlay_position(pos);
     platform::set_overlay_position(pos);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
+  pub(super) fn handle_settings_toggle_history(&mut self, enabled: bool) {
+    self.history_enabled = enabled;
+    preferred_store::save_history_enabled(enabled);
     platform::update_settings_window(self.settings_view_model());
   }
 
@@ -502,6 +490,7 @@ impl AppController {
       run_on_startup_enabled: self.run_on_startup_enabled,
       startup_listen_mode_index: self.startup_listen_mode.ui_index(),
       activation_level: self.activation_level,
+      history_enabled: self.history_enabled,
       paste_method_index: self.paste_method.ui_index(),
       auto_submit_index: self.auto_submit_mode.ui_index(),
       overlay_position_index: self.overlay_position.ui_index(),

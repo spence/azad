@@ -114,9 +114,6 @@ public struct DeviceOption: Codable {
 
 public struct OnboardingViewModel: Codable {
     public let alwaysListeningEnabled: Bool
-    public let historyEnabled: Bool
-    public let pasteMethodIndex: Int
-    public let appendTrailingSpaceOnPaste: Bool
     public let overlayPositionIndex: Int
     public let runOnStartupEnabled: Bool
     public let accessibilityStatus: PermissionStatus
@@ -129,9 +126,6 @@ public struct OnboardingViewModel: Codable {
 
     public init(
         alwaysListeningEnabled: Bool,
-        historyEnabled: Bool,
-        pasteMethodIndex: Int,
-        appendTrailingSpaceOnPaste: Bool,
         overlayPositionIndex: Int,
         runOnStartupEnabled: Bool,
         accessibilityStatus: PermissionStatus,
@@ -143,9 +137,6 @@ public struct OnboardingViewModel: Codable {
         listenModifiers: UInt8
     ) {
         self.alwaysListeningEnabled = alwaysListeningEnabled
-        self.historyEnabled = historyEnabled
-        self.pasteMethodIndex = pasteMethodIndex
-        self.appendTrailingSpaceOnPaste = appendTrailingSpaceOnPaste
         self.overlayPositionIndex = overlayPositionIndex
         self.runOnStartupEnabled = runOnStartupEnabled
         self.accessibilityStatus = accessibilityStatus
@@ -177,6 +168,7 @@ public struct SettingsViewModel: Codable {
     public let runOnStartupEnabled: Bool
     public let startupListenModeIndex: Int
     public let activationLevel: Int
+    public let historyEnabled: Bool
     public let pasteMethodIndex: Int
     public let autoSubmitIndex: Int
     public let overlayPositionIndex: Int
@@ -201,6 +193,7 @@ public struct SettingsViewModel: Codable {
         runOnStartupEnabled: Bool,
         startupListenModeIndex: Int,
         activationLevel: Int,
+        historyEnabled: Bool,
         pasteMethodIndex: Int,
         autoSubmitIndex: Int,
         overlayPositionIndex: Int,
@@ -224,6 +217,7 @@ public struct SettingsViewModel: Codable {
         self.runOnStartupEnabled = runOnStartupEnabled
         self.startupListenModeIndex = startupListenModeIndex
         self.activationLevel = activationLevel
+        self.historyEnabled = historyEnabled
         self.pasteMethodIndex = pasteMethodIndex
         self.autoSubmitIndex = autoSubmitIndex
         self.overlayPositionIndex = overlayPositionIndex

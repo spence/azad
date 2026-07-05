@@ -142,21 +142,22 @@ impl AutoSubmitMode {
 /// top-center anchor; they differ only in which screen is chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OverlayPosition {
-  /// The screen under the mouse cursor (the app's original hardcoded behavior).
-  #[default]
+  /// The screen under the mouse cursor.
   FollowCursor,
   /// The primary display (the one carrying the menu bar).
   PrimaryMonitor,
   /// The display containing the focused window of the frontmost app.
+  #[default]
   ActiveWindow,
 }
 
 impl OverlayPosition {
   pub fn from_prefs_value(value: &str) -> Self {
     match value {
+      "follow_cursor" => Self::FollowCursor,
       "primary_monitor" => Self::PrimaryMonitor,
       "active_window" => Self::ActiveWindow,
-      _ => Self::FollowCursor,
+      _ => Self::ActiveWindow,
     }
   }
 
@@ -172,7 +173,8 @@ impl OverlayPosition {
     match index {
       1 => Self::PrimaryMonitor,
       2 => Self::ActiveWindow,
-      _ => Self::FollowCursor,
+      0 => Self::FollowCursor,
+      _ => Self::ActiveWindow,
     }
   }
 
@@ -256,8 +258,8 @@ mod tests {
   }
 
   #[test]
-  fn overlay_position_invalid_pref_defaults_to_follow_cursor() {
-    assert_eq!(OverlayPosition::from_prefs_value("nope"), OverlayPosition::FollowCursor);
-    assert_eq!(OverlayPosition::from_ui_index(99), OverlayPosition::FollowCursor);
+  fn overlay_position_invalid_pref_defaults_to_active_window() {
+    assert_eq!(OverlayPosition::from_prefs_value("nope"), OverlayPosition::ActiveWindow);
+    assert_eq!(OverlayPosition::from_ui_index(99), OverlayPosition::ActiveWindow);
   }
 }

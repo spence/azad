@@ -60,9 +60,6 @@ pub struct UiDeviceOption {
 #[serde(rename_all = "camelCase")]
 pub struct OnboardingViewModel {
   pub always_listening_enabled: bool,
-  pub history_enabled: bool,
-  pub paste_method_index: i64,
-  pub append_trailing_space_on_paste: bool,
   pub overlay_position_index: i64,
   pub run_on_startup_enabled: bool,
   pub accessibility_status: UiPermissionStatus,
@@ -91,6 +88,7 @@ pub struct SettingsViewModel {
   pub run_on_startup_enabled: bool,
   pub startup_listen_mode_index: i64,
   pub activation_level: i64,
+  pub history_enabled: bool,
   pub paste_method_index: i64,
   pub auto_submit_index: i64,
   pub overlay_position_index: i64,
@@ -143,10 +141,7 @@ mod tests {
   fn onboarding_payload_uses_camel_case_state() {
     let json = serde_json::to_string(&OnboardingViewModel {
       always_listening_enabled: true,
-      history_enabled: true,
-      paste_method_index: 0,
-      append_trailing_space_on_paste: false,
-      overlay_position_index: 0,
+      overlay_position_index: 2,
       run_on_startup_enabled: false,
       accessibility_status: UiPermissionStatus::NotDetermined,
       microphone_status: UiPermissionStatus::Granted,
