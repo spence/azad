@@ -96,22 +96,29 @@ fn flush_lowercase_word(out: &mut String, word: &mut String) {
         return;
     }
 
-    let mut alpha_count = 0;
-    let mut all_alpha_uppercase = true;
-    for ch in word.chars().filter(|ch| ch.is_alphabetic()) {
-        alpha_count += 1;
-        if !ch.is_uppercase() {
-            all_alpha_uppercase = false;
-            break;
-        }
-    }
-
-    if alpha_count >= 2 && all_alpha_uppercase {
+    if should_preserve_uppercase_word(word) {
         out.push_str(word);
     } else {
         out.extend(word.chars().flat_map(|ch| ch.to_lowercase()));
     }
     word.clear();
+}
+
+fn should_preserve_uppercase_word(word: &str) -> bool {
+    uppercase_alpha_count(word) >= 2
+        || uppercase_alpha_count(word.strip_suffix("es").unwrap_or_default()) >= 2
+        || uppercase_alpha_count(word.strip_suffix('s').unwrap_or_default()) >= 2
+}
+
+fn uppercase_alpha_count(text: &str) -> usize {
+    let mut alpha_count = 0;
+    for ch in text.chars().filter(|ch| ch.is_alphabetic()) {
+        alpha_count += 1;
+        if !ch.is_uppercase() {
+            return 0;
+        }
+    }
+    alpha_count
 }
 
 fn strip_removed_words(text: &str, removed_words: &[String]) -> String {
@@ -860,6 +867,39 @@ mod tests {
                 lowercase_options(false, &[], true, false)
             ),
             "i saw NASA launch an API-based HTTP2 test in the USA."
+        );
+    }
+
+    #[test]
+    fn build_paste_text_preserves_plural_uppercase_words() {
+        assert_eq!(
+            build_paste_text(
+                "The APIs and OSes connect to CPUs, SDKs, and HTTP2 endpoints.",
+                lowercase_options(false, &[], true, false)
+            ),
+            "the APIs and OSes connect to CPUs, SDKs, and HTTP2 endpoints."
+        );
+    }
+
+    #[test]
+    fn build_paste_text_preserves_plural_uppercase_words_with_possessives() {
+        assert_eq!(
+            build_paste_text(
+                "The APIs' limits and API's docs mention SMSes.",
+                lowercase_options(false, &[], true, false)
+            ),
+            "the APIs' limits and API's docs mention SMSes."
+        );
+    }
+
+    #[test]
+    fn build_paste_text_lowercases_non_plural_uppercase_suffixes() {
+        assert_eq!(
+            build_paste_text(
+                "The APIing demo and URLish example are weird.",
+                lowercase_options(false, &[], true, false)
+            ),
+            "the apiing demo and urlish example are weird."
         );
     }
 
