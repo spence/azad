@@ -817,6 +817,26 @@ enum TurnStartReason {
   ManualOverride,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureEnableTransition {
+  Unchanged,
+  Enabled(Instant),
+  Disabled,
+}
+
+fn capture_enable_transition(
+  previous: Option<Instant>,
+  current: Option<Instant>,
+) -> CaptureEnableTransition {
+  if current == previous {
+    return CaptureEnableTransition::Unchanged;
+  }
+  match current {
+    Some(at) => CaptureEnableTransition::Enabled(at),
+    None => CaptureEnableTransition::Disabled,
+  }
+}
+
 fn activation_level_blocks_start(
   in_speech: bool,
   is_speech: bool,
@@ -921,8 +941,12 @@ impl PipelineCore {
     // `capture_enabled_since`. On a fresh wake: emit `AZAD_VAD_RESUME` once
     // and arm the 10 s `AZAD_VAD_COLDSTART` window.
     let cur_enable_at = self.controls.as_ref().and_then(|c| c.capture_enabled_since());
-    if cur_enable_at != self.prev_capture_enable_at {
-      if let Some(at) = cur_enable_at {
+    match capture_enable_transition(self.prev_capture_enable_at, cur_enable_at) {
+      CaptureEnableTransition::Enabled(at) => {
+        // A capture wake is the user's intent boundary. Pre-roll must start
+        // after this point so audio heard before Listen was enabled cannot
+        // seed the next turn.
+        self.pre_roll.clear();
         self.cold_start_log_until = Some(at + Duration::from_secs(10));
         self.cold_start_chunk_idx = 0;
         // Reset VAD smoothing state and arm the seed-grace window so a
@@ -941,10 +965,14 @@ impl PipelineCore {
         self.vad_avg_ema = 0.0;
         self.start_run = 0;
         self.vad_seed_grace_chunks = 10;
-      } else {
-        self.cold_start_log_until = None;
+        self.prev_capture_enable_at = cur_enable_at;
       }
-      self.prev_capture_enable_at = cur_enable_at;
+      CaptureEnableTransition::Disabled => {
+        self.pre_roll.clear();
+        self.cold_start_log_until = None;
+        self.prev_capture_enable_at = None;
+      }
+      CaptureEnableTransition::Unchanged => {}
     }
 
     // Pre-roll ring buffer: only while idle.
@@ -3576,21 +3604,24 @@ fn samples_to_ms_at_target_sr(samples: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+  use std::time::Instant;
+
   use super::stitch::{
     is_one_char_audio_cutoff_truncation, tokenize_for_stitch, tokens_differ_only_in_non_alpha,
     tokens_equivalent, tokens_match_substantive_boundary, try_consume_number_run,
   };
   use super::{
-    DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES, EmptyPartialAction, EouEmission,
-    FinalizeTailPlan, FinalizingPulsePlan, INCREMENTAL_LIVE_TAIL_WAIT_FACTOR,
-    INCREMENTAL_TAIL_MAX_WAIT_FACTOR, IncrementalPartialSegment, MIDDLE_COVERAGE_TOLERANCE_SAMPLES,
-    PipelineControls, PipelineCore, TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start,
-    cap_segment_start, choose_streaming_final_text, debug_recording_stem, empty_partial_action,
-    eou_chars_in_range, eou_corroborates_silence, finalize_tail_plan, finalizing_pulse_plan,
-    incremental_tail_wait_ms, leading_coverage_is_incomplete, middle_coverage_is_incomplete,
-    non_empty_partials, normalize_chunk_case, partial_core_coverage_gap, prune_debug_recordings,
-    samples_to_ms_at_target_sr, stitch_incremental_text, stitch_right_start_cap_from_overlap,
-    tail_coverage_is_incomplete,
+    CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES,
+    EmptyPartialAction, EouEmission, FinalizeTailPlan, FinalizingPulsePlan,
+    INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_TAIL_MAX_WAIT_FACTOR, IncrementalPartialSegment,
+    MIDDLE_COVERAGE_TOLERANCE_SAMPLES, PipelineControls, PipelineCore,
+    TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start, cap_segment_start,
+    capture_enable_transition, choose_streaming_final_text, debug_recording_stem,
+    empty_partial_action, eou_chars_in_range, eou_corroborates_silence, finalize_tail_plan,
+    finalizing_pulse_plan, incremental_tail_wait_ms, leading_coverage_is_incomplete,
+    middle_coverage_is_incomplete, non_empty_partials, normalize_chunk_case,
+    partial_core_coverage_gap, prune_debug_recordings, samples_to_ms_at_target_sr,
+    stitch_incremental_text, stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
   };
 
   fn partial(
@@ -3615,6 +3646,27 @@ mod tests {
     assert!(!activation_level_blocks_start(false, true, -35.0, -40.0));
     assert!(!activation_level_blocks_start(false, false, -45.0, -40.0));
     assert!(!activation_level_blocks_start(true, true, -45.0, -40.0));
+  }
+
+  #[test]
+  fn capture_enable_transition_marks_listen_boundaries() {
+    let first = Instant::now();
+    let second = first + std::time::Duration::from_millis(1);
+
+    assert_eq!(capture_enable_transition(None, None), CaptureEnableTransition::Unchanged);
+    assert_eq!(
+      capture_enable_transition(None, Some(first)),
+      CaptureEnableTransition::Enabled(first)
+    );
+    assert_eq!(
+      capture_enable_transition(Some(first), Some(first)),
+      CaptureEnableTransition::Unchanged
+    );
+    assert_eq!(
+      capture_enable_transition(Some(first), Some(second)),
+      CaptureEnableTransition::Enabled(second)
+    );
+    assert_eq!(capture_enable_transition(Some(first), None), CaptureEnableTransition::Disabled);
   }
 
   #[test]
