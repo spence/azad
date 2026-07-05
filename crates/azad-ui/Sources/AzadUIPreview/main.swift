@@ -144,6 +144,7 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         accessibilityStatus: .granted,
         microphoneStatus: tab == .permissions ? .notGranted : .granted,
         runOnStartupEnabled: true,
+        startupListenModeIndex: 2,
         activationLevel: 0,
         pasteMethodIndex: 0,
         autoSubmitIndex: 0,

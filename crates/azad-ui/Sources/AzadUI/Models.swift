@@ -175,6 +175,7 @@ public struct SettingsViewModel: Codable {
     public let accessibilityStatus: PermissionStatus
     public let microphoneStatus: PermissionStatus
     public let runOnStartupEnabled: Bool
+    public let startupListenModeIndex: Int
     public let activationLevel: Int
     public let pasteMethodIndex: Int
     public let autoSubmitIndex: Int
@@ -198,6 +199,7 @@ public struct SettingsViewModel: Codable {
         accessibilityStatus: PermissionStatus,
         microphoneStatus: PermissionStatus,
         runOnStartupEnabled: Bool,
+        startupListenModeIndex: Int,
         activationLevel: Int,
         pasteMethodIndex: Int,
         autoSubmitIndex: Int,
@@ -220,6 +222,7 @@ public struct SettingsViewModel: Codable {
         self.accessibilityStatus = accessibilityStatus
         self.microphoneStatus = microphoneStatus
         self.runOnStartupEnabled = runOnStartupEnabled
+        self.startupListenModeIndex = startupListenModeIndex
         self.activationLevel = activationLevel
         self.pasteMethodIndex = pasteMethodIndex
         self.autoSubmitIndex = autoSubmitIndex

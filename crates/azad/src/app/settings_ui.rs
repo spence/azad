@@ -5,7 +5,7 @@ use crate::model_download;
 use crate::models::{self, PackStatus};
 use crate::platform::{self, ConnectorRowVM, SettingsTab, SettingsViewModel};
 use crate::preferred_store;
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
+use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
 use crate::ui_model::{UiDeviceOption, UiModelPack, UiModelStatus, UiPermissionStatus};
 
 use super::AppController;
@@ -292,6 +292,12 @@ impl AppController {
     platform::update_settings_window(self.settings_view_model());
   }
 
+  pub(super) fn handle_settings_select_startup_listen_mode(&mut self, mode: StartupListenMode) {
+    self.startup_listen_mode = mode;
+    preferred_store::save_startup_listen_mode(mode);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
   pub(super) fn handle_settings_toggle_debug_stats(&mut self, enabled: bool) {
     self.debug_stats_enabled = enabled;
     preferred_store::save_debug_stats_enabled(enabled);
@@ -494,6 +500,7 @@ impl AppController {
       accessibility_status: ui_permission_status(platform::accessibility_authorization()),
       microphone_status: ui_permission_status(platform::microphone_authorization()),
       run_on_startup_enabled: self.run_on_startup_enabled,
+      startup_listen_mode_index: self.startup_listen_mode.ui_index(),
       activation_level: self.activation_level,
       paste_method_index: self.paste_method.ui_index(),
       auto_submit_index: self.auto_submit_mode.ui_index(),

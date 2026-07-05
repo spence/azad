@@ -89,6 +89,7 @@ pub struct SettingsViewModel {
   pub accessibility_status: UiPermissionStatus,
   pub microphone_status: UiPermissionStatus,
   pub run_on_startup_enabled: bool,
+  pub startup_listen_mode_index: i64,
   pub activation_level: i64,
   pub paste_method_index: i64,
   pub auto_submit_index: i64,

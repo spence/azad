@@ -54,6 +54,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             accessibilityStatus: accessibility,
             microphoneStatus: microphone,
             runOnStartupEnabled: model.runOnStartupEnabled,
+            startupListenModeIndex: model.startupListenModeIndex,
             activationLevel: model.activationLevel,
             pasteMethodIndex: model.pasteMethodIndex,
             autoSubmitIndex: model.autoSubmitIndex,
@@ -176,7 +177,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func generalPane(_ model: SettingsViewModel) -> NSView {
         let stack = paneStack()
 
-        stack.addArrangedSubview(FormRow(label: "Startup", control: Design.checkbox("Run Azad on startup", checked: model.runOnStartupEnabled, target: self, action: #selector(toggleRunOnStartup(_:)))))
+        let startupListen = Design.popup(["Off", "On", "Restore last state"], selected: model.startupListenModeIndex, target: self, action: #selector(selectStartupListenMode(_:)))
+        startupListen.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        stack.addArrangedSubview(FormRow(label: "Start listening", control: startupListen))
+
+        let shortcut = ShortcutView(mask: model.listenModifiers, target: self, action: #selector(toggleModifier(_:)))
+        shortcutView = shortcut
+        stack.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
+
+        stack.addArrangedSubview(FormRow(label: "Activation level", control: activationLevelControl(model.activationLevel)))
+
+        let overlay = Design.popup(["Follow cursor", "Primary monitor", "Active window"], selected: model.overlayPositionIndex, target: self, action: #selector(selectOverlayPosition(_:)))
+        overlay.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        stack.addArrangedSubview(FormRow(label: "Overlay position", control: overlay))
 
         let paste = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: #selector(selectPasteMethod(_:)))
         paste.widthAnchor.constraint(equalToConstant: 210).isActive = true
@@ -186,15 +199,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         submit.widthAnchor.constraint(equalToConstant: 170).isActive = true
         stack.addArrangedSubview(FormRow(label: "Auto submit", control: submit))
 
-        let overlay = Design.popup(["Follow cursor", "Primary monitor", "Active window"], selected: model.overlayPositionIndex, target: self, action: #selector(selectOverlayPosition(_:)))
-        overlay.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        stack.addArrangedSubview(FormRow(label: "Overlay position", control: overlay))
-
-        let shortcut = ShortcutView(mask: model.listenModifiers, target: self, action: #selector(toggleModifier(_:)))
-        shortcutView = shortcut
-        stack.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
-
-        stack.addArrangedSubview(FormRow(label: "Activation level", control: activationLevelControl(model.activationLevel)))
+        stack.addArrangedSubview(FormRow(label: "Open at login", control: Design.checkbox("Run Azad on startup", checked: model.runOnStartupEnabled, target: self, action: #selector(toggleRunOnStartup(_:)))))
 
         return stack
     }
@@ -479,6 +484,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleRunOnStartup", boolValue: sender.state == .on))
     }
 
+    @objc private func selectStartupListenMode(_ sender: NSPopUpButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "selectStartupListenMode", index: sender.indexOfSelectedItem))
+    }
+
     @objc private func setActivationLevel(_ sender: NSSlider) {
         let value = sender.integerValue
         activationLevelValueLabel?.stringValue = activationLevelLabel(for: value)
@@ -488,6 +497,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 accessibilityStatus: model.accessibilityStatus,
                 microphoneStatus: model.microphoneStatus,
                 runOnStartupEnabled: model.runOnStartupEnabled,
+                startupListenModeIndex: model.startupListenModeIndex,
                 activationLevel: value,
                 pasteMethodIndex: model.pasteMethodIndex,
                 autoSubmitIndex: model.autoSubmitIndex,

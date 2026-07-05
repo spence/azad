@@ -5,10 +5,11 @@ use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::NSString;
 use objc::{class, msg_send, sel, sel_impl};
 
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
+use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
 
 const PREFERRED_DEVICE_KEY: &str = "AzadPreferredInputDeviceId";
 const ALWAYS_LISTENING_KEY: &str = "AzadAlwaysListeningEnabled";
+const STARTUP_LISTEN_MODE_KEY: &str = "AzadStartupListenMode";
 const DEBUG_STATS_ENABLED_KEY: &str = "AzadDebugStatsEnabled";
 const ACTIVATION_LEVEL_KEY: &str = "AzadActivationLevel";
 const RUN_ON_STARTUP_KEY: &str = "AzadRunOnStartup";
@@ -84,6 +85,35 @@ pub fn save_always_listening_enabled(enabled: bool) {
     let key = NSString::alloc(nil).init_str(ALWAYS_LISTENING_KEY);
     let value = if enabled { YES } else { NO };
     let _: () = msg_send![defaults, setBool: value forKey: key];
+  }
+}
+
+pub fn load_startup_listen_mode() -> StartupListenMode {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return StartupListenMode::default();
+    }
+
+    let key = NSString::alloc(nil).init_str(STARTUP_LISTEN_MODE_KEY);
+    let value: id = msg_send![defaults, stringForKey: key];
+    let Some(value) = nsstring_to_string(value) else {
+      return StartupListenMode::default();
+    };
+    StartupListenMode::from_prefs_value(value.trim())
+  }
+}
+
+pub fn save_startup_listen_mode(mode: StartupListenMode) {
+  unsafe {
+    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    if defaults == nil {
+      return;
+    }
+
+    let key = NSString::alloc(nil).init_str(STARTUP_LISTEN_MODE_KEY);
+    let value = NSString::alloc(nil).init_str(mode.prefs_value());
+    let _: () = msg_send![defaults, setObject: value forKey: key];
   }
 }
 

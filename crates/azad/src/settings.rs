@@ -1,4 +1,55 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartupListenMode {
+  Off,
+  On,
+  #[default]
+  RestoreLast,
+}
+
+impl StartupListenMode {
+  pub fn from_prefs_value(value: &str) -> Self {
+    match value {
+      "off" => Self::Off,
+      "on" => Self::On,
+      "restore_last" => Self::RestoreLast,
+      _ => Self::RestoreLast,
+    }
+  }
+
+  pub fn prefs_value(self) -> &'static str {
+    match self {
+      Self::Off => "off",
+      Self::On => "on",
+      Self::RestoreLast => "restore_last",
+    }
+  }
+
+  pub fn from_ui_index(index: i64) -> Self {
+    match index {
+      0 => Self::Off,
+      1 => Self::On,
+      _ => Self::RestoreLast,
+    }
+  }
+
+  pub fn ui_index(self) -> i64 {
+    match self {
+      Self::Off => 0,
+      Self::On => 1,
+      Self::RestoreLast => 2,
+    }
+  }
+
+  pub fn initial_listen_enabled(self, last_enabled: bool) -> bool {
+    match self {
+      Self::Off => false,
+      Self::On => true,
+      Self::RestoreLast => last_enabled,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PasteMethod {
   #[default]
   ClipboardPaste,
@@ -136,7 +187,23 @@ impl OverlayPosition {
 
 #[cfg(test)]
 mod tests {
-  use super::{AutoSubmitMode, OverlayPosition, PasteMethod};
+  use super::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
+
+  #[test]
+  fn startup_listen_mode_roundtrips_preferences_values() {
+    for mode in [StartupListenMode::Off, StartupListenMode::On, StartupListenMode::RestoreLast] {
+      assert_eq!(StartupListenMode::from_prefs_value(mode.prefs_value()), mode);
+      assert_eq!(StartupListenMode::from_ui_index(mode.ui_index()), mode);
+    }
+  }
+
+  #[test]
+  fn startup_listen_mode_resolves_initial_state() {
+    assert!(!StartupListenMode::Off.initial_listen_enabled(true));
+    assert!(StartupListenMode::On.initial_listen_enabled(false));
+    assert!(StartupListenMode::RestoreLast.initial_listen_enabled(true));
+    assert!(!StartupListenMode::RestoreLast.initial_listen_enabled(false));
+  }
 
   #[test]
   fn paste_method_roundtrips_preferences_values() {

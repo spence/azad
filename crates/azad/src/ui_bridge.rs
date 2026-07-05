@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::AppEvent;
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
+use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
 use crate::ui_model::{
   OnboardingViewModel, SettingsPermissionUpdate, SettingsViewModel, UiEvent, UiPermissionStatus,
 };
@@ -266,6 +266,9 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
     ("settings", "toggleRunOnStartup") => {
       UiEventAction::Send(AppEvent::SettingsToggleRunOnStartup(bool_value()))
     }
+    ("settings", "selectStartupListenMode") => UiEventAction::Send(
+      AppEvent::SettingsSelectStartupListenMode(StartupListenMode::from_ui_index(index() as i64)),
+    ),
     ("settings", "toggleDebugStats") => {
       UiEventAction::Send(AppEvent::SettingsToggleDebugStats(bool_value()))
     }
@@ -373,6 +376,7 @@ mod tests {
       ("onboarding", "setListenModifier"),
       ("onboarding", "requestPermission"),
       ("settings", "toggleRunOnStartup"),
+      ("settings", "selectStartupListenMode"),
       ("settings", "toggleDebugStats"),
       ("settings", "setActivationLevel"),
       ("settings", "selectPasteMethod"),
@@ -417,6 +421,26 @@ mod tests {
     };
     match app_event_for_ui_event(&event) {
       UiEventAction::Send(AppEvent::SettingsSelectPasteMethod(PasteMethod::DirectTyping)) => {}
+      _ => panic!("unexpected event mapping"),
+    }
+  }
+
+  #[test]
+  fn settings_startup_listen_mode_event_maps_to_app_event() {
+    let event = UiEvent {
+      surface: "settings".to_string(),
+      action: "selectStartupListenMode".to_string(),
+      bool_value: None,
+      index: Some(2),
+      bit: None,
+      value: None,
+      pack_id: None,
+      permission: None,
+    };
+    match app_event_for_ui_event(&event) {
+      UiEventAction::Send(AppEvent::SettingsSelectStartupListenMode(
+        StartupListenMode::RestoreLast,
+      )) => {}
       _ => panic!("unexpected event mapping"),
     }
   }

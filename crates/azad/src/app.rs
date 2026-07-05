@@ -20,7 +20,7 @@ use crate::models::{self, PackStatus};
 use crate::platform;
 use crate::platform::{DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsTab};
 use crate::preferred_store;
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod};
+use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
 use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
 use crate::transcript_history::TranscriptIndex;
 
@@ -82,6 +82,7 @@ pub enum AppEvent {
   MenuOpened,
   MenuClosed,
   SettingsToggleRunOnStartup(bool),
+  SettingsSelectStartupListenMode(StartupListenMode),
   SettingsToggleDebugStats(bool),
   SettingsSetActivationLevel(i64),
   SettingsSelectPasteMethod(PasteMethod),
@@ -352,6 +353,7 @@ struct AppController {
   raw_finalize_requested: bool,
   pending_hold_release_raw_requested: bool,
   run_on_startup_enabled: bool,
+  startup_listen_mode: StartupListenMode,
   activation_level: i64,
   history_enabled: bool,
   paste_method: PasteMethod,
@@ -580,7 +582,9 @@ fn auto_submit_mode_label(mode: AutoSubmitMode) -> &'static str {
 
 impl AppController {
   fn new(cfg: AzadConfig) -> Self {
-    let always_listening_enabled = preferred_store::load_always_listening_enabled();
+    let startup_listen_mode = preferred_store::load_startup_listen_mode();
+    let always_listening_enabled =
+      startup_listen_mode.initial_listen_enabled(preferred_store::load_always_listening_enabled());
     let run_on_startup_enabled = effective_run_on_startup_enabled(
       preferred_store::load_run_on_startup_enabled(),
       platform::launch_agent_plist_exists(),
@@ -656,6 +660,7 @@ impl AppController {
       raw_finalize_requested: false,
       pending_hold_release_raw_requested: false,
       run_on_startup_enabled,
+      startup_listen_mode,
       activation_level,
       history_enabled,
       paste_method,
@@ -929,6 +934,9 @@ impl AppController {
       AppEvent::MenuClosed => self.handle_menu_closed(),
       AppEvent::SettingsToggleRunOnStartup(enabled) => {
         self.handle_settings_toggle_run_on_startup(enabled)
+      }
+      AppEvent::SettingsSelectStartupListenMode(mode) => {
+        self.handle_settings_select_startup_listen_mode(mode)
       }
       AppEvent::SettingsToggleDebugStats(enabled) => {
         self.handle_settings_toggle_debug_stats(enabled)
