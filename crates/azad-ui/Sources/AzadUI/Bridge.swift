@@ -92,7 +92,7 @@ public final class AzadUI: NSObject {
     }
 
     func closeOnboarding() {
-        onboardingController?.close()
+        onboardingController?.closeAfterCompletion()
         onboardingController = nil
         updateActivationPolicyAfterWindowClose()
     }

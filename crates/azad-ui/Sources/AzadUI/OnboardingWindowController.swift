@@ -3,16 +3,22 @@ import AppKit
 final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private var model: OnboardingViewModel?
     private var shortcutView: ShortcutView?
+    private var closingAfterCompletion = false
     private static let windowSize = NSSize(width: 560, height: 370)
     private static let formLabelWidth: CGFloat = 120
 
     init() {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.windowSize),
-            styleMask: [.borderless],
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        window.title = ""
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
@@ -43,6 +49,20 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     func syncListenModifiers(_ mask: UInt8) {
         shortcutView?.sync(mask: mask)
+    }
+
+    func closeAfterCompletion() {
+        closingAfterCompletion = true
+        close()
+        closingAfterCompletion = false
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closingAfterCompletion {
+            return true
+        }
+        AzadUI.shared.emit(UIEvent(surface: "app", action: "quit"))
+        return false
     }
 
     func windowWillClose(_ notification: Notification) {
