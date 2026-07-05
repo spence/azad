@@ -3,8 +3,8 @@ import AppKit
 final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private var model: OnboardingViewModel?
     private var shortcutView: ShortcutView?
-    private static let windowSize = NSSize(width: 540, height: 370)
-    private static let formLabelWidth: CGFloat = 100
+    private static let windowSize = NSSize(width: 560, height: 370)
+    private static let formLabelWidth: CGFloat = 120
 
     init() {
         let window = NSWindow(
@@ -84,7 +84,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         ])
 
         let modelRow = ModelRowView(model: model.model, compact: true, target: self, downloadAction: #selector(downloadModel), downloadControlAction: #selector(controlDownload(_:)))
-        form.addArrangedSubview(FormRow(label: "Model", labelWidth: Self.formLabelWidth, control: modelRow))
+        form.addArrangedSubview(FormRow(label: "Download model", labelWidth: Self.formLabelWidth, control: modelRow))
 
         let permissionCard = PermissionCard(
             accessibility: model.accessibilityStatus,
@@ -94,7 +94,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             compactGranted: model.accessibilityStatus == .granted && model.microphoneStatus == .granted
         )
         permissionCard.widthAnchor.constraint(equalToConstant: 358).isActive = true
-        form.addArrangedSubview(FormRow(label: "Permissions", labelWidth: Self.formLabelWidth, control: permissionCard))
+        form.addArrangedSubview(FormRow(label: "Grant permissions", labelWidth: Self.formLabelWidth, control: permissionCard))
 
         let shortcut = ShortcutView(mask: model.listenModifiers, target: self, action: #selector(toggleModifier(_:)))
         shortcutView = shortcut
