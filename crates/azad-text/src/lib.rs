@@ -105,9 +105,28 @@ fn flush_lowercase_word(out: &mut String, word: &mut String) {
 }
 
 fn should_preserve_uppercase_word(word: &str) -> bool {
-    uppercase_alpha_count(word) >= 2
+    uppercase_alphanumeric_identifier(word)
+        || uppercase_alpha_count(word) >= 2
         || uppercase_alpha_count(word.strip_suffix("es").unwrap_or_default()) >= 2
         || uppercase_alpha_count(word.strip_suffix('s').unwrap_or_default()) >= 2
+}
+
+fn uppercase_alphanumeric_identifier(word: &str) -> bool {
+    let mut has_alpha = false;
+    let mut has_digit = false;
+    for ch in word.chars() {
+        if ch.is_ascii_digit() {
+            has_digit = true;
+        } else if ch.is_ascii_alphabetic() {
+            if !ch.is_ascii_uppercase() {
+                return false;
+            }
+            has_alpha = true;
+        } else {
+            return false;
+        }
+    }
+    has_alpha && has_digit
 }
 
 fn uppercase_alpha_count(text: &str) -> usize {
@@ -323,6 +342,13 @@ fn replace_english_number_words(text: &str) -> String {
             continue;
         }
 
+        if let Some((end, replacement)) = identifier_number_phrase(&tokens, i) {
+            out.push_str(&replacement);
+            i = end + 1;
+            changed = true;
+            continue;
+        }
+
         let Some(candidates) = number_candidates(&tokens, i) else {
             out.push_str(tokens[i].text);
             i += 1;
@@ -342,6 +368,90 @@ fn replace_english_number_words(text: &str) -> String {
     }
 
     if changed { out } else { text.to_string() }
+}
+
+fn identifier_number_phrase(tokens: &[TextToken<'_>], start: usize) -> Option<(usize, String)> {
+    let start_token = tokens.get(start)?;
+    if !is_identifier_phrase_start_token(start_token.text) {
+        return None;
+    }
+
+    let mut out = start_token.text.to_string();
+    let mut word_index = start;
+    let mut consumed_spoken_number = false;
+
+    while let Some(next_word_index) = next_whitespace_separated_word(tokens, word_index) {
+        let next = tokens[next_word_index];
+        if is_identifier_code_token(next.text) {
+            out.push_str(next.text);
+            word_index = next_word_index;
+            continue;
+        }
+
+        let Some((number_end, number)) = identifier_number_at(tokens, next_word_index) else {
+            break;
+        };
+        out.push_str(&number);
+        word_index = number_end;
+        consumed_spoken_number = true;
+    }
+
+    consumed_spoken_number.then_some((word_index, out))
+}
+
+fn identifier_number_at(tokens: &[TextToken<'_>], start: usize) -> Option<(usize, String)> {
+    number_candidates(tokens, start)?
+        .into_iter()
+        .rev()
+        .find_map(|(end, words)| parse_identifier_number_words(&words).map(|number| (end, number)))
+}
+
+fn parse_identifier_number_words(words: &[String]) -> Option<String> {
+    if let [word] = words {
+        if let Some(digit) = decimal_digit(word) {
+            return Some(char::from(b'0' + digit).to_string());
+        }
+    }
+    parse_number_words(words)
+}
+
+fn next_whitespace_separated_word(tokens: &[TextToken<'_>], word_index: usize) -> Option<usize> {
+    let sep_index = word_index + 1;
+    let next_index = word_index + 2;
+    if !tokens.get(word_index).is_some_and(|token| token.is_word) {
+        return None;
+    }
+    if tokens
+        .get(sep_index)
+        .is_some_and(|token| !token.is_word && token.text.chars().all(char::is_whitespace))
+        && tokens.get(next_index).is_some_and(|token| token.is_word)
+    {
+        Some(next_index)
+    } else {
+        None
+    }
+}
+
+fn is_identifier_phrase_start_token(token: &str) -> bool {
+    if matches!(token, "A" | "I") {
+        return false;
+    }
+    is_identifier_code_token(token)
+}
+
+fn is_identifier_code_token(token: &str) -> bool {
+    let mut has_alpha = false;
+    for ch in token.chars() {
+        if ch.is_ascii_alphabetic() {
+            if !ch.is_ascii_uppercase() {
+                return false;
+            }
+            has_alpha = true;
+        } else if !ch.is_ascii_digit() {
+            return false;
+        }
+    }
+    has_alpha
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1023,6 +1133,17 @@ mod tests {
     }
 
     #[test]
+    fn build_paste_text_preserves_generated_identifiers_when_lowercasing() {
+        assert_eq!(
+            build_paste_text(
+                "Use S eight and W three C with HTTP two.",
+                lowercase_options(false, &[], true, true)
+            ),
+            "use S8 and W3C with HTTP2."
+        );
+    }
+
+    #[test]
     fn generated_emoji_phrase_map_has_expected_coverage() {
         assert!(EMOJI_PHRASE_COUNT >= 3_800);
     }
@@ -1270,6 +1391,46 @@ mod tests {
     }
 
     #[test]
+    fn number_words_convert_spoken_section_identifiers() {
+        assert_eq!(
+            build_paste_text(
+                "Open section S eight, R four, and V twelve.",
+                options(false, &[], true, true),
+            ),
+            "Open section S8, R4, and V12."
+        );
+    }
+
+    #[test]
+    fn number_words_convert_spoken_acronym_identifiers() {
+        assert_eq!(
+            build_paste_text(
+                "Check W three C, WS two, HTTP two, and API twenty one.",
+                options(false, &[], true, true),
+            ),
+            "Check W3C, WS2, HTTP2, and API21."
+        );
+    }
+
+    #[test]
+    fn number_words_identifier_conversion_requires_uppercase_identifier_signal() {
+        assert_eq!(
+            build_paste_text(
+                "we three C should stay prose",
+                options(false, &[], true, true)
+            ),
+            "we three C should stay prose"
+        );
+        assert_eq!(
+            build_paste_text(
+                "A one time thing and I two guess",
+                options(false, &[], true, true)
+            ),
+            "A one time thing and I two guess"
+        );
+    }
+
+    #[test]
     fn number_words_match_agreed_replacement_table() {
         for (spoken, expected) in [
             ("three", "three"),
@@ -1297,6 +1458,11 @@ mod tests {
             ("first", "first"),
             ("second", "second"),
             ("third", "third"),
+            ("S eight", "S8"),
+            ("R four", "R4"),
+            ("V twelve", "V12"),
+            ("W three C", "W3C"),
+            ("WS two", "WS2"),
         ] {
             assert_eq!(
                 build_paste_text(spoken, options(false, &[], true, true)),
