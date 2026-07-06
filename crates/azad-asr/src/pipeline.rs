@@ -20,7 +20,7 @@ use audio_prep::{AudioPrep, SampleQueue, health_to_view, levels_dbfs, round_up_t
 use stitch::{
   INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS, INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
   normalize_chunk_case, normalize_stitch_token, stitch_incremental_text,
-  stitch_right_start_cap_from_overlap,
+  stitch_right_start_cap_from_overlap, tokenize_for_stitch,
 };
 
 const TARGET_SR: u32 = 16_000;
@@ -29,6 +29,9 @@ const NO_JOB_ID: u64 = 0;
 const INCREMENTAL_TAIL_MAX_WAIT_FACTOR: u32 = 60;
 const INCREMENTAL_LIVE_TAIL_WAIT_FACTOR: u32 = 8;
 const INCREMENTAL_MAX_SEGMENT_MS: u32 = 8_000;
+const LIVE_STREAM_GAP_LOG_THRESHOLD_SAMPLES: usize = TARGET_SR as usize * 2;
+const LIVE_REFINE_MAX_STITCH_EXTRA_TOKENS: usize = 8;
+const LIVE_REFINE_STREAM_LEAD_TOKENS: usize = 8;
 
 /// When a finalization slice returns empty text in a range where the streaming
 /// model already produced text, retry once with the start shifted back this
@@ -143,6 +146,136 @@ fn choose_streaming_final_text(draft: String, model_final: Option<String>) -> St
   let model_final = model_final.unwrap_or_default();
   let model_final = model_final.trim();
   if !model_final.is_empty() { model_final.to_string() } else { draft.trim().to_string() }
+}
+
+fn compose_live_display_text(refined_text: &str, streaming_text: &str) -> String {
+  let refined = refined_text.trim();
+  let streaming = streaming_text.trim();
+  if refined.is_empty() {
+    return streaming.to_string();
+  }
+  if streaming.is_empty() {
+    return refined.to_string();
+  }
+
+  let refined_tokens = live_token_count(refined);
+  let streaming_tokens = live_token_count(streaming);
+  if refined_tokens == 0 {
+    return streaming.to_string();
+  }
+  if streaming_tokens == 0 {
+    return refined.to_string();
+  }
+
+  if let Some(with_streaming_tail) = append_streaming_tail_to_refinement(refined, streaming) {
+    return with_streaming_tail;
+  }
+
+  if streaming_tokens > refined_tokens.saturating_add(LIVE_REFINE_STREAM_LEAD_TOKENS) {
+    streaming.to_string()
+  } else {
+    refined.to_string()
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LiveDraftRenderPlan {
+  StreamingHypothesis(String),
+  ReplacementDisplay(String),
+}
+
+fn plan_live_draft_render(refined_text: &str, streaming_text: &str) -> Option<LiveDraftRenderPlan> {
+  let display = normalize_chunk_case("", compose_live_display_text(refined_text, streaming_text));
+  let display = display.trim().to_string();
+  if display.is_empty() {
+    return None;
+  }
+
+  if refined_text.trim().is_empty() {
+    Some(LiveDraftRenderPlan::StreamingHypothesis(display))
+  } else {
+    Some(LiveDraftRenderPlan::ReplacementDisplay(display))
+  }
+}
+
+fn live_token_count(text: &str) -> usize {
+  tokenize_for_stitch(text).len()
+}
+
+fn live_stream_output_gap(
+  previous_audio_samples: usize,
+  current_audio_samples: usize,
+) -> Option<(usize, u32)> {
+  let gap = current_audio_samples.saturating_sub(previous_audio_samples);
+  (gap >= LIVE_STREAM_GAP_LOG_THRESHOLD_SAMPLES).then(|| (gap, samples_to_ms_at_target_sr(gap)))
+}
+
+const LIVE_DISPLAY_TOKEN_ROLLBACK_TOLERANCE: usize = 1;
+
+fn live_display_token_count(text: &str) -> usize {
+  live_token_count(text)
+}
+
+fn live_display_can_replace(previous: &str, candidate: &str) -> bool {
+  let candidate = candidate.trim();
+  if candidate.is_empty() {
+    return false;
+  }
+  let previous = previous.trim();
+  if previous.is_empty() {
+    return true;
+  }
+
+  let previous_tokens = live_display_token_count(previous);
+  let candidate_tokens = live_display_token_count(candidate);
+  candidate_tokens.saturating_add(LIVE_DISPLAY_TOKEN_ROLLBACK_TOLERANCE) >= previous_tokens
+}
+
+fn append_streaming_tail_to_refinement(refined: &str, streaming: &str) -> Option<String> {
+  let refined_tokens = tokenize_for_stitch(refined);
+  let streaming_tokens = tokenize_for_stitch(streaming);
+  if refined_tokens.len() < INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS
+    || streaming_tokens.len() < INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS
+  {
+    return None;
+  }
+
+  let max_overlap = refined_tokens.len().min(streaming_tokens.len());
+  for overlap in (INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS..=max_overlap).rev() {
+    let refined_start = refined_tokens.len() - overlap;
+    let refined_tail = &refined_tokens[refined_start..];
+    for stream_start in (0..=streaming_tokens.len() - overlap).rev() {
+      let stream_end = stream_start + overlap;
+      if stream_end == streaming_tokens.len() {
+        continue;
+      }
+      let stream_slice = &streaming_tokens[stream_start..stream_end];
+      if refined_tail
+        .iter()
+        .zip(stream_slice.iter())
+        .all(|(left, right)| left.match_key == right.match_key)
+      {
+        let tail = streaming_tokens[stream_end..]
+          .iter()
+          .map(|token| token.original.as_str())
+          .collect::<Vec<_>>()
+          .join(" ");
+        if tail.is_empty() || live_token_count(&tail) > LIVE_REFINE_MAX_STITCH_EXTRA_TOKENS {
+          return None;
+        }
+        return Some(stitch_incremental_text(
+          refined,
+          &tail,
+          INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
+          INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
+          None,
+          0,
+        ));
+      }
+    }
+  }
+
+  None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1515,10 +1648,8 @@ impl PipelineCore {
         text: cleaned.clone(),
       });
 
-      // Stability tracker expects "full hypothesis"; EOU produces incremental tokens.
-      // Using the cumulative draft keeps the UI "stable prefix + live suffix" behavior.
-      let (committed, live) = self.tracker.update(&self.eou_draft);
-      self.renderer.emit(RenderEvent::Active { id: self.turn_id, committed, live });
+      self.log_live_stream_output_gap();
+      self.emit_active_draft();
 
       // Diagnostic: capture per-emission timing so we can correlate the renderer's
       // overlay-show gate (`overlay_pending_vad_text` cleared by the first non-empty
@@ -1542,6 +1673,91 @@ impl PipelineCore {
     }
 
     Ok(saw_eou)
+  }
+
+  fn log_live_stream_output_gap(&mut self) {
+    let current = self.turn_audio.len();
+    let previous = self.incremental.last_live_output_audio_samples.replace(current);
+    let Some(previous) = previous else {
+      return;
+    };
+    let Some((gap, gap_ms)) = live_stream_output_gap(previous, current) else {
+      return;
+    };
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_LIVE_STREAM_GAP turn_id={} from_samples={} to_samples={} gap_samples={} \
+         gap_ms={} draft_chars={} refined_chars={}",
+        self.turn_id,
+        previous,
+        current,
+        gap,
+        gap_ms,
+        self.eou_draft.chars().count(),
+        self.incremental.live_refined_text.chars().count(),
+      );
+    }
+  }
+
+  fn emit_active_draft(&mut self) {
+    match plan_live_draft_render(&self.incremental.live_refined_text, &self.eou_draft) {
+      Some(LiveDraftRenderPlan::StreamingHypothesis(display)) => {
+        let (committed, live) = self.tracker.update(&display);
+        let visible = format!("{committed}{live}").trim().to_string();
+        if !visible.is_empty() {
+          self.incremental.last_live_display_text = visible.clone();
+          self.record_live_display_event("streaming", "emit", visible, None);
+        }
+        self.renderer.emit(RenderEvent::Active { id: self.turn_id, committed, live });
+      }
+      Some(LiveDraftRenderPlan::ReplacementDisplay(display)) => {
+        self.emit_replacement_live_display(display);
+      }
+      None => {}
+    }
+  }
+
+  fn emit_replacement_live_display(&mut self, display: String) {
+    if !live_display_can_replace(&self.incremental.last_live_display_text, &display) {
+      let previous = self.incremental.last_live_display_text.clone();
+      self.record_live_display_event("refined", "hold_rollback", previous, Some(display.clone()));
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_LIVE_DISPLAY turn_id={} action=hold_rollback previous_chars={} \
+           previous_tokens={} candidate_chars={} candidate_tokens={}",
+          self.turn_id,
+          self.incremental.last_live_display_text.chars().count(),
+          live_display_token_count(&self.incremental.last_live_display_text),
+          display.chars().count(),
+          live_display_token_count(&display),
+        );
+      }
+      return;
+    }
+
+    self.incremental.last_live_display_text = display.clone();
+    self.record_live_display_event("refined", "emit", display.clone(), None);
+    self.renderer.emit(RenderEvent::Active {
+      id: self.turn_id,
+      committed: display,
+      live: String::new(),
+    });
+  }
+
+  fn record_live_display_event(
+    &mut self,
+    source: &'static str,
+    action: &'static str,
+    text: String,
+    candidate_text: Option<String>,
+  ) {
+    self.incremental.live_display_events.push(LiveDisplayEvent {
+      audio_samples: self.turn_audio.len(),
+      source,
+      action,
+      text,
+      candidate_text,
+    });
   }
 
   fn enter_tentative_finalize(&mut self, reason: &'static str, vad_prob: f32) -> Result<()> {
@@ -1636,9 +1852,21 @@ impl PipelineCore {
   }
 
   /// Compose the draft text used for both the in-flight `Finalizing` pulse and
-  /// the eventual `FinalLine` emission. Falls back to raw EOU draft text when
-  /// the stability tracker hasn't committed yet — same priority as `finish_turn`.
+  /// the eventual `FinalLine` emission. Refined partial text owns the display
+  /// once available; streaming-only turns use the stability tracker and then
+  /// fall back to raw EOU text when no stable draft exists yet.
   fn current_finalize_draft(&self) -> String {
+    if let Some(LiveDraftRenderPlan::ReplacementDisplay(display)) =
+      plan_live_draft_render(&self.incremental.live_refined_text, &self.eou_draft)
+    {
+      if !live_display_can_replace(&self.incremental.last_live_display_text, &display)
+        && !self.incremental.last_live_display_text.trim().is_empty()
+      {
+        return self.incremental.last_live_display_text.trim().to_string();
+      }
+      return display;
+    }
+
     let mut draft = self.tracker.full_text().trim().to_string();
     if draft.is_empty() {
       draft = self.eou_draft.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2275,6 +2503,7 @@ impl PipelineCore {
     partial_segments: Vec<IncrementalPartialSegment>,
   ) -> bool {
     let eou_emissions = self.incremental.eou_emissions.clone();
+    let live_display_events = self.incremental.live_display_events.clone();
     self
       .partial_audit_tx
       .send(PartialAuditJob {
@@ -2284,6 +2513,7 @@ impl PipelineCore {
         emitted_text,
         partial_segments,
         eou_emissions,
+        live_display_events,
         bailout_reason: None,
       })
       .is_ok()
@@ -2299,6 +2529,7 @@ impl PipelineCore {
     }
     let partial_segments = self.incremental.partial_segments.clone();
     let eou_emissions = self.incremental.eou_emissions.clone();
+    let live_display_events = self.incremental.live_display_events.clone();
     if self
       .partial_audit_tx
       .send(PartialAuditJob {
@@ -2308,6 +2539,7 @@ impl PipelineCore {
         emitted_text: String::new(),
         partial_segments,
         eou_emissions,
+        live_display_events,
         bailout_reason: Some(reason.to_string()),
       })
       .is_err()
@@ -2441,6 +2673,8 @@ impl PipelineCore {
             result.turn_id, self.incremental.assembled_text
           );
         }
+        self.incremental.live_refined_text = self.incremental.assembled_text.clone();
+        self.emit_active_draft();
       } else {
         // Finalization decoded this slice to empty text. Three cases:
         //
@@ -2661,6 +2895,7 @@ fn spawn_partial_audit_worker(
           "",
           &auditable_partials,
           &job.eou_emissions,
+          &job.live_display_events,
           Some(bailout_reason),
         ) {
           eprintln!("Azad: failed to save bailout debug recording for turn {}: {e}", job.turn_id);
@@ -2738,6 +2973,7 @@ fn spawn_partial_audit_worker(
         &full_text,
         &auditable_partials,
         &job.eou_emissions,
+        &job.live_display_events,
         None,
       ) {
         eprintln!("Azad: failed to save debug recording for turn {}: {e}", job.turn_id);
@@ -3026,6 +3262,7 @@ fn save_debug_recording(
   full_text: &str,
   partial_segments: &[IncrementalPartialSegment],
   eou_emissions: &[EouEmission],
+  live_display_events: &[LiveDisplayEvent],
   bailout_reason: Option<&str>,
 ) -> std::io::Result<()> {
   let Some(dir) = debug_recordings_dir() else {
@@ -3076,6 +3313,18 @@ fn save_debug_recording(
       })
     })
     .collect();
+  let live_display_json: Vec<serde_json::Value> = live_display_events
+    .iter()
+    .map(|e| {
+      serde_json::json!({
+        "audio_samples": e.audio_samples,
+        "source": e.source,
+        "action": e.action,
+        "text": e.text,
+        "candidate_text": e.candidate_text,
+      })
+    })
+    .collect();
   let payload = serde_json::json!({
     "turn_id": turn_id,
     "ts_ms": ts_ms,
@@ -3086,6 +3335,7 @@ fn save_debug_recording(
     "full_text": full_text,
     "partials": partials_json,
     "eou_emissions": eou_json,
+    "live_display_events": live_display_json,
     "bailout_reason": bailout_reason,
   });
   std::fs::write(&json_path, serde_json::to_string_pretty(&payload)?)?;
@@ -3165,6 +3415,7 @@ struct PartialAuditJob {
   emitted_text: String,
   partial_segments: Vec<IncrementalPartialSegment>,
   eou_emissions: Vec<EouEmission>,
+  live_display_events: Vec<LiveDisplayEvent>,
   /// When `Some`, this job represents a full-pass bailout: no `emitted_text`
   /// was sent to the renderer, so the audit worker skips the comparison
   /// comparison finalization call and just saves the recording. The reason string
@@ -3191,6 +3442,15 @@ struct EouEmission {
   audio_samples: usize,
   delta_chars: usize,
   text: String,
+}
+
+#[derive(Debug, Clone)]
+struct LiveDisplayEvent {
+  audio_samples: usize,
+  source: &'static str,
+  action: &'static str,
+  text: String,
+  candidate_text: Option<String>,
 }
 
 struct IncrementalSegmentMeta {
@@ -3220,6 +3480,10 @@ struct IncrementalRefineState {
   /// slice as covered instead of bailing to whole-turn finalization. The
   /// `text` field is also written to the debug-recording sidecar.
   eou_emissions: Vec<EouEmission>,
+  last_live_output_audio_samples: Option<usize>,
+  live_refined_text: String,
+  last_live_display_text: String,
+  live_display_events: Vec<LiveDisplayEvent>,
   /// Original `[start_sample, end_sample)` ranges of partials that already
   /// triggered an empty-result retry this turn. Drives the at-most-one-retry-
   /// per-range invariant for the cold-LSTM-trap recovery path.
@@ -3244,6 +3508,10 @@ impl IncrementalRefineState {
       pending_reschedule: false,
       has_refined_text: false,
       eou_emissions: Vec::new(),
+      last_live_output_audio_samples: None,
+      live_refined_text: String::new(),
+      last_live_display_text: String::new(),
+      live_display_events: Vec::new(),
       retried_empty_ranges: HashSet::new(),
       retry_segment_ids: HashSet::new(),
     }
@@ -3261,6 +3529,10 @@ impl IncrementalRefineState {
     self.pending_reschedule = false;
     self.has_refined_text = false;
     self.eou_emissions.clear();
+    self.last_live_output_audio_samples = None;
+    self.live_refined_text.clear();
+    self.last_live_display_text.clear();
+    self.live_display_events.clear();
     self.retried_empty_ranges.clear();
     self.retry_segment_ids.clear();
   }
@@ -3614,14 +3886,16 @@ mod tests {
     CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES,
     EmptyPartialAction, EouEmission, FinalizeTailPlan, FinalizingPulsePlan,
     INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_TAIL_MAX_WAIT_FACTOR, IncrementalPartialSegment,
-    MIDDLE_COVERAGE_TOLERANCE_SAMPLES, PipelineControls, PipelineCore,
+    LiveDraftRenderPlan, MIDDLE_COVERAGE_TOLERANCE_SAMPLES, PipelineControls, PipelineCore,
     TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start, cap_segment_start,
-    capture_enable_transition, choose_streaming_final_text, debug_recording_stem,
-    empty_partial_action, eou_chars_in_range, eou_corroborates_silence, finalize_tail_plan,
-    finalizing_pulse_plan, incremental_tail_wait_ms, leading_coverage_is_incomplete,
+    capture_enable_transition, choose_streaming_final_text, compose_live_display_text,
+    debug_recording_stem, empty_partial_action, eou_chars_in_range, eou_corroborates_silence,
+    finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
+    leading_coverage_is_incomplete, live_display_can_replace, live_stream_output_gap,
     middle_coverage_is_incomplete, non_empty_partials, normalize_chunk_case,
-    partial_core_coverage_gap, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stitch_incremental_text, stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
+    partial_core_coverage_gap, plan_live_draft_render, prune_debug_recordings,
+    samples_to_ms_at_target_sr, stitch_incremental_text, stitch_right_start_cap_from_overlap,
+    tail_coverage_is_incomplete,
   };
 
   fn partial(
@@ -3694,6 +3968,16 @@ mod tests {
     assert_eq!(samples_to_ms_at_target_sr(16), 1);
     // 31 samples = 1.9375 ms → truncates to 1.
     assert_eq!(samples_to_ms_at_target_sr(31), 1);
+  }
+
+  #[test]
+  fn live_stream_output_gap_ignores_short_gaps() {
+    assert_eq!(live_stream_output_gap(10_000, 10_000 + 31_999), None);
+  }
+
+  #[test]
+  fn live_stream_output_gap_reports_two_second_gaps() {
+    assert_eq!(live_stream_output_gap(10_000, 42_000), Some((32_000, 2_000)));
   }
 
   #[test]
@@ -3966,6 +4250,121 @@ mod tests {
       "expected punctuation-only merge to pick right's `lets`: {stitched}"
     );
     assert!(stitched.contains("are going to be different"), "tail merge dropped: {stitched}");
+  }
+
+  #[test]
+  fn live_display_uses_partial_refinement_to_recover_streaming_gap() {
+    let streaming = "All right, I think it's time that we create our own connector and by that I \
+      mean that we recognize when the user is speaking to us this application. Specific commands";
+    let refined = "All right, I think it's time that we create our Own connector and by that I \
+      mean that We recognize when the user is speaking to us, This application and be able to \
+      respond to specific commands.";
+
+    let display = compose_live_display_text(refined, streaming);
+
+    assert!(
+      display.contains("application and be able to respond to specific commands"),
+      "partial refinement did not repair the skipped middle phrase: {display}"
+    );
+    assert!(
+      !display.contains("Specific commands All right"),
+      "unsafe full-stream duplication leaked into live display: {display}"
+    );
+  }
+
+  #[test]
+  fn live_display_stitches_safe_new_stream_tail_onto_refinement() {
+    let refined = "we recognize when the user is speaking to us, this application and be able to \
+      respond to specific commands";
+    let streaming = "the user is speaking to us this application. specific commands now";
+
+    let display = compose_live_display_text(refined, streaming);
+
+    assert_eq!(
+      display,
+      "we recognize when the user is speaking to us, this application and be able to respond to \
+       specific commands now"
+    );
+  }
+
+  #[test]
+  fn live_display_does_not_concatenate_unrelated_refined_and_streaming_text() {
+    let refined = "this is a short refined phrase";
+    let streaming = "a completely different streaming hypothesis that has already moved far ahead \
+      with enough newer words to own the display";
+
+    let display = compose_live_display_text(refined, streaming);
+
+    assert_eq!(display, streaming);
+  }
+
+  #[test]
+  fn live_draft_render_streaming_only_uses_stability_hypothesis() {
+    let plan = plan_live_draft_render("", "hello from the streaming decoder").unwrap();
+
+    assert_eq!(
+      plan,
+      LiveDraftRenderPlan::StreamingHypothesis("hello from the streaming decoder".to_string())
+    );
+  }
+
+  #[test]
+  fn live_draft_render_refined_partial_replaces_display() {
+    let streaming = "So how well does this work if I uh say something weird like half does it \
+      figure out";
+    let refined = "So how well does this work if I uh say something weird like half does it";
+
+    let plan = plan_live_draft_render(refined, streaming).unwrap();
+
+    assert_eq!(
+      plan,
+      LiveDraftRenderPlan::ReplacementDisplay(
+        "So how well does this work if I uh say something weird like half does it figure out"
+          .to_string()
+      )
+    );
+  }
+
+  #[test]
+  fn live_draft_render_refined_with_stream_tail_still_replaces_display() {
+    let refined = "we recognize when the user is speaking to us, this application and be able to \
+      respond to specific commands";
+    let streaming = "the user is speaking to us this application. specific commands now";
+
+    let plan = plan_live_draft_render(refined, streaming).unwrap();
+
+    assert_eq!(
+      plan,
+      LiveDraftRenderPlan::ReplacementDisplay(
+        "we recognize when the user is speaking to us, this application and be able to respond to \
+         specific commands now"
+          .to_string()
+      )
+    );
+  }
+
+  #[test]
+  fn live_display_rejects_refined_candidate_that_rolls_back_visible_text() {
+    let previous = "we should have some way to be able to rerun the recording through our system";
+    let candidate = "we should have some way to be able to";
+
+    assert!(!live_display_can_replace(previous, candidate));
+  }
+
+  #[test]
+  fn live_display_accepts_refined_candidate_that_corrects_without_rolling_back() {
+    let previous = "the text got pasted and then it stated open";
+    let candidate = "the text got pasted and then it stayed open";
+
+    assert!(live_display_can_replace(previous, candidate));
+  }
+
+  #[test]
+  fn live_display_allows_small_token_shape_corrections() {
+    let previous = "we are removing text and then it gets added back";
+    let candidate = "we're removing text and then it gets added back";
+
+    assert!(live_display_can_replace(previous, candidate));
   }
 
   #[test]
