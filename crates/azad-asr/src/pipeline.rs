@@ -33,6 +33,8 @@ const LIVE_STREAM_GAP_LOG_THRESHOLD_SAMPLES: usize = TARGET_SR as usize * 2;
 const LIVE_STREAM_STALL_REFINE_SAMPLES: usize = (TARGET_SR as usize * 6) / 5;
 const LIVE_REFINE_MAX_STITCH_EXTRA_TOKENS: usize = 8;
 const LIVE_REFINE_STREAM_LEAD_TOKENS: usize = 8;
+const LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 36;
+const LIVE_DISPLAY_STABLE_OVERLAP_TOKENS: usize = 4;
 
 /// When a finalization slice returns empty text in a range where the streaming
 /// model already produced text, retry once with the start shifted back this
@@ -212,7 +214,7 @@ fn plan_live_draft_render_after_previous(
   if live_streaming_should_supersede_replacement(previous_display, display, streaming_text) {
     let streaming = normalize_chunk_case("", streaming_text.trim().to_string()).trim().to_string();
     if !streaming.is_empty() {
-      return Some(LiveDraftRenderPlan::StreamingHypothesis(streaming));
+      return Some(LiveDraftRenderPlan::ReplacementDisplay(streaming));
     }
   }
 
@@ -286,6 +288,135 @@ fn live_display_can_replace(previous: &str, candidate: &str) -> bool {
   let previous_tokens = live_display_token_count(previous);
   let candidate_tokens = live_display_token_count(candidate);
   candidate_tokens.saturating_add(LIVE_DISPLAY_TOKEN_ROLLBACK_TOLERANCE) >= previous_tokens
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveDisplayTokenSpan {
+  end: usize,
+  match_key: String,
+}
+
+fn stabilize_live_display_replacement(previous: &str, candidate: &str) -> String {
+  let previous = previous.trim();
+  let candidate = candidate.trim();
+  if previous.is_empty() || candidate.is_empty() {
+    return candidate.to_string();
+  }
+
+  let previous_tokens = live_display_token_spans(previous);
+  if previous_tokens.len() <= LIVE_DISPLAY_MUTABLE_TAIL_TOKENS {
+    return candidate.to_string();
+  }
+
+  let candidate_tokens = live_display_token_spans(candidate);
+  let stable_len = previous_tokens.len().saturating_sub(LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+  if stable_len < LIVE_DISPLAY_STABLE_OVERLAP_TOKENS
+    || candidate_tokens.len() < LIVE_DISPLAY_STABLE_OVERLAP_TOKENS
+  {
+    return candidate.to_string();
+  }
+
+  let Some(candidate_boundary) =
+    find_live_display_stable_boundary(&previous_tokens[..stable_len], &candidate_tokens)
+  else {
+    return previous.to_string();
+  };
+
+  let prefix_end = previous_tokens[stable_len - 1].end;
+  let tail_start = candidate_tokens[candidate_boundary].end;
+  join_live_display_prefix_and_tail(&previous[..prefix_end], &candidate[tail_start..])
+}
+
+fn live_display_token_spans(text: &str) -> Vec<LiveDisplayTokenSpan> {
+  let mut spans = Vec::new();
+  let mut token_start = None;
+
+  for (idx, ch) in text.char_indices() {
+    if ch.is_whitespace() {
+      if let Some(start) = token_start.take() {
+        push_live_display_token_span(text, start, idx, &mut spans);
+      }
+    } else if token_start.is_none() {
+      token_start = Some(idx);
+    }
+  }
+
+  if let Some(start) = token_start {
+    push_live_display_token_span(text, start, text.len(), &mut spans);
+  }
+
+  spans
+}
+
+fn push_live_display_token_span(
+  text: &str,
+  start: usize,
+  end: usize,
+  spans: &mut Vec<LiveDisplayTokenSpan>,
+) {
+  let match_key = normalize_stitch_token(&text[start..end]);
+  if !match_key.is_empty() {
+    spans.push(LiveDisplayTokenSpan { end, match_key });
+  }
+}
+
+fn find_live_display_stable_boundary(
+  previous_stable_tokens: &[LiveDisplayTokenSpan],
+  candidate_tokens: &[LiveDisplayTokenSpan],
+) -> Option<usize> {
+  let max_overlap = LIVE_DISPLAY_STABLE_OVERLAP_TOKENS
+    .min(previous_stable_tokens.len())
+    .min(candidate_tokens.len());
+  if max_overlap < INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS {
+    return None;
+  }
+
+  for overlap in (INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS..=max_overlap).rev() {
+    let previous_start = previous_stable_tokens.len() - overlap;
+    let expected_candidate_start = previous_start;
+    let min_candidate_start =
+      expected_candidate_start.saturating_sub(LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+    let max_candidate_start = (expected_candidate_start + LIVE_DISPLAY_MUTABLE_TAIL_TOKENS)
+      .min(candidate_tokens.len().saturating_sub(overlap));
+
+    let mut best: Option<(usize, usize)> = None;
+    for candidate_start in min_candidate_start..=max_candidate_start {
+      let candidate_slice = &candidate_tokens[candidate_start..candidate_start + overlap];
+      if previous_stable_tokens[previous_start..]
+        .iter()
+        .zip(candidate_slice.iter())
+        .all(|(left, right)| left.match_key == right.match_key)
+      {
+        let distance = candidate_start.abs_diff(expected_candidate_start);
+        let replace = best
+          .map(|(best_distance, best_start)| {
+            distance < best_distance || (distance == best_distance && candidate_start > best_start)
+          })
+          .unwrap_or(true);
+        if replace {
+          best = Some((distance, candidate_start));
+        }
+      }
+    }
+
+    if let Some((_, candidate_start)) = best {
+      return Some(candidate_start + overlap - 1);
+    }
+  }
+
+  None
+}
+
+fn join_live_display_prefix_and_tail(prefix: &str, tail: &str) -> String {
+  let prefix = prefix.trim();
+  let tail = tail.trim();
+  if prefix.is_empty() {
+    tail.to_string()
+  } else if tail.is_empty() {
+    prefix.to_string()
+  } else {
+    format!("{prefix} {tail}")
+  }
 }
 
 fn append_streaming_tail_to_refinement(refined: &str, streaming: &str) -> Option<String> {
@@ -1801,6 +1932,8 @@ impl PipelineCore {
   }
 
   fn emit_replacement_live_display(&mut self, display: String) {
+    let display =
+      stabilize_live_display_replacement(&self.incremental.last_live_display_text, &display);
     if !live_display_can_replace(&self.incremental.last_live_display_text, &display) {
       let previous = self.incremental.last_live_display_text.clone();
       self.record_live_display_event("refined", "hold_rollback", previous, Some(display.clone()));
@@ -3988,7 +4121,8 @@ mod tests {
     live_stream_stall_refine_due, middle_coverage_is_incomplete, non_empty_partials,
     normalize_chunk_case, partial_core_coverage_gap, plan_live_draft_render,
     plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stitch_incremental_text, stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
+    stabilize_live_display_replacement, stitch_incremental_text,
+    stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
   };
 
   fn partial(
@@ -4466,7 +4600,7 @@ mod tests {
 
     let plan = plan_live_draft_render_after_previous(previous, refined, streaming).unwrap();
 
-    assert_eq!(plan, LiveDraftRenderPlan::StreamingHypothesis(streaming.to_string()));
+    assert_eq!(plan, LiveDraftRenderPlan::ReplacementDisplay(streaming.to_string()));
   }
 
   #[test]
@@ -4505,6 +4639,62 @@ mod tests {
     let candidate = "we're removing text and then it gets added back";
 
     assert!(live_display_can_replace(previous, candidate));
+  }
+
+  #[test]
+  fn live_display_preserves_safe_prefix_when_late_partial_rewrites_opening_text() {
+    let previous = "I'm still getting some thrashing from the partials updating this streaming \
+      text that I'm being shown, and for the most part it's good. Like, I can see that like it's \
+      you know consolidating things that didn't think it was a sentence originally and then it's \
+      it's doing the right thing but like I feel like I get this like";
+    let candidate = "I'm still getting some thrashing from the partials updating the streaming \
+      text that I'm being shown and for the most part it's good like I can see that like it's you \
+      know consolidating things that didn't think it was A sentence originally, and then um it's \
+      it's doing the right thing but like I feel like I get this like thrashing where previous \
+      parts are being updated when they should have already resolved";
+
+    let display = stabilize_live_display_replacement(previous, candidate);
+
+    assert!(
+      display.contains("updating this streaming text"),
+      "safe prefix should keep prior wording: {display}"
+    );
+    assert!(
+      display.contains("it's good. like") && !display.contains("it's good like"),
+      "safe prefix should keep prior sentence boundary: {display}"
+    );
+    assert!(
+      !display.contains("updating the streaming text"),
+      "late partial rewrote stable prefix: {display}"
+    );
+    assert!(
+      display.contains("thrashing where previous parts are being updated"),
+      "candidate tail should still advance: {display}"
+    );
+  }
+
+  #[test]
+  fn live_display_allows_short_turns_to_keep_refining_before_safe_prefix() {
+    let previous = "the text got pasted and then it stated open";
+    let candidate = "the text got pasted and then it stayed open";
+
+    let display = stabilize_live_display_replacement(previous, candidate);
+
+    assert_eq!(display, candidate);
+  }
+
+  #[test]
+  fn live_display_holds_previous_text_when_stable_boundary_cannot_be_matched() {
+    let previous = "one two three four five six seven eight nine ten eleven twelve thirteen \
+      fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty one twenty two twenty \
+      three twenty four twenty five twenty six twenty seven twenty eight twenty nine thirty thirty \
+      one thirty two thirty three thirty four thirty five thirty six thirty seven thirty eight";
+    let candidate = "a completely different candidate without the stable boundary but with enough \
+      extra words to otherwise look like forward progress for the overlay display";
+
+    let display = stabilize_live_display_replacement(previous, candidate);
+
+    assert_eq!(display, previous);
   }
 
   #[test]
