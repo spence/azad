@@ -429,7 +429,7 @@ fn number_candidates(tokens: &[TextToken<'_>], start: usize) -> Option<Vec<(usiz
 fn number_token_parts(token: &str) -> Option<Vec<String>> {
     let parts: Vec<String> = token
         .split('-')
-        .map(|part| lemmatize(part).to_ascii_lowercase())
+        .map(|part| part.to_ascii_lowercase())
         .collect();
     if parts.is_empty() || parts.iter().any(|part| !is_number_part(part)) {
         return None;
@@ -437,18 +437,13 @@ fn number_token_parts(token: &str) -> Option<Vec<String>> {
     Some(parts)
 }
 
-fn lemmatize(word: &str) -> &str {
-    if word.ends_with('s') && word != "seconds" {
-        word.trim_end_matches('s')
-    } else {
-        word
-    }
-}
-
 fn is_number_part(word: &str) -> bool {
-    unit_value(word).is_some()
-        || teen_value(word).is_some()
-        || ten_value(word).is_some()
+    cardinal_unit_value(word).is_some()
+        || ordinal_unit_value(word).is_some()
+        || cardinal_teen_value(word).is_some()
+        || ordinal_teen_value(word).is_some()
+        || cardinal_ten_value(word).is_some()
+        || ordinal_ten_value(word).is_some()
         || matches!(
             word,
             "zero"
@@ -470,6 +465,9 @@ fn parse_number_words(words: &[String]) -> Option<String> {
     if let Some(digits) = parse_digit_word_sequence(words) {
         return Some(digits);
     }
+    if let Some(ordinal) = parse_ordinal_words(words) {
+        return Some(ordinal);
+    }
     if words.iter().filter(|word| word.as_str() == "point").count() > 1 {
         return None;
     }
@@ -485,6 +483,9 @@ fn parse_number_words(words: &[String]) -> Option<String> {
         return Some(format!("{int}.{decimals}"));
     }
     let cardinal = parse_cardinal(words)?;
+    if scale_only_magnitude(words) {
+        return None;
+    }
     if words.len() > 1
         || cardinal
             .parse::<u128>()
@@ -497,19 +498,87 @@ fn parse_number_words(words: &[String]) -> Option<String> {
     }
 }
 
+fn parse_ordinal_words(words: &[String]) -> Option<String> {
+    let (last, prefix) = words.split_last()?;
+    let (ordinal_base, final_kind) = ordinal_word_value(last)?;
+    let value = if prefix.is_empty() {
+        ordinal_base
+    } else {
+        if prefix.iter().any(|word| word == "point") {
+            return None;
+        }
+        let prefix_value = parse_cardinal_value(prefix)?;
+        match final_kind {
+            OrdinalKind::Unit if prefix_value >= 20 && prefix_value % 10 == 0 => {
+                prefix_value + ordinal_base
+            }
+            OrdinalKind::Unit if prefix_value >= 100 && prefix_value % 100 == 0 => {
+                prefix_value + ordinal_base
+            }
+            OrdinalKind::TeenOrTen if prefix_value >= 100 && prefix_value % 100 == 0 => {
+                prefix_value + ordinal_base
+            }
+            _ => return None,
+        }
+    };
+    Some(format!("{value}{}", ordinal_suffix(value)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrdinalKind {
+    Unit,
+    TeenOrTen,
+}
+
+fn ordinal_word_value(word: &str) -> Option<(u128, OrdinalKind)> {
+    ordinal_unit_value(word)
+        .map(|value| (value, OrdinalKind::Unit))
+        .or_else(|| ordinal_teen_value(word).map(|value| (value, OrdinalKind::TeenOrTen)))
+        .or_else(|| ordinal_ten_value(word).map(|value| (value, OrdinalKind::TeenOrTen)))
+}
+
+fn ordinal_suffix(value: u128) -> &'static str {
+    match value % 100 {
+        11..=13 => "th",
+        _ => match value % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    }
+}
+
+fn scale_only_magnitude(words: &[String]) -> bool {
+    match words {
+        [only] => matches!(
+            only.as_str(),
+            "hundred" | "thousand" | "million" | "billion"
+        ),
+        _ => words
+            .last()
+            .is_some_and(|word| matches!(word.as_str(), "thousand" | "million" | "billion")),
+    }
+}
+
 fn parse_cardinal(words: &[String]) -> Option<String> {
+    Some(parse_cardinal_value(words)?.to_string())
+}
+
+fn parse_cardinal_value(words: &[String]) -> Option<u128> {
     if let Some(digits) = parse_leading_zero_sequence(words) {
-        return Some(digits);
+        return digits.parse().ok();
     }
 
     let mut total: u128 = 0;
     let mut group: u128 = 0;
     let mut saw = false;
 
-    for word in words {
+    for (idx, word) in words.iter().enumerate() {
         let word = word.as_str();
         if word == "and" {
-            if !saw {
+            let next = words.get(idx + 1).map(String::as_str);
+            if !saw || next.is_none() || group < 100 || group % 100 != 0 {
                 return None;
             }
             continue;
@@ -517,7 +586,7 @@ fn parse_cardinal(words: &[String]) -> Option<String> {
         if matches!(word, "zero" | "o" | "nought") {
             return None;
         }
-        if let Some(value) = unit_value(word).or_else(|| teen_value(word)) {
+        if let Some(value) = cardinal_unit_value(word).or_else(|| cardinal_teen_value(word)) {
             if group == 0 {
                 group = value;
             } else if (group >= 20 && group % 10 == 0 && value < 10)
@@ -530,7 +599,7 @@ fn parse_cardinal(words: &[String]) -> Option<String> {
             saw = true;
             continue;
         }
-        if let Some(value) = ten_value(word) {
+        if let Some(value) = cardinal_ten_value(word) {
             if group == 0 || (group >= 100 && group % 100 == 0) {
                 group += value;
             } else {
@@ -565,7 +634,7 @@ fn parse_cardinal(words: &[String]) -> Option<String> {
     if !saw {
         return None;
     }
-    Some((total + group).to_string())
+    Some(total + group)
 }
 
 fn parse_leading_zero_sequence(words: &[String]) -> Option<String> {
@@ -585,70 +654,106 @@ fn parse_digit_word_sequence(words: &[String]) -> Option<String> {
     }
     let digits: Option<Vec<u8>> = words.iter().map(|word| decimal_digit(word)).collect();
     let digits = digits?;
-    if matches!(words.first()?.as_str(), "zero" | "o" | "nought") {
-        let mut out = String::with_capacity(digits.len());
-        for digit in digits {
-            out.push(char::from(b'0' + digit));
-        }
-        return Some(out);
+    let mut out = String::with_capacity(digits.len());
+    for digit in digits {
+        out.push(char::from(b'0' + digit));
     }
-    Some(
-        digits
-            .into_iter()
-            .map(|digit| char::from(b'0' + digit).to_string())
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+    Some(out)
 }
 
 fn decimal_digit(word: &str) -> Option<u8> {
     match word {
         "zero" | "o" | "nought" => Some(0),
-        _ => unit_value(word).and_then(|value| u8::try_from(value).ok()),
+        _ => cardinal_unit_value(word).and_then(|value| u8::try_from(value).ok()),
     }
 }
 
-fn unit_value(word: &str) -> Option<u128> {
+fn cardinal_unit_value(word: &str) -> Option<u128> {
     match word {
-        "one" | "first" | "oneth" => Some(1),
-        "two" | "second" => Some(2),
-        "three" | "third" => Some(3),
-        "four" | "fourth" => Some(4),
-        "five" | "fifth" => Some(5),
-        "six" | "sixth" => Some(6),
-        "seven" | "seventh" => Some(7),
-        "eight" | "eighth" => Some(8),
-        "nine" | "ninth" => Some(9),
+        "one" => Some(1),
+        "two" => Some(2),
+        "three" => Some(3),
+        "four" => Some(4),
+        "five" => Some(5),
+        "six" => Some(6),
+        "seven" => Some(7),
+        "eight" => Some(8),
+        "nine" => Some(9),
         _ => None,
     }
 }
 
-fn teen_value(word: &str) -> Option<u128> {
+fn ordinal_unit_value(word: &str) -> Option<u128> {
     match word {
-        "ten" | "tenth" => Some(10),
-        "eleven" | "eleventh" => Some(11),
-        "twelve" | "twelfth" => Some(12),
-        "thirteen" | "thirteenth" => Some(13),
-        "fourteen" | "fourteenth" => Some(14),
-        "fifteen" | "fifteenth" => Some(15),
-        "sixteen" | "sixteenth" => Some(16),
-        "seventeen" | "seventeenth" => Some(17),
-        "eighteen" | "eighteenth" => Some(18),
-        "nineteen" | "nineteenth" => Some(19),
+        "first" | "oneth" => Some(1),
+        "second" => Some(2),
+        "third" => Some(3),
+        "fourth" => Some(4),
+        "fifth" => Some(5),
+        "sixth" => Some(6),
+        "seventh" => Some(7),
+        "eighth" => Some(8),
+        "ninth" => Some(9),
         _ => None,
     }
 }
 
-fn ten_value(word: &str) -> Option<u128> {
+fn cardinal_teen_value(word: &str) -> Option<u128> {
     match word {
-        "twenty" | "twentieth" => Some(20),
-        "thirty" | "thirtieth" => Some(30),
-        "fourty" | "forty" | "fourtieth" | "fortieth" => Some(40),
-        "fifty" | "fiftieth" => Some(50),
-        "sixty" | "sixtieth" | "sixteeth" => Some(60),
-        "seventy" | "seventieth" => Some(70),
-        "eighty" | "eightieth" => Some(80),
-        "ninety" | "ninetieth" => Some(90),
+        "ten" => Some(10),
+        "eleven" => Some(11),
+        "twelve" => Some(12),
+        "thirteen" => Some(13),
+        "fourteen" => Some(14),
+        "fifteen" => Some(15),
+        "sixteen" => Some(16),
+        "seventeen" => Some(17),
+        "eighteen" => Some(18),
+        "nineteen" => Some(19),
+        _ => None,
+    }
+}
+
+fn ordinal_teen_value(word: &str) -> Option<u128> {
+    match word {
+        "tenth" => Some(10),
+        "eleventh" => Some(11),
+        "twelfth" => Some(12),
+        "thirteenth" => Some(13),
+        "fourteenth" => Some(14),
+        "fifteenth" => Some(15),
+        "sixteenth" => Some(16),
+        "seventeenth" => Some(17),
+        "eighteenth" => Some(18),
+        "nineteenth" => Some(19),
+        _ => None,
+    }
+}
+
+fn cardinal_ten_value(word: &str) -> Option<u128> {
+    match word {
+        "twenty" => Some(20),
+        "thirty" => Some(30),
+        "fourty" | "forty" => Some(40),
+        "fifty" => Some(50),
+        "sixty" => Some(60),
+        "seventy" => Some(70),
+        "eighty" => Some(80),
+        "ninety" => Some(90),
+        _ => None,
+    }
+}
+
+fn ordinal_ten_value(word: &str) -> Option<u128> {
+    match word {
+        "twentieth" => Some(20),
+        "thirtieth" => Some(30),
+        "fourtieth" | "fortieth" => Some(40),
+        "fiftieth" => Some(50),
+        "sixtieth" | "sixteeth" => Some(60),
+        "seventieth" => Some(70),
+        "eightieth" => Some(80),
+        "ninetieth" => Some(90),
         _ => None,
     }
 }
@@ -1131,7 +1236,7 @@ mod tests {
     fn number_words_convert_digit_sequences_without_dedup_loss() {
         assert_eq!(
             build_paste_text("two two eight eight", options(false, &[], true, true)),
-            "2 2 8 8"
+            "2288"
         );
         assert_eq!(
             build_paste_text("zero zero five", options(false, &[], true, true)),
@@ -1146,7 +1251,7 @@ mod tests {
                 "Please call me at one two three four five six seven eight nine zero",
                 options(false, &[], true, true),
             ),
-            "Please call me at 1 2 3 4 5 6 7 8 9 0"
+            "Please call me at 1234567890"
         );
         assert_eq!(
             build_paste_text(
@@ -1159,6 +1264,41 @@ mod tests {
             build_paste_text("I have fifteen tabs", options(false, &[], true, true)),
             "I have 15 tabs"
         );
+    }
+
+    #[test]
+    fn number_words_match_agreed_replacement_table() {
+        for (spoken, expected) in [
+            ("three", "three"),
+            ("four", "four"),
+            ("twelve", "12"),
+            ("twenty", "20"),
+            ("twenty five", "25"),
+            ("one hundred twenty five", "125"),
+            ("one thousand two hundred sixty six", "1266"),
+            ("twelve point nine nine", "12.99"),
+            ("one two three four", "1234"),
+            ("zero zero five", "005"),
+            ("two two eight eight", "2288"),
+            ("a hundred", "a hundred"),
+            ("a thousand", "a thousand"),
+            ("a million", "a million"),
+            ("two million", "two million"),
+            ("one billion", "one billion"),
+            ("billions", "billions"),
+            ("millions of rows", "millions of rows"),
+            ("hundreds of users", "hundreds of users"),
+            ("one and done", "one and done"),
+            ("one hundred and three", "103"),
+            ("twenty first", "21st"),
+            ("third", "3rd"),
+        ] {
+            assert_eq!(
+                build_paste_text(spoken, options(false, &[], true, true)),
+                expected,
+                "spoken phrase: {spoken:?}"
+            );
+        }
     }
 
     #[test]
