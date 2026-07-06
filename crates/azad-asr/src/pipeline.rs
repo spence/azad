@@ -5615,6 +5615,33 @@ mod tests {
   }
 
   #[test]
+  fn stitch_regression_turn15_preserves_clause_before_repeated_that_we() {
+    // Turn 15 (2026-07-05). The stitcher found a weak 2-token overlap (`that we`) only
+    // after dropping the nine-token left tail `will need ... sure that`, then appended
+    // enough right-side tokens that the net length shrink looked harmless. That dropped
+    // a real clause and forced the final partial-core coverage bailout.
+    let left = "What are the requirements for server to serter connectivity That we will need \
+      to be able to support for making sure that.";
+    let right = "That we have you know the highest uh throughput, lowest latency.";
+    let overlap_samples = 1_873_920usize - 1_843_200usize;
+    let cap = stitch_right_start_cap_from_overlap(overlap_samples);
+
+    let stitched = stitch_incremental_text(left, right, 64, 2, Some(cap), overlap_samples);
+    let normalized = stitched.to_lowercase();
+
+    assert!(
+      normalized.contains(
+        "connectivity that we will need to be able to support for making sure that we have"
+      ),
+      "dropped the middle clause: {stitched}"
+    );
+    assert!(
+      !normalized.contains("connectivity that we have"),
+      "accepted the false repeated-prefix overlap: {stitched}"
+    );
+  }
+
+  #[test]
   fn boundary_recovery_does_not_anchor_on_short_common_word_seam_dedup_cleans() {
     // 2-char `"of"` fails the boundary-recovery `tokens_match_substantive_boundary`
     // len-≥-3 filter — control falls through to the no-anchor append path where

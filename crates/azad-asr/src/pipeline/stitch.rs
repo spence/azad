@@ -5,12 +5,22 @@ const INCREMENTAL_STITCH_MAX_SHRINK_TOKENS: usize = 2;
 const INCREMENTAL_STITCH_STRONG_OVERLAP_TOKENS: usize = 3;
 const INCREMENTAL_STITCH_SAMPLES_PER_WORD_MAX: usize = 4_000;
 const INCREMENTAL_STITCH_RIGHT_START_SLACK_TOKENS: usize = 2;
+fn overlap_tail_drop_is_safe(tail_drop: usize, overlap: usize, match_start: usize) -> bool {
+  tail_drop <= INCREMENTAL_STITCH_MAX_SHRINK_TOKENS
+    || (overlap >= INCREMENTAL_STITCH_STRONG_OVERLAP_TOKENS && match_start == 0)
+}
+
 fn overlap_merge_is_safe(
   original_left_len: usize,
   merged_len: usize,
+  tail_drop: usize,
   overlap: usize,
   match_start: usize,
 ) -> bool {
+  if !overlap_tail_drop_is_safe(tail_drop, overlap, match_start) {
+    return false;
+  }
+
   if merged_len >= original_left_len {
     return true;
   }
@@ -124,6 +134,9 @@ pub(super) fn stitch_incremental_text(
       if is_pseudo_suffix_full || is_pseudo_suffix_stretched {
         continue;
       }
+      if !overlap_tail_drop_is_safe(tail_drop, overlap, match_start) {
+        continue;
+      }
       let replace = best_match
         .map(|(best_drop, best_start, best_overlap)| {
           overlap > best_overlap
@@ -175,7 +188,7 @@ pub(super) fn stitch_incremental_text(
 
     merged_tokens.extend(right.iter().skip(match_start + overlap).map(|t| t.original.clone()));
 
-    if overlap_merge_is_safe(left.len(), merged_tokens.len(), overlap, match_start) {
+    if overlap_merge_is_safe(left.len(), merged_tokens.len(), tail_drop, overlap, match_start) {
       return merged_tokens.join(" ");
     }
   }
