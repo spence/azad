@@ -117,6 +117,12 @@ MIT. See [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.4.2 Unreleased
+
+- Expanded spoken-number conversion for identifiers like `S eight` -> `S8`.
+- Removed terminal periods from single-word pasted output.
+- Fixed live transcription responsiveness and overlay finalization issues.
+
 ### 0.4.1
 
 - Reduced idle wakeups when listening is off.
