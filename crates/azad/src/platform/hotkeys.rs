@@ -1,4 +1,7 @@
-use super::{MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
+use super::{
+  KEYCODE_ARROW_DOWN, KEYCODE_ARROW_LEFT, KEYCODE_ARROW_RIGHT, KEYCODE_ARROW_UP, KEYCODE_ESCAPE,
+  KEYCODE_NUMPAD_ENTER, KEYCODE_RETURN, MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT,
+};
 
 /// Build the persisted MOD_* mask from live CGEventFlags booleans.
 pub(super) fn current_mod_mask(
@@ -71,10 +74,91 @@ pub(super) fn space_hotkey_decision(
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OverlayHotkeyState {
+  pub(super) escape_enabled: bool,
+  pub(super) enter_enabled: bool,
+  pub(super) arrows_enabled: bool,
+  pub(super) arrow_left_enabled: bool,
+  pub(super) arrow_right_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverlayHotkeyAction {
+  PassThrough,
+  ClaimOnly,
+  Cancel,
+  Finalize { raw_requested: bool },
+  Navigate(i32),
+  HistoryCollapse,
+  HistoryExpand,
+}
+
+pub(super) fn overlay_hotkey_decision(
+  state: OverlayHotkeyState,
+  keycode: u16,
+  is_option: bool,
+  is_shift: bool,
+  is_keydown: bool,
+) -> OverlayHotkeyAction {
+  if state.escape_enabled && keycode == KEYCODE_ESCAPE {
+    return if is_keydown { OverlayHotkeyAction::Cancel } else { OverlayHotkeyAction::ClaimOnly };
+  }
+
+  if state.enter_enabled && (keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER) {
+    if is_shift {
+      return OverlayHotkeyAction::PassThrough;
+    }
+    return if is_keydown {
+      OverlayHotkeyAction::Finalize { raw_requested: is_option }
+    } else {
+      OverlayHotkeyAction::ClaimOnly
+    };
+  }
+
+  if state.arrows_enabled {
+    if keycode == KEYCODE_ARROW_UP {
+      return if is_keydown {
+        OverlayHotkeyAction::Navigate(-1)
+      } else {
+        OverlayHotkeyAction::ClaimOnly
+      };
+    }
+    if keycode == KEYCODE_ARROW_DOWN {
+      return if is_keydown {
+        OverlayHotkeyAction::Navigate(1)
+      } else {
+        OverlayHotkeyAction::ClaimOnly
+      };
+    }
+  }
+
+  if state.arrow_left_enabled && keycode == KEYCODE_ARROW_LEFT {
+    return if is_keydown {
+      OverlayHotkeyAction::HistoryCollapse
+    } else {
+      OverlayHotkeyAction::ClaimOnly
+    };
+  }
+
+  if state.arrow_right_enabled && keycode == KEYCODE_ARROW_RIGHT {
+    return if is_keydown {
+      OverlayHotkeyAction::HistoryExpand
+    } else {
+      OverlayHotkeyAction::ClaimOnly
+    };
+  }
+
+  OverlayHotkeyAction::PassThrough
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{SpaceHotkeyAction, SpaceHotkeyDecision, space_hotkey_decision};
-  use crate::platform::MOD_OPTION;
+  use super::{
+    OverlayHotkeyAction, OverlayHotkeyState, SpaceHotkeyAction, SpaceHotkeyDecision,
+    overlay_hotkey_decision, space_hotkey_decision,
+  };
+  use crate::platform::{KEYCODE_ARROW_DOWN, KEYCODE_ESCAPE, KEYCODE_RETURN, MOD_OPTION};
 
   #[test]
   fn option_space_press_claims_and_dispatches_press() {
@@ -131,6 +215,74 @@ mod tests {
     assert_eq!(
       space_hotkey_decision(MOD_OPTION, false, 0, false, false),
       SpaceHotkeyDecision { claimed_after: false, action: SpaceHotkeyAction::PassThrough }
+    );
+  }
+
+  #[test]
+  fn overlay_escape_is_claimed_when_enabled() {
+    let state = OverlayHotkeyState {
+      escape_enabled: true,
+      enter_enabled: false,
+      arrows_enabled: false,
+      arrow_left_enabled: false,
+      arrow_right_enabled: false,
+    };
+
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_ESCAPE, false, false, true),
+      OverlayHotkeyAction::Cancel
+    );
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_ESCAPE, false, false, false),
+      OverlayHotkeyAction::ClaimOnly
+    );
+  }
+
+  #[test]
+  fn overlay_enter_is_claimed_unless_shift_is_held() {
+    let state = OverlayHotkeyState {
+      escape_enabled: false,
+      enter_enabled: true,
+      arrows_enabled: false,
+      arrow_left_enabled: false,
+      arrow_right_enabled: false,
+    };
+
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_RETURN, false, false, true),
+      OverlayHotkeyAction::Finalize { raw_requested: false }
+    );
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_RETURN, true, false, true),
+      OverlayHotkeyAction::Finalize { raw_requested: true }
+    );
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_RETURN, false, false, false),
+      OverlayHotkeyAction::ClaimOnly
+    );
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_RETURN, false, true, true),
+      OverlayHotkeyAction::PassThrough
+    );
+  }
+
+  #[test]
+  fn overlay_arrow_navigation_is_claimed_when_enabled() {
+    let state = OverlayHotkeyState {
+      escape_enabled: false,
+      enter_enabled: false,
+      arrows_enabled: true,
+      arrow_left_enabled: false,
+      arrow_right_enabled: false,
+    };
+
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_ARROW_DOWN, false, false, true),
+      OverlayHotkeyAction::Navigate(1)
+    );
+    assert_eq!(
+      overlay_hotkey_decision(state, KEYCODE_ARROW_DOWN, false, false, false),
+      OverlayHotkeyAction::ClaimOnly
     );
   }
 }

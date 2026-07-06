@@ -31,7 +31,10 @@ mod hotkeys;
 mod paste;
 mod permissions;
 
-use hotkeys::{SpaceHotkeyAction, current_mod_mask, space_hotkey_decision};
+use hotkeys::{
+  OverlayHotkeyAction, OverlayHotkeyState, SpaceHotkeyAction, current_mod_mask,
+  overlay_hotkey_decision, space_hotkey_decision,
+};
 pub use paste::{PasteResult, insert_text, send_auto_submit};
 pub use permissions::{
   PermissionStatus, accessibility_authorization, ensure_accessibility_for_auto_paste,
@@ -185,6 +188,8 @@ static HOTKEY_ARROW_UP_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ARROW_DOWN_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ARROW_LEFT_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ARROW_RIGHT_ID: OnceLock<u32> = OnceLock::new();
+// Overlay key-claim state. Carbon registration is only a fallback; the HID tap reads
+// these flags directly so modal overlay keys keep working inside remote-desktop clients.
 static HOTKEY_ESCAPE_REGISTERED: AtomicBool = AtomicBool::new(false);
 static HOTKEY_ENTER_REGISTERED: AtomicBool = AtomicBool::new(false);
 static HOTKEY_ARROWS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -719,6 +724,7 @@ pub fn show_overlay() {
     let loc = std::panic::Location::caller();
     eprintln!("AZAD_WIN main=front at {}:{}", loc.file(), loc.line());
   }
+  ensure_hotkey_event_tap_if_accessibility_granted();
   unsafe {
     let refs = ensure_overlay();
     move_overlay_to_target_screen(refs, true);
@@ -5545,12 +5551,14 @@ fn install_hotkey_event_tap() {
         eprintln!("Azad: failed to create run-loop source for HID event tap");
         CFRelease(tap.cast());
         EVENT_TAP_PORT.store(std::ptr::null_mut(), Ordering::Release);
+        EVENT_TAP_INSTALL_STARTED.store(false, Ordering::Release);
         return;
       }
 
       CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
       CGEventTapEnable(tap, true);
       CFRelease(source.cast());
+      eprintln!("Azad: HID event tap installed");
 
       // CFRunLoopRun blocks forever, driving the tap callback on this thread.
       CFRunLoopRun();
@@ -5677,60 +5685,37 @@ fn claim_tap_hotkey(
     }
   }
 
-  // Overlay-only hotkeys. Claim both keydown and keyup so the underlying app never sees either
-  // half of the chord. Event dispatch only fires on keydown.
-  if HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed) && keycode == KEYCODE_ESCAPE {
-    if is_keydown {
+  let overlay_state = OverlayHotkeyState {
+    escape_enabled: HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed),
+    enter_enabled: HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed),
+    arrows_enabled: HOTKEY_ARROWS_REGISTERED.load(Ordering::Relaxed),
+    arrow_left_enabled: HOTKEY_ARROW_LEFT_REGISTERED.load(Ordering::Relaxed),
+    arrow_right_enabled: HOTKEY_ARROW_RIGHT_REGISTERED.load(Ordering::Relaxed),
+  };
+  match overlay_hotkey_decision(overlay_state, keycode, is_option, is_shift, is_keydown) {
+    OverlayHotkeyAction::PassThrough => false,
+    OverlayHotkeyAction::ClaimOnly => true,
+    OverlayHotkeyAction::Cancel => {
       crate::app::send_event(AppEvent::OverlayCancel);
+      true
     }
-    return true;
-  }
-
-  if HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
-    && (keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER)
-  {
-    if is_shift {
-      // Shift+Enter is the user's "soft return / newline in the app underneath"
-      // escape hatch. Don't claim, don't dispatch — let the OS deliver the chord
-      // to whichever app has keyboard focus.
-      return false;
+    OverlayHotkeyAction::Finalize { raw_requested } => {
+      crate::app::send_event(AppEvent::FinalizeHotkeyPressed { raw_requested });
+      true
     }
-    if is_keydown {
-      crate::app::send_event(AppEvent::FinalizeHotkeyPressed { raw_requested: is_option });
+    OverlayHotkeyAction::Navigate(delta) => {
+      crate::app::send_event(AppEvent::ArrowNavigate(delta));
+      true
     }
-    return true;
-  }
-
-  if HOTKEY_ARROWS_REGISTERED.load(Ordering::Relaxed) {
-    if keycode == KEYCODE_ARROW_UP {
-      if is_keydown {
-        crate::app::send_event(AppEvent::ArrowNavigate(-1));
-      }
-      return true;
-    }
-    if keycode == KEYCODE_ARROW_DOWN {
-      if is_keydown {
-        crate::app::send_event(AppEvent::ArrowNavigate(1));
-      }
-      return true;
-    }
-  }
-
-  if HOTKEY_ARROW_LEFT_REGISTERED.load(Ordering::Relaxed) && keycode == KEYCODE_ARROW_LEFT {
-    if is_keydown {
+    OverlayHotkeyAction::HistoryCollapse => {
       crate::app::send_event(AppEvent::HistoryCollapse);
+      true
     }
-    return true;
-  }
-
-  if HOTKEY_ARROW_RIGHT_REGISTERED.load(Ordering::Relaxed) && keycode == KEYCODE_ARROW_RIGHT {
-    if is_keydown {
+    OverlayHotkeyAction::HistoryExpand => {
       crate::app::send_event(AppEvent::HistoryExpand);
+      true
     }
-    return true;
   }
-
-  false
 }
 
 const KEYCODE_DELETE: u16 = 51; // backspace
@@ -5761,10 +5746,8 @@ fn claim_tap_search_input(
 
   // Enter short-circuit: paste the selected history entry. Done here as a
   // belt-and-suspenders fix — `claim_tap_hotkey` should already handle
-  // Enter, but its dispatch is gated on `HOTKEY_ENTER_REGISTERED`, and
-  // when the panel is key + the search field is first responder there
-  // were occurrences of Enter not pasting. This direct claim is
-  // independent of that gate.
+  // Enter, but this keeps search-mode paste independent from the ordinary
+  // overlay finalize path.
   //
   // Shift+Enter still passes through here too, mirroring the bypass in
   // `claim_tap_hotkey` so a soft-return chord lands in the focused app even
@@ -5881,6 +5864,8 @@ fn set_escape_hotkey_enabled(enabled: bool) {
     return;
   }
 
+  HOTKEY_ESCAPE_REGISTERED.store(enabled, Ordering::Relaxed);
+
   HOTKEY_MANAGER_REF.with(|slot| {
     let mut manager_slot = slot.borrow_mut();
     let Some(manager) = manager_slot.as_mut() else {
@@ -5892,9 +5877,7 @@ fn set_escape_hotkey_enabled(enabled: bool) {
       if enabled { manager.register(escape_hotkey) } else { manager.unregister(escape_hotkey) };
 
     match result {
-      Ok(()) => {
-        HOTKEY_ESCAPE_REGISTERED.store(enabled, Ordering::Relaxed);
-      }
+      Ok(()) => {}
       Err(err) => {
         eprintln!(
           "Azad: failed to {} Escape hotkey: {}",
@@ -5912,6 +5895,8 @@ fn set_enter_hotkey_enabled(enabled: bool) {
     return;
   }
 
+  HOTKEY_ENTER_REGISTERED.store(enabled, Ordering::Relaxed);
+
   HOTKEY_MANAGER_REF.with(|slot| {
     let mut manager_slot = slot.borrow_mut();
     let Some(manager) = manager_slot.as_mut() else {
@@ -5924,14 +5909,8 @@ fn set_enter_hotkey_enabled(enabled: bool) {
     let numpad_enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::NumpadEnter);
 
     if enabled {
-      match manager.register(enter_hotkey) {
-        Ok(()) => {
-          HOTKEY_ENTER_REGISTERED.store(true, Ordering::Relaxed);
-        }
-        Err(err) => {
-          eprintln!("Azad: failed to register Enter hotkey: {}", err);
-          return;
-        }
+      if let Err(err) = manager.register(enter_hotkey) {
+        eprintln!("Azad: failed to register Enter hotkey: {}", err);
       }
 
       if let Err(err) = manager.register(enter_option_hotkey) {
@@ -5958,7 +5937,6 @@ fn set_enter_hotkey_enabled(enabled: bool) {
     if let Err(err) = manager.unregister(numpad_enter_option_hotkey) {
       eprintln!("Azad: failed to unregister Option+NumpadEnter hotkey: {}", err);
     }
-    HOTKEY_ENTER_REGISTERED.store(false, Ordering::Relaxed);
   });
 }
 
@@ -5967,6 +5945,8 @@ fn set_arrow_hotkeys_enabled(enabled: bool) {
   if currently_enabled == enabled {
     return;
   }
+
+  HOTKEY_ARROWS_REGISTERED.store(enabled, Ordering::Relaxed);
 
   HOTKEY_MANAGER_REF.with(|slot| {
     let mut manager_slot = slot.borrow_mut();
@@ -5984,7 +5964,6 @@ fn set_arrow_hotkeys_enabled(enabled: bool) {
       if let Err(err) = manager.register(arrow_down) {
         eprintln!("Azad: failed to register ArrowDown hotkey: {}", err);
       }
-      HOTKEY_ARROWS_REGISTERED.store(true, Ordering::Relaxed);
     } else {
       if let Err(err) = manager.unregister(arrow_up) {
         eprintln!("Azad: failed to unregister ArrowUp hotkey: {}", err);
@@ -5992,7 +5971,6 @@ fn set_arrow_hotkeys_enabled(enabled: bool) {
       if let Err(err) = manager.unregister(arrow_down) {
         eprintln!("Azad: failed to unregister ArrowDown hotkey: {}", err);
       }
-      HOTKEY_ARROWS_REGISTERED.store(false, Ordering::Relaxed);
     }
   });
 }
@@ -6048,6 +6026,8 @@ pub fn set_arrow_left_hotkey_enabled(enabled: bool) {
     return;
   }
 
+  HOTKEY_ARROW_LEFT_REGISTERED.store(enabled, Ordering::Relaxed);
+
   HOTKEY_MANAGER_REF.with(|slot| {
     let mut manager_slot = slot.borrow_mut();
     let Some(manager) = manager_slot.as_mut() else {
@@ -6059,12 +6039,10 @@ pub fn set_arrow_left_hotkey_enabled(enabled: bool) {
       if let Err(err) = manager.register(arrow_left) {
         eprintln!("Azad: failed to register ArrowLeft hotkey: {}", err);
       }
-      HOTKEY_ARROW_LEFT_REGISTERED.store(true, Ordering::Relaxed);
     } else {
       if let Err(err) = manager.unregister(arrow_left) {
         eprintln!("Azad: failed to unregister ArrowLeft hotkey: {}", err);
       }
-      HOTKEY_ARROW_LEFT_REGISTERED.store(false, Ordering::Relaxed);
     }
   });
 }
@@ -6074,6 +6052,8 @@ pub fn set_arrow_right_hotkey_enabled(enabled: bool) {
   if currently_enabled == enabled {
     return;
   }
+
+  HOTKEY_ARROW_RIGHT_REGISTERED.store(enabled, Ordering::Relaxed);
 
   HOTKEY_MANAGER_REF.with(|slot| {
     let mut manager_slot = slot.borrow_mut();
@@ -6086,12 +6066,10 @@ pub fn set_arrow_right_hotkey_enabled(enabled: bool) {
       if let Err(err) = manager.register(arrow_right) {
         eprintln!("Azad: failed to register ArrowRight hotkey: {}", err);
       }
-      HOTKEY_ARROW_RIGHT_REGISTERED.store(true, Ordering::Relaxed);
     } else {
       if let Err(err) = manager.unregister(arrow_right) {
         eprintln!("Azad: failed to unregister ArrowRight hotkey: {}", err);
       }
-      HOTKEY_ARROW_RIGHT_REGISTERED.store(false, Ordering::Relaxed);
     }
   });
 }
