@@ -30,6 +30,7 @@ const INCREMENTAL_TAIL_MAX_WAIT_FACTOR: u32 = 60;
 const INCREMENTAL_LIVE_TAIL_WAIT_FACTOR: u32 = 8;
 const INCREMENTAL_MAX_SEGMENT_MS: u32 = 8_000;
 const LIVE_STREAM_GAP_LOG_THRESHOLD_SAMPLES: usize = TARGET_SR as usize * 2;
+const LIVE_STREAM_STALL_REFINE_SAMPLES: usize = (TARGET_SR as usize * 6) / 5;
 const LIVE_REFINE_MAX_STITCH_EXTRA_TOKENS: usize = 8;
 const LIVE_REFINE_STREAM_LEAD_TOKENS: usize = 8;
 
@@ -249,6 +250,21 @@ fn live_stream_output_gap(
 ) -> Option<(usize, u32)> {
   let gap = current_audio_samples.saturating_sub(previous_audio_samples);
   (gap >= LIVE_STREAM_GAP_LOG_THRESHOLD_SAMPLES).then(|| (gap, samples_to_ms_at_target_sr(gap)))
+}
+
+fn live_stream_stall_refine_due(
+  last_output_audio_samples: Option<usize>,
+  current_audio_samples: usize,
+  draft_has_text: bool,
+  threshold_samples: usize,
+) -> Option<(usize, u32)> {
+  if !draft_has_text || threshold_samples == 0 {
+    return None;
+  }
+  let last_output_audio_samples = last_output_audio_samples?;
+  let stalled_samples = current_audio_samples.saturating_sub(last_output_audio_samples);
+  (stalled_samples >= threshold_samples)
+    .then(|| (stalled_samples, samples_to_ms_at_target_sr(stalled_samples)))
 }
 
 const LIVE_DISPLAY_TOKEN_ROLLBACK_TOLERANCE: usize = 1;
@@ -1441,6 +1457,28 @@ impl PipelineCore {
             min_new,
             inflight,
             self.has_draft_text(),
+          );
+        }
+        self.maybe_schedule_incremental_slice(true);
+      }
+    }
+
+    if let Some((stalled_samples, stalled_ms)) = live_stream_stall_refine_due(
+      self.incremental.last_live_output_audio_samples,
+      self.turn_audio.len(),
+      !self.eou_draft.trim().is_empty(),
+      LIVE_STREAM_STALL_REFINE_SAMPLES,
+    ) {
+      if self.cfg.incremental_finalization_enabled {
+        if self.debug_stats_enabled() {
+          eprintln!(
+            "TOON_LIVE_STREAM_STALL turn_id={} action=request_refine audio_samples={} \
+             stalled_samples={} stalled_ms={} inflight={}",
+            self.turn_id,
+            self.turn_audio.len(),
+            stalled_samples,
+            stalled_ms,
+            self.incremental.inflight_segment.is_some(),
           );
         }
         self.maybe_schedule_incremental_slice(true);
@@ -3947,10 +3985,10 @@ mod tests {
     debug_recording_stem, empty_partial_action, eou_chars_in_range, eou_corroborates_silence,
     finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
     leading_coverage_is_incomplete, live_display_can_replace, live_stream_output_gap,
-    middle_coverage_is_incomplete, non_empty_partials, normalize_chunk_case,
-    partial_core_coverage_gap, plan_live_draft_render, plan_live_draft_render_after_previous,
-    prune_debug_recordings, samples_to_ms_at_target_sr, stitch_incremental_text,
-    stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
+    live_stream_stall_refine_due, middle_coverage_is_incomplete, non_empty_partials,
+    normalize_chunk_case, partial_core_coverage_gap, plan_live_draft_render,
+    plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
+    stitch_incremental_text, stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
   };
 
   fn partial(
@@ -4033,6 +4071,25 @@ mod tests {
   #[test]
   fn live_stream_output_gap_reports_two_second_gaps() {
     assert_eq!(live_stream_output_gap(10_000, 42_000), Some((32_000, 2_000)));
+  }
+
+  #[test]
+  fn live_stream_stall_refine_waits_for_prior_output_and_draft_text() {
+    assert_eq!(live_stream_stall_refine_due(None, 40_000, true, 16_000), None);
+    assert_eq!(live_stream_stall_refine_due(Some(10_000), 40_000, false, 16_000), None);
+  }
+
+  #[test]
+  fn live_stream_stall_refine_reports_sustained_no_output_span() {
+    assert_eq!(
+      live_stream_stall_refine_due(Some(10_000), 29_200, true, 19_200),
+      Some((19_200, 1_200))
+    );
+  }
+
+  #[test]
+  fn live_stream_stall_refine_ignores_short_no_output_span() {
+    assert_eq!(live_stream_stall_refine_due(Some(10_000), 29_199, true, 19_200), None);
   }
 
   #[test]
