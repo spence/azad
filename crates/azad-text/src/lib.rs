@@ -502,6 +502,9 @@ fn parse_ordinal_words(words: &[String]) -> Option<String> {
     let (last, prefix) = words.split_last()?;
     let (ordinal_base, final_kind) = ordinal_word_value(last)?;
     let value = if prefix.is_empty() {
+        if matches!(final_kind, OrdinalKind::Unit) {
+            return None;
+        }
         ordinal_base
     } else {
         if prefix.iter().any(|word| word == "point") {
@@ -1291,7 +1294,9 @@ mod tests {
             ("one and done", "one and done"),
             ("one hundred and three", "103"),
             ("twenty first", "21st"),
-            ("third", "3rd"),
+            ("first", "first"),
+            ("second", "second"),
+            ("third", "third"),
         ] {
             assert_eq!(
                 build_paste_text(spoken, options(false, &[], true, true)),
