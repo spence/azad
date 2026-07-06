@@ -95,4 +95,12 @@ Transcribe a recording through the exact same pipeline:
 cargo run -p azad-asr -- transcribe-file ./path/to/recording.m4a
 ```
 
+Replay a saved debug WAV and print the renderer event stream:
+
+```bash
+cargo run -p azad-asr -- transcribe-file \
+  "$HOME/Library/Application Support/Azad/debug-recordings/<recording-id>.wav" \
+  --events-jsonl
+```
+
 Quit with `q` (or `Ctrl-C`).

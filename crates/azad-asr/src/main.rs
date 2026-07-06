@@ -5,7 +5,7 @@ use crossbeam_channel as chan;
 use std::collections::BTreeMap;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use asr::audio::AudioInput;
@@ -170,6 +170,10 @@ struct TranscribeFileArgs {
   /// File read chunk size (ms).
   #[arg(long, default_value_t = 20)]
   chunk_ms: u32,
+
+  /// Print the renderer event stream as JSON lines instead of final text only.
+  #[arg(long = "events-jsonl")]
+  events_jsonl: bool,
 }
 
 #[derive(Clone)]
@@ -186,11 +190,20 @@ impl Renderer for ChanRenderer {
 struct CollectingRenderer {
   lines: Mutex<BTreeMap<u64, String>>,
   errors: Mutex<Vec<String>>,
+  events: Mutex<Vec<serde_json::Value>>,
+  event_seq: AtomicU64,
+  record_events: bool,
 }
 
 impl CollectingRenderer {
-  fn new() -> Self {
-    Self { lines: Mutex::new(BTreeMap::new()), errors: Mutex::new(Vec::new()) }
+  fn new(record_events: bool) -> Self {
+    Self {
+      lines: Mutex::new(BTreeMap::new()),
+      errors: Mutex::new(Vec::new()),
+      events: Mutex::new(Vec::new()),
+      event_seq: AtomicU64::new(1),
+      record_events,
+    }
   }
 
   fn snapshot_lines(&self) -> Vec<String> {
@@ -200,10 +213,26 @@ impl CollectingRenderer {
       .filter_map(|(id, text)| if *id == 0 { None } else { Some(text.clone()) })
       .collect()
   }
+
+  fn snapshot_events(&self) -> Vec<serde_json::Value> {
+    self.events.lock().unwrap().clone()
+  }
+
+  fn record_event(&self, ev: &RenderEvent) {
+    if !self.record_events {
+      return;
+    }
+    let seq = self.event_seq.fetch_add(1, Ordering::Relaxed);
+    let Some(event) = replay_event_json(seq, ev) else {
+      return;
+    };
+    self.events.lock().unwrap().push(event);
+  }
 }
 
 impl Renderer for CollectingRenderer {
   fn emit(&self, ev: RenderEvent) {
+    self.record_event(&ev);
     match ev {
       RenderEvent::Active { .. }
       | RenderEvent::Finalizing { .. }
@@ -226,6 +255,70 @@ impl Renderer for CollectingRenderer {
       | RenderEvent::Meter(_)
       | RenderEvent::DebugStats(_) => {}
     }
+  }
+}
+
+fn replay_event_json(seq: u64, ev: &RenderEvent) -> Option<serde_json::Value> {
+  match ev {
+    RenderEvent::Status(v) => Some(serde_json::json!({
+      "seq": seq,
+      "event": "status",
+      "state": format!("{:?}", v.state),
+      "detail": v.detail,
+    })),
+    RenderEvent::SpeechStartedByVad => Some(serde_json::json!({
+      "seq": seq,
+      "event": "speech_started_by_vad",
+    })),
+    RenderEvent::TurnStarted { reason } => Some(serde_json::json!({
+      "seq": seq,
+      "event": "turn_started",
+      "reason": format!("{:?}", reason),
+    })),
+    RenderEvent::Active { id, committed, live } => {
+      let merged = format!("{committed}{live}").trim().to_string();
+      Some(serde_json::json!({
+        "seq": seq,
+        "event": "active",
+        "turn_id": id,
+        "committed": committed,
+        "live": live,
+        "merged": merged,
+        "merged_chars": merged.chars().count(),
+      }))
+    }
+    RenderEvent::Finalizing { id, text } => Some(serde_json::json!({
+      "seq": seq,
+      "event": "finalizing",
+      "turn_id": id,
+      "text": text,
+      "text_chars": text.chars().count(),
+    })),
+    RenderEvent::FinalizingCancelled { id } => Some(serde_json::json!({
+      "seq": seq,
+      "event": "finalizing_cancelled",
+      "turn_id": id,
+    })),
+    RenderEvent::FinalLine { id, text } => Some(serde_json::json!({
+      "seq": seq,
+      "event": "final_line",
+      "turn_id": id,
+      "text": text,
+      "text_chars": text.chars().count(),
+    })),
+    RenderEvent::ReplaceLine { id, text } => Some(serde_json::json!({
+      "seq": seq,
+      "event": "replace_line",
+      "turn_id": id,
+      "text": text,
+      "text_chars": text.chars().count(),
+    })),
+    RenderEvent::Error { message } => Some(serde_json::json!({
+      "seq": seq,
+      "event": "error",
+      "message": message,
+    })),
+    RenderEvent::CaptureHealth(_) | RenderEvent::Meter(_) | RenderEvent::DebugStats(_) => None,
   }
 }
 
@@ -313,12 +406,18 @@ fn cmd_transcribe_file(args: TranscribeFileArgs) -> Result<()> {
     Box::new(DecodedInput::decode(&args.path, args.chunk_ms)?)
   };
 
-  let renderer = Arc::new(CollectingRenderer::new());
+  let renderer = Arc::new(CollectingRenderer::new(args.events_jsonl));
   let shutdown = Arc::new(AtomicBool::new(false));
   run_pipeline(&mut *input, renderer.clone(), cfg, shutdown)?;
 
-  for line in renderer.snapshot_lines() {
-    println!("{}", line.trim());
+  if args.events_jsonl {
+    for event in renderer.snapshot_events() {
+      println!("{}", serde_json::to_string(&event)?);
+    }
+  } else {
+    for line in renderer.snapshot_lines() {
+      println!("{}", line.trim());
+    }
   }
 
   Ok(())
