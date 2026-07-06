@@ -1379,6 +1379,7 @@ impl AppController {
       &self.finalizing_draft,
     ) || split_overlay_visible_with_live_divergence_for_state(
       self.finalizing_turn_id,
+      self.current_turn_id,
       &self.latest_draft,
       &self.finalizing_draft,
     )
@@ -2083,6 +2084,7 @@ impl AppController {
           &cleaned,
         ) || split_overlay_visible_with_live_divergence_for_state(
           self.finalizing_turn_id,
+          self.current_turn_id,
           &self.latest_draft,
           &self.finalizing_draft,
         );
@@ -4266,6 +4268,7 @@ mod tests {
   fn split_overlay_live_divergence_shows_when_turn_id_lags() {
     assert!(split_overlay_visible_with_live_divergence_for_state(
       Some(5),
+      Some(6),
       "new sentence starts in next thought",
       "previous finalized sentence is done",
     ));
@@ -4275,8 +4278,19 @@ mod tests {
   fn split_overlay_live_divergence_ignores_same_lane_rewrites() {
     assert!(!split_overlay_visible_with_live_divergence_for_state(
       Some(5),
+      Some(5),
       "this is still the same lane text",
       "this is still the same lane text with punctuation",
+    ));
+  }
+
+  #[test]
+  fn split_overlay_live_divergence_ignores_same_turn_refinement() {
+    assert!(!split_overlay_visible_with_live_divergence_for_state(
+      Some(7),
+      Some(7),
+      "same turn final text gained better punctuation",
+      "same turn final text gained better punctuation and casing",
     ));
   }
 
@@ -4326,7 +4340,7 @@ mod tests {
   fn split_top_completion_allows_live_divergence_without_vad_hint() {
     let completion = split_top_completion_for_state(
       Some(10),
-      Some(10),
+      Some(11),
       "brand new sentence in next lane",
       false,
       false,
@@ -4334,6 +4348,7 @@ mod tests {
       "previous lane text that just finished",
     ) || split_overlay_visible_with_live_divergence_for_state(
       Some(10),
+      Some(11),
       "brand new sentence in next lane",
       "previous lane text that just finished",
     );

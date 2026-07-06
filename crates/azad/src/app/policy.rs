@@ -233,10 +233,11 @@ pub(super) fn draft_matches_finalized_text(live_draft: &str, finalized_text: &st
 
 pub(super) fn split_overlay_visible_with_live_divergence_for_state(
   finalizing_turn_id: Option<u64>,
+  current_turn_id: Option<u64>,
   live_draft: &str,
   finalizing_draft: &str,
 ) -> bool {
-  finalizing_turn_id.is_some()
+  split_overlay_active_for_turns(finalizing_turn_id, current_turn_id)
     && !live_draft.trim().is_empty()
     && !finalizing_draft.trim().is_empty()
     && !draft_matches_finalized_text(live_draft, finalizing_draft)
