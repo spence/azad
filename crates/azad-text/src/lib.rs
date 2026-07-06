@@ -64,6 +64,7 @@ pub fn build_display_text(text: &str, options: DisplayTextOptions<'_>) -> String
 
 pub fn build_paste_text(text: &str, options: PasteTextOptions<'_>) -> String {
     let mut paste_text = build_display_text(text, options.display_options());
+    paste_text = strip_single_word_terminal_period(&paste_text);
     if options.append_trailing_space
         && !paste_text
             .chars()
@@ -73,6 +74,25 @@ pub fn build_paste_text(text: &str, options: PasteTextOptions<'_>) -> String {
         paste_text.push(' ');
     }
     paste_text
+}
+
+fn strip_single_word_terminal_period(text: &str) -> String {
+    let trimmed = text.trim_end_matches(char::is_whitespace);
+    if !trimmed.ends_with('.') {
+        return text.to_string();
+    }
+
+    let before_period = &trimmed[..trimmed.len() - 1];
+    if tokenize(before_period)
+        .filter(|token| token.is_word)
+        .count()
+        != 1
+    {
+        return text.to_string();
+    }
+
+    let trailing_whitespace = &text[trimmed.len()..];
+    format!("{before_period}{trailing_whitespace}")
 }
 
 fn lowercase_except_uppercase_words(text: &str) -> String {
@@ -1006,6 +1026,58 @@ mod tests {
         assert_eq!(
             build_paste_text("hello ", options(false, &[], true, false)),
             "hello "
+        );
+    }
+
+    #[test]
+    fn build_paste_text_strips_single_word_terminal_period() {
+        assert_eq!(
+            build_paste_text("Hello.", options(false, &[], true, false)),
+            "Hello"
+        );
+        assert_eq!(
+            build_paste_text("Hello. ", options(false, &[], true, false)),
+            "Hello "
+        );
+    }
+
+    #[test]
+    fn build_paste_text_strips_single_word_period_before_appending_space() {
+        assert_eq!(
+            build_paste_text("Hello.", options(true, &[], true, false)),
+            "Hello "
+        );
+    }
+
+    #[test]
+    fn build_paste_text_strips_period_after_single_identifier_transform() {
+        assert_eq!(
+            build_paste_text("S eight.", options(false, &[], true, true)),
+            "S8"
+        );
+    }
+
+    #[test]
+    fn build_paste_text_keeps_terminal_period_for_multi_word_text() {
+        assert_eq!(
+            build_paste_text("Hello world.", options(false, &[], true, false)),
+            "Hello world."
+        );
+    }
+
+    #[test]
+    fn build_paste_text_keeps_period_for_multi_token_abbreviation() {
+        assert_eq!(
+            build_paste_text("U.S.", options(false, &[], true, false)),
+            "U.S."
+        );
+    }
+
+    #[test]
+    fn build_display_text_keeps_single_word_terminal_period() {
+        assert_eq!(
+            build_display_text("Hello.", display_options(&[], true, false, false)),
+            "Hello."
         );
     }
 
