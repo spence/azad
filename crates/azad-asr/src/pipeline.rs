@@ -198,6 +198,47 @@ fn plan_live_draft_render(refined_text: &str, streaming_text: &str) -> Option<Li
   }
 }
 
+fn plan_live_draft_render_after_previous(
+  previous_display: &str,
+  refined_text: &str,
+  streaming_text: &str,
+) -> Option<LiveDraftRenderPlan> {
+  let plan = plan_live_draft_render(refined_text, streaming_text)?;
+  let LiveDraftRenderPlan::ReplacementDisplay(display) = &plan else {
+    return Some(plan);
+  };
+
+  if live_streaming_should_supersede_replacement(previous_display, display, streaming_text) {
+    let streaming = normalize_chunk_case("", streaming_text.trim().to_string()).trim().to_string();
+    if !streaming.is_empty() {
+      return Some(LiveDraftRenderPlan::StreamingHypothesis(streaming));
+    }
+  }
+
+  Some(plan)
+}
+
+fn live_streaming_should_supersede_replacement(
+  previous_display: &str,
+  replacement_display: &str,
+  streaming_text: &str,
+) -> bool {
+  let previous = previous_display.trim();
+  let streaming = streaming_text.trim();
+  if previous.is_empty() || streaming.is_empty() {
+    return false;
+  }
+
+  let previous_tokens = live_display_token_count(previous);
+  let streaming_tokens = live_display_token_count(streaming);
+  if streaming_tokens <= previous_tokens || !live_display_can_replace(previous, streaming) {
+    return false;
+  }
+
+  let replacement_tokens = live_display_token_count(replacement_display);
+  !live_display_can_replace(previous, replacement_display) || replacement_tokens <= previous_tokens
+}
+
 fn live_token_count(text: &str) -> usize {
   tokenize_for_stitch(text).len()
 }
@@ -1700,7 +1741,11 @@ impl PipelineCore {
   }
 
   fn emit_active_draft(&mut self) {
-    match plan_live_draft_render(&self.incremental.live_refined_text, &self.eou_draft) {
+    match plan_live_draft_render_after_previous(
+      &self.incremental.last_live_display_text,
+      &self.incremental.live_refined_text,
+      &self.eou_draft,
+    ) {
       Some(LiveDraftRenderPlan::StreamingHypothesis(display)) => {
         let (committed, live) = self.tracker.update(&display);
         let visible = format!("{committed}{live}").trim().to_string();
@@ -1856,15 +1901,25 @@ impl PipelineCore {
   /// once available; streaming-only turns use the stability tracker and then
   /// fall back to raw EOU text when no stable draft exists yet.
   fn current_finalize_draft(&self) -> String {
-    if let Some(LiveDraftRenderPlan::ReplacementDisplay(display)) =
-      plan_live_draft_render(&self.incremental.live_refined_text, &self.eou_draft)
-    {
-      if !live_display_can_replace(&self.incremental.last_live_display_text, &display)
-        && !self.incremental.last_live_display_text.trim().is_empty()
-      {
-        return self.incremental.last_live_display_text.trim().to_string();
+    match plan_live_draft_render_after_previous(
+      &self.incremental.last_live_display_text,
+      &self.incremental.live_refined_text,
+      &self.eou_draft,
+    ) {
+      Some(LiveDraftRenderPlan::ReplacementDisplay(display)) => {
+        if !live_display_can_replace(&self.incremental.last_live_display_text, &display)
+          && !self.incremental.last_live_display_text.trim().is_empty()
+        {
+          return self.incremental.last_live_display_text.trim().to_string();
+        }
+        return display;
       }
-      return display;
+      Some(LiveDraftRenderPlan::StreamingHypothesis(display))
+        if !self.incremental.live_refined_text.trim().is_empty() =>
+      {
+        return display;
+      }
+      _ => {}
     }
 
     let mut draft = self.tracker.full_text().trim().to_string();
@@ -3893,9 +3948,9 @@ mod tests {
     finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
     leading_coverage_is_incomplete, live_display_can_replace, live_stream_output_gap,
     middle_coverage_is_incomplete, non_empty_partials, normalize_chunk_case,
-    partial_core_coverage_gap, plan_live_draft_render, prune_debug_recordings,
-    samples_to_ms_at_target_sr, stitch_incremental_text, stitch_right_start_cap_from_overlap,
-    tail_coverage_is_incomplete,
+    partial_core_coverage_gap, plan_live_draft_render, plan_live_draft_render_after_previous,
+    prune_debug_recordings, samples_to_ms_at_target_sr, stitch_incremental_text,
+    stitch_right_start_cap_from_overlap, tail_coverage_is_incomplete,
   };
 
   fn partial(
@@ -4340,6 +4395,34 @@ mod tests {
          specific commands now"
           .to_string()
       )
+    );
+  }
+
+  #[test]
+  fn live_draft_render_falls_back_to_streaming_when_refinement_stalls() {
+    let previous = "I changed my mind on this these cannot be translated into the numbers because \
+      they're just used in common speech so often, and having them";
+    let refined = "I changed my mind on this these cannot be translated into the numbers because \
+      they're just used in common speech so often and having the";
+    let streaming = "I changed my mind on this these cannot be translated into the numbers because \
+      they're just used in common speech so often and having them like get converted is just weird";
+
+    let plan = plan_live_draft_render_after_previous(previous, refined, streaming).unwrap();
+
+    assert_eq!(plan, LiveDraftRenderPlan::StreamingHypothesis(streaming.to_string()));
+  }
+
+  #[test]
+  fn live_draft_render_keeps_refined_candidate_when_streaming_has_not_advanced() {
+    let previous = "the text got pasted and then it stated open";
+    let refined = "the text got pasted and then it stayed open";
+    let streaming = "the text got pasted and then it stayed";
+
+    let plan = plan_live_draft_render_after_previous(previous, refined, streaming).unwrap();
+
+    assert_eq!(
+      plan,
+      LiveDraftRenderPlan::ReplacementDisplay("the text got pasted and then it stayed open".into())
     );
   }
 
