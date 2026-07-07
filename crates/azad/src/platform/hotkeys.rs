@@ -71,10 +71,35 @@ pub(super) fn space_hotkey_decision(
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClaimedHoldNavigationAction {
+  PassThrough,
+  ClaimOnly,
+  Navigate(i32),
+}
+
+pub(super) fn claimed_hold_navigation_decision(
+  space_claimed: bool,
+  keycode: u16,
+  is_keydown: bool,
+) -> ClaimedHoldNavigationAction {
+  if !space_claimed || keycode != super::KEYCODE_ARROW_UP {
+    return ClaimedHoldNavigationAction::PassThrough;
+  }
+  if is_keydown {
+    ClaimedHoldNavigationAction::Navigate(-1)
+  } else {
+    ClaimedHoldNavigationAction::ClaimOnly
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{SpaceHotkeyAction, SpaceHotkeyDecision, space_hotkey_decision};
-  use crate::platform::MOD_OPTION;
+  use super::{
+    ClaimedHoldNavigationAction, SpaceHotkeyAction, SpaceHotkeyDecision,
+    claimed_hold_navigation_decision, space_hotkey_decision,
+  };
+  use crate::platform::{KEYCODE_ARROW_DOWN, KEYCODE_ARROW_UP, MOD_OPTION};
 
   #[test]
   fn option_space_press_claims_and_dispatches_press() {
@@ -131,6 +156,30 @@ mod tests {
     assert_eq!(
       space_hotkey_decision(MOD_OPTION, false, 0, false, false),
       SpaceHotkeyDecision { claimed_after: false, action: SpaceHotkeyAction::PassThrough }
+    );
+  }
+
+  #[test]
+  fn claimed_space_up_opens_history_before_overlay_arrow_registration() {
+    assert_eq!(
+      claimed_hold_navigation_decision(true, KEYCODE_ARROW_UP, true),
+      ClaimedHoldNavigationAction::Navigate(-1)
+    );
+    assert_eq!(
+      claimed_hold_navigation_decision(true, KEYCODE_ARROW_UP, false),
+      ClaimedHoldNavigationAction::ClaimOnly
+    );
+  }
+
+  #[test]
+  fn unclaimed_or_non_history_arrows_pass_through() {
+    assert_eq!(
+      claimed_hold_navigation_decision(false, KEYCODE_ARROW_UP, true),
+      ClaimedHoldNavigationAction::PassThrough
+    );
+    assert_eq!(
+      claimed_hold_navigation_decision(true, KEYCODE_ARROW_DOWN, true),
+      ClaimedHoldNavigationAction::PassThrough
     );
   }
 }

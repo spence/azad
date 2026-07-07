@@ -48,6 +48,7 @@ const OVERLAY_BUSY_PHASE_STEP: f32 = 0.24;
 const LISTEN_TOGGLE_NOTICE_DURATION_MS: u64 = 600;
 const LISTEN_RECOVERING_NOTICE_DURATION_MS: u64 = 1200;
 const CANCEL_VAD_SHOW_SUPPRESSION_MS: u64 = 500;
+const HISTORY_MANUAL_HOLD_RELEASE_GRACE_MS: u64 = 500;
 const SESSION_FAULT_WINDOW_MS: u64 = 30_000;
 const SESSION_IMMEDIATE_RETRY_LIMIT: usize = 2;
 const SESSION_DEGRADED_THRESHOLD: usize = 3;
@@ -315,6 +316,7 @@ struct AppController {
   pending_always_listening_enabled: Option<bool>,
 
   manual_hold_active: bool,
+  manual_hold_history_grace_until: Option<Instant>,
   hold_saw_speech: bool,
   overlay_visible: bool,
   overlay_pending_vad_text: bool,
@@ -622,6 +624,7 @@ impl AppController {
       always_listening_enabled,
       pending_always_listening_enabled: None,
       manual_hold_active: false,
+      manual_hold_history_grace_until: None,
       hold_saw_speech: false,
       overlay_visible: false,
       overlay_pending_vad_text: false,
@@ -1060,6 +1063,7 @@ impl AppController {
     self.dispatch_hotkey_input(HotkeyInput::SessionReset);
     self.raw_finalize_requested = false;
     self.pending_hold_release_raw_requested = false;
+    self.manual_hold_history_grace_until = None;
     self.reset_activity_history();
     self.busy_border_phase = 0.0;
     self.turn_started_at.clear();
@@ -1140,6 +1144,7 @@ impl AppController {
       return;
     }
     self.log_input_event(InputLogEvent::HotkeyPressed);
+    self.manual_hold_history_grace_until = None;
     // Pressing opt+space while in history mode dismisses history (without
     // pasting) and starts a fresh dictation turn. The user is signalling
     // "I want to talk now" — don't trap them in the list.
@@ -1469,6 +1474,8 @@ impl AppController {
       }
       HotkeyEffect::ReleaseManualHold { should_finalize, has_started_turn } => {
         self.manual_hold_active = false;
+        self.manual_hold_history_grace_until =
+          Some(Instant::now() + Duration::from_millis(HISTORY_MANUAL_HOLD_RELEASE_GRACE_MS));
         self.hold_saw_speech = false;
         let plan = manual_hold_release_plan(
           self.always_listening_enabled,
@@ -1572,6 +1579,7 @@ impl AppController {
       self.gateway_conn = GatewayConnState::Disconnected;
       self.cancelled = true;
       self.manual_hold_active = false;
+      self.manual_hold_history_grace_until = None;
       self.hold_saw_speech = false;
       self.raw_finalize_requested = false;
       self.finalizing_deadline = None;
@@ -1598,6 +1606,7 @@ impl AppController {
     self.cancel_vad_show_suppressed_until =
       Some(Instant::now() + Duration::from_millis(CANCEL_VAD_SHOW_SUPPRESSION_MS));
     self.manual_hold_active = false;
+    self.manual_hold_history_grace_until = None;
     self.hold_saw_speech = false;
     self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
     self.raw_finalize_requested = false;

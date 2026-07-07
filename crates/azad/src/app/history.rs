@@ -1,6 +1,7 @@
 use crate::input_log::InputLogEvent;
 use crate::platform;
 use azad_text::{PasteTextOptions, build_paste_text};
+use std::time::Instant;
 
 use super::{AppController, effective_removed_words};
 
@@ -9,10 +10,24 @@ const HISTORY_SEARCH_LIMIT: usize = 1000;
 impl AppController {
   pub(super) fn handle_arrow_navigate(&mut self, direction: i32) {
     self.log_input_event(InputLogEvent::ArrowNavigate { direction });
+    let now = Instant::now();
+    let manual_hold_recently_released =
+      self.manual_hold_history_grace_until.is_some_and(|deadline| now <= deadline);
+    if !manual_hold_recently_released {
+      self.manual_hold_history_grace_until = None;
+    }
     // Up only pivots into history while opt+space is actively held. VAD-only
-    // sessions must let Up flow through to the focused app underneath.
-    if !self.history_browsing && direction == -1 && self.overlay_visible && self.manual_hold_active
-    {
+    // sessions must let Up flow through to the focused app underneath. Some
+    // remote desktop clients deliver Up just after the Space release, so keep a
+    // short release grace for the same manual-hold gesture.
+    if should_enter_history_mode(
+      self.history_browsing,
+      direction,
+      self.overlay_visible,
+      self.manual_hold_active,
+      manual_hold_recently_released,
+    ) {
+      self.manual_hold_history_grace_until = None;
       self.enter_history_mode();
       return;
     }
@@ -236,6 +251,7 @@ impl AppController {
     // History owns the overlay and pauses capture so a simultaneous in-flight
     // turn cannot paste while the user is browsing saved transcripts.
     self.manual_hold_active = false;
+    self.manual_hold_history_grace_until = None;
     self.hold_saw_speech = false;
     if let Some(session) = &self.session {
       session.release_manual_hold();
@@ -279,5 +295,37 @@ impl AppController {
     if let Some(session) = &self.session {
       session.set_capture_enabled(should_capture);
     }
+  }
+}
+
+fn should_enter_history_mode(
+  history_browsing: bool,
+  direction: i32,
+  overlay_visible: bool,
+  manual_hold_active: bool,
+  manual_hold_recently_released: bool,
+) -> bool {
+  !history_browsing
+    && direction == -1
+    && overlay_visible
+    && (manual_hold_active || manual_hold_recently_released)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::should_enter_history_mode;
+
+  #[test]
+  fn up_enters_history_during_manual_hold_or_release_grace() {
+    assert!(should_enter_history_mode(false, -1, true, true, false));
+    assert!(should_enter_history_mode(false, -1, true, false, true));
+  }
+
+  #[test]
+  fn up_does_not_enter_history_for_vad_only_or_wrong_direction() {
+    assert!(!should_enter_history_mode(false, -1, true, false, false));
+    assert!(!should_enter_history_mode(true, -1, true, true, true));
+    assert!(!should_enter_history_mode(false, 1, true, true, true));
+    assert!(!should_enter_history_mode(false, -1, false, true, true));
   }
 }

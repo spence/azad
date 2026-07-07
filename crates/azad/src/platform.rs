@@ -31,7 +31,10 @@ mod hotkeys;
 mod paste;
 mod permissions;
 
-use hotkeys::{SpaceHotkeyAction, current_mod_mask, space_hotkey_decision};
+use hotkeys::{
+  ClaimedHoldNavigationAction, SpaceHotkeyAction, claimed_hold_navigation_decision,
+  current_mod_mask, space_hotkey_decision,
+};
 pub use paste::{PasteResult, insert_text, send_auto_submit};
 pub use permissions::{
   PermissionStatus, accessibility_authorization, ensure_accessibility_for_auto_paste,
@@ -5674,6 +5677,19 @@ fn claim_tap_hotkey(
         crate::app::send_event(AppEvent::HotkeyReleased { raw_requested });
         return true;
       }
+    }
+  }
+
+  match claimed_hold_navigation_decision(
+    SPACE_HOLD_CLAIMED.load(Ordering::Acquire),
+    keycode,
+    is_keydown,
+  ) {
+    ClaimedHoldNavigationAction::PassThrough => {}
+    ClaimedHoldNavigationAction::ClaimOnly => return true,
+    ClaimedHoldNavigationAction::Navigate(direction) => {
+      crate::app::send_event(AppEvent::ArrowNavigate(direction));
+      return true;
     }
   }
 
