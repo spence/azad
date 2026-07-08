@@ -164,19 +164,42 @@ def parse_jsonl(path, since_ms=None):
     return out
 
 
-def finalize_latencies(input_log, since_ms=None):
-    """turn_id -> finalize wall time (ms): engine_final_text.ts - speech_finalizing.ts."""
+def finalize_events(input_log, since_ms=None):
+    """Per finalized turn: {turn_id, latency_ms, draft_chars} from input.log.
+
+    latency_ms = engine_final_text.ts - engine_speech_finalizing.ts. draft_chars (the live
+    draft length at finalize) is a turn-size proxy so latency can be bucketed by size even
+    for turns whose sidecars have rotated away — input.log is append-only and keeps them all.
+    """
     start = {}
-    lat = {}
+    out = []
     for d in parse_jsonl(input_log, since_ms):
         ev, tid, ts = d.get("event"), d.get("turn_id"), d.get("ts_ms")
         if tid is None or ts is None:
             continue
         if ev == "engine_speech_finalizing":
-            start[tid] = ts
+            start[tid] = (ts, d.get("draft_chars") or 0)
         elif ev == "engine_final_text" and tid in start:
-            lat[tid] = ts - start[tid]
-    return lat
+            s_ts, dch = start.pop(tid)
+            out.append({"turn_id": tid, "latency_ms": ts - s_ts, "draft_chars": dch})
+    return out
+
+
+def finalize_latencies(input_log, since_ms=None):
+    """turn_id -> finalize wall time (ms)."""
+    return {e["turn_id"]: e["latency_ms"] for e in finalize_events(input_log, since_ms)}
+
+
+DRAFT_CHAR_BUCKETS = [(0, 50), (50, 200), (200, 500), (500, 10 ** 9)]
+
+
+def latency_buckets(events):
+    rows = []
+    for lo, hi in DRAFT_CHAR_BUCKETS:
+        vals = [e["latency_ms"] for e in events if lo <= e["draft_chars"] < hi]
+        label = f"{lo}-{'+' if hi >= 10 ** 8 else hi} ch"
+        rows.append([label, len(vals), pct(vals, 50), pct(vals, 95)])
+    return rows
 
 
 def metrics_bailouts(metrics_log, since_ms=None):
@@ -207,7 +230,8 @@ def stderr_stall_gap(stderr_log, since_ms=None):
 def build_report(args):
     rows = load_sidecars(args.dir, args.since_ms, args.pipeline)
     tms = [turn_metrics(j) for j in rows]
-    lat = finalize_latencies(args.input_log, args.since_ms)
+    lat_events = finalize_events(args.input_log, args.since_ms)
+    lat = {e["turn_id"]: e["latency_ms"] for e in lat_events}
     for t in tms:
         t["finalize_ms"] = lat.get(t["turn_id"], t["finalize_ms_sidecar"])
 
@@ -230,6 +254,7 @@ def build_report(args):
         "refined_edit_turns": sum(1 for t in non_bailout if t["refined_edits"] > 0),
         "refined_edit_max": max((t["refined_edit_max"] for t in non_bailout), default=0),
         "long_turns_with_refined_edit": sum(1 for t in long_turns if t["refined_edits"] > 0),
+        "latency_buckets": latency_buckets(lat_events),
         "stderr": stderr_stall_gap(args.stderr_log, args.since_ms),
     }
     # Gate verdicts (mirror plan Phase 1.4).
@@ -280,6 +305,12 @@ def emit_text(tms, agg, md=False):
     out.append(f"  G2 latency    : p50={p50 and round(p50)} ms, p95={p95 and round(p95)} ms; "
                f"bailouts={agg['bailouts_sidecar']} (metrics.log={agg['bailouts_metrics_log']})"
                f"  -> {'PASS' if agg['gate_G2_bailouts_pass'] else 'FAIL'} (compare p50/p95 vs baseline)")
+    if any(n for _, n, _, _ in agg["latency_buckets"]):
+        out.append("  G2 by size    : finalize latency by draft chars (input.log, all turns in window)")
+        for label, n, b50, b95 in agg["latency_buckets"]:
+            if n:
+                out.append(f"    {label:>10}: n={n:<4} p50={b50 and round(b50):>5} ms  "
+                           f"p95={b95 and round(b95):>5} ms")
     out.append(f"  G3 corrections: refined-edit turns={agg['refined_edit_turns']} "
                f"(long: {agg['long_turns_with_refined_edit']}/{agg['long_turns']}), "
                f"max magnitude={agg['refined_edit_max']} tok"
