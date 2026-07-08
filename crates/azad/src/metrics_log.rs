@@ -11,6 +11,15 @@ const RECENT_TRANSCRIPTS_LIMIT: usize = 10;
 const RECENT_EVENT_ASSOCIATION_MAX_GAP_MS: u64 = 5 * 60 * 1000;
 const SUMMARY_TRAILING_BLANK_LINES: usize = 2;
 
+/// Recent-transcriptions table: `mode` (raw/normal/full), `ref` (words the refined pass changed,
+/// or a state), `preview`, `dur` (turn seconds). Shared by both render call sites so the widths
+/// can't drift apart.
+const RECENT_TABLE_HEADERS: &[&str] = &["mode", "ref", "preview", "dur"];
+const RECENT_TABLE_WIDTHS: &[usize] = &[6, 5, 40, 5];
+/// The debug overlay wraps any row wider than this; the table must stay within it so each turn
+/// occupies exactly one line. See `recent_transcriptions_row_fits_on_one_line`.
+const RECENT_TABLE_MAX_WIDTH: usize = 69;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptMode {
@@ -232,8 +241,8 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
   lines.push(format!("Recent transcriptions (latest {})", RECENT_TRANSCRIPTS_LIMIT));
   if summary.recent_transcripts.is_empty() {
     lines.extend(render_table(
-      &["mode", "refined", "preview", "ms"],
-      &[7, 9, 40, 8],
+      RECENT_TABLE_HEADERS,
+      RECENT_TABLE_WIDTHS,
       &[vec!["-".to_string(), "-".to_string(), "-".to_string(), "-".to_string()]],
     ));
   } else {
@@ -243,10 +252,10 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
         recent_mode_label(sample).to_string(),
         recent_refined_label(sample),
         sample.text_preview.clone(),
-        sample.transcription_duration_ms.to_string(),
+        format_duration_secs(sample.transcription_duration_ms),
       ]);
     }
-    lines.extend(render_table(&["mode", "refined", "preview", "ms"], &[7, 9, 40, 8], &rows));
+    lines.extend(render_table(RECENT_TABLE_HEADERS, RECENT_TABLE_WIDTHS, &rows));
   }
   for _ in 0..SUMMARY_TRAILING_BLANK_LINES {
     lines.push(String::new());
@@ -561,6 +570,14 @@ fn recent_refined_label(sample: &RecentTranscriptSummary) -> String {
   "-".to_string()
 }
 
+/// Compact turn duration for the recent-transcriptions table. Raw ms reached six digits on long
+/// turns ("118378"), overflowing the overlay width and wrapping the row; seconds stay <=5 chars
+/// and read faster. Tenths under 100 s, whole seconds above.
+fn format_duration_secs(ms: u64) -> String {
+  let secs = ms as f64 / 1000.0;
+  if secs < 99.95 { format!("{secs:.1}s") } else { format!("{secs:.0}s") }
+}
+
 fn metrics_log_path() -> PathBuf {
   if let Some(home) = std::env::var_os("HOME") {
     return PathBuf::from(home)
@@ -575,8 +592,40 @@ fn metrics_log_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
   use super::{
-    MetricsLogEvent, MetricsLogRecord, TranscriptMode, duration_stats, percentile, summarize,
+    MetricsLogEvent, MetricsLogRecord, RECENT_TABLE_HEADERS, RECENT_TABLE_MAX_WIDTH,
+    RECENT_TABLE_WIDTHS, TranscriptMode, duration_stats, format_duration_secs, percentile,
+    render_table, summarize,
   };
+
+  #[test]
+  fn recent_transcriptions_row_fits_on_one_line() {
+    // render_table pads/truncates every cell to its width, so a row can only wrap if the widths
+    // total exceeds the overlay budget. Worst case: widest state label, an overlong preview, a
+    // multi-minute duration. Guards the column widths against future growth.
+    let rows = vec![vec![
+      "normal".to_string(),
+      "queued".to_string(),
+      "x".repeat(200),
+      format_duration_secs(3_599_000),
+    ]];
+    for line in render_table(RECENT_TABLE_HEADERS, RECENT_TABLE_WIDTHS, &rows) {
+      assert!(
+        line.chars().count() <= RECENT_TABLE_MAX_WIDTH,
+        "recent-transcriptions line is {} cols (> {RECENT_TABLE_MAX_WIDTH}); it will wrap: {line:?}",
+        line.chars().count()
+      );
+    }
+  }
+
+  #[test]
+  fn format_duration_secs_stays_within_dur_column() {
+    for ms in [0, 900, 3_741, 12_739, 99_949, 99_999, 118_378, 3_599_000] {
+      let rendered = format_duration_secs(ms);
+      assert!(rendered.len() <= 5, "`{rendered}` exceeds the dur column width of 5");
+    }
+    assert_eq!(format_duration_secs(3_741), "3.7s");
+    assert_eq!(format_duration_secs(118_378), "118s");
+  }
 
   #[test]
   fn percentile_interpolates_correctly() {
