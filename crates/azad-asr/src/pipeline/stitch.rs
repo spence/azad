@@ -92,6 +92,20 @@ pub(super) fn stitch_incremental_text(
     // tokens `[it's, not, clear, to]` matched right's middle 4 tokens of the same phrase
     // and the stitcher used left's prefix as pseudo-suffix, dropping ~10 tokens of real
     // speech.
+    //
+    // `tail_drop` alone exceeding the cap is the same violation from the *left* side: it
+    // discards more of left's tail than the overlapping audio could have re-transcribed, so
+    // it can only be anchoring on a repeated phrase deeper in left. Turn 41 (2026-07-07)
+    // hit this — the speaker said "add another instance to this cluster that is beefier ...
+    // and if we get more traffic then we're going to add another instance to this cluster",
+    // and seg 13's head "another instance to this cluster that is beefier" matched the
+    // EARLIER occurrence at tail_drop=16 (overlap 8) against a 9-token audio budget,
+    // beating the genuine tail-anchored match (overlap 5) and dropping the middle clause.
+    // Rejecting `tail_drop > cap` here restores the true anchor. (`cap` is never below the
+    // 2-token slack floor, so ordinary ≤2-token tail corrections always survive.)
+    if max_right_start.is_some_and(|cap| tail_drop > cap) {
+      continue;
+    }
     let adjusted_right_cap = max_right_start.map(|c| c.saturating_sub(tail_drop));
     let left_start = left_len.saturating_sub(tail_window_tokens);
     let left_keys = left[left_start..left_len]

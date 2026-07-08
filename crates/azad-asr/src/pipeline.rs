@@ -4111,12 +4111,13 @@ mod tests {
   use super::{
     CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES,
     EmptyPartialAction, EouEmission, FinalizeTailPlan, FinalizingPulsePlan,
-    INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_TAIL_MAX_WAIT_FACTOR, IncrementalPartialSegment,
-    LiveDraftRenderPlan, MIDDLE_COVERAGE_TOLERANCE_SAMPLES, PipelineControls, PipelineCore,
-    TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start, cap_segment_start,
-    capture_enable_transition, choose_streaming_final_text, compose_live_display_text,
-    debug_recording_stem, empty_partial_action, eou_chars_in_range, eou_corroborates_silence,
-    finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
+    INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
+    INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS, INCREMENTAL_TAIL_MAX_WAIT_FACTOR,
+    IncrementalPartialSegment, LiveDraftRenderPlan, MIDDLE_COVERAGE_TOLERANCE_SAMPLES,
+    PipelineControls, PipelineCore, TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start,
+    cap_segment_start, capture_enable_transition, choose_streaming_final_text,
+    compose_live_display_text, debug_recording_stem, empty_partial_action, eou_chars_in_range,
+    eou_corroborates_silence, finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
     leading_coverage_is_incomplete, live_display_can_replace, live_stream_output_gap,
     live_stream_stall_refine_due, middle_coverage_is_incomplete, non_empty_partials,
     normalize_chunk_case, partial_core_coverage_gap, plan_live_draft_render,
@@ -4139,6 +4140,157 @@ mod tests {
       is_tail,
       text: text.to_string(),
     }
+  }
+
+  /// The 25 captured incremental partials from turn 41 (debug-recording
+  /// 1783487560687-turn-000041-bailout), in received order: (start_sample,
+  /// end_sample, is_tail, text). Real 103 s dictation; the speaker repeated
+  /// "add another instance to this cluster ... beefier".
+  const TURN_41_PARTIALS: &[(usize, usize, bool, &str)] = &[
+    (0, 81920, false, "The likeliest case here is that we will launch on a"),
+    (0, 102400, false, "The likeliest case here is that we will launch on a"),
+    (0, 122880, false, "The likeliest case here is that we will launch on a"),
+    (15360, 143360, false, "Case here is that we will launch on a reasonably"),
+    (
+      112640,
+      240640,
+      false,
+      "Reasonably inexpensive instance that gives us at least enough compute to handle.",
+    ),
+    (
+      133120,
+      261120,
+      false,
+      "Reasonably inexpensive instance that gives us at least enough compute to handle.",
+    ),
+    (171520, 299520, false, "That gives us at least enough compute to handle the"),
+    (
+      268800,
+      396800,
+      false,
+      "The initial volume and I really have no idea on what this initial volume is.",
+    ),
+    (
+      366080,
+      494080,
+      false,
+      "On what this initial volume is going to be, it's likely not going to be very much at \
+       all, but if it is",
+    ),
+    (
+      386560,
+      514560,
+      false,
+      "Show volume is going to be, it's likely not going to be very much at all, but if it is um.",
+    ),
+    (483840, 611840, false, "Then we will add another instance to this cluster that is beefier."),
+    (
+      581120,
+      709120,
+      false,
+      "Is beefier, and if we get more traffic, then we're going to add another instance to \
+       this cluster.",
+    ),
+    (
+      678400,
+      806400,
+      false,
+      "Another instance to this cluster that is beefier still and we may shut down the \
+       original node so like.",
+    ),
+    (
+      775680,
+      903680,
+      false,
+      "original node so like that's generally how I'm probably going to launch this and so \
+       this V one this G.",
+    ),
+    (844800, 972800, false, "And so this V one, this GA that we must ship must be able to uh."),
+    (872960, 1000960, false, "V one, this GA that we must ship must be able to uh standard."),
+    (926720, 1054720, false, "Must be able to uh stand itself up, run as a single node it."),
+    (
+      985600,
+      1113600,
+      false,
+      "Stand itself up, run as a single node it must be able to like uh, you know",
+    ),
+    (1082880, 1210880, false, "Uh you know see that another node is trying to connect to it."),
+    (1103360, 1231360, false, "You know see that another node is trying to connect to it and"),
+    (1200640, 1328640, false, "To it and uh it you know like uh will have the Amazon."),
+    (1297920, 1425920, false, "Will have the Amazon you know uh NLB do routing and like"),
+    (
+      1395200,
+      1523200,
+      false,
+      "And like you know they should both sort of get equal traffic uh there's a question \
+       about how do.",
+    ),
+    (
+      1487360,
+      1615360,
+      false,
+      "A question about how do we make sure that uh connections stay pinned to the instance \
+       they start in, and that's a",
+    ),
+    (
+      1530880,
+      1658880,
+      true,
+      "Sure that connections stay pinned to the instance they start in, and that's a whole \
+       thing I don't know.",
+    ),
+  ];
+
+  /// Replays the captured partials through the exact accumulation loop from
+  /// `handle_incremental_result` and returns the final assembled text.
+  fn assemble_turn_41() -> String {
+    let mut assembled = String::new();
+    let mut prev_refined_end = 0usize;
+    for &(start, end, _is_tail, text) in TURN_41_PARTIALS {
+      let audio_overlap = prev_refined_end.saturating_sub(start);
+      let max_right_start = stitch_right_start_cap_from_overlap(audio_overlap);
+      let stitched = stitch_incremental_text(
+        &assembled,
+        text,
+        INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
+        INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
+        Some(max_right_start),
+        audio_overlap,
+      );
+      eprintln!("--- after seg @{start}: {stitched}");
+      assembled = stitched;
+      prev_refined_end = prev_refined_end.max(end);
+    }
+    assembled
+  }
+
+  #[test]
+  fn turn_41_repeated_phrase_keeps_the_middle_clause() {
+    // The speaker said "...add another instance to this cluster that is beefier, AND IF WE
+    // GET MORE TRAFFIC, then we're going to add another instance...". The repeated
+    // "add another instance to this cluster" false-anchored the stitcher, dropping the
+    // middle clause — which tripped `partial_core_coverage_gap` on seg 12 live and forced a
+    // full-turn pass on 103 s of audio.
+    let assembled = assemble_turn_41();
+    assert!(
+      assembled.to_lowercase().contains("if we get more traffic"),
+      "stitcher dropped the repeated-phrase middle clause:\n{assembled}"
+    );
+  }
+
+  #[test]
+  fn turn_41_assembly_does_not_trip_core_coverage_bailout() {
+    let assembled = assemble_turn_41();
+    let segments: Vec<IncrementalPartialSegment> = TURN_41_PARTIALS
+      .iter()
+      .enumerate()
+      .map(|(i, &(start, end, is_tail, text))| partial(i as u64 + 1, start, end, is_tail, text))
+      .collect();
+    let gap = partial_core_coverage_gap(&segments, &assembled);
+    assert!(
+      gap.is_none(),
+      "assembled text tripped a core-coverage bailout (would force a full pass): {gap:?}\n{assembled}"
+    );
   }
 
   #[test]
