@@ -129,7 +129,11 @@ final class AsrWorker {
           reset()
           writeResponse(["ok": true])
         case "finish":
-          let text = finish()
+          // `stream_only` returns just the streaming session's own flushed tail — no
+          // whole-turn re-decode. The dual-stream refined pass is fed continuously, so its
+          // finalize is a cheap flush of the last buffered chunk, not an O(turn) re-decode.
+          let streamOnly = object["stream_only"] as? Bool ?? false
+          let text = finish(streamOnly: streamOnly)
           writeResponse(["ok": true, "text": text])
         case "final_samples":
           let samples = try parseSamples(object["samples"])
@@ -157,8 +161,13 @@ final class AsrWorker {
     turnSamples.removeAll(keepingCapacity: true)
   }
 
-  private func finish() -> String {
+  private func finish(streamOnly: Bool = false) -> String {
     let streamTail = liveSession.finish().text
+
+    if streamOnly {
+      reset()
+      return streamTail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     guard !turnSamples.isEmpty else {
       reset()

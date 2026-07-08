@@ -75,6 +75,19 @@ impl MlxNemotronAsr {
     Ok((!text.is_empty()).then_some(text))
   }
 
+  /// Flush the streaming session's own tail without a whole-turn re-decode. Used by the
+  /// continuously-fed dual-stream refined pass so finalize is O(one chunk), not O(turn).
+  pub fn stream_finish(&mut self) -> Result<Option<String>> {
+    let response = self.command(json!({ "type": "finish", "stream_only": true }))?;
+    let text = response
+      .get("text")
+      .and_then(Value::as_str)
+      .unwrap_or_default()
+      .trim()
+      .to_string();
+    Ok((!text.is_empty()).then_some(text))
+  }
+
   pub fn transcribe_final_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
     let response = self.command(json!({
       "type": "final_samples",
