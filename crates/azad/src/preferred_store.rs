@@ -640,7 +640,7 @@ pub fn save_active_model_pack(pack_id: &str) {
 }
 
 pub const BUILT_IN_HESITATIONS: &[&str] =
-  &["um", "uh", "umm", "uhh", "uhhh", "er", "err", "ah", "ahh", "eh", "hm", "hmm", "mmm"];
+  &["um", "uhm", "uh", "umm", "uhh", "uhhh", "er", "err", "ah", "ahh", "eh", "hm", "hmm", "mmm"];
 
 fn bool_for_key(key_name: &str) -> Option<bool> {
   unsafe {
