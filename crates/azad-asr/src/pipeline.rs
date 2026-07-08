@@ -2517,6 +2517,9 @@ enum AuditEmittedKind {
   DualFinal,
 }
 
+// All variants share the `Refine` prefix because, since the windowed-finalization job kinds were
+// retired, the only jobs left are operations on the refined streaming session.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FinalJobKind {
   /// Dual-stream: feed `audio` into the worker's persistent refined streaming session.
