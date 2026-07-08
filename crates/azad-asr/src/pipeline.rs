@@ -1956,9 +1956,19 @@ impl PipelineCore {
   }
 
   fn emit_active_draft(&mut self) {
+    // Goal #1 (never churn/swap): in dual-stream the refined 560ms stream lags the live 80ms
+    // stream, so feeding it into the live display made the caption swap large committed spans.
+    // Keep the live caption a PURE streaming hypothesis during speech; the refined text is
+    // applied once at finalize (ReplaceLine). Subtle in-place live corrections (goal #3) are a
+    // later, carefully-stabilized addition.
+    let refined_for_display: &str = if self.cfg.refinement_mode == RefinementMode::DualStream {
+      ""
+    } else {
+      &self.incremental.live_refined_text
+    };
     match plan_live_draft_render_after_previous(
       &self.incremental.last_live_display_text,
-      &self.incremental.live_refined_text,
+      refined_for_display,
       &self.eou_draft,
     ) {
       Some(LiveDraftRenderPlan::StreamingHypothesis(display)) => {
@@ -2922,7 +2932,8 @@ impl PipelineCore {
     let cleaned = normalize_chunk_case(&self.incremental.live_refined_text, cleaned);
     self.incremental.live_refined_text.push_str(&cleaned);
     self.incremental.has_refined_text = true;
-    self.emit_active_draft();
+    // Do NOT re-render the live caption here: dual-stream keeps the caption a pure streaming
+    // hypothesis during speech (goal #1). The accumulated refined text is applied at finalize.
   }
 
   fn handle_incremental_result(&mut self, result: IncrementalSegmentResult) {
