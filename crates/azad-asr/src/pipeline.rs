@@ -547,20 +547,17 @@ impl StreamingAsr {
   }
 }
 
-fn finalizer_config(model: &StreamingModelConfig, refined_stream: bool) -> MlxNemotronConfig {
+/// Config for the persistent refined-stream worker: it runs its streaming session at the
+/// higher-quality final chunk size (fed the turn's audio continuously), so its live `chunk` step
+/// already decodes at final quality and finalize is a cheap flush.
+fn finalizer_config(model: &StreamingModelConfig) -> MlxNemotronConfig {
   match model {
     StreamingModelConfig::MlxNemotron {
-      model_dir,
-      language,
-      streaming_chunk_ms,
-      final_chunk_ms,
-      helper_path,
+      model_dir, language, final_chunk_ms, helper_path, ..
     } => MlxNemotronConfig {
       model_dir: model_dir.clone(),
       language: language.clone(),
-      // The dual-stream refined worker's PERSISTENT streaming session must run at the
-      // higher-quality final chunk size; it's fed the turn's audio continuously.
-      streaming_chunk_ms: if refined_stream { *final_chunk_ms } else { *streaming_chunk_ms },
+      streaming_chunk_ms: *final_chunk_ms,
       final_chunk_ms: *final_chunk_ms,
       helper_path: helper_path.clone(),
     },
@@ -809,9 +806,9 @@ pub fn run_pipeline_with_options(
   // Finalization runs in a separate helper process so live streaming stays responsive. That
   // worker hosts the persistent refined 560ms session (fed continuously, off the live thread) and
   // flushes it at turn end.
-  let worker_cfg = finalizer_config(&cfg.streaming_model, true);
+  let worker_cfg = finalizer_config(&cfg.streaming_model);
   let (final_tx, async_rx, final_handle) = spawn_final_worker(worker_cfg, Arc::clone(&renderer));
-  let (partial_audit_tx, partial_audit_handle) = spawn_partial_audit_worker();
+  let (debug_recording_tx, debug_recording_handle) = spawn_debug_recording_worker();
 
   renderer
     .emit(RenderEvent::Status(StatusView { state: EngineState::Idle, detail: "idle".to_string() }));
@@ -820,7 +817,7 @@ pub fn run_pipeline_with_options(
     vad,
     streaming_asr,
     final_tx,
-    partial_audit_tx,
+    debug_recording_tx,
     async_rx,
     controls: options.controls,
     stop_after_turn: options.stop_after_turn,
@@ -860,7 +857,7 @@ pub fn run_pipeline_with_options(
   // Close worker channels (drops senders) then wait for pending work.
   drop(runner);
   let _ = final_handle.join();
-  let _ = partial_audit_handle.join();
+  let _ = debug_recording_handle.join();
   Ok(())
 }
 
@@ -874,7 +871,7 @@ struct PipelineRuntimeParts {
   vad: CoreMlVadProcessor,
   streaming_asr: StreamingAsr,
   final_tx: crossbeam_channel::Sender<FinalJob>,
-  partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
+  debug_recording_tx: crossbeam_channel::Sender<DebugRecordingJob>,
   async_rx: crossbeam_channel::Receiver<FinalResult>,
   controls: Option<Arc<PipelineControls>>,
   stop_after_turn: bool,
@@ -940,7 +937,7 @@ struct PipelineCore {
   vad: CoreMlVadProcessor,
   streaming_asr: StreamingAsr,
   final_tx: crossbeam_channel::Sender<FinalJob>,
-  partial_audit_tx: crossbeam_channel::Sender<PartialAuditJob>,
+  debug_recording_tx: crossbeam_channel::Sender<DebugRecordingJob>,
   async_rx: crossbeam_channel::Receiver<FinalResult>,
   controls: Option<Arc<PipelineControls>>,
   stop_after_turn: bool,
@@ -1002,7 +999,7 @@ struct PipelineCore {
   tentative_active_chunks: u32,
   tentative_active_with_text: u32,
 
-  incremental: IncrementalRefineState,
+  live_display: LiveDisplayState,
 
   // Don't clear "Active" immediately at turn end; short turns may only produce
   // a draft right before finalization, and clearing in the same cycle makes it
@@ -1060,7 +1057,7 @@ impl PipelineCore {
       vad,
       streaming_asr,
       final_tx,
-      partial_audit_tx,
+      debug_recording_tx,
       async_rx,
       controls,
       stop_after_turn,
@@ -1081,7 +1078,7 @@ impl PipelineCore {
       vad,
       streaming_asr,
       final_tx,
-      partial_audit_tx,
+      debug_recording_tx,
       async_rx,
       controls,
       stop_after_turn,
@@ -1109,7 +1106,7 @@ impl PipelineCore {
       tentative_recovery_vad_above_thr: false,
       tentative_active_chunks: 0,
       tentative_active_with_text: 0,
-      incremental: IncrementalRefineState::new(Instant::now()),
+      live_display: LiveDisplayState::new(Instant::now()),
       pending_active_clear_chunks: 0,
       last_health_emit: Instant::now(),
       health_interval: Duration::from_millis(200),
@@ -1585,7 +1582,7 @@ impl PipelineCore {
     self.tentative_active = false;
     self.tentative_recovery_eou_text_seen = false;
     self.tentative_recovery_vad_above_thr = false;
-    self.incremental.reset(Instant::now());
+    self.live_display.reset(Instant::now());
 
     self.turn_audio.clear();
     self.turn_id = self.turn_id.wrapping_add(1);
@@ -1683,7 +1680,7 @@ impl PipelineCore {
       // Record per-emission timing and the surface form so the debug-recording sidecar can record
       // what EOU heard for each span. The audio_samples value matches the TOON_EOU_TEXT log line
       // below so log fixtures and runtime data line up exactly.
-      self.incremental.eou_emissions.push(EouEmission {
+      self.live_display.eou_emissions.push(EouEmission {
         audio_samples: self.turn_audio.len(),
         delta_chars,
         text: cleaned.clone(),
@@ -1718,7 +1715,7 @@ impl PipelineCore {
 
   fn log_live_stream_output_gap(&mut self) {
     let current = self.turn_audio.len();
-    let previous = self.incremental.last_live_output_audio_samples.replace(current);
+    let previous = self.live_display.last_live_output_audio_samples.replace(current);
     let Some(previous) = previous else {
       return;
     };
@@ -1735,7 +1732,7 @@ impl PipelineCore {
         gap,
         gap_ms,
         self.eou_draft.chars().count(),
-        self.incremental.live_refined_text.chars().count(),
+        self.live_display.live_refined_text.chars().count(),
       );
     }
   }
@@ -1747,15 +1744,15 @@ impl PipelineCore {
     // bounded tail — tightly bounded in dual-stream so the lagging 560ms stream can never rewrite
     // a large already-shown span.
     match plan_live_draft_render_after_previous(
-      &self.incremental.last_live_display_text,
-      &self.incremental.live_refined_text,
+      &self.live_display.last_live_display_text,
+      &self.live_display.live_refined_text,
       &self.eou_draft,
     ) {
       Some(LiveDraftRenderPlan::StreamingHypothesis(display)) => {
         let (committed, live) = self.tracker.update(&display);
         let visible = format!("{committed}{live}").trim().to_string();
         if !visible.is_empty() {
-          self.incremental.last_live_display_text = visible.clone();
+          self.live_display.last_live_display_text = visible.clone();
           self.record_live_display_event("streaming", "emit", visible, None);
         }
         self.renderer.emit(RenderEvent::Active { id: self.turn_id, committed, live });
@@ -1769,20 +1766,20 @@ impl PipelineCore {
 
   fn emit_replacement_live_display(&mut self, display: String) {
     let display = stabilize_live_display_replacement(
-      &self.incremental.last_live_display_text,
+      &self.live_display.last_live_display_text,
       &display,
       LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
     );
-    if !live_display_can_replace(&self.incremental.last_live_display_text, &display) {
-      let previous = self.incremental.last_live_display_text.clone();
+    if !live_display_can_replace(&self.live_display.last_live_display_text, &display) {
+      let previous = self.live_display.last_live_display_text.clone();
       self.record_live_display_event("refined", "hold_rollback", previous, Some(display.clone()));
       if self.debug_stats_enabled() {
         eprintln!(
           "TOON_LIVE_DISPLAY turn_id={} action=hold_rollback previous_chars={} \
            previous_tokens={} candidate_chars={} candidate_tokens={}",
           self.turn_id,
-          self.incremental.last_live_display_text.chars().count(),
-          live_display_token_count(&self.incremental.last_live_display_text),
+          self.live_display.last_live_display_text.chars().count(),
+          live_display_token_count(&self.live_display.last_live_display_text),
           display.chars().count(),
           live_display_token_count(&display),
         );
@@ -1790,7 +1787,7 @@ impl PipelineCore {
       return;
     }
 
-    self.incremental.last_live_display_text = display.clone();
+    self.live_display.last_live_display_text = display.clone();
     self.record_live_display_event("refined", "emit", display.clone(), None);
     self.renderer.emit(RenderEvent::Active {
       id: self.turn_id,
@@ -1806,7 +1803,7 @@ impl PipelineCore {
     text: String,
     candidate_text: Option<String>,
   ) {
-    self.incremental.live_display_events.push(LiveDisplayEvent {
+    self.live_display.live_display_events.push(LiveDisplayEvent {
       audio_samples: self.turn_audio.len(),
       source,
       action,
@@ -1912,20 +1909,20 @@ impl PipelineCore {
   /// fall back to raw EOU text when no stable draft exists yet.
   fn current_finalize_draft(&self) -> String {
     match plan_live_draft_render_after_previous(
-      &self.incremental.last_live_display_text,
-      &self.incremental.live_refined_text,
+      &self.live_display.last_live_display_text,
+      &self.live_display.live_refined_text,
       &self.eou_draft,
     ) {
       Some(LiveDraftRenderPlan::ReplacementDisplay(display)) => {
-        if !live_display_can_replace(&self.incremental.last_live_display_text, &display)
-          && !self.incremental.last_live_display_text.trim().is_empty()
+        if !live_display_can_replace(&self.live_display.last_live_display_text, &display)
+          && !self.live_display.last_live_display_text.trim().is_empty()
         {
-          return self.incremental.last_live_display_text.trim().to_string();
+          return self.live_display.last_live_display_text.trim().to_string();
         }
         return display;
       }
       Some(LiveDraftRenderPlan::StreamingHypothesis(display))
-        if !self.incremental.live_refined_text.trim().is_empty() =>
+        if !self.live_display.live_refined_text.trim().is_empty() =>
       {
         return display;
       }
@@ -2036,7 +2033,7 @@ impl PipelineCore {
         Err(_) => break,
       }
     }
-    let refined = self.incremental.live_refined_text.trim().to_string();
+    let refined = self.live_display.live_refined_text.trim().to_string();
     let finalize_elapsed_ms = elapsed_ms_since(finalize_started_at);
     if self.debug_stats_enabled() {
       eprintln!(
@@ -2081,9 +2078,9 @@ impl PipelineCore {
     );
     self.renderer.emit(RenderEvent::DebugStats(event));
 
-    let eou_emissions = self.incremental.eou_emissions.clone();
-    let live_display_events = self.incremental.live_display_events.clone();
-    let _ = self.partial_audit_tx.send(PartialAuditJob {
+    let eou_emissions = self.live_display.eou_emissions.clone();
+    let live_display_events = self.live_display.live_display_events.clone();
+    let _ = self.debug_recording_tx.send(DebugRecordingJob {
       turn_id: self.turn_id,
       audio,
       emitted_kind: AuditEmittedKind::DualFinal,
@@ -2111,7 +2108,7 @@ impl PipelineCore {
     self.tracker.reset();
     self.eou_draft.clear();
     let _ = self.streaming_asr.reset_turn();
-    self.incremental.reset(Instant::now());
+    self.live_display.reset(Instant::now());
 
     self.renderer.emit(RenderEvent::Active {
       id: self.turn_id,
@@ -2189,9 +2186,9 @@ impl PipelineCore {
       return;
     }
     let cleaned = delta.replace('▁', " ");
-    let cleaned = normalize_chunk_case(&self.incremental.live_refined_text, cleaned);
-    self.incremental.live_refined_text.push_str(&cleaned);
-    self.incremental.has_refined_text = true;
+    let cleaned = normalize_chunk_case(&self.live_display.live_refined_text, cleaned);
+    self.live_display.live_refined_text.push_str(&cleaned);
+    self.live_display.has_refined_text = true;
     // Do NOT re-render the live caption here: dual-stream keeps the caption a pure streaming
     // hypothesis during speech (goal #1). The accumulated refined text is applied at finalize.
   }
@@ -2258,9 +2255,9 @@ fn spawn_final_worker(
 /// divergence is emitted on the finalize thread, so this thread only persists the turn's wav +
 /// sidecar (draft, refined final, live-display + EOU events) off the hot path. Only reached when
 /// debug stats are enabled.
-fn spawn_partial_audit_worker()
--> (crossbeam_channel::Sender<PartialAuditJob>, std::thread::JoinHandle<()>) {
-  let (tx, rx) = crossbeam_channel::unbounded::<PartialAuditJob>();
+fn spawn_debug_recording_worker()
+-> (crossbeam_channel::Sender<DebugRecordingJob>, std::thread::JoinHandle<()>) {
+  let (tx, rx) = crossbeam_channel::unbounded::<DebugRecordingJob>();
   let handle = std::thread::spawn(move || {
     // Recording should remain timely for recent rows in debug views without competing with
     // user-interactive work.
@@ -2545,16 +2542,15 @@ enum FinalJobKind {
   RefineReset,
 }
 
-struct PartialAuditJob {
+struct DebugRecordingJob {
   turn_id: u64,
   audio: Vec<f32>,
   emitted_kind: AuditEmittedKind,
   emitted_text: String,
-  /// Dual-stream only: the live draft shown at finalize, before the refined replace. Empty for
-  /// legacy jobs. Paired with `emitted_text` (the refined final) so the sidecar captures the
-  /// correction magnitude without a model re-decode.
+  /// The live draft shown at finalize, before the refined replace. Paired with `emitted_text` (the
+  /// refined final) so the sidecar captures the correction magnitude without a model re-decode.
   draft_text: String,
-  /// Dual-stream only: wall-time to drain + flush the refined stream at finalize (G2 latency).
+  /// Wall-time to drain + flush the refined stream at finalize (G2 latency).
   finalize_elapsed_ms: Option<u64>,
   eou_emissions: Vec<EouEmission>,
   live_display_events: Vec<LiveDisplayEvent>,
@@ -2592,7 +2588,7 @@ struct LiveDisplayEvent {
 /// Per-turn live-display + refined-stream state. Dual-stream keeps the live caption a pure
 /// streaming hypothesis and folds the continuously-fed refined stream into it via the
 /// stabilizer; the recorded `eou_emissions` / `live_display_events` feed the debug sidecar.
-struct IncrementalRefineState {
+struct LiveDisplayState {
   has_refined_text: bool,
   /// Per-emission streaming history within the current turn. The `text` field is written to the
   /// debug-recording sidecar.
@@ -2603,7 +2599,7 @@ struct IncrementalRefineState {
   live_display_events: Vec<LiveDisplayEvent>,
 }
 
-impl IncrementalRefineState {
+impl LiveDisplayState {
   fn new(_now: Instant) -> Self {
     Self {
       has_refined_text: false,

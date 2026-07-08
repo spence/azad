@@ -64,40 +64,10 @@ impl MlxNemotronAsr {
     response_ok(&response)
   }
 
-  // Whole-turn re-decode helper commands. The dual-stream pipeline no longer calls either — the
-  // helper-side `final_samples`/non-stream `finish` protocol is retired in a later commit; kept for
-  // now so this commit only touches the pipeline.
-  #[allow(dead_code)]
-  pub fn final_transcript(&mut self) -> Result<Option<String>> {
-    let response = self.command(json!({ "type": "finish" }))?;
-    let text = response
-      .get("text")
-      .and_then(Value::as_str)
-      .unwrap_or_default()
-      .trim()
-      .to_string();
-    Ok((!text.is_empty()).then_some(text))
-  }
-
-  /// Flush the streaming session's own tail without a whole-turn re-decode. Used by the
-  /// continuously-fed dual-stream refined pass so finalize is O(one chunk), not O(turn).
+  /// Flush the streaming session's own tail. The continuously-fed dual-stream refined pass makes
+  /// finalize a cheap flush of the last buffered chunk — O(one chunk), not O(turn).
   pub fn stream_finish(&mut self) -> Result<Option<String>> {
-    let response = self.command(json!({ "type": "finish", "stream_only": true }))?;
-    let text = response
-      .get("text")
-      .and_then(Value::as_str)
-      .unwrap_or_default()
-      .trim()
-      .to_string();
-    Ok((!text.is_empty()).then_some(text))
-  }
-
-  #[allow(dead_code)]
-  pub fn transcribe_final_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
-    let response = self.command(json!({
-      "type": "final_samples",
-      "samples": samples,
-    }))?;
+    let response = self.command(json!({ "type": "finish" }))?;
     let text = response
       .get("text")
       .and_then(Value::as_str)

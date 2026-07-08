@@ -93,16 +93,13 @@ final class AsrWorker {
   private let model: NemotronASRModel
   private let language: String
   private let streamingChunkMs: Int
-  private let finalChunkMs: Int
   private var liveSession: NemotronASRStreamSession
-  private var turnSamples: [Float] = []
 
   init(options: Options) throws {
     let modelDir = options.modelDir!
     self.model = try NemotronASRModel.fromDirectory(modelDir)
     self.language = options.language
     self.streamingChunkMs = options.streamingChunkMs
-    self.finalChunkMs = options.finalChunkMs
     self.liveSession = model.makeStreamSession(
       language: options.language,
       chunkMs: options.streamingChunkMs
@@ -129,15 +126,10 @@ final class AsrWorker {
           reset()
           writeResponse(["ok": true])
         case "finish":
-          // `stream_only` returns just the streaming session's own flushed tail — no
-          // whole-turn re-decode. The dual-stream refined pass is fed continuously, so its
-          // finalize is a cheap flush of the last buffered chunk, not an O(turn) re-decode.
-          let streamOnly = object["stream_only"] as? Bool ?? false
-          let text = finish(streamOnly: streamOnly)
-          writeResponse(["ok": true, "text": text])
-        case "final_samples":
-          let samples = try parseSamples(object["samples"])
-          let text = transcribeFinal(samples)
+          // `finish` flushes just the streaming session's own tail — no whole-turn re-decode.
+          // The dual-stream refined pass is fed continuously, so finalize is a cheap flush of the
+          // last buffered chunk, not an O(turn) re-decode.
+          let text = finish()
           writeResponse(["ok": true, "text": text])
         case "shutdown":
           writeResponse(["ok": true])
@@ -152,42 +144,17 @@ final class AsrWorker {
   }
 
   private func step(_ samples: [Float]) -> String {
-    turnSamples.append(contentsOf: samples)
     return liveSession.step(samples).text
   }
 
   private func reset() {
     liveSession = model.makeStreamSession(language: language, chunkMs: streamingChunkMs)
-    turnSamples.removeAll(keepingCapacity: true)
   }
 
-  private func finish(streamOnly: Bool = false) -> String {
+  private func finish() -> String {
     let streamTail = liveSession.finish().text
-
-    if streamOnly {
-      reset()
-      return streamTail.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    guard !turnSamples.isEmpty else {
-      reset()
-      return streamTail.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    let text = transcribeFinal(turnSamples)
     reset()
-    return text.isEmpty ? streamTail.trimmingCharacters(in: .whitespacesAndNewlines) : text
-  }
-
-  private func transcribeFinal(_ samples: [Float]) -> String {
-    guard !samples.isEmpty else {
-      return ""
-    }
-
-    let finalSession = model.makeStreamSession(language: language, chunkMs: finalChunkMs)
-    _ = finalSession.step(samples)
-    _ = finalSession.finish()
-    return finalSession.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return streamTail.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 }
 
