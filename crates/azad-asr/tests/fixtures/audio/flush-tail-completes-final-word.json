@@ -1,0 +1,270 @@
+{
+  "bailout_reason": null,
+  "draft_text": "Of note, the percentage that we show is still the overall weekly tra",
+  "emitted_kind": "dual_final",
+  "emitted_text": "Of note, the percentage that we show is still the overall weekly tra cker.",
+  "eou_emissions": [
+    {
+      "audio_samples": 38400,
+      "delta_chars": 2,
+      "text": "Of"
+    },
+    {
+      "audio_samples": 43520,
+      "delta_chars": 3,
+      "text": " no"
+    },
+    {
+      "audio_samples": 48640,
+      "delta_chars": 2,
+      "text": "te"
+    },
+    {
+      "audio_samples": 51200,
+      "delta_chars": 1,
+      "text": ","
+    },
+    {
+      "audio_samples": 53760,
+      "delta_chars": 4,
+      "text": " the"
+    },
+    {
+      "audio_samples": 61440,
+      "delta_chars": 4,
+      "text": " per"
+    },
+    {
+      "audio_samples": 64000,
+      "delta_chars": 3,
+      "text": "cen"
+    },
+    {
+      "audio_samples": 66560,
+      "delta_chars": 4,
+      "text": "tage"
+    },
+    {
+      "audio_samples": 79360,
+      "delta_chars": 5,
+      "text": " that"
+    },
+    {
+      "audio_samples": 81920,
+      "delta_chars": 3,
+      "text": " we"
+    },
+    {
+      "audio_samples": 84480,
+      "delta_chars": 4,
+      "text": " sho"
+    },
+    {
+      "audio_samples": 87040,
+      "delta_chars": 1,
+      "text": "w"
+    },
+    {
+      "audio_samples": 92160,
+      "delta_chars": 3,
+      "text": " is"
+    },
+    {
+      "audio_samples": 94720,
+      "delta_chars": 6,
+      "text": " still"
+    },
+    {
+      "audio_samples": 99840,
+      "delta_chars": 4,
+      "text": " the"
+    },
+    {
+      "audio_samples": 122880,
+      "delta_chars": 8,
+      "text": " overall"
+    },
+    {
+      "audio_samples": 135680,
+      "delta_chars": 3,
+      "text": " we"
+    },
+    {
+      "audio_samples": 138240,
+      "delta_chars": 2,
+      "text": "ek"
+    },
+    {
+      "audio_samples": 140800,
+      "delta_chars": 2,
+      "text": "ly"
+    },
+    {
+      "audio_samples": 153600,
+      "delta_chars": 4,
+      "text": " tra"
+    },
+    {
+      "audio_samples": 158720,
+      "delta_chars": 4,
+      "text": "cker"
+    }
+  ],
+  "finalize_elapsed_ms": 33,
+  "full_text": "",
+  "live_display_events": [
+    {
+      "action": "emit",
+      "audio_samples": 38400,
+      "candidate_text": null,
+      "source": "streaming",
+      "text": "Of"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 43520,
+      "candidate_text": null,
+      "source": "streaming",
+      "text": "Of no"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 48640,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 51200,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 53760,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note the"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 61440,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the per"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 64000,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percen"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 66560,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 79360,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 81920,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 84480,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we sho"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 87040,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 92160,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 94720,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 99840,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still the"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 122880,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still the overall"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 135680,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still the overall we"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 138240,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still the overall week"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 140800,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still the overall week"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 153600,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still the overall weekly tra"
+    },
+    {
+      "action": "emit",
+      "audio_samples": 158720,
+      "candidate_text": null,
+      "source": "refined",
+      "text": "Of note, the percentage that we show is still the overall weekly tra"
+    }
+  ],
+  "num_samples": 158720,
+  "partials": [],
+  "pipeline": "dual_stream",
+  "sample_rate": 16000,
+  "ts_ms": 1783550968911,
+  "turn_id": 34
+}

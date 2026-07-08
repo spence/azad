@@ -39,6 +39,16 @@
         "must_be_single_turn": true,
         "must_contain": ["for reference", "kerning"]
       }
+    },
+    {
+      "id": "flush-tail-completes-final-word",
+      "wav": "flush-tail-completes-final-word.wav",
+      "json": "flush-tail-completes-final-word.json",
+      "description": "Pinned 2026-07-08. Real turn ('Of note, the percentage ... the overall weekly tracker.') where the live draft was cut off mid-word ('...weekly tra') and the 560 ms refined finalize flush completed the final word ('cker'). A downstream char-collision heuristic could not distinguish a mid-word continuation from a new word and split it into 'tra cker.'. The helper now preserves the flush tail's leading word-boundary marker, so the finalize join appends it verbatim like any other delta and the final word stays whole. Regression: any reintroduced boundary-guessing on the flush tail splits or glues the last word.",
+      "assertions": {
+        "must_contain": ["weekly tracker"],
+        "must_not_contain": ["tra cker"]
+      }
     }
   ]
 }

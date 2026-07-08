@@ -74,6 +74,31 @@ fn replay_repeated_phrase_preserves_prefix() {
   }
 }
 
+/// Pinned 2026-07-08. Real turn where the live draft was cut off mid-word ("...the overall
+/// weekly tra") and the 560 ms refined finalize flush completed the final word ("cker"). The
+/// flush tail's leading word-boundary marker used to be trimmed off by the helper, so a downstream
+/// char-collision heuristic re-inserted a space and split "tracker" into "tra cker.". The helper
+/// now preserves that marker and the join appends the tail verbatim like any chunk delta, so the
+/// final word stays whole. Fails on the pre-fix code (which emits "tra cker.").
+#[test]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
+fn replay_flush_tail_completes_final_word() {
+  let Some(r) = run_fixture("flush-tail-completes-final-word") else {
+    return;
+  };
+  assert!(r.errors.is_empty(), "pipeline emitted errors: {:?}", r.errors);
+  assert!(
+    r.final_text.contains("weekly tracker"),
+    "finalize flush split the final word — expected a whole `weekly tracker`.\n  got: {}",
+    r.final_text
+  );
+  assert!(
+    !r.final_text.contains("tra cker"),
+    "finalize flush split `tracker` into `tra cker`.\n  got: {}",
+    r.final_text
+  );
+}
+
 /// Synthesized fixture proving the tentative-finalize recovery window fires
 /// on a gap that fits inside the window. Built by concatenating two real
 /// recordings (turn-000008 + 200 ms silence + turn-000009). The 200 ms gap

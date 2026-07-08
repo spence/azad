@@ -154,7 +154,12 @@ final class AsrWorker {
   private func finish() -> String {
     let streamTail = liveSession.finish().text
     reset()
-    return streamTail.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Return the flush tail verbatim, exactly like `step`. Its leading word-boundary marker
+    // (space / SentencePiece `▁`) is what distinguishes a new word (" dare") from a mid-word
+    // continuation ("cker" completing "tracker"). Trimming it here erased that boundary, which
+    // forced a lossy guess downstream: the last word was either glued on or split apart. Rust
+    // trims only the trailing side, so no leading boundary is ever lost.
+    return streamTail
   }
 }
 
