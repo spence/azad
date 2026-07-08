@@ -3862,3 +3862,16 @@
 "zipper mouth face" = "🤐"
 "zombie" = "🧟"
 "zzz" = "💤"
+
+# Curated spoken aliases (2026-07): checkbox, new, and {color} dot phrasings.
+"checkbox" = "✅"
+"new" = "🆕"
+"black dot" = "⚫"
+"blue dot" = "🔵"
+"brown dot" = "🟤"
+"green dot" = "🟢"
+"orange dot" = "🟠"
+"purple dot" = "🟣"
+"red dot" = "🔴"
+"white dot" = "⚪"
+"yellow dot" = "🟡"
