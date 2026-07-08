@@ -134,6 +134,11 @@ struct CommonArgs {
   /// MLX chunk size for finalization passes (ms).
   #[arg(long, default_value_t = 560)]
   final_chunk_ms: u32,
+
+  /// Refinement strategy: `legacy_stitch` (windowed re-decode + text stitch) or `dual_stream`
+  /// (persistent higher-quality streaming session, no stitch, cheap flush finalize).
+  #[arg(long, default_value = "legacy_stitch")]
+  refinement_mode: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -545,6 +550,7 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
     incremental_left_context_ms: args.incremental_left_context_ms,
     incremental_min_new_audio_ms: args.incremental_min_new_audio_ms,
     incremental_wait_tail_result_ms: args.incremental_wait_tail_result_ms,
+    refinement_mode: asr::pipeline::RefinementMode::from_str_lenient(&args.refinement_mode),
   })
 }
 

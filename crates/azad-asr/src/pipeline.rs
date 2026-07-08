@@ -587,6 +587,27 @@ pub struct PipelineConfig {
   pub incremental_left_context_ms: u32,
   pub incremental_min_new_audio_ms: u32,
   pub incremental_wait_tail_result_ms: u32,
+  /// How the refined/final text is produced. `LegacyStitch` runs windowed re-decodes and
+  /// text-stitches them (fragile on repeated phrases, O(turn) full-pass bailout). `DualStream`
+  /// runs a persistent higher-quality streaming session alongside the live one, fed the turn's
+  /// audio continuously, and finalizes with a cheap flush — no stitching, no bailout.
+  pub refinement_mode: RefinementMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RefinementMode {
+  #[default]
+  LegacyStitch,
+  DualStream,
+}
+
+impl RefinementMode {
+  pub fn from_str_lenient(s: &str) -> Self {
+    match s.trim().to_ascii_lowercase().as_str() {
+      "dual_stream" | "dual-stream" | "dual" => Self::DualStream,
+      _ => Self::LegacyStitch,
+    }
+  }
 }
 
 impl PipelineConfig {
@@ -663,7 +684,7 @@ impl StreamingAsr {
   }
 }
 
-fn finalizer_config(model: &StreamingModelConfig) -> MlxNemotronConfig {
+fn finalizer_config(model: &StreamingModelConfig, refined_stream: bool) -> MlxNemotronConfig {
   match model {
     StreamingModelConfig::MlxNemotron {
       model_dir,
@@ -674,7 +695,9 @@ fn finalizer_config(model: &StreamingModelConfig) -> MlxNemotronConfig {
     } => MlxNemotronConfig {
       model_dir: model_dir.clone(),
       language: language.clone(),
-      streaming_chunk_ms: *streaming_chunk_ms,
+      // The dual-stream refined worker's PERSISTENT streaming session must run at the
+      // higher-quality final chunk size; it's fed the turn's audio continuously.
+      streaming_chunk_ms: if refined_stream { *final_chunk_ms } else { *streaming_chunk_ms },
       final_chunk_ms: *final_chunk_ms,
       helper_path: helper_path.clone(),
     },
@@ -920,16 +943,22 @@ pub fn run_pipeline_with_options(
 
   let streaming_asr = StreamingAsr::load(&cfg)?;
 
-  // Finalization slices run in a separate helper process so live streaming stays responsive.
-  let worker_cfg = finalizer_config(&cfg.streaming_model);
-  let (final_tx, async_rx, final_handle) = if cfg.incremental_finalization_enabled {
-    spawn_final_worker(worker_cfg.clone(), Arc::clone(&renderer))
+  // Finalization runs in a separate helper process so live streaming stays responsive. In
+  // dual-stream mode that worker hosts the persistent refined 560ms session (fed continuously,
+  // off the live thread); in legacy mode it does windowed re-decode slices.
+  let dual_stream = cfg.refinement_mode == RefinementMode::DualStream;
+  let worker_cfg = finalizer_config(&cfg.streaming_model, dual_stream);
+  let (final_tx, async_rx, final_handle) = if dual_stream || cfg.incremental_finalization_enabled {
+    spawn_final_worker(worker_cfg, Arc::clone(&renderer))
   } else {
     spawn_noop_final_worker()
   };
   let worker_controls = options.controls.as_ref().map(Arc::clone);
-  let (partial_audit_tx, partial_audit_handle) =
-    spawn_partial_audit_worker(worker_cfg, Arc::clone(&renderer), worker_controls);
+  let (partial_audit_tx, partial_audit_handle) = spawn_partial_audit_worker(
+    finalizer_config(&cfg.streaming_model, false),
+    Arc::clone(&renderer),
+    worker_controls,
+  );
 
   renderer
     .emit(RenderEvent::Status(StatusView { state: EngineState::Idle, detail: "idle".to_string() }));
@@ -1755,6 +1784,13 @@ impl PipelineCore {
     self.turn_started_by_vad = reason == TurnStartReason::Vad;
 
     self.streaming_asr.reset_turn()?;
+    if self.cfg.refinement_mode == RefinementMode::DualStream {
+      let _ = self.final_tx.send(FinalJob {
+        turn_id: self.turn_id,
+        audio: Vec::new(),
+        kind: FinalJobKind::RefineReset,
+      });
+    }
     self.eou_draft.clear();
     self.prev_silence_ms = 0;
     self.seen_eou_since_speech = false;
@@ -1837,6 +1873,16 @@ impl PipelineCore {
   }
 
   fn feed_eou(&mut self, piece: &[f32]) -> Result<bool> {
+    // Dual-stream: mirror the live audio into the background refined session. Non-blocking
+    // send keeps the live thread responsive (goal: zero-lag caption); the refined stream
+    // runs slightly behind and its deltas land via `drain_async_results`.
+    if self.cfg.refinement_mode == RefinementMode::DualStream && !piece.is_empty() {
+      let _ = self.final_tx.send(FinalJob {
+        turn_id: self.turn_id,
+        audio: piece.to_vec(),
+        kind: FinalJobKind::RefineChunk,
+      });
+    }
     let (out, saw_eou) = self.streaming_asr.transcribe_chunk(piece)?;
 
     if !out.is_empty() {
@@ -2156,6 +2202,13 @@ impl PipelineCore {
       self.emit_finalizing_pulse();
     }
     let audio_snapshot: Vec<f32> = std::mem::take(&mut self.turn_audio);
+    if self.cfg.refinement_mode == RefinementMode::DualStream {
+      self.finish_turn_dual_stream(draft)?;
+      self.tracker.reset();
+      self.eou_draft.clear();
+      self.turn_started_by_vad = false;
+      return Ok(());
+    }
     if Self::should_try_incremental_finalization(
       self.cfg.incremental_finalization_enabled,
       !audio_snapshot.is_empty(),
@@ -2178,6 +2231,65 @@ impl PipelineCore {
     self.tracker.reset();
     self.eou_draft.clear();
     self.turn_started_by_vad = false;
+    Ok(())
+  }
+
+  /// Dual-stream finalize: emit the live draft immediately, then flush the continuously-fed
+  /// refined session (cheap — no whole-turn re-decode) and replace with the higher-quality
+  /// refined text. No stitching, no coverage-gap bailout.
+  fn finish_turn_dual_stream(&mut self, draft: String) -> Result<()> {
+    if !draft.is_empty() {
+      self
+        .renderer
+        .emit(RenderEvent::FinalLine { id: self.turn_id, text: draft.clone() });
+    }
+    self.drain_async_results();
+    let _ = self.final_tx.send(FinalJob {
+      turn_id: self.turn_id,
+      audio: Vec::new(),
+      kind: FinalJobKind::RefineFlush,
+    });
+    let finalize_started_at = Instant::now();
+    let wait =
+      Duration::from_millis(u64::from(self.cfg.incremental_wait_tail_result_ms.max(50)) * 6);
+    let deadline = finalize_started_at + wait;
+    loop {
+      let now = Instant::now();
+      if now >= deadline {
+        break;
+      }
+      match self.async_rx.recv_timeout(deadline.saturating_duration_since(now)) {
+        Ok(FinalResult::RefinedDelta { turn_id, delta }) => {
+          if turn_id == self.turn_id {
+            self.apply_refined_delta(&delta);
+          }
+        }
+        Ok(FinalResult::RefinedFinal { turn_id, text }) => {
+          if turn_id == self.turn_id {
+            self.apply_refined_delta(&text);
+            break;
+          }
+        }
+        Ok(FinalResult::Incremental(_)) => {}
+        Err(_) => break,
+      }
+    }
+    let refined = self.incremental.live_refined_text.trim().to_string();
+    if self.debug_stats_enabled() {
+      eprintln!(
+        "TOON_DUAL_STREAM_FINAL turn_id={} elapsed_ms={} draft_chars={} refined_chars={}",
+        self.turn_id,
+        finalize_started_at.elapsed().as_millis(),
+        draft.chars().count(),
+        refined.chars().count(),
+      );
+    }
+    let final_text = if refined.is_empty() { draft } else { refined };
+    if !final_text.is_empty() {
+      self
+        .renderer
+        .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text });
+    }
     Ok(())
   }
 
@@ -2391,6 +2503,9 @@ impl PipelineCore {
       let remaining = deadline.saturating_duration_since(now);
       match self.async_rx.recv_timeout(remaining) {
         Ok(FinalResult::Incremental(result)) => self.handle_incremental_result(result),
+        // Refined-stream results never arrive in legacy mode (this path isn't used in
+        // dual-stream), but the match must stay exhaustive.
+        Ok(FinalResult::RefinedDelta { .. }) | Ok(FinalResult::RefinedFinal { .. }) => {}
         Err(crossbeam_channel::RecvTimeoutError::Timeout) => return false,
         Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return false,
       }
@@ -2778,8 +2893,30 @@ impl PipelineCore {
     while let Ok(result) = self.async_rx.try_recv() {
       match result {
         FinalResult::Incremental(incremental) => self.handle_incremental_result(incremental),
+        FinalResult::RefinedDelta { turn_id, delta } => {
+          if turn_id == self.turn_id {
+            self.apply_refined_delta(&delta);
+          }
+        }
+        FinalResult::RefinedFinal { .. } => {
+          // Only consumed synchronously by `finish_turn_dual_stream`; ignore stragglers.
+        }
       }
     }
+  }
+
+  /// Append a refined streaming delta to the refined text and re-render the composed caption.
+  /// The refined stream is append-only (transducer), so this is pure concatenation — the
+  /// existing display stabilizer decides whether/how the refined text replaces the live one.
+  fn apply_refined_delta(&mut self, delta: &str) {
+    if delta.is_empty() {
+      return;
+    }
+    let cleaned = delta.replace('▁', " ");
+    let cleaned = normalize_chunk_case(&self.incremental.live_refined_text, cleaned);
+    self.incremental.live_refined_text.push_str(&cleaned);
+    self.incremental.has_refined_text = true;
+    self.emit_active_draft();
   }
 
   fn handle_incremental_result(&mut self, result: IncrementalSegmentResult) {
@@ -3076,6 +3213,23 @@ fn spawn_final_worker(
             }
           }
           let _ = async_tx.send(FinalResult::Incremental(result));
+        }
+        FinalJobKind::RefineChunk => match finalizer.transcribe_chunk(&job.audio) {
+          Ok(delta) => {
+            if !delta.is_empty() {
+              let _ = async_tx.send(FinalResult::RefinedDelta { turn_id: job.turn_id, delta });
+            }
+          }
+          Err(e) => {
+            renderer.emit(RenderEvent::Error { message: format!("MLX refined chunk failed: {e}") });
+          }
+        },
+        FinalJobKind::RefineFlush => {
+          let text = finalizer.stream_finish().ok().flatten().unwrap_or_default();
+          let _ = async_tx.send(FinalResult::RefinedFinal { turn_id: job.turn_id, text });
+        }
+        FinalJobKind::RefineReset => {
+          let _ = finalizer.reset_turn();
         }
       }
     }
@@ -3631,7 +3785,18 @@ enum AuditEmittedKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FinalJobKind {
-  Incremental { segment_id: u64, start_sample: usize, end_sample: usize, is_tail: bool },
+  Incremental {
+    segment_id: u64,
+    start_sample: usize,
+    end_sample: usize,
+    is_tail: bool,
+  },
+  /// Dual-stream: feed `audio` into the worker's persistent refined streaming session.
+  RefineChunk,
+  /// Dual-stream: cheap streaming flush of the refined session; emits `RefinedFinal`.
+  RefineFlush,
+  /// Dual-stream: reset the refined session for a new turn.
+  RefineReset,
 }
 
 struct PartialAuditJob {
@@ -3776,6 +3941,16 @@ struct IncrementalSegmentResult {
 
 enum FinalResult {
   Incremental(IncrementalSegmentResult),
+  /// Dual-stream: an appended delta from the refined streaming session.
+  RefinedDelta {
+    turn_id: u64,
+    delta: String,
+  },
+  /// Dual-stream: the refined session's flushed final text for the turn.
+  RefinedFinal {
+    turn_id: u64,
+    text: String,
+  },
 }
 
 #[derive(Debug, Clone, Copy)]
