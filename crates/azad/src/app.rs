@@ -2619,6 +2619,14 @@ impl AppController {
   }
 
   #[track_caller]
+  /// Body text for the single-lane finalizing overlay. It follows the *live* draft so a
+  /// tentative finalize (a brief mid-sentence pause) keeps the caption tracking the speaker
+  /// instead of freezing on the `finalizing_draft` snapshot. `finalizing_draft` is only the
+  /// commit candidate and the frozen top lane of a genuine two-turn split (handled above).
+  fn finalizing_single_lane_body(&self) -> &str {
+    &self.latest_draft
+  }
+
   fn render_finalizing_overlay_state(&mut self) {
     if self.accessibility_notice_deadline.is_some() {
       return;
@@ -2668,7 +2676,7 @@ impl AppController {
       return;
     }
 
-    let body_text = self.stream_display_text(&self.finalizing_draft);
+    let body_text = self.stream_display_text(self.finalizing_single_lane_body());
     platform::hide_overlay_top();
     platform::set_overlay_stream_content(
       &body_text,
@@ -3817,6 +3825,27 @@ mod tests {
     controller.latest_seen_turn_id = 42;
     controller.latest_draft = "Keep This Visible Draft".to_string();
     controller
+  }
+
+  #[test]
+  fn finalizing_single_lane_tracks_live_draft_not_frozen_snapshot() {
+    // Reproduces the "pause freezes the caption" bug: during a tentative finalize the
+    // snapshot is taken at the micro-pause, then the user keeps talking so the live draft
+    // grows past it. The single-lane finalizing overlay must render the *live* draft, not
+    // the frozen `finalizing_draft` snapshot. (Pre-fix this rendered `finalizing_draft`.)
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.overlay_visible = true;
+    controller.engine_state = EngineState::Speech;
+    controller.current_turn_id = Some(7);
+    controller.latest_seen_turn_id = 7;
+    controller.finalizing_turn_id = Some(7);
+    controller.finalizing_draft = "hello".to_string();
+    controller.latest_draft = "hello world".to_string();
+    controller.finalizing_deadline =
+      Some(std::time::Instant::now() + std::time::Duration::from_millis(3000));
+
+    assert_eq!(controller.finalizing_single_lane_body(), "hello world");
+    assert_ne!(controller.finalizing_single_lane_body(), controller.finalizing_draft);
   }
 
   #[test]
