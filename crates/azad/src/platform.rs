@@ -781,6 +781,20 @@ pub fn hide_overlay_top() {
   }
 }
 
+// Test seam: every body string handed to `set_overlay_stream_content` is recorded here so
+// render-routing regressions (e.g. a frozen finalizing caption) can be asserted without a
+// live AppKit window. Thread-local so parallel `cargo test` threads never cross-contaminate.
+#[cfg(test)]
+thread_local! {
+  static OVERLAY_BODY_CAPTURE: std::cell::RefCell<Vec<String>> =
+    const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_take_overlay_bodies() -> Vec<String> {
+  OVERLAY_BODY_CAPTURE.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn set_overlay_stream_content(
   draft: &str,
@@ -792,6 +806,8 @@ pub fn set_overlay_stream_content(
   connector_tag: &str,
   connector_icon: &str,
 ) {
+  #[cfg(test)]
+  OVERLAY_BODY_CAPTURE.with(|cell| cell.borrow_mut().push(draft.to_string()));
   let Some(refs) = current_overlay() else {
     return;
   };

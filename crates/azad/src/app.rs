@@ -3827,12 +3827,20 @@ mod tests {
     controller
   }
 
+  fn draft_event(turn_id: u64, text: &str) -> SpeechEvent {
+    SpeechEvent::DraftUpdated {
+      session_id: 7,
+      turn_id,
+      committed: text.to_string(),
+      live: String::new(),
+    }
+  }
+
   #[test]
   fn finalizing_single_lane_tracks_live_draft_not_frozen_snapshot() {
-    // Reproduces the "pause freezes the caption" bug: during a tentative finalize the
-    // snapshot is taken at the micro-pause, then the user keeps talking so the live draft
-    // grows past it. The single-lane finalizing overlay must render the *live* draft, not
-    // the frozen `finalizing_draft` snapshot. (Pre-fix this rendered `finalizing_draft`.)
+    // Focused guard on the render-source decision: during a tentative finalize the
+    // single-lane finalizing body must follow the *live* draft, not the frozen
+    // `finalizing_draft` snapshot. (Pre-fix this returned `finalizing_draft`.)
     let mut controller = AppController::new(AzadConfig::default());
     controller.overlay_visible = true;
     controller.engine_state = EngineState::Speech;
@@ -3846,6 +3854,48 @@ mod tests {
 
     assert_eq!(controller.finalizing_single_lane_body(), "hello world");
     assert_ne!(controller.finalizing_single_lane_body(), controller.finalizing_draft);
+  }
+
+  #[test]
+  fn finalizing_caption_replays_live_speech_through_a_midsentence_pause() {
+    // Deterministic replay of the render events one turn produces when the speaker pauses
+    // briefly mid-sentence: drafts grow, the engine emits a tentative `Finalizing` snapshot
+    // at the pause, then the speaker resumes and drafts keep growing in the SAME turn.
+    // Drives the real `handle_speech_event` routing (DraftUpdated -> Finalizing ->
+    // DraftUpdated -> render_finalizing_overlay_state) and asserts the overlay body keeps
+    // tracking live speech. Pre-fix the single-lane finalizing branch rendered the frozen
+    // `finalizing_draft`, so the terminal body would be "the quick brown" and this fails.
+    let _ = crate::platform::test_take_overlay_bodies(); // clear any prior-test residue on this thread
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.session = Some(SpeechSession::test(7));
+    controller.turn_accept_floor = 0;
+    controller.overlay_visible = true;
+    controller.engine_state = EngineState::Speech;
+
+    controller.handle_speech_event(draft_event(1, "the quick"));
+    controller.handle_speech_event(draft_event(1, "the quick brown"));
+    controller.handle_speech_event(SpeechEvent::Finalizing {
+      session_id: 7,
+      turn_id: 1,
+      current_draft: "the quick brown".to_string(),
+    });
+    // Speaker resumes — same turn, still inside the finalizing window.
+    controller.handle_speech_event(draft_event(1, "the quick brown fox"));
+    controller.handle_speech_event(draft_event(1, "the quick brown fox jumps"));
+
+    assert!(controller.finalizing_deadline.is_some(), "still within the finalizing window");
+    let bodies = crate::platform::test_take_overlay_bodies();
+    let last = bodies.last().expect("the overlay rendered at least once");
+    assert_eq!(
+      last,
+      &controller.stream_display_text("the quick brown fox jumps"),
+      "single-lane finalizing caption must track live speech; got render sequence {bodies:?}"
+    );
+    assert_ne!(
+      last,
+      &controller.stream_display_text("the quick brown"),
+      "caption froze on the tentative-finalize snapshot"
+    );
   }
 
   #[test]
