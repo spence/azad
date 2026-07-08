@@ -35,6 +35,12 @@ const LIVE_REFINE_MAX_STITCH_EXTRA_TOKENS: usize = 8;
 const LIVE_REFINE_STREAM_LEAD_TOKENS: usize = 8;
 const LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 36;
 const LIVE_DISPLAY_STABLE_OVERLAP_TOKENS: usize = 4;
+/// Dual-stream goal #3: the refined 560ms stream lags the live 80ms stream by ~1-2 words and can
+/// re-segment, so it must only ever correct the volatile live tail — never rewrite settled text.
+/// A much tighter mutable tail than legacy's stitched refinement freezes the committed prefix, so
+/// subtle in-place corrections (and filler decisions) stick instead of flip-flopping, while a
+/// large divergence can rewrite at most this many trailing tokens.
+const DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 12;
 
 /// When a finalization slice returns empty text in a range where the streaming
 /// model already produced text, retry once with the start shifted back this
@@ -296,7 +302,11 @@ struct LiveDisplayTokenSpan {
   match_key: String,
 }
 
-fn stabilize_live_display_replacement(previous: &str, candidate: &str) -> String {
+fn stabilize_live_display_replacement(
+  previous: &str,
+  candidate: &str,
+  mutable_tail: usize,
+) -> String {
   let previous = previous.trim();
   let candidate = candidate.trim();
   if previous.is_empty() || candidate.is_empty() {
@@ -304,21 +314,23 @@ fn stabilize_live_display_replacement(previous: &str, candidate: &str) -> String
   }
 
   let previous_tokens = live_display_token_spans(previous);
-  if previous_tokens.len() <= LIVE_DISPLAY_MUTABLE_TAIL_TOKENS {
+  if previous_tokens.len() <= mutable_tail {
     return candidate.to_string();
   }
 
   let candidate_tokens = live_display_token_spans(candidate);
-  let stable_len = previous_tokens.len().saturating_sub(LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+  let stable_len = previous_tokens.len().saturating_sub(mutable_tail);
   if stable_len < LIVE_DISPLAY_STABLE_OVERLAP_TOKENS
     || candidate_tokens.len() < LIVE_DISPLAY_STABLE_OVERLAP_TOKENS
   {
     return candidate.to_string();
   }
 
-  let Some(candidate_boundary) =
-    find_live_display_stable_boundary(&previous_tokens[..stable_len], &candidate_tokens)
-  else {
+  let Some(candidate_boundary) = find_live_display_stable_boundary(
+    &previous_tokens[..stable_len],
+    &candidate_tokens,
+    mutable_tail,
+  ) else {
     return previous.to_string();
   };
 
@@ -363,6 +375,7 @@ fn push_live_display_token_span(
 fn find_live_display_stable_boundary(
   previous_stable_tokens: &[LiveDisplayTokenSpan],
   candidate_tokens: &[LiveDisplayTokenSpan],
+  mutable_tail: usize,
 ) -> Option<usize> {
   let max_overlap = LIVE_DISPLAY_STABLE_OVERLAP_TOKENS
     .min(previous_stable_tokens.len())
@@ -374,10 +387,9 @@ fn find_live_display_stable_boundary(
   for overlap in (INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS..=max_overlap).rev() {
     let previous_start = previous_stable_tokens.len() - overlap;
     let expected_candidate_start = previous_start;
-    let min_candidate_start =
-      expected_candidate_start.saturating_sub(LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
-    let max_candidate_start = (expected_candidate_start + LIVE_DISPLAY_MUTABLE_TAIL_TOKENS)
-      .min(candidate_tokens.len().saturating_sub(overlap));
+    let min_candidate_start = expected_candidate_start.saturating_sub(mutable_tail);
+    let max_candidate_start =
+      (expected_candidate_start + mutable_tail).min(candidate_tokens.len().saturating_sub(overlap));
 
     let mut best: Option<(usize, usize)> = None;
     for candidate_start in min_candidate_start..=max_candidate_start {
@@ -1956,19 +1968,14 @@ impl PipelineCore {
   }
 
   fn emit_active_draft(&mut self) {
-    // Goal #1 (never churn/swap): in dual-stream the refined 560ms stream lags the live 80ms
-    // stream, so feeding it into the live display made the caption swap large committed spans.
-    // Keep the live caption a PURE streaming hypothesis during speech; the refined text is
-    // applied once at finalize (ReplaceLine). Subtle in-place live corrections (goal #3) are a
-    // later, carefully-stabilized addition.
-    let refined_for_display: &str = if self.cfg.refinement_mode == RefinementMode::DualStream {
-      ""
-    } else {
-      &self.incremental.live_refined_text
-    };
+    // Both modes fold the refined stream into the live caption so the stronger model sharpens it
+    // in place (goal #3). Anti-churn (goal #1) is enforced downstream in
+    // `emit_replacement_live_display`, which freezes the committed prefix and only mutates a
+    // bounded tail — tightly bounded in dual-stream so the lagging 560ms stream can never rewrite
+    // a large already-shown span.
     match plan_live_draft_render_after_previous(
       &self.incremental.last_live_display_text,
-      refined_for_display,
+      &self.incremental.live_refined_text,
       &self.eou_draft,
     ) {
       Some(LiveDraftRenderPlan::StreamingHypothesis(display)) => {
@@ -1988,8 +1995,16 @@ impl PipelineCore {
   }
 
   fn emit_replacement_live_display(&mut self, display: String) {
-    let display =
-      stabilize_live_display_replacement(&self.incremental.last_live_display_text, &display);
+    let mutable_tail = if self.cfg.refinement_mode == RefinementMode::DualStream {
+      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS
+    } else {
+      LIVE_DISPLAY_MUTABLE_TAIL_TOKENS
+    };
+    let display = stabilize_live_display_replacement(
+      &self.incremental.last_live_display_text,
+      &display,
+      mutable_tail,
+    );
     if !live_display_can_replace(&self.incremental.last_live_display_text, &display) {
       let previous = self.incremental.last_live_display_text.clone();
       self.record_live_display_event("refined", "hold_rollback", previous, Some(display.clone()));
@@ -4306,14 +4321,15 @@ mod tests {
   };
   use super::{
     CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES,
-    EmptyPartialAction, EouEmission, FinalizeTailPlan, FinalizingPulsePlan,
-    INCREMENTAL_LIVE_TAIL_WAIT_FACTOR, INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
-    INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS, INCREMENTAL_TAIL_MAX_WAIT_FACTOR,
-    IncrementalPartialSegment, LiveDraftRenderPlan, MIDDLE_COVERAGE_TOLERANCE_SAMPLES,
-    PipelineControls, PipelineCore, TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start,
-    cap_segment_start, capture_enable_transition, choose_streaming_final_text,
-    compose_live_display_text, debug_recording_stem, empty_partial_action, eou_chars_in_range,
-    eou_corroborates_silence, finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
+    DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, EmptyPartialAction, EouEmission,
+    FinalizeTailPlan, FinalizingPulsePlan, INCREMENTAL_LIVE_TAIL_WAIT_FACTOR,
+    INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS, INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
+    INCREMENTAL_TAIL_MAX_WAIT_FACTOR, IncrementalPartialSegment, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
+    LiveDraftRenderPlan, MIDDLE_COVERAGE_TOLERANCE_SAMPLES, PipelineControls, PipelineCore,
+    TAIL_COVERAGE_TOLERANCE_SAMPLES, activation_level_blocks_start, cap_segment_start,
+    capture_enable_transition, choose_streaming_final_text, compose_live_display_text,
+    debug_recording_stem, empty_partial_action, eou_chars_in_range, eou_corroborates_silence,
+    finalize_tail_plan, finalizing_pulse_plan, incremental_tail_wait_ms,
     leading_coverage_is_incomplete, live_display_can_replace, live_stream_output_gap,
     live_stream_stall_refine_due, middle_coverage_is_incomplete, non_empty_partials,
     normalize_chunk_case, partial_core_coverage_gap, plan_live_draft_render,
@@ -4990,6 +5006,71 @@ mod tests {
   }
 
   #[test]
+  fn dual_stream_tight_tail_freezes_settled_prefix_words() {
+    // A lagging refined stream tries to flip a filler word ("uh") deep in a long, settled
+    // caption. With dual-stream's tight mutable tail that word is frozen, so the swap is
+    // rejected — no flip-flop of already-read text (goal #1).
+    let previous = "so we are routing uh audio through it and it is our job to ensure that we \
+      correctly map the audio volume that the device set to the system audio level right now";
+    let candidate = "so we are routing audio through it and it is our job to ensure that we \
+      correctly map the audio volume that the device set to the system audio level right now";
+
+    let display = stabilize_live_display_replacement(
+      previous,
+      candidate,
+      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
+    );
+
+    assert!(
+      display.contains("routing uh audio"),
+      "tight tail should freeze the settled filler decision: {display}"
+    );
+  }
+
+  #[test]
+  fn dual_stream_tight_tail_still_applies_a_recent_word_completion() {
+    // The valuable refined correction: completing a truncated word in the live tail region.
+    let previous = "the headset volume is not being correctly synchronized with the computer volume so we \
+       need to make sure that we correctly map the audio vol";
+    let candidate = "the headset volume is not being correctly synchronized with the computer volume so we \
+       need to make sure that we correctly map the audio volume";
+
+    let display = stabilize_live_display_replacement(
+      previous,
+      candidate,
+      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
+    );
+
+    assert!(
+      display.ends_with("map the audio volume"),
+      "recent tail correction should apply: {display}"
+    );
+  }
+
+  #[test]
+  fn dual_stream_tail_is_tighter_than_legacy() {
+    // Same divergence, different budgets: a word ~29 tokens back sits inside legacy's wide
+    // 36-token tail (so legacy lets it change) but behind dual's 12-token tail (so dual freezes
+    // it). This is the knob that keeps the lagging 560ms stream from churning settled text.
+    let words: Vec<String> = (0..50).map(|i| format!("w{i}")).collect();
+    let previous = words.join(" ");
+    let mut edited = words.clone();
+    edited[20] = "CHANGED".to_string();
+    let candidate = edited.join(" ");
+
+    let dual = stabilize_live_display_replacement(
+      &previous,
+      &candidate,
+      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
+    );
+    let legacy =
+      stabilize_live_display_replacement(&previous, &candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+
+    assert!(!dual.contains("CHANGED"), "dual tight tail should freeze token 20: {dual}");
+    assert!(legacy.contains("CHANGED"), "legacy wide tail should let token 20 change: {legacy}");
+  }
+
+  #[test]
   fn live_display_preserves_safe_prefix_when_late_partial_rewrites_opening_text() {
     let previous = "I'm still getting some thrashing from the partials updating this streaming \
       text that I'm being shown, and for the most part it's good. Like, I can see that like it's \
@@ -5001,7 +5082,8 @@ mod tests {
       it's doing the right thing but like I feel like I get this like thrashing where previous \
       parts are being updated when they should have already resolved";
 
-    let display = stabilize_live_display_replacement(previous, candidate);
+    let display =
+      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
 
     assert!(
       display.contains("updating this streaming text"),
@@ -5026,7 +5108,8 @@ mod tests {
     let previous = "the text got pasted and then it stated open";
     let candidate = "the text got pasted and then it stayed open";
 
-    let display = stabilize_live_display_replacement(previous, candidate);
+    let display =
+      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
 
     assert_eq!(display, candidate);
   }
@@ -5040,7 +5123,8 @@ mod tests {
     let candidate = "a completely different candidate without the stable boundary but with enough \
       extra words to otherwise look like forward progress for the overlay display";
 
-    let display = stabilize_live_display_replacement(previous, candidate);
+    let display =
+      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
 
     assert_eq!(display, previous);
   }
