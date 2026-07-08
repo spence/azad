@@ -363,6 +363,15 @@ fn append_streaming_tail_to_refinement(refined: &str, streaming: &str) -> Option
   None
 }
 
+/// Whether the finalize flush `tail` needs a space inserted before it when appended to `prior`.
+/// True only when a word char would collide with a word char — `prior` ends alphanumeric and
+/// `tail` begins alphanumeric (no leading space or `▁` boundary). Guards the finalize flush
+/// against the last word gluing onto the previous one.
+fn refined_tail_needs_space(prior: &str, tail: &str) -> bool {
+  prior.chars().next_back().is_some_and(char::is_alphanumeric)
+    && tail.chars().next().is_some_and(char::is_alphanumeric)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineState {
   Idle,
@@ -2017,7 +2026,7 @@ impl PipelineCore {
         }
         Ok(FinalResult::RefinedFinal { turn_id, text }) => {
           if turn_id == self.turn_id {
-            self.apply_refined_delta(&text);
+            self.apply_refined_final_tail(&text);
             break;
           }
         }
@@ -2176,6 +2185,19 @@ impl PipelineCore {
     self.live_display.has_refined_text = true;
     // Do NOT re-render the live caption here: dual-stream keeps the caption a pure streaming
     // hypothesis during speech (goal #1). The accumulated refined text is applied at finalize.
+  }
+
+  /// Apply the finalize flush tail (the streaming session's `finish()` remainder). Unlike the
+  /// per-chunk deltas — which keep their leading word-boundary — the flush tail can arrive with
+  /// its leading space trimmed off, which glues its first word onto the last already-emitted word
+  /// ("will" + "it be" -> "willit be"). Ensure a boundary first. Only touches the flush tail, so
+  /// mid-word streaming continuations are unaffected.
+  fn apply_refined_final_tail(&mut self, tail: &str) {
+    if refined_tail_needs_space(&self.live_display.live_refined_text, tail) {
+      self.apply_refined_delta(&format!(" {tail}"));
+    } else {
+      self.apply_refined_delta(tail);
+    }
   }
 }
 
@@ -4523,5 +4545,22 @@ mod tests {
     assert_eq!(super::pipeline_label(super::AuditEmittedKind::Assembled), "legacy_stitch");
     assert_eq!(super::pipeline_label(super::AuditEmittedKind::DraftEmit), "legacy_stitch");
     assert_eq!(super::audit_kind_label(super::AuditEmittedKind::DualFinal), "dual_final");
+  }
+
+  #[test]
+  fn refined_tail_needs_space_only_on_word_collision() {
+    // The bug: flush tail glued onto the previous word ("will"+"it be", "you"+"dare").
+    assert!(super::refined_tail_needs_space("how much longer will", "it be"));
+    assert!(super::refined_tail_needs_space("don't you", "dare"));
+    assert!(super::refined_tail_needs_space("words", "together"));
+    // Boundary already present (leading space or SentencePiece marker) -> no insert.
+    assert!(!super::refined_tail_needs_space("how much longer will", " it be"));
+    assert!(!super::refined_tail_needs_space("how much longer will", "\u{2581}it be"));
+    assert!(!super::refined_tail_needs_space("hello ", "world"));
+    // Nothing to glue onto / nothing to append.
+    assert!(!super::refined_tail_needs_space("", "it be"));
+    assert!(!super::refined_tail_needs_space("will", ""));
+    // Punctuation boundaries are not word collisions.
+    assert!(!super::refined_tail_needs_space("will", ", it"));
   }
 }

@@ -68,11 +68,14 @@ impl MlxNemotronAsr {
   /// finalize a cheap flush of the last buffered chunk — O(one chunk), not O(turn).
   pub fn stream_finish(&mut self) -> Result<Option<String>> {
     let response = self.command(json!({ "type": "finish" }))?;
+    // Preserve any LEADING word-boundary space on the flush tail (only trailing whitespace is
+    // noise). Trimming the leading space here would glue the tail's first word onto the last
+    // already-emitted word ("will" + " it" -> "willit"); the finalize join relies on it.
     let text = response
       .get("text")
       .and_then(Value::as_str)
       .unwrap_or_default()
-      .trim()
+      .trim_end()
       .to_string();
     Ok((!text.is_empty()).then_some(text))
   }
