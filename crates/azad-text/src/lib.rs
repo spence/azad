@@ -83,16 +83,35 @@ fn strip_single_word_terminal_period(text: &str) -> String {
     }
 
     let before_period = &trimmed[..trimmed.len() - 1];
-    if tokenize(before_period)
-        .filter(|token| token.is_word)
-        .count()
-        != 1
-    {
+    let tokens: Vec<TextToken<'_>> = tokenize(before_period).collect();
+    let word_count = tokens.iter().filter(|token| token.is_word).count();
+    let is_single_word = word_count == 1;
+    // A lone emoji is a single "unit" too: saying "happy emoji" yields "😊", which should
+    // paste as "😊", not "😊." — auto-punctuation shouldn't tack a period onto a bare emoji.
+    let visible_token_count = tokens
+        .iter()
+        .filter(|token| !token.text.chars().all(char::is_whitespace))
+        .count();
+    let is_single_emoji =
+        word_count == 0 && visible_token_count == 1 && before_period.chars().any(is_emoji_char);
+    if !is_single_word && !is_single_emoji {
         return text.to_string();
     }
 
     let trailing_whitespace = &text[trimmed.len()..];
     format!("{before_period}{trailing_whitespace}")
+}
+
+/// True for characters in the common emoji / pictographic Unicode blocks. Used to recognize a
+/// bare-emoji paste so auto-punctuation doesn't append a period to it.
+fn is_emoji_char(ch: char) -> bool {
+    matches!(ch as u32,
+        0x1F000..=0x1FAFF   // symbols, pictographs, emoticons, supplemental symbols
+        | 0x2600..=0x27BF   // misc symbols + dingbats (✅ ⚫ ⚪ …)
+        | 0x2B00..=0x2BFF   // misc symbols & arrows (⭐ ⬛ …)
+        | 0xFE00..=0xFE0F   // variation selectors
+        | 0x200D            // zero-width joiner (emoji sequences)
+    )
 }
 
 fn lowercase_except_uppercase_words(text: &str) -> String {
@@ -1046,6 +1065,33 @@ mod tests {
         assert_eq!(
             build_paste_text("Hello.", options(true, &[], true, false)),
             "Hello "
+        );
+    }
+
+    #[test]
+    fn build_paste_text_strips_terminal_period_after_a_lone_emoji() {
+        // "happy emoji" -> "😊"; a single emoji output must not carry a period.
+        assert_eq!(
+            build_paste_text("happy emoji.", emoji_options(false, &[], false, false)),
+            "😊"
+        );
+        assert_eq!(
+            build_paste_text("happy emoji.", emoji_options(true, &[], false, false)),
+            "😊 "
+        );
+        // New aliases resolve, and a lone one drops the period too.
+        assert_eq!(
+            build_paste_text("checkbox emoji.", emoji_options(false, &[], false, false)),
+            "✅"
+        );
+        assert_eq!(
+            build_paste_text("red dot emoji.", emoji_options(false, &[], false, false)),
+            "🔴"
+        );
+        // A period after real words still stays (two words, not a lone unit).
+        assert_eq!(
+            build_paste_text("ship it.", emoji_options(false, &[], false, false)),
+            "ship it."
         );
     }
 
