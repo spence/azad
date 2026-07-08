@@ -133,7 +133,7 @@ impl Default for AzadConfig {
         incremental_left_context_ms: 10_000,
         incremental_min_new_audio_ms: 1_200,
         incremental_wait_tail_result_ms: 220,
-        refinement_mode: asr::pipeline::RefinementMode::LegacyStitch,
+        refinement_mode: asr::pipeline::RefinementMode::DualStream,
       },
     };
     if let Some(paths) = resolve_pipeline_paths(default_pack) {
