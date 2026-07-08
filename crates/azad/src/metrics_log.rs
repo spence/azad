@@ -540,7 +540,7 @@ fn recent_mode_label(sample: &RecentTranscriptSummary) -> &'static str {
       if sample.fallback {
         "full"
       } else {
-        "dual"
+        "normal"
       }
     }
   }
