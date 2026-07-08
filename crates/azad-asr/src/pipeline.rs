@@ -2250,9 +2250,11 @@ impl PipelineCore {
       kind: FinalJobKind::RefineFlush,
     });
     let finalize_started_at = Instant::now();
-    let wait =
-      Duration::from_millis(u64::from(self.cfg.incremental_wait_tail_result_ms.max(50)) * 6);
-    let deadline = finalize_started_at + wait;
+    // Drain the refined worker's backlog fully: RefineFlush is FIFO-queued behind every
+    // RefineChunk for this turn, so RefinedFinal only arrives once the worker has consumed all
+    // of the turn's audio. Break as soon as it lands (near-instant when the worker kept up);
+    // the cap only bounds a pathologically backlogged worker.
+    let deadline = finalize_started_at + Duration::from_secs(20);
     loop {
       let now = Instant::now();
       if now >= deadline {
@@ -2412,7 +2414,11 @@ impl PipelineCore {
   }
 
   fn maybe_schedule_incremental_slice(&mut self, force_interval: bool) {
-    if !self.cfg.incremental_finalization_enabled {
+    if !self.cfg.incremental_finalization_enabled
+      || self.cfg.refinement_mode == RefinementMode::DualStream
+    {
+      // Dual-stream owns the refined worker with continuous RefineChunk feed; windowed
+      // slice re-decodes would fight it (stitch overwrites the refined text) and waste GPU.
       return;
     }
     if !self.in_speech || self.turn_audio.is_empty() || !self.has_draft_text() {
@@ -2920,7 +2926,11 @@ impl PipelineCore {
   }
 
   fn handle_incremental_result(&mut self, result: IncrementalSegmentResult) {
-    if !self.cfg.incremental_finalization_enabled || result.turn_id != self.turn_id {
+    if !self.cfg.incremental_finalization_enabled
+      || self.cfg.refinement_mode == RefinementMode::DualStream
+      || result.turn_id != self.turn_id
+    {
+      // Dual-stream never stitches — the refined text comes from RefinedDelta accumulation.
       return;
     }
     let debug_enabled = self.debug_stats_enabled();
