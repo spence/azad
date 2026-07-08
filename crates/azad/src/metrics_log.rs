@@ -123,8 +123,9 @@ pub struct RecentTranscriptSummary {
   pub turn_id: u64,
   pub mode: TranscriptMode,
   pub transcription_duration_ms: u64,
-  pub partial_count: Option<usize>,
-  pub quality_score_pct: Option<f64>,
+  /// Words the refined pass changed vs the live draft at finalize (token edit distance).
+  /// Small nonzero == subtle in-place touch-ups; not an error rate (dual has no ground truth).
+  pub refined_words: Option<usize>,
   pub quality_pending: bool,
   pub quality_error: bool,
   pub fallback: bool,
@@ -231,30 +232,21 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
   lines.push(format!("Recent transcriptions (latest {})", RECENT_TRANSCRIPTS_LIMIT));
   if summary.recent_transcripts.is_empty() {
     lines.extend(render_table(
-      &["mode", "parts", "quality", "preview", "ms"],
-      &[7, 5, 7, 34, 8],
-      &[vec!["-".to_string(), "-".to_string(), "-".to_string(), "-".to_string(), "-".to_string()]],
+      &["mode", "refined", "preview", "ms"],
+      &[7, 9, 40, 8],
+      &[vec!["-".to_string(), "-".to_string(), "-".to_string(), "-".to_string()]],
     ));
   } else {
     let mut rows = Vec::new();
     for sample in &summary.recent_transcripts {
-      let partial_count = sample
-        .partial_count
-        .map(|count| count.to_string())
-        .unwrap_or_else(|| "-".to_string());
       rows.push(vec![
         recent_mode_label(sample).to_string(),
-        partial_count,
-        recent_quality_label(sample),
+        recent_refined_label(sample),
         sample.text_preview.clone(),
         sample.transcription_duration_ms.to_string(),
       ]);
     }
-    lines.extend(render_table(
-      &["mode", "parts", "quality", "preview", "ms"],
-      &[7, 5, 7, 34, 8],
-      &rows,
-    ));
+    lines.extend(render_table(&["mode", "refined", "preview", "ms"], &[7, 9, 40, 8], &rows));
   }
   for _ in 0..SUMMARY_TRAILING_BLANK_LINES {
     lines.push(String::new());
@@ -321,7 +313,6 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
       MetricsLogEvent::PartialAuditResult {
         turn_id,
         exact,
-        partial_count,
         edit_distance,
         wer_like,
         lcp_pct,
@@ -337,7 +328,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
         audits_by_turn.entry(*turn_id).or_default().push((
           record.ts_ms,
           *exact,
-          *partial_count,
+          *edit_distance,
           *wer_like,
           *lcp_pct,
         ));
@@ -363,8 +354,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
             turn_id: *turn_id,
             mode: *mode,
             transcription_duration_ms: *transcription_duration_ms,
-            partial_count: None,
-            quality_score_pct: None,
+            refined_words: None,
             quality_pending: false,
             quality_error: false,
             fallback: *fallback,
@@ -400,18 +390,15 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
 
   for (snapshot_ts, sample) in &mut recent_samples {
     if let Some(audits) = audits_by_turn.get(&sample.turn_id) {
-      if let Some((_, exact, partial_count, wer_like, _)) =
-        nearest_by_ts(audits, *snapshot_ts, |item| item.0)
+      if let Some((_, _, edit_distance, _, _)) = nearest_by_ts(audits, *snapshot_ts, |item| item.0)
       {
-        sample.partial_count = Some(*partial_count);
-        sample.quality_score_pct = Some(quality_score_pct(*exact, *wer_like));
+        sample.refined_words = Some(*edit_distance);
         continue;
       }
     }
 
     if let Some(errors) = audit_errors_by_turn.get(&sample.turn_id) {
-      if let Some((_, partial_count, _)) = nearest_by_ts(errors, *snapshot_ts, |item| item.0) {
-        sample.partial_count = Some(*partial_count);
+      if nearest_by_ts(errors, *snapshot_ts, |item| item.0).is_some() {
         sample.quality_error = true;
         continue;
       }
@@ -553,15 +540,17 @@ fn recent_mode_label(sample: &RecentTranscriptSummary) -> &'static str {
       if sample.fallback {
         "full"
       } else {
-        "partial"
+        "dual"
       }
     }
   }
 }
 
-fn recent_quality_label(sample: &RecentTranscriptSummary) -> String {
-  if let Some(pct) = sample.quality_score_pct {
-    return format!("{pct:.1}%");
+fn recent_refined_label(sample: &RecentTranscriptSummary) -> String {
+  if let Some(words) = sample.refined_words {
+    // Words the refined pass changed vs the live draft. 0w == paste matched what you saw; small
+    // nonzero == subtle in-place touch-ups. NOT an error rate — dual has no ground-truth reference.
+    return format!("{words}w");
   }
   if sample.quality_error {
     return "error".to_string();
@@ -570,13 +559,6 @@ fn recent_quality_label(sample: &RecentTranscriptSummary) -> String {
     return "queued".to_string();
   }
   "-".to_string()
-}
-
-fn quality_score_pct(exact: bool, wer_like: f64) -> f64 {
-  if exact {
-    return 100.0;
-  }
-  (1.0 - wer_like.clamp(0.0, 1.0)) * 100.0
 }
 
 fn metrics_log_path() -> PathBuf {
@@ -593,8 +575,7 @@ fn metrics_log_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
   use super::{
-    MetricsLogEvent, MetricsLogRecord, TranscriptMode, duration_stats, percentile,
-    quality_score_pct, summarize,
+    MetricsLogEvent, MetricsLogRecord, TranscriptMode, duration_stats, percentile, summarize,
   };
 
   #[test]
@@ -715,14 +696,7 @@ mod tests {
     assert!(summary.recent_transcripts[0].fallback);
     assert_eq!(summary.recent_transcripts[0].transcription_duration_ms, 80);
     assert_eq!(summary.recent_transcripts[1].turn_id, 1);
-    assert_eq!(summary.recent_transcripts[1].quality_score_pct, Some(100.0));
-  }
-
-  #[test]
-  fn quality_score_uses_wer_like_similarity() {
-    assert_eq!(quality_score_pct(true, 0.7), 100.0);
-    assert!((quality_score_pct(false, 0.03) - 97.0).abs() < 1e-9);
-    assert!((quality_score_pct(false, 2.0) - 0.0).abs() < 1e-9);
+    assert_eq!(summary.recent_transcripts[1].refined_words, Some(0));
   }
 
   #[test]
@@ -755,7 +729,7 @@ mod tests {
     assert_eq!(summary.recent_transcripts.len(), 1);
     assert!(summary.recent_transcripts[0].quality_pending);
     assert!(!summary.recent_transcripts[0].quality_error);
-    assert_eq!(summary.recent_transcripts[0].quality_score_pct, None);
+    assert_eq!(summary.recent_transcripts[0].refined_words, None);
   }
 
   #[test]
@@ -798,7 +772,7 @@ mod tests {
     assert_eq!(summary.recent_transcripts.len(), 1);
     assert!(!summary.recent_transcripts[0].quality_pending);
     assert!(summary.recent_transcripts[0].quality_error);
-    assert_eq!(summary.recent_transcripts[0].quality_score_pct, None);
+    assert_eq!(summary.recent_transcripts[0].refined_words, None);
   }
 
   #[test]
@@ -894,11 +868,9 @@ mod tests {
     let summary = summarize(&records);
     assert_eq!(summary.recent_transcripts.len(), 2);
     assert_eq!(summary.recent_transcripts[0].text_preview, "newer turn");
-    assert_eq!(summary.recent_transcripts[0].partial_count, Some(4));
-    assert_eq!(summary.recent_transcripts[0].quality_score_pct, Some(75.0));
+    assert_eq!(summary.recent_transcripts[0].refined_words, Some(4));
     assert_eq!(summary.recent_transcripts[1].text_preview, "older turn");
-    assert_eq!(summary.recent_transcripts[1].partial_count, Some(1));
-    assert_eq!(summary.recent_transcripts[1].quality_score_pct, Some(100.0));
+    assert_eq!(summary.recent_transcripts[1].refined_words, Some(0));
   }
 
   #[test]
@@ -936,8 +908,7 @@ mod tests {
 
     let summary = summarize(&records);
     assert_eq!(summary.recent_transcripts.len(), 1);
-    assert_eq!(summary.recent_transcripts[0].partial_count, None);
-    assert_eq!(summary.recent_transcripts[0].quality_score_pct, None);
+    assert_eq!(summary.recent_transcripts[0].refined_words, None);
     assert!(!summary.recent_transcripts[0].quality_pending);
     assert!(!summary.recent_transcripts[0].quality_error);
   }
