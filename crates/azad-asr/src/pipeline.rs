@@ -2228,7 +2228,7 @@ impl PipelineCore {
     }
     let audio_snapshot: Vec<f32> = std::mem::take(&mut self.turn_audio);
     if self.cfg.refinement_mode == RefinementMode::DualStream {
-      self.finish_turn_dual_stream(draft)?;
+      self.finish_turn_dual_stream(draft, audio_snapshot)?;
       self.tracker.reset();
       self.eou_draft.clear();
       self.turn_started_by_vad = false;
@@ -2262,7 +2262,7 @@ impl PipelineCore {
   /// Dual-stream finalize: emit the live draft immediately, then flush the continuously-fed
   /// refined session (cheap — no whole-turn re-decode) and replace with the higher-quality
   /// refined text. No stitching, no coverage-gap bailout.
-  fn finish_turn_dual_stream(&mut self, draft: String) -> Result<()> {
+  fn finish_turn_dual_stream(&mut self, draft: String, audio_snapshot: Vec<f32>) -> Result<()> {
     if !draft.is_empty() {
       self
         .renderer
@@ -2302,22 +2302,64 @@ impl PipelineCore {
       }
     }
     let refined = self.incremental.live_refined_text.trim().to_string();
+    let finalize_elapsed_ms = elapsed_ms_since(finalize_started_at);
     if self.debug_stats_enabled() {
       eprintln!(
         "TOON_DUAL_STREAM_FINAL turn_id={} elapsed_ms={} draft_chars={} refined_chars={}",
         self.turn_id,
-        finalize_started_at.elapsed().as_millis(),
+        finalize_elapsed_ms,
         draft.chars().count(),
         refined.chars().count(),
       );
     }
-    let final_text = if refined.is_empty() { draft } else { refined };
+    let final_text = if refined.is_empty() { draft.clone() } else { refined };
     if !final_text.is_empty() {
       self
         .renderer
-        .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text });
+        .emit(RenderEvent::ReplaceLine { id: self.turn_id, text: final_text.clone() });
+    }
+    // Debug-only: reproduce the on-device evidence the legacy audit worker used to write (wav +
+    // sidecar) and emit the draft->refined divergence. Off the hot path — the sidecar write runs
+    // on the recorder thread, and the divergence is a cheap token edit distance (no model).
+    if self.debug_stats_enabled() {
+      self.record_dual_final(draft, final_text, finalize_elapsed_ms, audio_snapshot);
     }
     Ok(())
+  }
+
+  /// Emit the draft->refined-final divergence (G3 correction magnitude) and enqueue the turn's
+  /// wav + sidecar on the recorder thread. Debug-gated; never touches a finalization model.
+  fn record_dual_final(
+    &mut self,
+    draft: String,
+    final_text: String,
+    finalize_elapsed_ms: u64,
+    audio: Vec<f32>,
+  ) {
+    let event = log_partial_audit_result(
+      self.turn_id,
+      AuditEmittedKind::DualFinal,
+      &[],
+      &draft,
+      &final_text,
+      None,
+    );
+    self.renderer.emit(RenderEvent::DebugStats(event));
+
+    let eou_emissions = self.incremental.eou_emissions.clone();
+    let live_display_events = self.incremental.live_display_events.clone();
+    let _ = self.partial_audit_tx.send(PartialAuditJob {
+      turn_id: self.turn_id,
+      audio,
+      emitted_kind: AuditEmittedKind::DualFinal,
+      emitted_text: final_text,
+      draft_text: draft,
+      finalize_elapsed_ms: Some(finalize_elapsed_ms),
+      partial_segments: Vec::new(),
+      eou_emissions,
+      live_display_events,
+      bailout_reason: None,
+    });
   }
 
   fn emit_whole_turn_final(&mut self, audio_samples: usize, draft: String) -> Result<()> {
@@ -2883,6 +2925,8 @@ impl PipelineCore {
         audio,
         emitted_kind,
         emitted_text,
+        draft_text: String::new(),
+        finalize_elapsed_ms: None,
         partial_segments,
         eou_emissions,
         live_display_events,
@@ -2909,6 +2953,8 @@ impl PipelineCore {
         audio,
         emitted_kind: AuditEmittedKind::Assembled,
         emitted_text: String::new(),
+        draft_text: String::new(),
+        finalize_elapsed_ms: None,
         partial_segments,
         eou_emissions,
         live_display_events,
@@ -3313,8 +3359,35 @@ fn spawn_partial_audit_worker(
           &job.eou_emissions,
           &job.live_display_events,
           Some(bailout_reason),
+          &job.draft_text,
+          job.finalize_elapsed_ms,
         ) {
           eprintln!("Azad: failed to save bailout debug recording for turn {}: {e}", job.turn_id);
+        }
+        continue;
+      }
+
+      // Dual-stream recorder: no model re-decode. The draft->refined divergence was already
+      // emitted on the finalize thread; here we only persist the wav + sidecar (draft, refined
+      // final, live-display events) so on-device measurement has per-turn evidence.
+      if job.emitted_kind == AuditEmittedKind::DualFinal {
+        if let Err(e) = save_debug_recording(
+          job.turn_id,
+          &job.audio,
+          job.emitted_kind,
+          &job.emitted_text,
+          "",
+          &[],
+          &job.eou_emissions,
+          &job.live_display_events,
+          None,
+          &job.draft_text,
+          job.finalize_elapsed_ms,
+        ) {
+          eprintln!(
+            "Azad: failed to save dual-final debug recording for turn {}: {e}",
+            job.turn_id
+          );
         }
         continue;
       }
@@ -3391,6 +3464,8 @@ fn spawn_partial_audit_worker(
         &job.eou_emissions,
         &job.live_display_events,
         None,
+        &job.draft_text,
+        job.finalize_elapsed_ms,
       ) {
         eprintln!("Azad: failed to save debug recording for turn {}: {e}", job.turn_id);
       }
@@ -3400,8 +3475,11 @@ fn spawn_partial_audit_worker(
   (tx, handle)
 }
 
-/// Rolling capacity for `save_debug_recording` — non-bailout pairs (wav + json sidecar) kept on disk.
-const DEBUG_RECORDING_MAX_FILES: usize = 10;
+/// Rolling capacity for `save_debug_recording` — non-bailout pairs (wav + json sidecar) kept on
+/// disk. Raised from 10 to 40 when the sidecar became the primary on-device evidence stream for the
+/// dual-stream rework: the live-proof gate needs ≥20 turns retained at once. Debug-gated; ~160 MB
+/// worst case.
+const DEBUG_RECORDING_MAX_FILES: usize = 40;
 
 /// Rolling capacity for `save_debug_recording` — bailout pairs (turns whose
 /// filename ends in `-bailout`) kept on disk. Larger than the normal cap
@@ -3680,6 +3758,8 @@ fn save_debug_recording(
   eou_emissions: &[EouEmission],
   live_display_events: &[LiveDisplayEvent],
   bailout_reason: Option<&str>,
+  draft_text: &str,
+  finalize_elapsed_ms: Option<u64>,
 ) -> std::io::Result<()> {
   let Some(dir) = debug_recordings_dir() else {
     return Ok(());
@@ -3707,6 +3787,45 @@ fn save_debug_recording(
   }
   writer.finalize().map_err(|e| std::io::Error::other(e.to_string()))?;
 
+  let payload = debug_recording_payload(
+    turn_id,
+    ts_ms,
+    audio.len(),
+    emitted_kind,
+    emitted_text,
+    full_text,
+    draft_text,
+    finalize_elapsed_ms,
+    partial_segments,
+    eou_emissions,
+    live_display_events,
+    bailout_reason,
+  );
+  std::fs::write(&json_path, serde_json::to_string_pretty(&payload)?)?;
+
+  prune_debug_recordings(&dir);
+  Ok(())
+}
+
+/// Build the sidecar JSON for a debug recording. Pure (no I/O) so the payload shape is unit-tested
+/// without touching disk or the real recordings directory. Additive schema: `pipeline`,
+/// `draft_text`, and `finalize_elapsed_ms` were added for the dual-stream recorder; legacy captures
+/// leave the latter two empty/null and analyzers key on `pipeline`.
+#[allow(clippy::too_many_arguments)]
+fn debug_recording_payload(
+  turn_id: u64,
+  ts_ms: u64,
+  num_samples: usize,
+  emitted_kind: AuditEmittedKind,
+  emitted_text: &str,
+  full_text: &str,
+  draft_text: &str,
+  finalize_elapsed_ms: Option<u64>,
+  partial_segments: &[IncrementalPartialSegment],
+  eou_emissions: &[EouEmission],
+  live_display_events: &[LiveDisplayEvent],
+  bailout_reason: Option<&str>,
+) -> serde_json::Value {
   let partials_json: Vec<serde_json::Value> = partial_segments
     .iter()
     .map(|p| {
@@ -3741,23 +3860,22 @@ fn save_debug_recording(
       })
     })
     .collect();
-  let payload = serde_json::json!({
+  serde_json::json!({
     "turn_id": turn_id,
     "ts_ms": ts_ms,
     "sample_rate": TARGET_SR,
-    "num_samples": audio.len(),
+    "num_samples": num_samples,
+    "pipeline": pipeline_label(emitted_kind),
     "emitted_kind": audit_kind_label(emitted_kind),
     "emitted_text": emitted_text,
+    "draft_text": draft_text,
     "full_text": full_text,
+    "finalize_elapsed_ms": finalize_elapsed_ms,
     "partials": partials_json,
     "eou_emissions": eou_json,
     "live_display_events": live_display_json,
     "bailout_reason": bailout_reason,
-  });
-  std::fs::write(&json_path, serde_json::to_string_pretty(&payload)?)?;
-
-  prune_debug_recordings(&dir);
-  Ok(())
+  })
 }
 
 /// Filename stem for the wav + json sidecar pair. The zero-padded `ts_ms`
@@ -3817,6 +3935,10 @@ struct FinalJob {
 enum AuditEmittedKind {
   Assembled,
   DraftEmit,
+  /// Dual-stream finalize: the refined replace that was pasted. Recorded with no model
+  /// re-decode — the sidecar's `draft_text` vs `emitted_text` already carry the correction
+  /// magnitude, so the audit worker never loads a finalization model for these.
+  DualFinal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3840,6 +3962,12 @@ struct PartialAuditJob {
   audio: Vec<f32>,
   emitted_kind: AuditEmittedKind,
   emitted_text: String,
+  /// Dual-stream only: the live draft shown at finalize, before the refined replace. Empty for
+  /// legacy jobs. Paired with `emitted_text` (the refined final) so the sidecar captures the
+  /// correction magnitude without a model re-decode.
+  draft_text: String,
+  /// Dual-stream only: wall-time to drain + flush the refined stream at finalize (G2 latency).
+  finalize_elapsed_ms: Option<u64>,
   partial_segments: Vec<IncrementalPartialSegment>,
   eou_emissions: Vec<EouEmission>,
   live_display_events: Vec<LiveDisplayEvent>,
@@ -4048,6 +4176,16 @@ fn audit_kind_label(kind: AuditEmittedKind) -> &'static str {
   match kind {
     AuditEmittedKind::Assembled => "assembled",
     AuditEmittedKind::DraftEmit => "draft_emit",
+    AuditEmittedKind::DualFinal => "dual_final",
+  }
+}
+
+/// Which pipeline produced a debug recording — lets analyzers separate the retiring legacy
+/// captures from dual-stream ones. Derived from `emitted_kind`, so no extra job field is needed.
+fn pipeline_label(kind: AuditEmittedKind) -> &'static str {
+  match kind {
+    AuditEmittedKind::DualFinal => "dual_stream",
+    AuditEmittedKind::Assembled | AuditEmittedKind::DraftEmit => "legacy_stitch",
   }
 }
 
@@ -6593,5 +6731,123 @@ mod tests {
       try_consume_number_run(&["one", "hundred", "and", "apples"], 0),
       Some((2, "100".into())),
     );
+  }
+
+  #[test]
+  fn dual_final_sidecar_carries_additive_dual_stream_keys() {
+    let live = vec![
+      super::LiveDisplayEvent {
+        audio_samples: 8_000,
+        source: "streaming",
+        action: "emit",
+        text: "forty two".to_string(),
+        candidate_text: None,
+      },
+      super::LiveDisplayEvent {
+        audio_samples: 16_000,
+        source: "refined",
+        action: "emit",
+        text: "forty-two percent".to_string(),
+        candidate_text: Some("forty two per".to_string()),
+      },
+    ];
+    let eou =
+      vec![EouEmission { audio_samples: 8_000, delta_chars: 9, text: "forty two".to_string() }];
+    let payload = super::debug_recording_payload(
+      7,
+      1_700_000_000_000,
+      16_000,
+      super::AuditEmittedKind::DualFinal,
+      "forty-two percent", // emitted_text = refined final (what was pasted)
+      "",                  // full_text: dual has no whole-turn model reference
+      "forty two per",     // draft_text = live caption at finalize
+      Some(123),
+      &[],
+      &eou,
+      &live,
+      None,
+    );
+    assert_eq!(payload["pipeline"], "dual_stream");
+    assert_eq!(payload["emitted_kind"], "dual_final");
+    assert_eq!(payload["draft_text"], "forty two per");
+    assert_eq!(payload["emitted_text"], "forty-two percent");
+    // No model re-decode in dual: the empty full_text is the observable signature of "no model".
+    assert_eq!(payload["full_text"], "");
+    assert_eq!(payload["finalize_elapsed_ms"], 123);
+    assert_eq!(payload["partials"].as_array().unwrap().len(), 0);
+    assert_eq!(payload["live_display_events"].as_array().unwrap().len(), 2);
+    assert_eq!(payload["eou_emissions"].as_array().unwrap().len(), 1);
+  }
+
+  #[test]
+  fn legacy_sidecar_keeps_empty_dual_keys_and_legacy_pipeline() {
+    let payload = super::debug_recording_payload(
+      3,
+      1_700_000_000_000,
+      4_000,
+      super::AuditEmittedKind::Assembled,
+      "hello world",
+      "hello world model",
+      "",   // legacy jobs carry no draft_text
+      None, // and no finalize_elapsed_ms
+      &[],
+      &[],
+      &[],
+      Some("no_incremental_or_draft_text"),
+    );
+    assert_eq!(payload["pipeline"], "legacy_stitch");
+    assert_eq!(payload["draft_text"], "");
+    assert!(payload["finalize_elapsed_ms"].is_null());
+    assert_eq!(payload["bailout_reason"], "no_incremental_or_draft_text");
+    assert_eq!(payload["full_text"], "hello world model");
+  }
+
+  #[test]
+  fn dual_final_divergence_measures_draft_to_refined_edits() {
+    // draft -> refined final: two single-token sharpenings (per->percent, allot->allotment).
+    let event = super::log_partial_audit_result(
+      11,
+      super::AuditEmittedKind::DualFinal,
+      &[],
+      "raise it by ten per and allot more",
+      "raise it by ten percent and allotment more",
+      None,
+    );
+    match event {
+      super::DebugStatsEvent::PartialAuditResult { emitted_kind, edit_distance, exact, .. } => {
+        assert_eq!(emitted_kind, "dual_final");
+        assert_eq!(edit_distance, 2);
+        assert!(!exact);
+      }
+      other => panic!("expected PartialAuditResult, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn dual_final_divergence_is_zero_when_refined_equals_draft() {
+    // When the refined stream produced nothing, final_text == draft: zero corrections.
+    let event = super::log_partial_audit_result(
+      12,
+      super::AuditEmittedKind::DualFinal,
+      &[],
+      "the plan is unchanged",
+      "the plan is unchanged",
+      None,
+    );
+    match event {
+      super::DebugStatsEvent::PartialAuditResult { edit_distance, exact, .. } => {
+        assert_eq!(edit_distance, 0);
+        assert!(exact);
+      }
+      other => panic!("expected PartialAuditResult, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn pipeline_label_separates_dual_from_legacy() {
+    assert_eq!(super::pipeline_label(super::AuditEmittedKind::DualFinal), "dual_stream");
+    assert_eq!(super::pipeline_label(super::AuditEmittedKind::Assembled), "legacy_stitch");
+    assert_eq!(super::pipeline_label(super::AuditEmittedKind::DraftEmit), "legacy_stitch");
+    assert_eq!(super::audit_kind_label(super::AuditEmittedKind::DualFinal), "dual_final");
   }
 }
