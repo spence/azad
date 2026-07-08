@@ -363,7 +363,6 @@ struct AppController {
   overlay_position: OverlayPosition,
   debug_stats_enabled: bool,
   turn_started_at: HashMap<u64, Instant>,
-  turn_finalize_outcomes: HashMap<u64, (String, String)>,
   session_recovery_state: SessionRecoveryState,
   session_fault_window: Vec<Instant>,
   last_session_error_was_stream_fault: bool,
@@ -671,7 +670,6 @@ impl AppController {
       overlay_position,
       debug_stats_enabled,
       turn_started_at: HashMap::new(),
-      turn_finalize_outcomes: HashMap::new(),
       session_recovery_state: SessionRecoveryState::Healthy,
       session_fault_window: Vec::new(),
       last_session_error_was_stream_fault: false,
@@ -1067,7 +1065,6 @@ impl AppController {
     self.reset_activity_history();
     self.busy_border_phase = 0.0;
     self.turn_started_at.clear();
-    self.turn_finalize_outcomes.clear();
 
     let device_id = self.current_device_id().map(ToOwned::to_owned);
     let emit: Arc<dyn Fn(SpeechEvent) + Send + Sync> =
@@ -3156,11 +3153,10 @@ impl AppController {
       .remove(&turn_id)
       .map(|started_at| u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX))
       .unwrap_or(0);
-    let (fallback, fallback_reason) = self
-      .turn_finalize_outcomes
-      .remove(&turn_id)
-      .map(|(outcome, reason)| (outcome == "full_pass_bailout", reason))
-      .unwrap_or((false, "unavailable".to_string()));
+    // Dual-stream never bails to a whole-turn re-decode; the `fallback` fields are retained only so
+    // the legacy-era metrics history stays parseable (see metrics_log).
+    let fallback = false;
+    let fallback_reason = "na".to_string();
 
     if self.debug_stats_enabled {
       let _ = metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::PasteCompleted {
@@ -3279,7 +3275,6 @@ impl AppController {
     self.current_turn_id = None;
     self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
     self.turn_started_at.clear();
-    self.turn_finalize_outcomes.clear();
     self.reset_activity_history();
     self.busy_border_phase = 0.0;
   }
@@ -3382,14 +3377,20 @@ impl AppController {
       return;
     }
 
-    match event {
-      DebugStatsEvent::PartialFinalizeOutcome { turn_id, outcome, reason } => {
-        self.turn_finalize_outcomes.insert(turn_id, (outcome.clone(), reason.clone()));
-        let _ = metrics_log::append_record(&MetricsLogRecord::new(
-          MetricsLogEvent::PartialFinalizeOutcome { turn_id, outcome, reason },
-        ));
-      }
-      DebugStatsEvent::PartialAuditResult {
+    let DebugStatsEvent::PartialAuditResult {
+      turn_id,
+      emitted_kind,
+      exact,
+      partial_count,
+      emitted_tokens,
+      full_tokens,
+      edit_distance,
+      wer_like,
+      lcp_tokens,
+      lcp_pct,
+    } = event;
+    let _ =
+      metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::PartialAuditResult {
         turn_id,
         emitted_kind,
         exact,
@@ -3400,31 +3401,7 @@ impl AppController {
         wer_like,
         lcp_tokens,
         lcp_pct,
-      } => {
-        let _ =
-          metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::PartialAuditResult {
-            turn_id,
-            emitted_kind,
-            exact,
-            partial_count,
-            emitted_tokens,
-            full_tokens,
-            edit_distance,
-            wer_like,
-            lcp_tokens,
-            lcp_pct,
-          }));
-      }
-      DebugStatsEvent::PartialAuditError { turn_id, emitted_kind, partial_count, message } => {
-        let _ =
-          metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::PartialAuditError {
-            turn_id,
-            emitted_kind,
-            partial_count,
-            message,
-          }));
-      }
-    }
+      }));
   }
 
   fn accept_turn(&self, turn_id: u64) -> bool {

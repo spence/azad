@@ -46,11 +46,17 @@ pub enum MetricsLogEvent {
     paste_duration_ms: u64,
     result: String,
   },
+  /// Legacy-era (historical). The windowed finalizer's per-turn outcome/bailout reason. No longer
+  /// emitted — dual-stream has no bailout — but kept on the read side so the retained legacy log
+  /// stays parseable for cross-era summaries.
   PartialFinalizeOutcome {
     turn_id: u64,
     outcome: String,
     reason: String,
   },
+  /// Quality signal. Under dual-stream this is the draft->refined-final token divergence (how much
+  /// the refined stream corrected the live draft at finalize). Legacy records used the same shape
+  /// for emitted-vs-whole-turn-re-decode divergence, so both eras parse identically.
   PartialAuditResult {
     turn_id: u64,
     emitted_kind: String,
@@ -63,6 +69,8 @@ pub enum MetricsLogEvent {
     lcp_tokens: usize,
     lcp_pct: f64,
   },
+  /// Legacy-era (historical). The windowed audit worker's model-load / decode error. No longer
+  /// emitted (the dual recorder loads no model); retained on the read side for old logs.
   PartialAuditError {
     turn_id: u64,
     emitted_kind: String,
@@ -73,6 +81,8 @@ pub enum MetricsLogEvent {
     turn_id: u64,
     mode: TranscriptMode,
     transcription_duration_ms: u64,
+    /// Legacy-era: whether the turn bailed to a whole-turn re-decode. Always `false` under
+    /// dual-stream; retained for schema history so old snapshots stay parseable.
     fallback: bool,
     fallback_reason: String,
     text_preview: String,
@@ -197,21 +207,25 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
   } else {
     fast_count as f64 * 100.0 / summary.fallback_attempts as f64
   };
-  lines.push(format!("Finalize attempts: {}", summary.fallback_attempts));
-  lines.push(format!("Finalize fast count: {}", fast_count));
-  lines.push(format!("Finalize fast rate_pct: {:.1}", fast_rate_pct));
+  // Legacy-era (historical): the windowed-finalization fallback/bailout counters. Dual-stream
+  // never bails, so these stay zero for new turns and only reflect the retained legacy log.
+  lines.push(format!("Finalize attempts (legacy-era): {}", summary.fallback_attempts));
+  lines.push(format!("Finalize fast count (legacy-era): {}", fast_count));
+  lines.push(format!("Finalize fast rate_pct (legacy-era): {:.1}", fast_rate_pct));
   lines.push(String::new());
-  lines.push(format!("Quality samples: {}", summary.quality_samples));
+  // Draft->refined-final divergence: how much the refined stream corrected the live draft at
+  // finalize (token edit distance; small nonzero == subtle in-place sharpenings, goal #3).
+  lines.push(format!("Draft->final divergence samples: {}", summary.quality_samples));
   if summary.quality_samples == 0 {
-    lines.push("Quality exact_pct: n/a".to_string());
-    lines.push("Quality avg_edit: n/a".to_string());
-    lines.push("Quality avg_wer: n/a".to_string());
-    lines.push("Quality avg_lcp_pct: n/a".to_string());
+    lines.push("Draft->final exact_pct: n/a".to_string());
+    lines.push("Draft->final avg_edit: n/a".to_string());
+    lines.push("Draft->final avg_wer: n/a".to_string());
+    lines.push("Draft->final avg_lcp_pct: n/a".to_string());
   } else {
-    lines.push(format!("Quality exact_pct: {:.1}", summary.quality_exact_rate_pct));
-    lines.push(format!("Quality avg_edit: {:.2}", summary.quality_avg_edit_distance));
-    lines.push(format!("Quality avg_wer: {:.3}", summary.quality_avg_wer_like));
-    lines.push(format!("Quality avg_lcp_pct: {:.1}", summary.quality_avg_lcp_pct));
+    lines.push(format!("Draft->final exact_pct: {:.1}", summary.quality_exact_rate_pct));
+    lines.push(format!("Draft->final avg_edit: {:.2}", summary.quality_avg_edit_distance));
+    lines.push(format!("Draft->final avg_wer: {:.3}", summary.quality_avg_wer_like));
+    lines.push(format!("Draft->final avg_lcp_pct: {:.1}", summary.quality_avg_lcp_pct));
   }
   lines.push(String::new());
   lines.push(format!("Recent transcriptions (latest {})", RECENT_TRANSCRIPTS_LIMIT));

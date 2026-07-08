@@ -369,13 +369,10 @@ pub enum EngineState {
   Speech,
 }
 
+/// Dual-stream quality signal: the token divergence between the live draft shown at finalize and
+/// the refined final that replaced it. Emitted per finalized turn when debug stats are enabled.
 #[derive(Debug, Clone)]
 pub enum DebugStatsEvent {
-  PartialFinalizeOutcome {
-    turn_id: u64,
-    outcome: String,
-    reason: String,
-  },
   PartialAuditResult {
     turn_id: u64,
     emitted_kind: String,
@@ -387,12 +384,6 @@ pub enum DebugStatsEvent {
     wer_like: f64,
     lcp_tokens: usize,
     lcp_pct: f64,
-  },
-  PartialAuditError {
-    turn_id: u64,
-    emitted_kind: String,
-    partial_count: usize,
-    message: String,
   },
 }
 
@@ -2068,14 +2059,8 @@ impl PipelineCore {
     finalize_elapsed_ms: u64,
     audio: Vec<f32>,
   ) {
-    let event = log_partial_audit_result(
-      self.turn_id,
-      AuditEmittedKind::DualFinal,
-      &[],
-      &draft,
-      &final_text,
-      None,
-    );
+    let event =
+      log_partial_audit_result(self.turn_id, AuditEmittedKind::DualFinal, &[], &draft, &final_text);
     self.renderer.emit(RenderEvent::DebugStats(event));
 
     let eou_emissions = self.live_display.eou_emissions.clone();
@@ -2750,25 +2735,8 @@ fn log_partial_audit_result(
   partial_segments: &[IncrementalPartialSegment],
   emitted_text: &str,
   full_text: &str,
-  error: Option<&str>,
 ) -> DebugStatsEvent {
   log_partial_audit_texts(turn_id, emitted_kind, partial_segments, emitted_text, full_text);
-
-  if let Some(message) = error {
-    eprintln!(
-      "TOON_PARTIAL_AUDIT turn_id={} emitted_kind={} status=error partial_count={} message={:?}",
-      turn_id,
-      audit_kind_label(emitted_kind),
-      partial_segments.len(),
-      message
-    );
-    return DebugStatsEvent::PartialAuditError {
-      turn_id,
-      emitted_kind: audit_kind_label(emitted_kind).to_string(),
-      partial_count: partial_segments.len(),
-      message: message.to_string(),
-    };
-  }
 
   let emitted = emitted_text.trim();
   let full = full_text.trim();
@@ -4516,7 +4484,6 @@ mod tests {
       &[],
       "raise it by ten per and allot more",
       "raise it by ten percent and allotment more",
-      None,
     );
     match event {
       super::DebugStatsEvent::PartialAuditResult { emitted_kind, edit_distance, exact, .. } => {
@@ -4537,7 +4504,6 @@ mod tests {
       &[],
       "the plan is unchanged",
       "the plan is unchanged",
-      None,
     );
     match event {
       super::DebugStatsEvent::PartialAuditResult { edit_distance, exact, .. } => {
