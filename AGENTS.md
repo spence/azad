@@ -70,6 +70,44 @@ Expected service/app identifiers:
   - `cargo test -q` (in touched Rust repos, especially `crates/azad`).
 - Validate live runtime for UI/hotkey changes after restart.
 
+## Validation without touching the running app (REQUIRED path)
+
+The user daily-drives the installed `Azad.app` and may be mid-transcription at any moment.
+**Never** validate against the running app: do not `just stop`/`restart` it, do not change its
+input device, and do not toggle `AzadAlwaysListeningEnabled` or any other `ai.azad`
+NSUserDefaults key for a test. Doing so hijacks the user's live dictation and mutates their
+settings (e.g. flipping always-listening on). Assume we are NOT competing for GPU/CPU — just do
+not interfere with the app's state.
+
+Run all engine/transcription/EOU validation **UI-less** through the standalone `asr` binary,
+which drives the *exact same pipeline* with no overlay, no paste, no audio device, and no
+`ai.azad` defaults:
+
+```
+cargo build -p azad-asr --bin asr --release
+M="$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1"
+./target/release/asr transcribe-file \
+  --vad-model "$M/vad/silero_vad.mlmodelc" \
+  --mlx-model-dir "$M/mlx" \
+  --mlx-helper "$PWD/target/swift/azad-mlx-asr/release/azad-mlx-asr" \
+  --language en-US \
+  --vad-thold 0.30 --eou-min-silence-ms 350 --eou-max-silence-ms 1000 \
+  --vad-in-speech-thold 0.10 --recovery-window-ms 250 --recovery-vad-thold 0.30 \
+  <input.wav>                       # add --events-jsonl for the full render-event stream
+```
+
+Every EOU/VAD knob is a CLI flag, so sweep timing values here — never in the live app. Match the
+app's defaults (see `crates/azad/src/config.rs`), which differ from the `asr` CLI defaults.
+
+- Pinned-fixture regressions: `cargo test -p azad-asr --test replay -- --ignored --test-threads=1`
+  (`AZAD_TEST_REQUIRE_MODELS=1` to hard-fail instead of skip; needs `AZAD_MLX_ASR_HELPER` set or
+  the helper on the default search path).
+- App-side overlay/paste routing is covered by `cargo test -p azad` unit tests (e.g. the
+  finalizing-caption replay), which need no models and no running app.
+- If a real-audio/device path is genuinely required, run a SEPARATE headless
+  `asr listen --device "BlackHole 2ch"` and `afplay` into BlackHole — still without changing the
+  running `Azad.app`'s device or settings.
+
 ## Commit and Scope Hygiene
 
 - This workspace is one Git repository. Keep commits grouped by workstream.
