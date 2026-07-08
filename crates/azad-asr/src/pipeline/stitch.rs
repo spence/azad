@@ -3,8 +3,6 @@ pub(super) const INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS: usize = 2;
 const INCREMENTAL_STITCH_MAX_TAIL_DROP_TOKENS: usize = 24;
 const INCREMENTAL_STITCH_MAX_SHRINK_TOKENS: usize = 2;
 const INCREMENTAL_STITCH_STRONG_OVERLAP_TOKENS: usize = 3;
-const INCREMENTAL_STITCH_SAMPLES_PER_WORD_MAX: usize = 4_000;
-const INCREMENTAL_STITCH_RIGHT_START_SLACK_TOKENS: usize = 2;
 fn overlap_tail_drop_is_safe(tail_drop: usize, overlap: usize, match_start: usize) -> bool {
   tail_drop <= INCREMENTAL_STITCH_MAX_SHRINK_TOKENS
     || (overlap >= INCREMENTAL_STITCH_STRONG_OVERLAP_TOKENS && match_start == 0)
@@ -32,17 +30,6 @@ fn overlap_merge_is_safe(
   // Large shrink is acceptable only when overlap is strong and anchored at the beginning of
   // the new segment, which indicates true continuation rather than an incidental phrase match.
   overlap >= INCREMENTAL_STITCH_STRONG_OVERLAP_TOKENS && match_start == 0
-}
-
-// Convert the audio-sample overlap between the previously-seen partials and the incoming one into
-// an upper bound on how far into the new segment the stitch can anchor. The false-overlap bug
-// happens when phrases like `[if, we, have]` recur deep in the new segment and outscore the true
-// overlap near the start. Audio alignment tells us the real overlap can only be a few seconds
-// long, which bounds how many tokens the true anchor could be past `right[0]`.
-pub(super) fn stitch_right_start_cap_from_overlap(overlap_samples: usize) -> usize {
-  overlap_samples
-    .saturating_div(INCREMENTAL_STITCH_SAMPLES_PER_WORD_MAX)
-    .saturating_add(INCREMENTAL_STITCH_RIGHT_START_SLACK_TOKENS)
 }
 
 pub(super) fn stitch_incremental_text(

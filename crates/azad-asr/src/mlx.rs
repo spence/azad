@@ -64,6 +64,10 @@ impl MlxNemotronAsr {
     response_ok(&response)
   }
 
+  // Whole-turn re-decode helper commands. The dual-stream pipeline no longer calls either — the
+  // helper-side `final_samples`/non-stream `finish` protocol is retired in a later commit; kept for
+  // now so this commit only touches the pipeline.
+  #[allow(dead_code)]
   pub fn final_transcript(&mut self) -> Result<Option<String>> {
     let response = self.command(json!({ "type": "finish" }))?;
     let text = response
@@ -88,6 +92,7 @@ impl MlxNemotronAsr {
     Ok((!text.is_empty()).then_some(text))
   }
 
+  #[allow(dead_code)]
   pub fn transcribe_final_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
     let response = self.command(json!({
       "type": "final_samples",
