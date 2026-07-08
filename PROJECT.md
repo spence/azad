@@ -6,6 +6,7 @@ Active milestones:
 - Runtime Module Boundary Cleanup
 
 Completed milestones:
+- Dual-Stream Pipeline Rework
 - Idle VAD Silence Compute Reduction
 - Root Rust Workspace Cutover
 - Debug Recent Quality Session Association
@@ -17,6 +18,12 @@ Completed milestones:
 - Listen Toggle Overlay Feedback
 
 # Milestones
+## Dual-Stream Pipeline Rework
+- [x] Run an instant live caption alongside a persistent higher-quality refined stream that folds into the caption's bounded mutable tail (zero-churn, subtle in-place corrections).
+- [x] Make finalize a cheap flush of the refined stream (O(chunk)) instead of a whole-turn re-decode.
+- [x] Retire the legacy windowed re-decode, text stitcher, and coverage-gap/full-pass-bailout machinery; dual-stream is the only pipeline.
+- [x] Add a dual-native debug recorder and the `live_metrics.py` on-device measurement analyzer; repoint the in-app quality metric to draft->refined-final divergence.
+
 ## Repository Quality Cleanup
 - [x] Add a documentation index and cross-link root/crate READMEs to active docs.
 - [x] Remove obsolete historical fork/model investigation docs from the active tree.
@@ -26,7 +33,7 @@ Completed milestones:
 ## Runtime Module Boundary Cleanup
 - [ ] Split macOS platform integration by concern (`hotkeys`, `paste`, `overlay`, `settings`, `history`, `onboarding`).
 - [ ] Split app orchestration by behavior flow (`interaction`, `overlay`, `paste`, `history`, `gateway`, `recovery`).
-- [ ] Split ASR pipeline internals by engine concern (`turn`, `vad`, `incremental`, `stitch`, `workers`, `debug_audit`).
+- [ ] Split ASR pipeline internals by engine concern (`turn`, `vad`, `refine`, `live_display`, `workers`, `debug_recorder`).
 
 ## Debug Recent Quality Session Association
 - [x] Prevent recent transcription quality rows from reusing stale audit scores across app sessions.

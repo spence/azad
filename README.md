@@ -119,6 +119,14 @@ MIT. See [LICENSE](LICENSE).
 
 ### 0.4.2 Unreleased
 
+- Reworked transcription to a dual-stream pipeline: an instant live caption plus a persistent
+  higher-quality stream that sharpens it in place without churning already-shown text.
+- Finalization is now a cheap flush instead of a whole-turn re-decode — roughly 15x faster on
+  device (p50 ~630ms to ~38ms), with fast, high-quality pasted output.
+- Dual-stream is now the only transcription pipeline; the legacy windowed re-decode, text stitcher,
+  and coverage-gap/full-pass-bailout machinery have been retired.
+- Added a debug recorder and an on-device measurement analyzer
+  (`crates/azad-asr/scripts/live_metrics.py`) for per-turn caption/finalize/correction evidence.
 - Expanded spoken-number conversion for identifiers like `S eight` -> `S8`.
 - Removed terminal periods from single-word pasted output.
 - Fixed live transcription responsiveness and overlay finalization issues.

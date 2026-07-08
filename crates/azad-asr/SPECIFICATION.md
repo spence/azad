@@ -7,7 +7,7 @@
 - the terminal CLI (`asr listen`, `asr transcribe-file`), and
 - the Azad macOS app (via embedded session API).
 
-It owns real-time audio ingestion, VAD gating, turn lifecycle, MLX streaming draft generation, incremental/final MLX refinement, and debug observability events.
+It owns real-time audio ingestion, VAD gating, turn lifecycle, MLX streaming draft generation, dual-stream refinement (a second, higher-quality streaming session), and debug observability events.
 
 It intentionally does **not** own:
 
@@ -40,11 +40,11 @@ Those concerns live in Azad.
 
 1. Audio input is normalized/prepared to 16kHz mono chunks.
 2. CoreML Silero VAD determines speech transitions.
-3. MLX Nemotron generates streaming draft text at low latency.
+3. MLX Nemotron generates the live streaming draft (80ms chunks) at low latency.
 4. Stability tracker splits draft into committed/live segments.
-5. During speech, incremental MLX finalization slices refine text in background.
-6. On finalize, assembled incremental text is preferred.
-7. If incremental output is unavailable or unsafe, whole-turn MLX finalization is used.
+5. Every chunk is also fed to a second, persistent refined streaming session (560ms chunks) running off the live thread; its deltas fold into the caption's bounded mutable tail.
+6. On finalize, the refined session is flushed (cheap — no whole-turn re-decode) and its text replaces the draft.
+7. If the refined session produced nothing, the live draft stands as the final text.
 8. Renderer emits state/text/debug events to embedding app or TUI.
 
 ### 3.2 Event Surface (`src/render.rs`)
@@ -89,15 +89,14 @@ On start:
 
 - pre-roll is prepended,
 - turn ID increments,
-- streaming/stability/incremental state reset,
+- streaming/stability/live-display state reset, and the refined session is reset for the new turn,
 - renderer emits `Status(Speech)` and initial `Active`.
 
 ## 4.2 During Speech
 
-- The streaming chunk feed updates cumulative draft text and stability state.
+- The live streaming chunk feed updates cumulative draft text and stability state.
 - stability tracker emits committed/live split.
-- incremental slices are periodically scheduled when enough new audio exists.
-- speculative finalize can be scheduled at silence transitions (non-incremental mode path).
+- each chunk is mirrored to the refined session (non-blocking); its deltas accumulate and fold into the caption's mutable tail.
 
 ## 4.3 End Conditions
 
@@ -110,71 +109,81 @@ A turn ends via one of:
 
 Finalize path:
 
-- emit `FinalLine` with best draft,
+- emit `FinalLine` with the best draft (draft-history safety net),
 - emit `Finalizing`,
-- enqueue final output path (incremental assembled text preferred, full pass fallback).
+- flush the refined session and emit `ReplaceLine` with the refined final (or the draft if the refined session was empty).
 
-## 5. Incremental Refinement and Fallback Design
+## 5. Dual-Stream Refinement Design
 
-`src/pipeline.rs` intentionally optimizes for low-latency live behavior:
+`src/pipeline.rs` runs two streaming sessions concurrently so the caption stays instant while a
+stronger decode sharpens it:
 
-- Heavy finalization inference runs off the live capture thread.
-- Incremental segments are stitched to avoid re-running full pass by default.
-- A tail-plan guard (`finalize_tail_plan`) decides if explicit tail segment is required.
-- Finalization output priority:
-  1. assembled incremental output,
-  2. draft output,
-  3. full pass bailout (with reason).
+- **Live stream (80ms chunks):** the low-latency draft shown as the user speaks. Anti-churn is
+  enforced by a bounded mutable tail — settled text never flip-flops.
+- **Refined stream (560ms chunks):** a second, persistent MLX session on the finalization worker
+  thread, fed the same audio continuously (`RefineChunk` per chunk, `RefineReset` per turn). Its
+  deltas (`RefinedDelta`) accumulate; a token stabilizer folds them into only the caption's
+  volatile tail (`LIVE_DISPLAY_MUTABLE_TAIL_TOKENS`), so in-place corrections land without
+  rewriting already-read text.
 
-This is tracked in `PartialFinalizeOutcome`:
+Finalize is O(one chunk), not O(turn):
 
-- `Assembled`
-- `DraftEmit`
-- `FullPassBailout(reason)`
+1. emit `FinalLine` with the live draft (draft-history safety net),
+2. send `RefineFlush`; the worker flushes its own streaming tail (`RefinedFinal`) — no whole-turn
+   re-decode,
+3. emit `ReplaceLine` with the refined final, or fall back to the draft if the refined session
+   produced nothing.
 
-Reasons are expected and diagnostic, but frequent bailouts in normal usage indicate regression or load pressure.
+There is no text stitching across windowed re-decodes, no coverage-gap ladder, and no full-pass
+bailout — the refined text is a single coherent transcript by construction, so the classes of bugs
+those guards existed to catch (repeated-phrase false anchors, dropped middle clauses) cannot occur.
+
+The live-display composition helpers (`stitch_incremental_text` and friends in
+`src/pipeline/stitch.rs`) survive as the tokenizer/merge used to append the live stream's tail to
+the refined text — not as a windowed-finalization stitcher.
 
 ## 6. Debug and Quality Observability
 
 When debug stats are enabled:
 
-- partial outcome events are emitted,
-- partial-vs-full audit worker computes quality metrics,
-- text traces for partials/emitted/full can be logged.
+- a slim recorder persists each turn's wav + sidecar (draft, refined final, live-display and EOU
+  events) off the hot path, with no model re-decode,
+- the draft->refined-final token divergence is emitted as the quality signal.
 
-`DebugStatsEvent` includes:
+`DebugStatsEvent`:
 
-- `PartialFinalizeOutcome`
-- `PartialAuditResult` (tokens/edit distance/wer-like/lcp)
-- `PartialAuditError`
+- `PartialAuditResult` (tokens/edit distance/wer-like/lcp) — the draft->final divergence.
 
 Design intent:
 
-- Keep audits non-blocking and background-priority.
-- Never block foreground capture/finalization for debug-only validation.
+- Keep recording non-blocking and background-priority.
+- Never block foreground capture/finalization for debug-only observability.
+
+(`metrics_log` retains read-side parsing of the legacy `PartialFinalizeOutcome`/`PartialAuditError`
+records so historical logs stay summarizable; those events are no longer emitted.)
 
 ## 7. Threading and Performance Decisions
 
 Explicit QoS separation:
 
 - live pipeline thread: user-interactive.
-- finalization worker: user-initiated (user-visible latency path).
-- partial-audit worker: background.
+- refined-stream / finalization worker: user-initiated (user-visible latency path).
+- debug recorder: background.
 
 Other important choices:
 
-- avoid blocking live capture for final inference,
-- keep only latest speculative jobs (drop stale),
+- avoid blocking live capture for refined inference,
+- keep the refined feed non-blocking (drop on a full channel rather than stall the live thread),
 - keep capture responsive even under session control changes.
 
 ## 8. Configuration Surface
 
-`PipelineConfig` governs VAD/streaming/incremental/finalization behavior.
+`PipelineConfig` governs VAD/streaming/finalization behavior.
 Key classes of knobs:
 
 - VAD thresholds and start confirmation,
 - silence/end-of-turn thresholds,
-- incremental cadence/overlap/context/wait timings,
+- live/final MLX chunk sizes (the refined session runs at the final chunk size),
 - model paths (VAD + MLX Nemotron).
 
 Host applications (Azad/CLI) are expected to provide coherent defaults. Azad default values live in `azad/src/config.rs`.
@@ -193,17 +202,18 @@ Validate:
 - no early cutoffs,
 - no stuck speech state.
 
-### 9.2 Change partial stitching/fallback behavior
+### 9.2 Change refinement / live-display composition behavior
 
 Primary files:
 
-- `src/pipeline.rs` (`maybe_schedule_incremental_slice`, `submit_incremental_final_pass`, `stitch_incremental_text`, `finalize_tail_plan`).
+- `src/pipeline.rs` (`feed_eou` refined feed, `finish_turn_dual_stream`, `apply_refined_delta`, `emit_replacement_live_display`, the stabilizer + `LIVE_DISPLAY_MUTABLE_TAIL_TOKENS`).
+- `src/pipeline/stitch.rs` (`stitch_incremental_text` — live-display tail composition only).
 
 Validate:
 
-- assembled text quality,
-- bailout rate,
-- tail coverage correctness.
+- refined final quality (no dropped/duplicated clauses),
+- caption anti-churn (rollback ≤ mutable tail; no large swaps of settled text),
+- finalize latency (flush stays O(chunk)).
 
 ### 9.3 Change embed integration contract
 
@@ -233,12 +243,13 @@ Rules:
 - Hotkey semantics must not leak into engine logic.
 - Engine must remain usable from non-Azad hosts.
 - Finalization must always produce deterministic turn completion events.
-- Debug auditing must remain optional and non-blocking.
-- Full-pass fallback is a safety net, not the default happy path.
+- Debug recording must remain optional and non-blocking.
+- The live caption must never rewrite settled text beyond the bounded mutable tail.
 
 ## 11. Testing Guidance
 
-- Unit tests in `src/pipeline.rs` cover stitching/tail-plan behavior.
+- Unit tests in `src/pipeline.rs` cover live-display composition and the stabilizer's mutable-tail behavior.
+- Pinned-fixture regressions live in `tests/replay.rs` (run with `--ignored`, models on disk).
 - Integration behavior should be validated through Azad and CLI paths.
 - Regressions should add tests near the logic that enforces the invariant (not only at outer wrappers).
 

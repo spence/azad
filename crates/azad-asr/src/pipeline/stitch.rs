@@ -1,3 +1,15 @@
+//! Live-display text composition for the dual-stream caption.
+//!
+//! The sole role of this module is to compose the caption shown while the user speaks: it
+//! tokenizes text, finds the overlap between the accumulated refined text and the live stream's
+//! trailing tokens, and merges the live tail onto the refined text without duplicating the seam
+//! (`stitch_incremental_text`, driven from `append_streaming_tail_to_refinement`).
+//!
+//! It is NOT a windowed-finalization stitcher — the legacy path that re-decoded overlapping audio
+//! windows and stitched their transcripts (with a coverage-gap/bailout ladder) has been retired.
+//! The `INCREMENTAL_STITCH_*` names are historical; they parameterize the token overlap/merge, not
+//! any audio re-decode.
+
 pub(super) const INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS: usize = 256;
 pub(super) const INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS: usize = 2;
 const INCREMENTAL_STITCH_MAX_TAIL_DROP_TOKENS: usize = 24;

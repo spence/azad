@@ -23,7 +23,7 @@ Project documentation is organized by ownership boundary.
 ## ASR Runtime
 
 - [ASR README](../crates/azad-asr/README.md): CLI use, model layout, and runtime dependencies.
-- [ASR specification](../crates/azad-asr/SPECIFICATION.md): capture, VAD, streaming, incremental finalization, and embed contracts.
+- [ASR specification](../crates/azad-asr/SPECIFICATION.md): capture, VAD, streaming, dual-stream refinement, and embed contracts.
 
 ## Swift Helper
 

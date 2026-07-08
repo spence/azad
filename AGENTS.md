@@ -99,6 +99,11 @@ M="$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1"
 Every EOU/VAD knob is a CLI flag, so sweep timing values here — never in the live app. Match the
 app's defaults (see `crates/azad/src/config.rs`), which differ from the `asr` CLI defaults.
 
+Dual-stream is the only transcription pipeline (an instant live caption plus a persistent refined
+stream, flushed at finalize — no windowed re-decode/stitcher/bailout). For on-device evidence
+(per-turn caption churn, finalize latency, correction magnitude), use
+`python3 crates/azad-asr/scripts/live_metrics.py report <sidecar-dir>`.
+
 - Pinned-fixture regressions: `cargo test -p azad-asr --test replay -- --ignored --test-threads=1`
   (`AZAD_TEST_REQUIRE_MODELS=1` to hard-fail instead of skip; needs `AZAD_MLX_ASR_HELPER` set or
   the helper on the default search path).
