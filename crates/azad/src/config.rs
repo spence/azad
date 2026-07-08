@@ -127,13 +127,6 @@ impl Default for AzadConfig {
         stable_k: 3,
         stable_h: 5,
         finalizing_pulse_enabled: true,
-        incremental_finalization_enabled: true,
-        incremental_slice_ms: 6_000,
-        incremental_overlap_ms: 3_000,
-        incremental_left_context_ms: 10_000,
-        incremental_min_new_audio_ms: 1_200,
-        incremental_wait_tail_result_ms: 220,
-        refinement_mode: asr::pipeline::RefinementMode::DualStream,
       },
     };
     if let Some(paths) = resolve_pipeline_paths(default_pack) {
@@ -175,7 +168,6 @@ fn apply_pipeline_paths(pipeline: &mut PipelineConfig, paths: models::ResolvedPi
         final_chunk_ms: 560,
         helper_path: None,
       };
-      pipeline.incremental_finalization_enabled = true;
     }
   }
 }

@@ -14,7 +14,7 @@
       "id": "stitcher-preserves-prefix-pseudo-suffix",
       "wav": "stitcher-preserves-prefix-pseudo-suffix.wav",
       "json": "stitcher-preserves-prefix-pseudo-suffix.json",
-      "description": "Pinned 2026-04-26. Real ~32s utterance ('I want you to undo the fix...') that contains a duplicated phrase ('I want you' / 'why don't you do an investigation' / 'have a conversation') giving the incremental stitcher a tempting false anchor. Pre-fix code (any commit at or before 74d53ac) drops the first ~50 words and emits only the trailing 'reproduce it, then let's have a conversation...' Current code (with the chain of stitcher fixes 10309a4 through fb31c66) preserves the prefix correctly. Regression: any future change that re-introduces a false-overlap path will drop the prefix and fail the must_contain assertions.",
+      "description": "Pinned 2026-04-26. Real ~32s utterance ('I want you to undo the fix...') with a repeated phrase ('I want you' / 'why don't you do an investigation' / 'have a conversation') that historically gave the finalizer a tempting false anchor and dropped the first ~50 words, emitting only the trailing 'reproduce it, then let's have a conversation...'. Under the dual-stream pipeline the full transcript must still keep the prefix. Regression: any change that reintroduces a prefix-dropping path will fail the must_contain assertions.",
       "assertions": {
         "must_contain": ["undo the fix", "commit it", "actually exists"],
         "must_not_contain": []

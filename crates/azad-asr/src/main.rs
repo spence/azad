@@ -86,35 +86,6 @@ struct CommonArgs {
   #[arg(long, default_value_t = 5)]
   stable_h: usize,
 
-  /// Enable incremental MLX finalization slices during an active turn.
-  #[arg(
-        long,
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        value_parser = clap::value_parser!(bool)
-    )]
-  incremental_finalization_enabled: bool,
-
-  /// Cadence for incremental refinement slices while speaking (ms).
-  #[arg(long, default_value_t = 6_000)]
-  incremental_slice_ms: u32,
-
-  /// Overlap from previous refined slice when creating a new slice (ms).
-  #[arg(long, default_value_t = 3_000)]
-  incremental_overlap_ms: u32,
-
-  /// Extra left-context to include for each incremental slice to improve boundary quality (ms).
-  #[arg(long, default_value_t = 10_000)]
-  incremental_left_context_ms: u32,
-
-  /// Minimum new audio required before scheduling the next incremental slice (ms).
-  #[arg(long, default_value_t = 1_200)]
-  incremental_min_new_audio_ms: u32,
-
-  /// Wait time before forcing tail refinement when a background slice is still running (ms).
-  #[arg(long, default_value_t = 220)]
-  incremental_wait_tail_result_ms: u32,
-
   /// MLX Nemotron model directory (contains config.json, model.safetensors, tokenizer.model, vocab.txt).
   #[arg(long = "mlx-model-dir")]
   mlx_model_dir: Option<PathBuf>,
@@ -134,11 +105,6 @@ struct CommonArgs {
   /// MLX chunk size for finalization passes (ms).
   #[arg(long, default_value_t = 560)]
   final_chunk_ms: u32,
-
-  /// Refinement strategy: `legacy_stitch` (windowed re-decode + text stitch) or `dual_stream`
-  /// (persistent higher-quality streaming session, no stitch, cheap flush finalize).
-  #[arg(long, default_value = "legacy_stitch")]
-  refinement_mode: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -544,13 +510,6 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
     stable_k: args.stable_k,
     stable_h: args.stable_h,
     finalizing_pulse_enabled: true,
-    incremental_finalization_enabled: args.incremental_finalization_enabled,
-    incremental_slice_ms: args.incremental_slice_ms,
-    incremental_overlap_ms: args.incremental_overlap_ms,
-    incremental_left_context_ms: args.incremental_left_context_ms,
-    incremental_min_new_audio_ms: args.incremental_min_new_audio_ms,
-    incremental_wait_tail_result_ms: args.incremental_wait_tail_result_ms,
-    refinement_mode: asr::pipeline::RefinementMode::from_str_lenient(&args.refinement_mode),
   })
 }
 

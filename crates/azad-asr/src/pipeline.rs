@@ -26,14 +26,12 @@ const CHUNK_SAMPLES: usize = 2_560; // 160ms @ 16kHz
 const LIVE_STREAM_GAP_LOG_THRESHOLD_SAMPLES: usize = TARGET_SR as usize * 2;
 const LIVE_REFINE_MAX_STITCH_EXTRA_TOKENS: usize = 8;
 const LIVE_REFINE_STREAM_LEAD_TOKENS: usize = 8;
-const LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 36;
 const LIVE_DISPLAY_STABLE_OVERLAP_TOKENS: usize = 4;
-/// Dual-stream goal #3: the refined 560ms stream lags the live 80ms stream by ~1-2 words and can
-/// re-segment, so it must only ever correct the volatile live tail — never rewrite settled text.
-/// A much tighter mutable tail than legacy's stitched refinement freezes the committed prefix, so
-/// subtle in-place corrections (and filler decisions) stick instead of flip-flopping, while a
-/// large divergence can rewrite at most this many trailing tokens.
-const DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 12;
+/// The refined 560ms stream lags the live 80ms stream by ~1-2 words and can re-segment, so it must
+/// only ever correct the volatile live tail — never rewrite settled text. This tight mutable tail
+/// freezes the committed prefix so subtle in-place corrections (and filler decisions) stick instead
+/// of flip-flopping, while a large divergence can rewrite at most this many trailing tokens.
+const LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalizingPulsePlan {
@@ -477,36 +475,8 @@ pub struct PipelineConfig {
   pub stable_k: usize,
   pub stable_h: usize,
 
-  /// Controls the UI "finalizing" pulse independently from whether the final
-  /// text comes from stitched background slices or a whole-turn pass.
+  /// Controls the UI "finalizing" pulse shown between the live draft and the refined replace.
   pub finalizing_pulse_enabled: bool,
-  pub incremental_finalization_enabled: bool,
-  pub incremental_slice_ms: u32,
-  pub incremental_overlap_ms: u32,
-  pub incremental_left_context_ms: u32,
-  pub incremental_min_new_audio_ms: u32,
-  pub incremental_wait_tail_result_ms: u32,
-  /// How the refined/final text is produced. `LegacyStitch` runs windowed re-decodes and
-  /// text-stitches them (fragile on repeated phrases, O(turn) full-pass bailout). `DualStream`
-  /// runs a persistent higher-quality streaming session alongside the live one, fed the turn's
-  /// audio continuously, and finalizes with a cheap flush — no stitching, no bailout.
-  pub refinement_mode: RefinementMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RefinementMode {
-  #[default]
-  LegacyStitch,
-  DualStream,
-}
-
-impl RefinementMode {
-  pub fn from_str_lenient(s: &str) -> Self {
-    match s.trim().to_ascii_lowercase().as_str() {
-      "dual_stream" | "dual-stream" | "dual" => Self::DualStream,
-      _ => Self::LegacyStitch,
-    }
-  }
 }
 
 impl PipelineConfig {
@@ -1603,13 +1573,12 @@ impl PipelineCore {
     self.turn_started_by_vad = reason == TurnStartReason::Vad;
 
     self.streaming_asr.reset_turn()?;
-    if self.cfg.refinement_mode == RefinementMode::DualStream {
-      let _ = self.final_tx.send(FinalJob {
-        turn_id: self.turn_id,
-        audio: Vec::new(),
-        kind: FinalJobKind::RefineReset,
-      });
-    }
+    // Reset the background refined session for the new turn.
+    let _ = self.final_tx.send(FinalJob {
+      turn_id: self.turn_id,
+      audio: Vec::new(),
+      kind: FinalJobKind::RefineReset,
+    });
     self.eou_draft.clear();
     self.prev_silence_ms = 0;
     self.seen_eou_since_speech = false;
@@ -1692,10 +1661,10 @@ impl PipelineCore {
   }
 
   fn feed_eou(&mut self, piece: &[f32]) -> Result<bool> {
-    // Dual-stream: mirror the live audio into the background refined session. Non-blocking
-    // send keeps the live thread responsive (goal: zero-lag caption); the refined stream
-    // runs slightly behind and its deltas land via `drain_async_results`.
-    if self.cfg.refinement_mode == RefinementMode::DualStream && !piece.is_empty() {
+    // Mirror the live audio into the background refined session. Non-blocking send keeps the live
+    // thread responsive (goal: zero-lag caption); the refined stream runs slightly behind and its
+    // deltas land via `drain_async_results`.
+    if !piece.is_empty() {
       let _ = self.final_tx.send(FinalJob {
         turn_id: self.turn_id,
         audio: piece.to_vec(),
@@ -1799,15 +1768,10 @@ impl PipelineCore {
   }
 
   fn emit_replacement_live_display(&mut self, display: String) {
-    let mutable_tail = if self.cfg.refinement_mode == RefinementMode::DualStream {
-      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS
-    } else {
-      LIVE_DISPLAY_MUTABLE_TAIL_TOKENS
-    };
     let display = stabilize_live_display_replacement(
       &self.incremental.last_live_display_text,
       &display,
-      mutable_tail,
+      LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
     );
     if !live_display_can_replace(&self.incremental.last_live_display_text, &display) {
       let previous = self.incremental.last_live_display_text.clone();
@@ -2867,14 +2831,13 @@ mod tests {
   };
   use super::{
     CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES,
-    DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, EouEmission, FinalizingPulsePlan,
-    INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS, INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
-    LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, LiveDraftRenderPlan, PipelineControls,
-    activation_level_blocks_start, capture_enable_transition, compose_live_display_text,
-    debug_recording_stem, finalizing_pulse_plan, live_display_can_replace, live_stream_output_gap,
-    normalize_chunk_case, plan_live_draft_render, plan_live_draft_render_after_previous,
-    prune_debug_recordings, samples_to_ms_at_target_sr, stabilize_live_display_replacement,
-    stitch_incremental_text,
+    EouEmission, FinalizingPulsePlan, INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
+    INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, LiveDraftRenderPlan,
+    PipelineControls, activation_level_blocks_start, capture_enable_transition,
+    compose_live_display_text, debug_recording_stem, finalizing_pulse_plan,
+    live_display_can_replace, live_stream_output_gap, normalize_chunk_case, plan_live_draft_render,
+    plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
+    stabilize_live_display_replacement, stitch_incremental_text,
   };
 
   /// The 25 captured incremental partials from turn 41 (debug-recording
@@ -3511,11 +3474,8 @@ mod tests {
     let candidate = "so we are routing audio through it and it is our job to ensure that we \
       correctly map the audio volume that the device set to the system audio level right now";
 
-    let display = stabilize_live_display_replacement(
-      previous,
-      candidate,
-      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
-    );
+    let display =
+      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
 
     assert!(
       display.contains("routing uh audio"),
@@ -3531,11 +3491,8 @@ mod tests {
     let candidate = "the headset volume is not being correctly synchronized with the computer volume so we \
        need to make sure that we correctly map the audio volume";
 
-    let display = stabilize_live_display_replacement(
-      previous,
-      candidate,
-      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
-    );
+    let display =
+      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
 
     assert!(
       display.ends_with("map the audio volume"),
@@ -3544,26 +3501,19 @@ mod tests {
   }
 
   #[test]
-  fn dual_stream_tail_is_tighter_than_legacy() {
-    // Same divergence, different budgets: a word ~29 tokens back sits inside legacy's wide
-    // 36-token tail (so legacy lets it change) but behind dual's 12-token tail (so dual freezes
-    // it). This is the knob that keeps the lagging 560ms stream from churning settled text.
+  fn tight_tail_freezes_a_word_behind_the_mutable_window() {
+    // A word ~30 tokens back sits behind the tight 12-token mutable tail, so the lagging 560ms
+    // stream cannot churn it — the knob that keeps settled text from flip-flopping.
     let words: Vec<String> = (0..50).map(|i| format!("w{i}")).collect();
     let previous = words.join(" ");
     let mut edited = words.clone();
     edited[20] = "CHANGED".to_string();
     let candidate = edited.join(" ");
 
-    let dual = stabilize_live_display_replacement(
-      &previous,
-      &candidate,
-      DUAL_STREAM_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
-    );
-    let legacy =
+    let display =
       stabilize_live_display_replacement(&previous, &candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
 
-    assert!(!dual.contains("CHANGED"), "dual tight tail should freeze token 20: {dual}");
-    assert!(legacy.contains("CHANGED"), "legacy wide tail should let token 20 change: {legacy}");
+    assert!(!display.contains("CHANGED"), "tight tail should freeze token 20: {display}");
   }
 
   #[test]
@@ -3586,7 +3536,7 @@ mod tests {
       "safe prefix should keep prior wording: {display}"
     );
     assert!(
-      display.contains("it's good. like") && !display.contains("it's good like"),
+      display.contains("it's good. Like") && !display.contains("it's good like"),
       "safe prefix should keep prior sentence boundary: {display}"
     );
     assert!(

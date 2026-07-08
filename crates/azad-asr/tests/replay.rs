@@ -54,14 +54,13 @@ fn replay_empty_audio_emits_nothing() {
 
 /// Real recording from 2026-04-26. The user says "I want you to undo the fix..." which contains
 /// duplicated phrases ("I want you", "have a conversation", "why don't you do an investigation")
-/// that give the incremental stitcher a tempting false anchor mid-utterance. With the chain of
-/// stitcher fixes from `10309a4` through `fb31c66`, the prefix is preserved correctly. Without
-/// any one of them, the stitcher locks onto the duplicate, treats left's prefix as a pseudo-
-/// suffix, and emits only the trailing fragment ("reproduce it, then let's have a conversation
-/// ...") — dropping ~50 words from the start.
+/// that historically gave the finalizer a tempting false anchor mid-utterance, dropping ~50 words
+/// from the start and emitting only the trailing fragment ("reproduce it, then let's have a
+/// conversation ..."). Under the dual-stream pipeline the finalized transcript must still keep the
+/// prefix; this fixture pins that against any future prefix-dropping regression.
 #[test]
 #[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
-fn replay_stitcher_preserves_prefix_pseudo_suffix() {
+fn replay_repeated_phrase_preserves_prefix() {
   let Some(r) = run_fixture("stitcher-preserves-prefix-pseudo-suffix") else {
     return;
   };
@@ -349,13 +348,6 @@ fn resolve_pipeline_config() -> Option<PipelineConfig> {
     stable_k: 3,
     stable_h: 5,
     finalizing_pulse_enabled: true,
-    incremental_finalization_enabled: true,
-    incremental_slice_ms: 6_000,
-    incremental_overlap_ms: 3_000,
-    incremental_left_context_ms: 10_000,
-    incremental_min_new_audio_ms: 1_200,
-    incremental_wait_tail_result_ms: 220,
-    refinement_mode: asr::pipeline::RefinementMode::LegacyStitch,
   })
 }
 
