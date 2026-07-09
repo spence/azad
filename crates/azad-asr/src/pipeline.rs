@@ -181,6 +181,93 @@ fn live_display_can_replace(previous: &str, candidate: &str) -> bool {
   candidate_tokens.saturating_add(LIVE_DISPLAY_TOKEN_ROLLBACK_TOLERANCE) >= previous_tokens
 }
 
+/// Splice the next live-caption text from the currently-shown `previous` and the stabilized
+/// `candidate`, freezing already-shown words so the caption can only grow at its trailing edge
+/// during speech. The refined 560ms stream revises its recent tail as more audio arrives — good
+/// revisions append new words or finish the last word, while churny ones re-segment/rephrase
+/// already-shown words back and forth (`sub agents`<->`subagents`, `they're`<->`their`, filler
+/// `uh`<->`um`). Repainting the latter is the visible flicker; in natural speech those flips ride
+/// on top of trailing growth, so any whole-candidate accept/hold decision either lets them through
+/// (when it grows) or freezes the growing edge (when it holds).
+///
+/// Instead we keep every already-shown word immutable and only ever:
+///   - grow: when `previous`'s tokens are a match-key prefix of `candidate`, show `candidate`
+///     (new trailing words / no-op);
+///   - complete: when only the last shown word changed and `candidate` extends it char-wise
+///     (`gen` -> `generate`), apply that completion plus any appended words;
+///   - otherwise freeze: keep `previous` and append only `candidate`'s net-new trailing words.
+///
+/// This guarantees zero interior flicker and zero leading-edge lag (new words never wait). A
+/// genuinely settled correction of an already-shown word is not applied live — it lands in one
+/// coalesced transition at finalize (`RenderEvent::ReplaceLine`), which sees the whole turn and so
+/// is dither-proof, matching the pipeline's flush-at-finalize design.
+fn splice_live_display_forward(previous: &str, candidate: &str) -> String {
+  let previous = previous.trim();
+  let candidate = candidate.trim();
+  if previous.is_empty() {
+    return candidate.to_string();
+  }
+  if candidate.is_empty() {
+    return previous.to_string();
+  }
+
+  let prev = live_display_token_spans(previous);
+  let cand = live_display_token_spans(candidate);
+  if prev.is_empty() {
+    return candidate.to_string();
+  }
+
+  let cp = prev
+    .iter()
+    .zip(cand.iter())
+    .take_while(|(p, c)| p.match_key == c.match_key)
+    .count();
+
+  // grow / no-op: every shown word survives by match-key. Keep `previous`'s exact rendering of the
+  // already-shown words — so a re-punctuated/re-cased prefix ("possible" -> "possible," -> "possible")
+  // never flickers; that settles at finalize like every other correction — and append only the
+  // candidate's net-new trailing words.
+  if cp == prev.len() {
+    if cand.len() > prev.len() {
+      let tail_start = cand[prev.len() - 1].end;
+      return join_live_display_prefix_and_tail(previous, &candidate[tail_start..]);
+    }
+    return previous.to_string();
+  }
+
+  // last-word completion: only the final shown word changed and the candidate extends it char-wise
+  // in the same slot; apply the completion and keep any appended words.
+  if cp == prev.len() - 1 && cp < cand.len() {
+    let prev_last = live_display_token_text(previous, &prev, cp);
+    let cand_at = live_display_token_text(candidate, &cand, cp);
+    if cand_at.starts_with(prev_last) {
+      let tail_start = if cp == 0 { 0 } else { cand[cp - 1].end };
+      return join_live_display_prefix_and_tail(
+        &previous[..prev[cp - 1].end],
+        &candidate[tail_start..],
+      );
+    }
+  }
+
+  // interior re-segmentation of already-shown words -> freeze `previous`, append only the
+  // candidate's net-new trailing words so the growing edge never stalls.
+  if cand.len() > prev.len() {
+    let tail_start = cand[prev.len() - 1].end;
+    return join_live_display_prefix_and_tail(previous, &candidate[tail_start..]);
+  }
+  previous.to_string()
+}
+
+/// Raw text of the `idx`-th whitespace token of `text`, given its precomputed spans.
+fn live_display_token_text<'a>(
+  text: &'a str,
+  spans: &[LiveDisplayTokenSpan],
+  idx: usize,
+) -> &'a str {
+  let start = if idx == 0 { 0 } else { spans[idx - 1].end };
+  text[start..spans[idx].end].trim()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LiveDisplayTokenSpan {
   end: usize,
@@ -1778,11 +1865,29 @@ impl PipelineCore {
       return;
     }
 
-    self.live_display.last_live_display_text = display.clone();
-    self.record_live_display_event("refined", "emit", display.clone(), None);
+    // Freeze already-shown words: the caption may only grow at its trailing edge during speech.
+    // New words and last-word completion paint instantly (zero lag); an interior re-segmentation
+    // of already-shown words is frozen (zero flicker) and its correction lands at finalize.
+    let previous = self.live_display.last_live_display_text.clone();
+    let spliced = splice_live_display_forward(&previous, &display);
+    if spliced == previous {
+      self.record_live_display_event("refined", "hold_interior", previous, Some(display.clone()));
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_LIVE_DISPLAY turn_id={} action=hold_interior shown_tokens={} candidate_tokens={}",
+          self.turn_id,
+          live_display_token_count(&self.live_display.last_live_display_text),
+          live_display_token_count(&display),
+        );
+      }
+      return;
+    }
+
+    self.live_display.last_live_display_text = spliced.clone();
+    self.record_live_display_event("refined", "emit", spliced.clone(), None);
     self.renderer.emit(RenderEvent::Active {
       id: self.turn_id,
-      committed: display,
+      committed: spliced,
       live: String::new(),
     });
   }
@@ -2808,7 +2913,7 @@ mod tests {
     compose_live_display_text, debug_recording_stem, finalizing_pulse_plan,
     live_display_can_replace, live_stream_output_gap, normalize_chunk_case, plan_live_draft_render,
     plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stabilize_live_display_replacement, stitch_incremental_text,
+    splice_live_display_forward, stabilize_live_display_replacement, stitch_incremental_text,
   };
 
   /// The 25 captured incremental partials from turn 41 (debug-recording
@@ -3544,6 +3649,122 @@ mod tests {
       stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
 
     assert_eq!(display, previous);
+  }
+
+  #[test]
+  fn splice_appended_words_grow_immediately() {
+    assert_eq!(
+      splice_live_display_forward("open a live streamed", "open a live streamed conversation"),
+      "open a live streamed conversation"
+    );
+  }
+
+  #[test]
+  fn splice_last_word_completion_applies() {
+    // Finishing a truncated tail word (`gen` -> `generate`) must paint live.
+    assert_eq!(
+      splice_live_display_forward("we need to gen", "we need to generate"),
+      "we need to generate"
+    );
+    // Completion plus further appended words.
+    assert_eq!(
+      splice_live_display_forward("we need to gen", "we need to generate the report"),
+      "we need to generate the report"
+    );
+  }
+
+  #[test]
+  fn splice_no_op_and_cosmetic_tail_are_frozen() {
+    assert_eq!(
+      splice_live_display_forward("the same caption", "the same caption"),
+      "the same caption"
+    );
+    // A cosmetic-only re-render of an already-shown word (punctuation/case) is frozen — otherwise
+    // the caption flickers ("possible" -> "possible," -> "possible"). It settles at finalize.
+    assert_eq!(
+      splice_live_display_forward("the same caption", "the same caption,"),
+      "the same caption"
+    );
+    // ...but punctuation attached to a genuinely NEW trailing word still paints.
+    assert_eq!(
+      splice_live_display_forward("the same caption", "the same caption, right"),
+      "the same caption right"
+    );
+  }
+
+  #[test]
+  fn splice_homophone_swap_is_frozen() {
+    // A shown word swapped for an equivalent homophone (`they're` -> `their`) is frozen: the
+    // caption keeps the shown word (no new trailing words here, so nothing changes).
+    assert_eq!(
+      splice_live_display_forward("I think they're going", "I think their going"),
+      "I think they're going"
+    );
+  }
+
+  #[test]
+  fn splice_boundary_merge_is_frozen() {
+    // Re-segmenting two shown words into one (`sub agents` -> `subagents`) is frozen.
+    assert_eq!(
+      splice_live_display_forward("spin up sub agents now", "spin up subagents now"),
+      "spin up sub agents now"
+    );
+  }
+
+  #[test]
+  fn splice_freezes_interior_reseg_but_appends_new_words() {
+    // The leading edge must never freeze: when a candidate adds net-new trailing words we append
+    // them even though the candidate also re-segmented a recently-shown word. The already-shown
+    // interior stays frozen (`micros we` kept), the new tail (`are going`) is appended. This is
+    // the growth-riding-flip case that froze the caption under a whole-candidate hold (turn 200).
+    assert_eq!(
+      splice_live_display_forward(
+        "know ahead of time which micros we",
+        "know ahead of time which micro swe are going"
+      ),
+      "know ahead of time which micros we are going"
+    );
+  }
+
+  #[test]
+  fn splice_shrink_is_frozen() {
+    // A candidate that drops a trailing shown word cannot rewrite the shown span downward.
+    assert_eq!(
+      splice_live_display_forward("the quick brown fox jumps", "the quick brown fox"),
+      "the quick brown fox jumps"
+    );
+  }
+
+  #[test]
+  fn splice_from_empty_shows_candidate() {
+    assert_eq!(splice_live_display_forward("", "first words"), "first words");
+  }
+
+  /// Bulk equivalence check against the Python reference (`scripts/gate_ref.py`) over real recorded
+  /// live-caption sequences. Gated on `AZAD_SPLICE_GOLDEN` (a JSON array of `[prev, cand, expected]`
+  /// produced by the reference) so it does not run in normal CI. Compares by normalized match-key
+  /// token sequence, since the reference space-joins tokens while the splice preserves substrings.
+  #[test]
+  fn splice_matches_reference_over_recorded_sequences() {
+    let Ok(path) = std::env::var("AZAD_SPLICE_GOLDEN") else {
+      return;
+    };
+    let data = std::fs::read_to_string(&path).expect("read golden");
+    let cases: Vec<Vec<String>> = serde_json::from_str(&data).expect("parse golden");
+    let keys = |s: &str| -> Vec<String> {
+      tokenize_for_stitch(s).into_iter().map(|t| t.match_key).collect()
+    };
+    let mut mismatches = 0usize;
+    for c in &cases {
+      let got = splice_live_display_forward(&c[0], &c[1]);
+      if keys(&got) != keys(&c[2]) {
+        mismatches += 1;
+        if mismatches <= 5 {
+          eprintln!("MISMATCH prev={:?}\n cand={:?}\n got={:?}\n exp={:?}", c[0], c[1], got, c[2]);
+        }
+      }
+    }
+    assert_eq!(mismatches, 0, "{mismatches}/{} cases diverged from reference", cases.len());
   }
 
   #[test]
