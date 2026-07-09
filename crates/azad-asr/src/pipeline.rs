@@ -223,7 +223,19 @@ fn stabilize_live_display_replacement(
     &candidate_tokens,
     mutable_tail,
   ) else {
-    return previous.to_string();
+    // The frozen prefix can no longer be re-anchored in the candidate: the streaming and refined
+    // streams diverged around the stable/mutable boundary — e.g. the refined pass re-spelled or
+    // re-segmented a settled word (`azad` -> `azod`), so every stable-overlap window includes the
+    // changed token and none match. Returning `previous` unconditionally STRANDS the caption on
+    // stale text for the rest of the turn while transcription keeps advancing underneath — the
+    // multi-second overlay freeze observed live. When the candidate is genuine forward progress
+    // (strictly more tokens than the frozen text), advance to it instead of freezing; a shorter or
+    // unrelated candidate is still a rollback we suppress by holding `previous`.
+    return if candidate_tokens.len() > previous_tokens.len() {
+      candidate.to_string()
+    } else {
+      previous.to_string()
+    };
   };
 
   let prefix_end = previous_tokens[stable_len - 1].end;
@@ -3527,6 +3539,32 @@ mod tests {
   }
 
   #[test]
+  fn stabilizer_advances_when_streams_diverge_at_the_boundary() {
+    // Regression for the live overlay freeze captured in turn-000009: the refined pass re-spelled a
+    // settled word sitting right at the stable/mutable boundary (`azad` -> `azod`), so every
+    // stable-overlap window includes the changed token and `find_live_display_stable_boundary`
+    // returns None. The old code returned `previous`, stranding the caption on stale text for the
+    // rest of the turn while transcription kept advancing. The caption must move forward instead.
+    let previous = "we certainly have more work around the hei azod later that we need";
+    let candidate = "we certainly have more work around the hei azad later that we need to get to";
+
+    let display = stabilize_live_display_replacement(
+      previous,
+      candidate,
+      DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
+    );
+
+    assert_ne!(
+      display, previous,
+      "stabilizer froze the caption on stale text instead of advancing"
+    );
+    assert!(
+      display.contains("to get to"),
+      "caption did not advance to the newer speech: {display}"
+    );
+  }
+
+  #[test]
   fn dual_stream_tight_tail_still_applies_a_recent_word_completion() {
     // The valuable refined correction: completing a truncated word in the live tail region.
     let previous = "the headset volume is not being correctly synchronized with the computer volume so we \
@@ -3632,7 +3670,11 @@ mod tests {
   }
 
   #[test]
-  fn live_display_holds_previous_text_when_stable_boundary_cannot_be_matched() {
+  fn live_display_holds_previous_when_unmatched_candidate_is_shorter() {
+    // When no stable boundary matches AND the candidate is not forward progress (fewer tokens than
+    // the frozen text), it's a rollback/unrelated hypothesis — hold `previous`. The forward-progress
+    // counterpart (candidate grew, so advance instead of freezing) is
+    // `stabilizer_advances_when_streams_diverge_at_the_boundary`.
     let previous = "one two three four five six seven eight nine ten eleven twelve thirteen \
       fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty one twenty two twenty \
       three twenty four twenty five twenty six twenty seven twenty eight twenty nine thirty thirty \
