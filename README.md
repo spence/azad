@@ -129,9 +129,9 @@ MIT. See [LICENSE](LICENSE).
   (`crates/azad-asr/scripts/live_metrics.py`) for per-turn caption/finalize/correction evidence.
 - Fixed the finalize flush splitting or gluing the final word of a turn (e.g. `tracker` ->
   `tra cker`) by preserving the model's word-boundary marker end-to-end.
-- Simplified the debug stats view: one turn per line (no wrapping), `fixes` and `dur (s)` columns,
-  and removed the retired fallback/bailout metrics surfaces (the `full` mode, legacy finalize
-  counters, and the dead outcome/error events they fed).
+- Simplified the debug stats view: one turn per line (no wrapping); a `raw` flag, `fixes`, and
+  `dur (s)` columns; and removed the retired fallback/bailout metrics surfaces (the old `full`
+  mode, legacy finalize counters, and the dead outcome/error events they fed).
 - Expanded spoken-number conversion for identifiers like `S eight` -> `S8`.
 - Removed terminal periods from single-word pasted output.
 - Fixed live transcription responsiveness and overlay finalization issues.

@@ -11,11 +11,11 @@ const RECENT_TRANSCRIPTS_LIMIT: usize = 10;
 const RECENT_EVENT_ASSOCIATION_MAX_GAP_MS: u64 = 5 * 60 * 1000;
 const SUMMARY_TRAILING_BLANK_LINES: usize = 2;
 
-/// Recent-transcriptions table: `mode` (raw/normal), `fixes` (token edits the refined pass made to
-/// the live draft, or `-`), `preview`, `dur (s)` (turn seconds). Shared by both render call sites
-/// so the widths can't drift apart.
-const RECENT_TABLE_HEADERS: &[&str] = &["mode", "fixes", "preview", "dur (s)"];
-const RECENT_TABLE_WIDTHS: &[usize] = &[6, 5, 40, 7];
+/// Recent-transcriptions table: `raw` (`x` if you held Option to raw-paste, else blank), `fixes`
+/// (token edits the refined pass made to the live draft, or `-`), `preview`, `dur (s)` (turn
+/// seconds). Shared by both render call sites so the widths can't drift apart.
+const RECENT_TABLE_HEADERS: &[&str] = &["raw", "fixes", "preview", "dur (s)"];
+const RECENT_TABLE_WIDTHS: &[usize] = &[3, 5, 40, 7];
 /// The debug overlay wraps any row wider than this; the table must stay within it so each turn
 /// occupies exactly one line. See `recent_transcriptions_row_fits_on_one_line`.
 const RECENT_TABLE_MAX_WIDTH: usize = 69;
@@ -222,7 +222,7 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
     let mut rows = Vec::new();
     for sample in &summary.recent_transcripts {
       rows.push(vec![
-        recent_mode_label(sample).to_string(),
+        recent_raw_label(sample).to_string(),
         recent_fixes_label(sample),
         sample.text_preview.clone(),
         format_duration_secs(sample.transcription_duration_ms),
@@ -463,10 +463,11 @@ fn truncate_cell(text: &str, width: usize) -> String {
   out
 }
 
-fn recent_mode_label(sample: &RecentTranscriptSummary) -> &'static str {
+fn recent_raw_label(sample: &RecentTranscriptSummary) -> &'static str {
+  // `x` marks a raw paste (Option held at finalize); blank == the normal cleaned paste.
   match sample.mode {
-    TranscriptMode::Raw => "raw",
-    TranscriptMode::Normal => "normal",
+    TranscriptMode::Raw => "x",
+    TranscriptMode::Normal => "",
   }
 }
 
@@ -513,7 +514,7 @@ mod tests {
     // total exceeds the overlay budget. Worst case: widest state label, an overlong preview, a
     // multi-minute duration. Guards the column widths against future growth.
     let rows = vec![vec![
-      "normal".to_string(),
+      "x".to_string(),
       "999".to_string(),
       "x".repeat(200),
       format_duration_secs(3_599_000),
