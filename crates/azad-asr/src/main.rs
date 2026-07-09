@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use asr::audio::AudioInput;
 use asr::audio::cpal_input::{CpalInput, CpalInputConfig};
 use asr::audio::decoded_input::DecodedInput;
 use asr::audio::wav_input::WavInput;
+use asr::audio::{AudioChunk, AudioHealth, AudioInput, AudioSpec};
 use asr::logging;
 use asr::pipeline::{PipelineConfig, StreamingModelConfig, run_pipeline};
 use asr::render::{RenderEvent, Renderer};
@@ -145,6 +145,12 @@ struct TranscribeFileArgs {
   /// Print the renderer event stream as JSON lines instead of final text only.
   #[arg(long = "events-jsonl")]
   events_jsonl: bool,
+
+  /// Pace the file feed to wall-clock (real time) so the concurrent 560ms refined worker runs at
+  /// the same cadence as live capture. Without this the fire-hose feed starves the refined stream,
+  /// so the live-caption composition never exercises and file-replay cannot reproduce caption churn.
+  #[arg(long)]
+  realtime: bool,
 }
 
 #[derive(Clone)]
@@ -376,6 +382,9 @@ fn cmd_transcribe_file(args: TranscribeFileArgs) -> Result<()> {
   } else {
     Box::new(DecodedInput::decode(&args.path, args.chunk_ms)?)
   };
+  if args.realtime {
+    input = Box::new(PacedInput::new(input));
+  }
 
   let renderer = Arc::new(CollectingRenderer::new(args.events_jsonl));
   let shutdown = Arc::new(AtomicBool::new(false));
@@ -392,6 +401,53 @@ fn cmd_transcribe_file(args: TranscribeFileArgs) -> Result<()> {
   }
 
   Ok(())
+}
+
+/// Wraps an `AudioInput` and sleeps in `read_chunk` so audio is delivered at wall-clock speed,
+/// matching live capture cadence. The concurrent 560ms refined worker then runs at the same rate
+/// it does live, so `transcribe-file --realtime --events-jsonl` reproduces live caption churn (the
+/// fire-hose default feed instead starves the refined stream, hiding it).
+struct PacedInput {
+  inner: Box<dyn AudioInput>,
+  start: Option<std::time::Instant>,
+  sample_rate: u32,
+  channels: u32,
+}
+
+impl PacedInput {
+  fn new(inner: Box<dyn AudioInput>) -> Self {
+    let spec = inner.spec();
+    Self {
+      inner,
+      start: None,
+      sample_rate: spec.sample_rate.max(1),
+      channels: u32::from(spec.channels).max(1),
+    }
+  }
+}
+
+impl AudioInput for PacedInput {
+  fn spec(&self) -> AudioSpec {
+    self.inner.spec()
+  }
+
+  fn health(&self) -> AudioHealth {
+    self.inner.health()
+  }
+
+  fn read_chunk(&mut self) -> Result<Option<AudioChunk>> {
+    let chunk = self.inner.read_chunk()?;
+    if let Some(c) = &chunk {
+      let start = *self.start.get_or_insert_with(std::time::Instant::now);
+      let end_frame = c.start_frame + (c.frames.len() as u64 / u64::from(self.channels));
+      let target =
+        std::time::Duration::from_secs_f64(end_frame as f64 / f64::from(self.sample_rate));
+      if let Some(remaining) = target.checked_sub(start.elapsed()) {
+        std::thread::sleep(remaining);
+      }
+    }
+    Ok(chunk)
+  }
 }
 
 fn choose_input_device(select: bool, device_index: Option<usize>) -> Result<(usize, String)> {
