@@ -13,7 +13,10 @@ use asr::audio::decoded_input::DecodedInput;
 use asr::audio::wav_input::WavInput;
 use asr::audio::{AudioChunk, AudioHealth, AudioInput, AudioSpec};
 use asr::logging;
-use asr::pipeline::{PipelineConfig, StreamingModelConfig, run_pipeline};
+use asr::pipeline::{
+  PipelineConfig, PipelineControls, PipelineRunOptions, StreamingModelConfig, run_pipeline,
+  run_pipeline_with_options,
+};
 use asr::render::{RenderEvent, Renderer};
 use asr::ui;
 
@@ -156,6 +159,12 @@ struct TranscribeFileArgs {
   /// so the live-caption composition never exercises and file-replay cannot reproduce caption churn.
   #[arg(long)]
   realtime: bool,
+
+  /// Turn on the engine's debug-stats instrumentation so diagnostic `TOON_*` lines are emitted to
+  /// stderr — notably `TOON_LIVE_STREAM_GAP`, which marks each multi-second live-caption freeze.
+  /// Pair with `--realtime` to measure live-caption pacing exactly as the app experiences it.
+  #[arg(long)]
+  debug_stats: bool,
 }
 
 #[derive(Clone)]
@@ -393,7 +402,14 @@ fn cmd_transcribe_file(args: TranscribeFileArgs) -> Result<()> {
 
   let renderer = Arc::new(CollectingRenderer::new(args.events_jsonl));
   let shutdown = Arc::new(AtomicBool::new(false));
-  run_pipeline(&mut *input, renderer.clone(), cfg, shutdown)?;
+  if args.debug_stats {
+    let controls = Arc::new(PipelineControls::default());
+    controls.set_debug_stats_enabled(true);
+    let options = PipelineRunOptions { controls: Some(controls), ..Default::default() };
+    run_pipeline_with_options(&mut *input, renderer.clone(), cfg, shutdown, options)?;
+  } else {
+    run_pipeline(&mut *input, renderer.clone(), cfg, shutdown)?;
+  }
 
   if args.events_jsonl {
     for event in renderer.snapshot_events() {
