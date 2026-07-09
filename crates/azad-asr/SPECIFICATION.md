@@ -129,6 +129,12 @@ stronger decode sharpens it:
   mid-speech churn ~60% vs the older 12, with the pasted finalize decode byte-identical. It cannot
   stall the caption — the monotonic streaming stream still supersedes a held replacement, so a
   tighter tail only enlarges the frozen prefix.
+  - Within that tail, `freeze_cosmetic_live_display_churn` pins the already-shown surface of any
+    token whose only change is cosmetic — case or surrounding punctuation (`For` -> `for`,
+    `know` -> `know,`). The finalize decode carries the model's casing/punctuation, so holding the
+    live surface is lossless and kills edge flicker; word insertions/deletions and genuine word
+    changes still render, so it cannot stall. On recorded turns this drove cosmetic edge flips to
+    zero while leaving substantive refined corrections intact.
 
 Finalize is O(one chunk), not O(turn):
 

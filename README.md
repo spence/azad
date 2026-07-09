@@ -125,6 +125,10 @@ MIT. See [LICENSE](LICENSE).
   longer re-phrase settled words mid-speech: recorded-turn replay shows ~60% less visible caption
   churn with the pasted finalize decode byte-identical, and the caption still keeps pace (the
   streaming stream supersedes any held refinement, so it never stalls).
+- Froze cosmetic churn in that tail: a live-caption word whose only change is case or punctuation
+  (`For` -> `for`, `know` -> `know,`) keeps its shown surface, since the pasted finalize decode
+  carries the model's casing/punctuation anyway. On recorded turns this drives edge case/punctuation
+  flicker to zero while genuine word corrections still render.
 - Finalization is now a cheap flush instead of a whole-turn re-decode — roughly 15x faster on
   device (p50 ~630ms to ~38ms), with fast, high-quality pasted output.
 - Dual-stream is now the only transcription pipeline; the legacy windowed re-decode, text stitcher,

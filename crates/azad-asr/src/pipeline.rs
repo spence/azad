@@ -231,6 +231,37 @@ fn stabilize_live_display_replacement(
   join_live_display_prefix_and_tail(&previous[..prefix_end], &candidate[tail_start..])
 }
 
+/// Hold the already-shown surface of any live-caption token whose only change is cosmetic — case
+/// or surrounding punctuation, e.g. `For` -> `for` or `know` -> `know,`. The finalize decode carries
+/// the model's chosen casing/punctuation, so pinning the live surface is lossless and removes the
+/// edge flicker the user called out. Word insertions, deletions, and genuine word changes fall
+/// through unchanged (aligned only where the normalized word matches), so growth and real
+/// corrections still render — it never withholds a new or changed word, so it cannot stall.
+fn freeze_cosmetic_live_display_churn(previous: &str, candidate: &str) -> String {
+  let prev_tokens: Vec<&str> = previous.split_whitespace().collect();
+  let cand_tokens: Vec<&str> = candidate.split_whitespace().collect();
+  if prev_tokens.is_empty() || cand_tokens.is_empty() {
+    return candidate.to_string();
+  }
+
+  let mut held = false;
+  let out: Vec<&str> = cand_tokens
+    .iter()
+    .enumerate()
+    .map(|(i, &cand)| match prev_tokens.get(i) {
+      Some(&prev)
+        if prev != cand && normalize_stitch_token(prev) == normalize_stitch_token(cand) =>
+      {
+        held = true;
+        prev
+      }
+      _ => cand,
+    })
+    .collect();
+
+  if held { out.join(" ") } else { candidate.to_string() }
+}
+
 fn live_display_token_spans(text: &str) -> Vec<LiveDisplayTokenSpan> {
   let mut spans = Vec::new();
   let mut token_start = None;
@@ -1774,6 +1805,11 @@ impl PipelineCore {
       &display,
       self.cfg.live_display_mutable_tail,
     );
+    let display =
+      freeze_cosmetic_live_display_churn(&self.live_display.last_live_display_text, &display);
+    if display == self.live_display.last_live_display_text {
+      return;
+    }
     if !live_display_can_replace(&self.live_display.last_live_display_text, &display) {
       let previous = self.live_display.last_live_display_text.clone();
       self.record_live_display_event("refined", "hold_rollback", previous, Some(display.clone()));
@@ -2819,9 +2855,10 @@ mod tests {
     INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS, INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
     LiveDraftRenderPlan, PipelineControls, activation_level_blocks_start,
     capture_enable_transition, compose_live_display_text, debug_recording_stem,
-    finalizing_pulse_plan, live_display_can_replace, live_stream_output_gap, normalize_chunk_case,
-    plan_live_draft_render, plan_live_draft_render_after_previous, prune_debug_recordings,
-    samples_to_ms_at_target_sr, stabilize_live_display_replacement, stitch_incremental_text,
+    finalizing_pulse_plan, freeze_cosmetic_live_display_churn, live_display_can_replace,
+    live_stream_output_gap, normalize_chunk_case, plan_live_draft_render,
+    plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
+    stabilize_live_display_replacement, stitch_incremental_text,
   };
 
   /// The 25 captured incremental partials from turn 41 (debug-recording
@@ -3502,6 +3539,38 @@ mod tests {
     assert!(
       display.ends_with("map the audio volume"),
       "recent tail correction should apply: {display}"
+    );
+  }
+
+  #[test]
+  fn cosmetic_freeze_holds_case_and_punctuation_toggles() {
+    // The exact edge flicker the user called out: a case flip and a punctuation toggle on words
+    // already on screen. Both are held to the shown surface (goal #1); the finalize decode still
+    // carries the model's casing/punctuation.
+    assert_eq!(
+      freeze_cosmetic_live_display_churn("For the record we", "for the record we"),
+      "For the record we"
+    );
+    assert_eq!(
+      freeze_cosmetic_live_display_churn("I know we can do", "I know, we can do"),
+      "I know we can do"
+    );
+  }
+
+  #[test]
+  fn cosmetic_freeze_lets_real_word_changes_and_growth_through() {
+    // A genuine word swap must still render (goal #3 refined correction lands).
+    assert_eq!(
+      freeze_cosmetic_live_display_churn("run the tests now", "run the suite now"),
+      "run the suite now"
+    );
+    // Growth: a new trailing word appears while an earlier word only changes case -> case held,
+    // new word rendered. Cannot stall: the new token always flows.
+    assert_eq!(freeze_cosmetic_live_display_churn("For the", "for the record"), "For the record");
+    // A truncated word completing is a different normalized word -> not cosmetic, renders.
+    assert_eq!(
+      freeze_cosmetic_live_display_churn("map the audio vol", "map the audio volume"),
+      "map the audio volume"
     );
   }
 
