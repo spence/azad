@@ -117,7 +117,7 @@ MIT. See [LICENSE](LICENSE).
 
 ## Changelog
 
-### 0.4.2 Unreleased
+### 0.5.0
 
 - Live transcription now corrects itself in place as you speak.
 - Added more spoken emoji names, including "checkbox", "new", and colored dots.
