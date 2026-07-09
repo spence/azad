@@ -1022,6 +1022,12 @@ struct PipelineCore {
   turn_audio: Vec<f32>,
   turn_started_at: Instant,
   turn_started_by_vad: bool,
+  // Per-turn timing of the synchronous streaming `transcribe_chunk`, summarized as TOON_LIVE_LAG at
+  // finalize. When the live decode is slower than real time, the live caption falls behind the
+  // speaker (the "delay at larger lengths under load" Spencer reported); `behind_ms` quantifies it.
+  stream_decode_ms_total: u64,
+  stream_decode_chunks: u32,
+  stream_decode_max_ms: u64,
 
   eou_draft: String,
   prev_silence_ms: u32,
@@ -1143,6 +1149,9 @@ impl PipelineCore {
       turn_audio: Vec::new(),
       turn_started_at: Instant::now(),
       turn_started_by_vad: false,
+      stream_decode_ms_total: 0,
+      stream_decode_chunks: 0,
+      stream_decode_max_ms: 0,
       eou_draft: String::new(),
       prev_silence_ms: 0,
       seen_eou_since_speech: false,
@@ -1632,6 +1641,9 @@ impl PipelineCore {
     self.live_display.reset(Instant::now());
 
     self.turn_audio.clear();
+    self.stream_decode_ms_total = 0;
+    self.stream_decode_chunks = 0;
+    self.stream_decode_max_ms = 0;
     self.turn_id = self.turn_id.wrapping_add(1);
 
     // Single source of truth for "turn started, by what mechanism." VAD-driven
@@ -1715,7 +1727,12 @@ impl PipelineCore {
         kind: FinalJobKind::RefineChunk,
       });
     }
+    let decode_started_at = Instant::now();
     let (out, saw_eou) = self.streaming_asr.transcribe_chunk(piece)?;
+    let decode_ms = elapsed_ms_since(decode_started_at);
+    self.stream_decode_ms_total = self.stream_decode_ms_total.saturating_add(decode_ms);
+    self.stream_decode_chunks = self.stream_decode_chunks.saturating_add(1);
+    self.stream_decode_max_ms = self.stream_decode_max_ms.max(decode_ms);
 
     if !out.is_empty() {
       let was_empty = self.eou_draft.is_empty();
@@ -2098,6 +2115,21 @@ impl PipelineCore {
         finalize_elapsed_ms,
         draft.chars().count(),
         refined.chars().count(),
+      );
+      // How far the live (streaming) decode fell behind real time this turn: it runs synchronously
+      // on the live thread, so wall time spent decoding beyond the turn's audio duration is backlog
+      // the live caption never caught up on before finalize. behind_ms ~= how stale the caption was.
+      let audio_ms = audio_snapshot.len() as u64 * 1000 / TARGET_SR as u64;
+      let behind_ms = self.stream_decode_ms_total.saturating_sub(audio_ms);
+      eprintln!(
+        "TOON_LIVE_LAG turn_id={} audio_ms={} stream_decode_ms={} behind_ms={} chunks={} \
+         max_chunk_ms={}",
+        self.turn_id,
+        audio_ms,
+        self.stream_decode_ms_total,
+        behind_ms,
+        self.stream_decode_chunks,
+        self.stream_decode_max_ms,
       );
     }
     let final_text = if refined.is_empty() { draft.clone() } else { refined };
