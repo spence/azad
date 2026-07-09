@@ -17,3 +17,12 @@ license = "MIT"
 [workspace.dependencies]
 thiserror = "1.0"
 num_cpus = "1.16"
+
+# Tighter release binary: cross-crate inlining (thin LTO) + a single codegen unit
+# trade build time for smaller, faster orchestration code. The latency-critical MLX
+# inference lives in the Swift helper (built `swift build -c release`), so this is
+# build hygiene, not a transcription-speed lever. `target-cpu` is intentionally NOT
+# set here — it would poison the notarized `just dist` build for other Macs.
+[profile.release]
+lto = "thin"
+codegen-units = 1
