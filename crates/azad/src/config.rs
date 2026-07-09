@@ -126,6 +126,7 @@ impl Default for AzadConfig {
         recovery_vad_thold: 0.30,
         stable_k: 3,
         stable_h: 5,
+        live_display_mutable_tail: asr::pipeline::DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
         finalizing_pulse_enabled: true,
       },
     };

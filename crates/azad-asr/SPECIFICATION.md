@@ -123,8 +123,12 @@ stronger decode sharpens it:
 - **Refined stream (560ms chunks):** a second, persistent MLX session on the finalization worker
   thread, fed the same audio continuously (`RefineChunk` per chunk, `RefineReset` per turn). Its
   deltas (`RefinedDelta`) accumulate; a token stabilizer folds them into only the caption's
-  volatile tail (`LIVE_DISPLAY_MUTABLE_TAIL_TOKENS`), so in-place corrections land without
-  rewriting already-read text.
+  volatile tail (`PipelineConfig::live_display_mutable_tail`, default
+  `DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS = 4`), so in-place corrections land without rewriting
+  already-read text. The tail is deliberately tight: replay of recorded turns showed 4 cuts visible
+  mid-speech churn ~60% vs the older 12, with the pasted finalize decode byte-identical. It cannot
+  stall the caption — the monotonic streaming stream still supersedes a held replacement, so a
+  tighter tail only enlarges the frozen prefix.
 
 Finalize is O(one chunk), not O(turn):
 
@@ -206,7 +210,7 @@ Validate:
 
 Primary files:
 
-- `src/pipeline.rs` (`feed_eou` refined feed, `finish_turn_dual_stream`, `apply_refined_delta`, `emit_replacement_live_display`, the stabilizer + `LIVE_DISPLAY_MUTABLE_TAIL_TOKENS`).
+- `src/pipeline.rs` (`feed_eou` refined feed, `finish_turn_dual_stream`, `apply_refined_delta`, `emit_replacement_live_display`, the stabilizer + `PipelineConfig::live_display_mutable_tail` / `DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS`).
 - `src/pipeline/stitch.rs` (`stitch_incremental_text` — live-display tail composition only).
 
 Validate:

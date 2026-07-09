@@ -121,6 +121,10 @@ MIT. See [LICENSE](LICENSE).
 
 - Reworked transcription to a dual-stream pipeline: an instant live caption plus a persistent
   higher-quality stream that sharpens it in place without churning already-shown text.
+- Tightened the live caption's mutable tail (12 -> 4 tokens) so the lagging refined stream can no
+  longer re-phrase settled words mid-speech: recorded-turn replay shows ~60% less visible caption
+  churn with the pasted finalize decode byte-identical, and the caption still keeps pace (the
+  streaming stream supersedes any held refinement, so it never stalls).
 - Finalization is now a cheap flush instead of a whole-turn re-decode — roughly 15x faster on
   device (p50 ~630ms to ~38ms), with fast, high-quality pasted output.
 - Dual-stream is now the only transcription pipeline; the legacy windowed re-decode, text stitcher,

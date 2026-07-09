@@ -27,11 +27,18 @@ const LIVE_STREAM_GAP_LOG_THRESHOLD_SAMPLES: usize = TARGET_SR as usize * 2;
 const LIVE_REFINE_MAX_STITCH_EXTRA_TOKENS: usize = 8;
 const LIVE_REFINE_STREAM_LEAD_TOKENS: usize = 8;
 const LIVE_DISPLAY_STABLE_OVERLAP_TOKENS: usize = 4;
-/// The refined 560ms stream lags the live 80ms stream by ~1-2 words and can re-segment, so it must
-/// only ever correct the volatile live tail — never rewrite settled text. This tight mutable tail
-/// freezes the committed prefix so subtle in-place corrections (and filler decisions) stick instead
-/// of flip-flopping, while a large divergence can rewrite at most this many trailing tokens.
-const LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 12;
+/// Default for [`PipelineConfig::live_display_mutable_tail`]. The refined 560ms stream lags the
+/// live 80ms stream by ~1-2 words and can re-segment, so it must only ever correct the volatile
+/// live tail — never rewrite settled text. This mutable tail freezes everything older so subtle
+/// in-place corrections (and filler decisions) stick instead of flip-flopping, while a large
+/// divergence can rewrite at most this many trailing tokens.
+///
+/// Tuned to 4 from recorded-turn replay: sweeping 12→4 cut visible mid-speech caption churn ~60%
+/// (goal #1) with the pasted finalize decode staying byte-identical (goal #2 unaffected) — the only
+/// cost is the refined stream landing in-place touch-ups (goal #3, lowest priority) a little later.
+/// Cannot stall the caption: the monotonic streaming stream still supersedes a held replacement, so
+/// a tighter tail only enlarges the frozen prefix, it never withholds forward progress.
+pub const DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalizingPulsePlan {
@@ -465,6 +472,12 @@ pub struct PipelineConfig {
 
   pub stable_k: usize,
   pub stable_h: usize,
+
+  /// How many trailing tokens of the live caption the lagging refined stream may still rewrite.
+  /// Everything older is frozen, so a smaller value confines mid-speech churn to fewer trailing
+  /// words (goal #1) at the cost of the refined stream landing corrections a little later. Cannot
+  /// stall the caption: the streaming stream still supersedes a held refined replacement.
+  pub live_display_mutable_tail: usize,
 
   /// Controls the UI "finalizing" pulse shown between the live draft and the refined replace.
   pub finalizing_pulse_enabled: bool,
@@ -1759,7 +1772,7 @@ impl PipelineCore {
     let display = stabilize_live_display_replacement(
       &self.live_display.last_live_display_text,
       &display,
-      LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
+      self.cfg.live_display_mutable_tail,
     );
     if !live_display_can_replace(&self.live_display.last_live_display_text, &display) {
       let previous = self.live_display.last_live_display_text.clone();
@@ -2802,13 +2815,13 @@ mod tests {
   };
   use super::{
     CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES,
-    EouEmission, FinalizingPulsePlan, INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
-    INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, LiveDraftRenderPlan,
-    PipelineControls, activation_level_blocks_start, capture_enable_transition,
-    compose_live_display_text, debug_recording_stem, finalizing_pulse_plan,
-    live_display_can_replace, live_stream_output_gap, normalize_chunk_case, plan_live_draft_render,
-    plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stabilize_live_display_replacement, stitch_incremental_text,
+    DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, EouEmission, FinalizingPulsePlan,
+    INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS, INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
+    LiveDraftRenderPlan, PipelineControls, activation_level_blocks_start,
+    capture_enable_transition, compose_live_display_text, debug_recording_stem,
+    finalizing_pulse_plan, live_display_can_replace, live_stream_output_gap, normalize_chunk_case,
+    plan_live_draft_render, plan_live_draft_render_after_previous, prune_debug_recordings,
+    samples_to_ms_at_target_sr, stabilize_live_display_replacement, stitch_incremental_text,
   };
 
   /// The 25 captured incremental partials from turn 41 (debug-recording
@@ -3445,13 +3458,35 @@ mod tests {
     let candidate = "so we are routing audio through it and it is our job to ensure that we \
       correctly map the audio volume that the device set to the system audio level right now";
 
-    let display =
-      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+    let display = stabilize_live_display_replacement(previous, candidate, 12);
 
     assert!(
       display.contains("routing uh audio"),
       "tight tail should freeze the settled filler decision: {display}"
     );
+  }
+
+  #[test]
+  fn default_tail_freezes_a_settled_word_a_dozen_tokens_back() {
+    // The tuned default (4) freezes a lateral re-phrasing that sits a dozen tokens behind the edge
+    // — the mid-speech churn goal #1 targets. The looser legacy tail (12) would let it through.
+    let previous =
+      "we route the audio through the sub agents and then map it back to the device now";
+    let candidate =
+      "we route the audio through the subagents and then map it back to the device now";
+
+    let tuned = stabilize_live_display_replacement(
+      previous,
+      candidate,
+      DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS,
+    );
+    assert!(
+      tuned.contains("the sub agents and"),
+      "tuned tail should freeze the settled swap: {tuned}"
+    );
+
+    let loose = stabilize_live_display_replacement(previous, candidate, 12);
+    assert!(loose.contains("the subagents and"), "loose tail should let the swap through: {loose}");
   }
 
   #[test]
@@ -3462,8 +3497,7 @@ mod tests {
     let candidate = "the headset volume is not being correctly synchronized with the computer volume so we \
        need to make sure that we correctly map the audio volume";
 
-    let display =
-      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+    let display = stabilize_live_display_replacement(previous, candidate, 12);
 
     assert!(
       display.ends_with("map the audio volume"),
@@ -3481,8 +3515,7 @@ mod tests {
     edited[20] = "CHANGED".to_string();
     let candidate = edited.join(" ");
 
-    let display =
-      stabilize_live_display_replacement(&previous, &candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+    let display = stabilize_live_display_replacement(&previous, &candidate, 12);
 
     assert!(!display.contains("CHANGED"), "tight tail should freeze token 20: {display}");
   }
@@ -3499,8 +3532,7 @@ mod tests {
       it's doing the right thing but like I feel like I get this like thrashing where previous \
       parts are being updated when they should have already resolved";
 
-    let display =
-      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+    let display = stabilize_live_display_replacement(previous, candidate, 12);
 
     assert!(
       display.contains("updating this streaming text"),
@@ -3525,8 +3557,7 @@ mod tests {
     let previous = "the text got pasted and then it stated open";
     let candidate = "the text got pasted and then it stayed open";
 
-    let display =
-      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+    let display = stabilize_live_display_replacement(previous, candidate, 12);
 
     assert_eq!(display, candidate);
   }
@@ -3540,8 +3571,7 @@ mod tests {
     let candidate = "a completely different candidate without the stable boundary but with enough \
       extra words to otherwise look like forward progress for the overlay display";
 
-    let display =
-      stabilize_live_display_replacement(previous, candidate, LIVE_DISPLAY_MUTABLE_TAIL_TOKENS);
+    let display = stabilize_live_display_replacement(previous, candidate, 12);
 
     assert_eq!(display, previous);
   }

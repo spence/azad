@@ -86,6 +86,11 @@ struct CommonArgs {
   #[arg(long, default_value_t = 5)]
   stable_h: usize,
 
+  /// Trailing live-caption tokens the lagging refined stream may still rewrite (older tokens are
+  /// frozen). Smaller confines mid-speech churn to fewer trailing words. Sweep this here.
+  #[arg(long, default_value_t = asr::pipeline::DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS)]
+  live_display_mutable_tail: usize,
+
   /// MLX Nemotron model directory (contains config.json, model.safetensors, tokenizer.model, vocab.txt).
   #[arg(long = "mlx-model-dir")]
   mlx_model_dir: Option<PathBuf>,
@@ -565,6 +570,7 @@ fn pipeline_config_from_common(args: &CommonArgs) -> Result<PipelineConfig> {
     recovery_vad_thold: args.recovery_vad_thold,
     stable_k: args.stable_k,
     stable_h: args.stable_h,
+    live_display_mutable_tail: args.live_display_mutable_tail,
     finalizing_pulse_enabled: true,
   })
 }
