@@ -119,30 +119,11 @@ MIT. See [LICENSE](LICENSE).
 
 ### 0.4.2 Unreleased
 
-- Reworked transcription to a dual-stream pipeline: an instant live caption plus a persistent
-  higher-quality stream that sharpens it in place without churning already-shown text.
-- Tightened the live caption's mutable tail (12 -> 4 tokens) so the lagging refined stream can no
-  longer re-phrase settled words mid-speech: recorded-turn replay shows ~60% less visible caption
-  churn with the pasted finalize decode byte-identical, and the caption still keeps pace (the
-  streaming stream supersedes any held refinement, so it never stalls).
-- Froze cosmetic churn in that tail: a live-caption word whose only change is case or punctuation
-  (`For` -> `for`, `know` -> `know,`) keeps its shown surface, since the pasted finalize decode
-  carries the model's casing/punctuation anyway. On recorded turns this drives edge case/punctuation
-  flicker to zero while genuine word corrections still render.
-- Finalization is now a cheap flush instead of a whole-turn re-decode — roughly 15x faster on
-  device (p50 ~630ms to ~38ms), with fast, high-quality pasted output.
-- Dual-stream is now the only transcription pipeline; the legacy windowed re-decode, text stitcher,
-  and coverage-gap/full-pass-bailout machinery have been retired.
-- Added a debug recorder and an on-device measurement analyzer
-  (`crates/azad-asr/scripts/live_metrics.py`) for per-turn caption/finalize/correction evidence.
-- Fixed the finalize flush splitting or gluing the final word of a turn (e.g. `tracker` ->
-  `tra cker`) by preserving the model's word-boundary marker end-to-end.
-- Simplified the debug stats view: one turn per line (no wrapping); a `raw` flag, `fixes`, and
-  `dur (s)` columns; and removed the retired fallback/bailout metrics surfaces (the old `full`
-  mode, legacy finalize counters, and the dead outcome/error events they fed).
-- Expanded spoken-number conversion for identifiers like `S eight` -> `S8`.
-- Removed terminal periods from single-word pasted output.
-- Fixed live transcription responsiveness and overlay finalization issues.
+- Live transcription now corrects itself in place as you speak.
+- Added more spoken emoji names, including "checkbox", "new", and colored dots.
+- Added spoken conversion of letter-number identifiers like "S eight" to "S8".
+- Added "uhm" to the hesitation words removed on paste.
+- Stopped adding a trailing period after single-word and lone-emoji pastes.
 
 ### 0.4.1
 
