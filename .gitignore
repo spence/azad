@@ -12,3 +12,6 @@ crates/asr-rs/
 crates/parakeet-rs/
 crates/whisper-cpp-plus-rs/
 crates/whisper.cpp/
+
+# Claude Code session infra (worktrees, checkpoints)
+.claude/
