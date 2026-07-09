@@ -1336,6 +1336,18 @@ mod tests {
     }
 
     #[test]
+    fn build_paste_text_converts_new_block_pause_and_common_aliases() {
+        // {color} block mirrors {color} dot; single-word "pause"; and new common single-word aliases.
+        assert_eq!(
+            build_paste_text(
+                "red block emoji green block emoji pause emoji joy emoji money emoji cake emoji",
+                emoji_options(false, &[], true, false)
+            ),
+            "🟥 🟩 ⏸️ 😂 💰 🎂"
+        );
+    }
+
+    #[test]
     fn build_paste_text_converts_plural_emoji_trigger() {
         assert_eq!(
             build_paste_text(
