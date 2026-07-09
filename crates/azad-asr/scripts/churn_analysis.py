@@ -11,6 +11,9 @@ prev_text (i.e. prev_text is not a token-prefix of text), we compute:
   - a classification of the change type
 
 This is measurement only. No pipeline code is modified.
+
+Reads ~/Library/Application Support/Azad/debug-recordings by default; set AZAD_DEBUG_DIR to point
+at any sidecar set (e.g. a deploy-era partition, to compare churn from real use before/after a fix).
 """
 import json
 import glob
@@ -19,7 +22,9 @@ import re
 import difflib
 from collections import Counter, defaultdict
 
-DEBUG_DIR = os.path.expanduser("~/Library/Application Support/Azad/debug-recordings")
+DEBUG_DIR = os.environ.get(
+    "AZAD_DEBUG_DIR", os.path.expanduser("~/Library/Application Support/Azad/debug-recordings")
+)
 
 WORD_RE = re.compile(r"[A-Za-z0-9']+|[.,!?;:]")
 
