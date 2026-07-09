@@ -122,6 +122,7 @@ MIT. See [LICENSE](LICENSE).
 - Live transcription now corrects itself in place as you speak.
 - Added more spoken emoji names, including "checkbox", "new", and colored dots.
 - Added spoken conversion of letter-number identifiers like "S eight" to "S8".
+- Added a percent sign to spoken numbers, so "12 percent" becomes "12%" (when number conversion is on).
 - Added "uhm" to the hesitation words removed on paste.
 - Stopped adding a trailing period after single-word and lone-emoji pastes.
 

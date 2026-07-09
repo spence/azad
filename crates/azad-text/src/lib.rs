@@ -49,6 +49,7 @@ pub fn build_display_text(text: &str, options: DisplayTextOptions<'_>) -> String
     };
     if options.convert_number_words {
         display_text = replace_english_number_words(&display_text);
+        display_text = attach_percent_sign_to_numbers(&display_text);
     }
     if options.convert_spoken_emoji {
         display_text = replace_spoken_emoji_names(&display_text);
@@ -402,6 +403,45 @@ fn replace_english_number_words(text: &str) -> String {
             changed = true;
         } else {
             out.push_str(tokens[i].text);
+            i += 1;
+        }
+    }
+
+    if changed { out } else { text.to_string() }
+}
+
+/// After spoken-number replacement, rewrite `<number> percent` as `<number>%` (e.g. "12 percent"
+/// -> "12%"), gated by the same number-words setting. The digit run adjacent to the word "percent"
+/// is always the number's last segment, so integers, decimals ("3.5 percent" -> "3.5%"), and
+/// grouped numbers ("1,000 percent" -> "1,000%") all rewrite correctly. The whole-word match leaves
+/// "percentage" and a bare "percent" with no preceding number untouched.
+fn attach_percent_sign_to_numbers(text: &str) -> String {
+    let tokens: Vec<TextToken> = tokenize(text).collect();
+    if tokens.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = tokens[i];
+        let number_before_percent = token.is_word
+            && !token.text.is_empty()
+            && token.text.bytes().all(|byte| byte.is_ascii_digit())
+            && tokens
+                .get(i + 1)
+                .is_some_and(|sep| !sep.is_word && sep.text.chars().all(char::is_whitespace))
+            && tokens
+                .get(i + 2)
+                .is_some_and(|word| word.is_word && word.text.eq_ignore_ascii_case("percent"));
+        if number_before_percent {
+            out.push_str(token.text);
+            out.push('%');
+            i += 3;
+            changed = true;
+        } else {
+            out.push_str(token.text);
             i += 1;
         }
     }
@@ -1595,6 +1635,68 @@ mod tests {
         assert_eq!(
             build_paste_text("twenty five", options(false, &[], true, false)),
             "twenty five"
+        );
+    }
+
+    #[test]
+    fn number_words_attach_percent_sign() {
+        // digits already in the text
+        assert_eq!(
+            build_paste_text(
+                "we grew 12 percent last quarter",
+                options(false, &[], true, true)
+            ),
+            "we grew 12% last quarter"
+        );
+        // spoken number -> digits -> percent sign, end to end
+        assert_eq!(
+            build_paste_text(
+                "raise it by twelve percent",
+                options(false, &[], true, true)
+            ),
+            "raise it by 12%"
+        );
+        // decimals and grouped numbers keep their separators; the last digit run carries the sign
+        assert_eq!(
+            build_paste_text("about 3.5 percent", options(false, &[], true, true)),
+            "about 3.5%"
+        );
+        assert_eq!(
+            build_paste_text("up 1,000 percent", options(false, &[], true, true)),
+            "up 1,000%"
+        );
+        // trailing punctuation is preserved
+        assert_eq!(
+            build_paste_text("up 100 percent.", options(false, &[], true, true)),
+            "up 100%."
+        );
+        // capitalized word still matches
+        assert_eq!(
+            build_paste_text("50 Percent done", options(false, &[], true, true)),
+            "50% done"
+        );
+    }
+
+    #[test]
+    fn number_words_percent_leaves_non_matches_alone() {
+        // "percentage" is a different word
+        assert_eq!(
+            build_paste_text("12 percentage points", options(false, &[], true, true)),
+            "12 percentage points"
+        );
+        // no preceding number
+        assert_eq!(
+            build_paste_text("a fair percent of them", options(false, &[], true, true)),
+            "a fair percent of them"
+        );
+    }
+
+    #[test]
+    fn number_words_percent_requires_the_setting() {
+        // gated by the number-words setting: off -> leave "12 percent" untouched
+        assert_eq!(
+            build_paste_text("12 percent", options(false, &[], true, false)),
+            "12 percent"
         );
     }
 }
