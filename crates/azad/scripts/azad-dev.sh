@@ -414,8 +414,7 @@ bootstrap_until_loaded() {
 }
 
 kickstart_with_retry() {
-  local attempt
-  for attempt in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     if launchctl kickstart -k "$SERVICE_TARGET" >/dev/null 2>&1; then
       return 0
     fi

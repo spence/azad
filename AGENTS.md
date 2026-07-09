@@ -52,7 +52,7 @@ When taking over a task, do this first:
 
 Expected service/app identifiers:
 - LaunchAgent label: `ai.azad`
-- App bundle executable: `/Users/spence/Applications/Azad.app/Contents/MacOS/azad`
+- App bundle executable: `~/Applications/Azad.app/Contents/MacOS/azad`
 - Logs: `~/Library/Logs/Azad/`
 
 ## Current Behavioral Priorities

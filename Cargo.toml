@@ -13,7 +13,3 @@ edition = "2024"
 rust-version = "1.85.0"
 repository = "https://github.com/spence/azad"
 license = "MIT"
-
-[workspace.dependencies]
-thiserror = "1.0"
-num_cpus = "1.16"
