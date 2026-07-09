@@ -3153,11 +3153,6 @@ impl AppController {
       .remove(&turn_id)
       .map(|started_at| u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX))
       .unwrap_or(0);
-    // Dual-stream never bails to a whole-turn re-decode; the `fallback` fields are retained only so
-    // the legacy-era metrics history stays parseable (see metrics_log).
-    let fallback = false;
-    let fallback_reason = "na".to_string();
-
     if self.debug_stats_enabled {
       let _ = metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::PasteCompleted {
         turn_id,
@@ -3178,8 +3173,6 @@ impl AppController {
         turn_id,
         mode,
         transcription_duration_ms,
-        fallback,
-        fallback_reason,
         text_preview: preview_text_for_metrics(text, 45),
       }));
     }

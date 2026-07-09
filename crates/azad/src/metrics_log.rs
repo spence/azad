@@ -11,14 +11,25 @@ const RECENT_TRANSCRIPTS_LIMIT: usize = 10;
 const RECENT_EVENT_ASSOCIATION_MAX_GAP_MS: u64 = 5 * 60 * 1000;
 const SUMMARY_TRAILING_BLANK_LINES: usize = 2;
 
-/// Recent-transcriptions table: `mode` (raw/normal/full), `ref` (words the refined pass changed,
-/// or a state), `preview`, `dur` (turn seconds). Shared by both render call sites so the widths
-/// can't drift apart.
-const RECENT_TABLE_HEADERS: &[&str] = &["mode", "ref", "preview", "dur"];
-const RECENT_TABLE_WIDTHS: &[usize] = &[6, 5, 40, 5];
+/// Recent-transcriptions table: `mode` (raw/normal), `fixes` (token edits the refined pass made to
+/// the live draft, or `-`), `preview`, `dur (s)` (turn seconds). Shared by both render call sites
+/// so the widths can't drift apart.
+const RECENT_TABLE_HEADERS: &[&str] = &["mode", "fixes", "preview", "dur (s)"];
+const RECENT_TABLE_WIDTHS: &[usize] = &[6, 5, 40, 7];
 /// The debug overlay wraps any row wider than this; the table must stay within it so each turn
 /// occupies exactly one line. See `recent_transcriptions_row_fits_on_one_line`.
 const RECENT_TABLE_MAX_WIDTH: usize = 69;
+
+// Compile-time no-wrap guard: a rendered row is `sum(widths) + 3 per column gap`. If a future
+// column change pushes it past the overlay budget, the build fails here — not the user's eyes.
+const _: () = assert!(
+  RECENT_TABLE_WIDTHS[0]
+    + RECENT_TABLE_WIDTHS[1]
+    + RECENT_TABLE_WIDTHS[2]
+    + RECENT_TABLE_WIDTHS[3]
+    + 3 * (RECENT_TABLE_WIDTHS.len() - 1)
+    <= RECENT_TABLE_MAX_WIDTH
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,14 +66,6 @@ pub enum MetricsLogEvent {
     paste_duration_ms: u64,
     result: String,
   },
-  /// Legacy-era (historical). The windowed finalizer's per-turn outcome/bailout reason. No longer
-  /// emitted — dual-stream has no bailout — but kept on the read side so the retained legacy log
-  /// stays parseable for cross-era summaries.
-  PartialFinalizeOutcome {
-    turn_id: u64,
-    outcome: String,
-    reason: String,
-  },
   /// Quality signal. Under dual-stream this is the draft->refined-final token divergence (how much
   /// the refined stream corrected the live draft at finalize). Legacy records used the same shape
   /// for emitted-vs-whole-turn-re-decode divergence, so both eras parse identically.
@@ -78,22 +81,10 @@ pub enum MetricsLogEvent {
     lcp_tokens: usize,
     lcp_pct: f64,
   },
-  /// Legacy-era (historical). The windowed audit worker's model-load / decode error. No longer
-  /// emitted (the dual recorder loads no model); retained on the read side for old logs.
-  PartialAuditError {
-    turn_id: u64,
-    emitted_kind: String,
-    partial_count: usize,
-    message: String,
-  },
   TurnSnapshot {
     turn_id: u64,
     mode: TranscriptMode,
     transcription_duration_ms: u64,
-    /// Legacy-era: whether the turn bailed to a whole-turn re-decode. Always `false` under
-    /// dual-stream; retained for schema history so old snapshots stay parseable.
-    fallback: bool,
-    fallback_reason: String,
     text_preview: String,
   },
 }
@@ -116,9 +107,6 @@ pub struct MetricsSummary {
   pub transcription_raw: DurationStats,
   pub transcription_normal: DurationStats,
   pub paste: DurationStats,
-  pub fallback_attempts: usize,
-  pub fallback_count: usize,
-  pub fallback_rate_pct: f64,
   pub quality_samples: usize,
   pub quality_exact_rate_pct: f64,
   pub quality_avg_edit_distance: f64,
@@ -132,12 +120,9 @@ pub struct RecentTranscriptSummary {
   pub turn_id: u64,
   pub mode: TranscriptMode,
   pub transcription_duration_ms: u64,
-  /// Words the refined pass changed vs the live draft at finalize (token edit distance).
-  /// Small nonzero == subtle in-place touch-ups; not an error rate (dual has no ground truth).
-  pub refined_words: Option<usize>,
-  pub quality_pending: bool,
-  pub quality_error: bool,
-  pub fallback: bool,
+  /// Fixes the refined pass applied to the live draft at finalize (token edit distance — words or
+  /// punctuation). Small nonzero == subtle in-place sharpening; not an error rate (no ground truth).
+  pub refined_fixes: Option<usize>,
   pub text_preview: String,
 }
 
@@ -211,18 +196,6 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
     ],
   ));
   lines.push(String::new());
-  let fast_count = summary.fallback_attempts.saturating_sub(summary.fallback_count);
-  let fast_rate_pct = if summary.fallback_attempts == 0 {
-    0.0
-  } else {
-    fast_count as f64 * 100.0 / summary.fallback_attempts as f64
-  };
-  // Legacy-era (historical): the windowed-finalization fallback/bailout counters. Dual-stream
-  // never bails, so these stay zero for new turns and only reflect the retained legacy log.
-  lines.push(format!("Finalize attempts (legacy-era): {}", summary.fallback_attempts));
-  lines.push(format!("Finalize fast count (legacy-era): {}", fast_count));
-  lines.push(format!("Finalize fast rate_pct (legacy-era): {:.1}", fast_rate_pct));
-  lines.push(String::new());
   // Draft->refined-final divergence: how much the refined stream corrected the live draft at
   // finalize (token edit distance; small nonzero == subtle in-place sharpenings, goal #3).
   lines.push(format!("Draft->final divergence samples: {}", summary.quality_samples));
@@ -250,7 +223,7 @@ pub fn render_summary(summary: &MetricsSummary) -> String {
     for sample in &summary.recent_transcripts {
       rows.push(vec![
         recent_mode_label(sample).to_string(),
-        recent_refined_label(sample),
+        recent_fixes_label(sample),
         sample.text_preview.clone(),
         format_duration_secs(sample.transcription_duration_ms),
       ]);
@@ -275,9 +248,7 @@ pub fn now_epoch_ms() -> i64 {
 fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
   type AuditSample = (i64, bool, usize, f64, f64);
 
-  let mut outcomes_by_turn: HashMap<u64, Vec<(i64, String, String)>> = HashMap::new();
   let mut audits_by_turn: HashMap<u64, Vec<AuditSample>> = HashMap::new();
-  let mut audit_errors_by_turn: HashMap<u64, Vec<(i64, usize, String)>> = HashMap::new();
   let mut recent_snapshots: Vec<(i64, RecentTranscriptSummary)> = Vec::new();
   let mut summary = MetricsSummary::default();
   let mut trans_all = Vec::new();
@@ -308,17 +279,6 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
       MetricsLogEvent::PasteCompleted { paste_duration_ms, .. } => {
         paste_values.push(*paste_duration_ms);
       }
-      MetricsLogEvent::PartialFinalizeOutcome { turn_id, outcome, reason } => {
-        summary.fallback_attempts += 1;
-        if outcome == "full_pass_bailout" {
-          summary.fallback_count += 1;
-        }
-        outcomes_by_turn.entry(*turn_id).or_default().push((
-          record.ts_ms,
-          outcome.clone(),
-          reason.clone(),
-        ));
-      }
       MetricsLogEvent::PartialAuditResult {
         turn_id,
         exact,
@@ -342,31 +302,14 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
           *lcp_pct,
         ));
       }
-      MetricsLogEvent::PartialAuditError { turn_id, partial_count, message, .. } => {
-        audit_errors_by_turn.entry(*turn_id).or_default().push((
-          record.ts_ms,
-          *partial_count,
-          message.clone(),
-        ));
-      }
-      MetricsLogEvent::TurnSnapshot {
-        turn_id,
-        mode,
-        transcription_duration_ms,
-        fallback,
-        fallback_reason: _,
-        text_preview,
-      } => {
+      MetricsLogEvent::TurnSnapshot { turn_id, mode, transcription_duration_ms, text_preview } => {
         recent_snapshots.push((
           record.ts_ms,
           RecentTranscriptSummary {
             turn_id: *turn_id,
             mode: *mode,
             transcription_duration_ms: *transcription_duration_ms,
-            refined_words: None,
-            quality_pending: false,
-            quality_error: false,
-            fallback: *fallback,
+            refined_fixes: None,
             text_preview: text_preview.clone(),
           },
         ));
@@ -378,12 +321,6 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
   summary.transcription_raw = duration_stats(&trans_raw);
   summary.transcription_normal = duration_stats(&trans_normal);
   summary.paste = duration_stats(&paste_values);
-
-  summary.fallback_rate_pct = if summary.fallback_attempts == 0 {
-    0.0
-  } else {
-    summary.fallback_count as f64 * 100.0 / summary.fallback_attempts as f64
-  };
 
   if summary.quality_samples > 0 {
     let denom = summary.quality_samples as f64;
@@ -401,23 +338,7 @@ fn summarize(records: &[MetricsLogRecord]) -> MetricsSummary {
     if let Some(audits) = audits_by_turn.get(&sample.turn_id) {
       if let Some((_, _, edit_distance, _, _)) = nearest_by_ts(audits, *snapshot_ts, |item| item.0)
       {
-        sample.refined_words = Some(*edit_distance);
-        continue;
-      }
-    }
-
-    if let Some(errors) = audit_errors_by_turn.get(&sample.turn_id) {
-      if nearest_by_ts(errors, *snapshot_ts, |item| item.0).is_some() {
-        sample.quality_error = true;
-        continue;
-      }
-    }
-
-    if let Some(outcomes) = outcomes_by_turn.get(&sample.turn_id) {
-      if let Some((_, outcome, _)) = nearest_by_ts(outcomes, *snapshot_ts, |item| item.0) {
-        if outcome == "assembled" || outcome == "draft_emit" {
-          sample.quality_pending = true;
-        }
+        sample.refined_fixes = Some(*edit_distance);
       }
     }
   }
@@ -545,37 +466,26 @@ fn truncate_cell(text: &str, width: usize) -> String {
 fn recent_mode_label(sample: &RecentTranscriptSummary) -> &'static str {
   match sample.mode {
     TranscriptMode::Raw => "raw",
-    TranscriptMode::Normal => {
-      if sample.fallback {
-        "full"
-      } else {
-        "normal"
-      }
-    }
+    TranscriptMode::Normal => "normal",
   }
 }
 
-fn recent_refined_label(sample: &RecentTranscriptSummary) -> String {
-  if let Some(words) = sample.refined_words {
-    // Words the refined pass changed vs the live draft. 0w == paste matched what you saw; small
-    // nonzero == subtle in-place touch-ups. NOT an error rate — dual has no ground-truth reference.
-    return format!("{words}w");
+fn recent_fixes_label(sample: &RecentTranscriptSummary) -> String {
+  // Token edits (words or punctuation) the refined pass made to the live draft. 0 == the paste
+  // matched what you saw; small nonzero == subtle in-place sharpening. Not an error rate — dual
+  // has no ground-truth reference. `-` == no refined pass ran for this turn (e.g. a raw paste).
+  match sample.refined_fixes {
+    Some(fixes) => fixes.to_string(),
+    None => "-".to_string(),
   }
-  if sample.quality_error {
-    return "error".to_string();
-  }
-  if sample.quality_pending {
-    return "queued".to_string();
-  }
-  "-".to_string()
 }
 
-/// Compact turn duration for the recent-transcriptions table. Raw ms reached six digits on long
-/// turns ("118378"), overflowing the overlay width and wrapping the row; seconds stay <=5 chars
-/// and read faster. Tenths under 100 s, whole seconds above.
+/// Compact turn duration in seconds (the column header `dur (s)` carries the unit) for the
+/// recent-transcriptions table. Raw ms reached six digits on long turns ("118378"), overflowing
+/// the overlay width and wrapping the row. Tenths under 100 s, whole seconds above.
 fn format_duration_secs(ms: u64) -> String {
   let secs = ms as f64 / 1000.0;
-  if secs < 99.95 { format!("{secs:.1}s") } else { format!("{secs:.0}s") }
+  if secs < 99.95 { format!("{secs:.1}") } else { format!("{secs:.0}") }
 }
 
 fn metrics_log_path() -> PathBuf {
@@ -604,7 +514,7 @@ mod tests {
     // multi-minute duration. Guards the column widths against future growth.
     let rows = vec![vec![
       "normal".to_string(),
-      "queued".to_string(),
+      "999".to_string(),
       "x".repeat(200),
       format_duration_secs(3_599_000),
     ]];
@@ -621,10 +531,10 @@ mod tests {
   fn format_duration_secs_stays_within_dur_column() {
     for ms in [0, 900, 3_741, 12_739, 99_949, 99_999, 118_378, 3_599_000] {
       let rendered = format_duration_secs(ms);
-      assert!(rendered.len() <= 5, "`{rendered}` exceeds the dur column width of 5");
+      assert!(rendered.len() <= 5, "`{rendered}` is too wide for the dur (s) column");
     }
-    assert_eq!(format_duration_secs(3_741), "3.7s");
-    assert_eq!(format_duration_secs(118_378), "118s");
+    assert_eq!(format_duration_secs(3_741), "3.7");
+    assert_eq!(format_duration_secs(118_378), "118");
   }
 
   #[test]
@@ -674,24 +584,6 @@ mod tests {
       },
       MetricsLogRecord {
         schema_version: 1,
-        ts_ms: 4,
-        event: MetricsLogEvent::PartialFinalizeOutcome {
-          turn_id: 1,
-          outcome: "assembled".to_string(),
-          reason: "na".to_string(),
-        },
-      },
-      MetricsLogRecord {
-        schema_version: 1,
-        ts_ms: 5,
-        event: MetricsLogEvent::PartialFinalizeOutcome {
-          turn_id: 2,
-          outcome: "full_pass_bailout".to_string(),
-          reason: "tail_timeout".to_string(),
-        },
-      },
-      MetricsLogRecord {
-        schema_version: 1,
         ts_ms: 6,
         event: MetricsLogEvent::PartialAuditResult {
           turn_id: 1,
@@ -713,8 +605,6 @@ mod tests {
           turn_id: 1,
           mode: TranscriptMode::Normal,
           transcription_duration_ms: 120,
-          fallback: false,
-          fallback_reason: "na".to_string(),
           text_preview: "hello world".to_string(),
         },
       },
@@ -725,9 +615,7 @@ mod tests {
           turn_id: 2,
           mode: TranscriptMode::Raw,
           transcription_duration_ms: 80,
-          fallback: true,
-          fallback_reason: "tail_timeout".to_string(),
-          text_preview: "fallback example".to_string(),
+          text_preview: "raw paste example".to_string(),
         },
       },
     ];
@@ -736,92 +624,13 @@ mod tests {
     assert_eq!(summary.total_transcriptions, 2);
     assert_eq!(summary.raw_transcriptions, 1);
     assert_eq!(summary.normal_transcriptions, 1);
-    assert_eq!(summary.fallback_attempts, 2);
-    assert_eq!(summary.fallback_count, 1);
     assert_eq!(summary.quality_samples, 1);
     assert_eq!(summary.quality_exact_rate_pct, 100.0);
     assert_eq!(summary.recent_transcripts.len(), 2);
     assert_eq!(summary.recent_transcripts[0].turn_id, 2);
-    assert!(summary.recent_transcripts[0].fallback);
     assert_eq!(summary.recent_transcripts[0].transcription_duration_ms, 80);
     assert_eq!(summary.recent_transcripts[1].turn_id, 1);
-    assert_eq!(summary.recent_transcripts[1].refined_words, Some(0));
-  }
-
-  #[test]
-  fn summarize_marks_queued_when_audit_is_missing_after_assembled_finalize() {
-    let records = vec![
-      MetricsLogRecord {
-        schema_version: 1,
-        ts_ms: 1,
-        event: MetricsLogEvent::TurnSnapshot {
-          turn_id: 7,
-          mode: TranscriptMode::Normal,
-          transcription_duration_ms: 1500,
-          fallback: false,
-          fallback_reason: "na".to_string(),
-          text_preview: "queued sample".to_string(),
-        },
-      },
-      MetricsLogRecord {
-        schema_version: 1,
-        ts_ms: 2,
-        event: MetricsLogEvent::PartialFinalizeOutcome {
-          turn_id: 7,
-          outcome: "assembled".to_string(),
-          reason: "na".to_string(),
-        },
-      },
-    ];
-
-    let summary = summarize(&records);
-    assert_eq!(summary.recent_transcripts.len(), 1);
-    assert!(summary.recent_transcripts[0].quality_pending);
-    assert!(!summary.recent_transcripts[0].quality_error);
-    assert_eq!(summary.recent_transcripts[0].refined_words, None);
-  }
-
-  #[test]
-  fn summarize_marks_error_when_partial_audit_errors() {
-    let records = vec![
-      MetricsLogRecord {
-        schema_version: 1,
-        ts_ms: 1,
-        event: MetricsLogEvent::TurnSnapshot {
-          turn_id: 9,
-          mode: TranscriptMode::Normal,
-          transcription_duration_ms: 2200,
-          fallback: false,
-          fallback_reason: "na".to_string(),
-          text_preview: "error sample".to_string(),
-        },
-      },
-      MetricsLogRecord {
-        schema_version: 1,
-        ts_ms: 2,
-        event: MetricsLogEvent::PartialFinalizeOutcome {
-          turn_id: 9,
-          outcome: "assembled".to_string(),
-          reason: "na".to_string(),
-        },
-      },
-      MetricsLogRecord {
-        schema_version: 1,
-        ts_ms: 3,
-        event: MetricsLogEvent::PartialAuditError {
-          turn_id: 9,
-          emitted_kind: "assembled".to_string(),
-          partial_count: 2,
-          message: "audit queue unavailable".to_string(),
-        },
-      },
-    ];
-
-    let summary = summarize(&records);
-    assert_eq!(summary.recent_transcripts.len(), 1);
-    assert!(!summary.recent_transcripts[0].quality_pending);
-    assert!(summary.recent_transcripts[0].quality_error);
-    assert_eq!(summary.recent_transcripts[0].refined_words, None);
+    assert_eq!(summary.recent_transcripts[1].refined_fixes, Some(0));
   }
 
   #[test]
@@ -863,8 +672,6 @@ mod tests {
           turn_id: 18,
           mode: TranscriptMode::Normal,
           transcription_duration_ms: 900,
-          fallback: false,
-          fallback_reason: "na".to_string(),
           text_preview: "older turn".to_string(),
         },
       },
@@ -891,8 +698,6 @@ mod tests {
           turn_id: 18,
           mode: TranscriptMode::Normal,
           transcription_duration_ms: 1500,
-          fallback: false,
-          fallback_reason: "na".to_string(),
           text_preview: "newer turn".to_string(),
         },
       },
@@ -917,9 +722,9 @@ mod tests {
     let summary = summarize(&records);
     assert_eq!(summary.recent_transcripts.len(), 2);
     assert_eq!(summary.recent_transcripts[0].text_preview, "newer turn");
-    assert_eq!(summary.recent_transcripts[0].refined_words, Some(4));
+    assert_eq!(summary.recent_transcripts[0].refined_fixes, Some(4));
     assert_eq!(summary.recent_transcripts[1].text_preview, "older turn");
-    assert_eq!(summary.recent_transcripts[1].refined_words, Some(0));
+    assert_eq!(summary.recent_transcripts[1].refined_fixes, Some(0));
   }
 
   #[test]
@@ -948,8 +753,6 @@ mod tests {
           turn_id: 44,
           mode: TranscriptMode::Normal,
           transcription_duration_ms: 1300,
-          fallback: false,
-          fallback_reason: "na".to_string(),
           text_preview: "current session".to_string(),
         },
       },
@@ -957,8 +760,6 @@ mod tests {
 
     let summary = summarize(&records);
     assert_eq!(summary.recent_transcripts.len(), 1);
-    assert_eq!(summary.recent_transcripts[0].refined_words, None);
-    assert!(!summary.recent_transcripts[0].quality_pending);
-    assert!(!summary.recent_transcripts[0].quality_error);
+    assert_eq!(summary.recent_transcripts[0].refined_fixes, None);
   }
 }
