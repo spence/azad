@@ -184,12 +184,34 @@ pub fn play_query(query: &str) -> Result<String, SpotifyClientError> {
     return Err(SpotifyClientError::SearchFailed("Empty play query".into()));
   }
 
-  match search_best_track(query) {
-    Ok(track) => {
-      play_uri(&track.uri)?;
-      // Brief settle so name-of-current-track is reliable.
-      thread::sleep(Duration::from_millis(400));
-      Ok(format!("Playing {} — {}", track.name, track.artists))
+  match search_ranked_tracks(query) {
+    Ok(candidates) if !candidates.is_empty() => {
+      // Try top hits in order — first URI sometimes fails to switch (region /
+      // catalog) while a later remaster plays fine.
+      let mut last_err = None;
+      for track in candidates.iter().take(5) {
+        match play_uri(&track.uri) {
+          Ok(()) => {
+            thread::sleep(Duration::from_millis(500));
+            eprintln!(
+              "AZAD_SPOTIFY event=play_uri ok uri={} name={:?} artists={:?} score={}",
+              track.uri, track.name, track.artists, track.score
+            );
+            return Ok(format!("Playing {} — {}", track.name, track.artists));
+          }
+          Err(e) => {
+            eprintln!("AZAD_SPOTIFY event=play_uri fail uri={} err={e}", track.uri);
+            last_err = Some(e);
+          }
+        }
+      }
+      Err(last_err.unwrap_or_else(|| {
+        SpotifyClientError::SearchFailed(format!("Couldn’t play any match for “{query}”."))
+      }))
+    }
+    Ok(_) => {
+      eprintln!("AZAD_SPOTIFY event=search_api_miss err=empty");
+      play_top_search_result(query)
     }
     Err(api_err) => {
       eprintln!("AZAD_SPOTIFY event=search_api_miss err={api_err}");
@@ -200,12 +222,13 @@ pub fn play_query(query: &str) -> Result<String, SpotifyClientError> {
 
 /// Open Spotify search for `query`, wait for results, press Return to play the
 /// highlighted/top hit. Uses Accessibility synthetic keys (not System Events).
+///
+/// Only reports success if `current track` actually changed — otherwise the UI
+/// often still shows the previous song while search is open.
 fn play_top_search_result(query: &str) -> Result<String, SpotifyClientError> {
-  // Activate + open search so the desktop client is focused for the keystroke.
+  let before = current_track().ok();
   let _ = run_osascript(r#"tell application "Spotify" to activate"#);
   open_search(query)?;
-  // Search UI needs a beat to populate the first row; Down moves off the
-  // search field onto the top track before Return starts playback.
   thread::sleep(Duration::from_millis(1800));
   if !crate::platform::post_down_then_return() {
     let _ = open_search(query);
@@ -215,9 +238,15 @@ fn play_top_search_result(query: &str) -> Result<String, SpotifyClientError> {
     )));
   }
   thread::sleep(Duration::from_millis(900));
-  match current_track() {
-    Ok(t) => Ok(format!("Playing {t}")),
-    Err(_) => Ok(format!("Playing “{query}”")),
+  let after = current_track().ok();
+  match (&before, &after) {
+    (_, Some(now)) if before.as_ref() != after.as_ref() => Ok(format!("Playing {now}")),
+    _ => {
+      // Don't claim success with the previous track name.
+      Err(SpotifyClientError::SearchFailed(format!(
+        "Opened Spotify search for “{query}” — pick a result to play."
+      )))
+    }
   }
 }
 
@@ -229,19 +258,99 @@ struct TrackHit {
   score: i32,
 }
 
-fn search_best_track(query: &str) -> Result<TrackHit, SpotifyClientError> {
+/// Search with several query shapes so ASR quirks don't zero out results.
+///
+/// Example: “like a stone by audio slave” → fielded `artist:audio slave` is empty,
+/// but free-text / collapsed `audioslave` finds the track.
+fn search_ranked_tracks(query: &str) -> Result<Vec<TrackHit>, SpotifyClientError> {
   let (title, artist) = split_title_artist(query);
-  let q = build_search_q(&title, artist.as_deref());
   let token = client_credentials_token()?;
-  let url =
-    format!("https://api.spotify.com/v1/search?type=track&limit=10&q={}", urlencode_component(&q));
   let client = reqwest::blocking::Client::builder()
     .timeout(Duration::from_secs(12))
     .build()
     .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+
+  let mut best_by_uri: std::collections::HashMap<String, TrackHit> =
+    std::collections::HashMap::new();
+
+  for q in search_query_variants(&title, artist.as_deref(), query) {
+    let items = match search_track_items(&client, &token, &q) {
+      Ok(items) => items,
+      Err(e) => {
+        eprintln!("AZAD_SPOTIFY event=search_variant_fail q={q:?} err={e}");
+        continue;
+      }
+    };
+    if items.is_empty() {
+      eprintln!("AZAD_SPOTIFY event=search_variant_empty q={q:?}");
+      continue;
+    }
+    eprintln!("AZAD_SPOTIFY event=search_variant_hits q={q:?} n={}", items.len());
+    for item in items {
+      let artists = item.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+      let score = score_track(&title, artist.as_deref(), &item.name, &artists);
+      let hit = TrackHit { uri: item.uri.clone(), name: item.name, artists, score };
+      best_by_uri
+        .entry(item.uri)
+        .and_modify(|existing| {
+          if hit.score > existing.score {
+            *existing = hit.clone();
+          }
+        })
+        .or_insert(hit);
+    }
+  }
+
+  let mut ranked: Vec<TrackHit> = best_by_uri.into_values().collect();
+  ranked.sort_by(|a, b| b.score.cmp(&a.score));
+  // Drop near-zero garbage when we have better hits.
+  if ranked.iter().any(|h| h.score >= 40) {
+    ranked.retain(|h| h.score >= 20);
+  }
+  if ranked.is_empty() {
+    return Err(SpotifyClientError::SearchFailed(format!("No Spotify tracks matched “{query}”.")));
+  }
+  Ok(ranked)
+}
+
+fn search_query_variants(title: &str, artist: Option<&str>, raw: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  let push = |v: &mut Vec<String>, s: String| {
+    let t = s.trim().to_string();
+    if !t.is_empty() && !v.iter().any(|x| x == &t) {
+      v.push(t);
+    }
+  };
+
+  if let Some(a) = artist {
+    push(&mut out, format!("track:{title} artist:{a}"));
+    // “audio slave” → “audioslave”; “ac dc” → “acdc”
+    let collapsed = collapse_ws(a);
+    if collapsed != a {
+      push(&mut out, format!("track:{title} artist:{collapsed}"));
+      push(&mut out, format!("{title} {collapsed}"));
+    }
+    push(&mut out, format!("{title} {a}"));
+  }
+  push(&mut out, title.to_string());
+  push(&mut out, raw.trim().to_string());
+  // Free-text without the word “by” often ranks better than field operators.
+  if let Some(a) = artist {
+    push(&mut out, format!("{title} {a}"));
+  }
+  out
+}
+
+fn search_track_items(
+  client: &reqwest::blocking::Client,
+  token: &str,
+  q: &str,
+) -> Result<Vec<TrackItem>, SpotifyClientError> {
+  let url =
+    format!("https://api.spotify.com/v1/search?type=track&limit=10&q={}", urlencode_component(q));
   let resp = client
     .get(&url)
-    .bearer_auth(&token)
+    .bearer_auth(token)
     .send()
     .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
   if !resp.status().is_success() {
@@ -254,20 +363,7 @@ fn search_best_track(query: &str) -> Result<TrackHit, SpotifyClientError> {
   }
   let parsed: SearchResponse =
     resp.json().map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
-  let items = parsed.tracks.map(|t| t.items).unwrap_or_default();
-  if items.is_empty() {
-    return Err(SpotifyClientError::SearchFailed(format!("No Spotify tracks matched “{query}”.")));
-  }
-  let mut best: Option<TrackHit> = None;
-  for item in items {
-    let artists = item.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
-    let score = score_track(&title, artist.as_deref(), &item.name, &artists);
-    let hit = TrackHit { uri: item.uri, name: item.name, artists, score };
-    if best.as_ref().map(|b| hit.score > b.score).unwrap_or(true) {
-      best = Some(hit);
-    }
-  }
-  best.ok_or_else(|| SpotifyClientError::SearchFailed("No track candidates".into()))
+  Ok(parsed.tracks.map(|t| t.items).unwrap_or_default())
 }
 
 fn split_title_artist(query: &str) -> (String, Option<String>) {
@@ -283,39 +379,44 @@ fn split_title_artist(query: &str) -> (String, Option<String>) {
   (query.trim().to_string(), None)
 }
 
-fn build_search_q(title: &str, artist: Option<&str>) -> String {
-  match artist {
-    Some(a) => format!("track:{title} artist:{a}"),
-    None => title.to_string(),
-  }
+fn collapse_ws(s: &str) -> String {
+  s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 fn score_track(title_q: &str, artist_q: Option<&str>, name: &str, artists: &str) -> i32 {
   let tq = title_q.to_ascii_lowercase();
   let n = name.to_ascii_lowercase();
+  // Prefer the base title before “ - Live …” / “ (Remastered)”
+  let n_base = n.split(" - ").next().unwrap_or(&n);
+  let n_base = n_base.split(" (").next().unwrap_or(n_base).trim();
   let a = artists.to_ascii_lowercase();
   let mut score = 0i32;
-  if n == tq {
+  if n_base == tq || n == tq {
     score += 100;
-  } else if n.contains(&tq) || tq.contains(&n) {
+  } else if n_base.contains(&tq) || tq.contains(n_base) {
     score += 50;
   } else {
-    // token overlap
     for tok in tq.split_whitespace() {
-      if n.contains(tok) {
+      if tok.len() > 1 && n.contains(tok) {
         score += 10;
       }
     }
   }
+  // Penalize live/remix when the query didn't ask for them.
+  if !tq.contains("live") && (n.contains(" - live") || n.contains("(live")) {
+    score -= 25;
+  }
   if let Some(aq) = artist_q {
     let aq = aq.to_ascii_lowercase();
-    if a == aq {
+    let aq_c = collapse_ws(&aq);
+    let a_c = collapse_ws(&a);
+    if a == aq || a_c == aq_c {
       score += 80;
-    } else if a.contains(&aq) || aq.contains(&a) {
+    } else if a.contains(&aq) || aq.contains(&a) || a_c.contains(&aq_c) || aq_c.contains(&a_c) {
       score += 40;
     } else {
       for tok in aq.split_whitespace() {
-        if a.contains(tok) {
+        if tok.len() > 1 && a.contains(tok) {
           score += 15;
         }
       }
@@ -514,5 +615,22 @@ client_secret = "secret456"
     let c: SpotifyTomlCreds = toml::from_str(raw).unwrap();
     assert_eq!(c.client_id, "abc123");
     assert_eq!(c.client_secret, "secret456");
+  }
+
+  #[test]
+  fn score_matches_asr_split_artist() {
+    // Spoken “audio slave” should still match catalog “Audioslave”.
+    let high = score_track("like a stone", Some("audio slave"), "Like a Stone", "Audioslave");
+    let low = score_track("like a stone", Some("audio slave"), "Fuss and Fight", "Koe Wetzel");
+    assert!(high > low, "high={high} low={low}");
+    assert!(high >= 100);
+  }
+
+  #[test]
+  fn search_variants_include_collapsed_artist() {
+    let v =
+      search_query_variants("like a stone", Some("audio slave"), "like a stone by audio slave");
+    assert!(v.iter().any(|q| q.contains("audioslave")));
+    assert!(v.iter().any(|q| q.contains("track:like a stone")));
   }
 }
