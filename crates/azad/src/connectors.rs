@@ -45,20 +45,25 @@ pub const CLAUDE_CONNECTOR_ID: &str = "claude";
 /// Built-in Azad connector id (on-device Apple Intelligence tools).
 pub const AZAD_CONNECTOR_ID: &str = "azad";
 
-/// Common ASR mis-hearings of "azad" after "hey".
+/// Common ASR mis-hearings of "azad" after "hey" (observed: "Hey azod, …").
 const AZAD_TRIGGER_ALIASES: &[&str] = &[
   "hey azod",
   "hey asad",
   "hey assad",
+  "hey asod",
+  "hey az id",
   "hey as odd",
   "hey a zod",
   "hey a zad",
+  "hey a sad",
   "hey az at",
   "hey as at",
+  "hey is odd",
 ];
 
 /// The built-in connector registry. Order is stable (settings UI indexes into it).
-/// Claude defaults on; Azad defaults off until the user enables it.
+/// Both Claude and Azad default on so the overlay chip + strip behave the same
+/// out of the box; users can still disable either in Settings → Connectors.
 pub fn builtin_connectors() -> Vec<Connector> {
   vec![
     Connector {
@@ -78,7 +83,7 @@ pub fn builtin_connectors() -> Vec<Connector> {
       tag_label: "Azad",
       // Text-only chip until a dedicated template asset is bundled.
       tag_icon: "",
-      enabled: false,
+      enabled: true,
     },
   ]
 }
@@ -232,10 +237,24 @@ mod tests {
   }
 
   #[test]
-  fn azad_defaults_disabled_and_does_not_match() {
+  fn azad_defaults_enabled_and_matches() {
     let cs = connectors();
     let azad = cs.iter().find(|c| c.id == AZAD_CONNECTOR_ID).expect("azad connector");
-    assert!(!azad.enabled);
+    assert!(azad.enabled);
+    let m = detect("hey azad disable numbers", &cs).expect("default-on azad should match");
+    assert_eq!(m.id, AZAD_CONNECTOR_ID);
+    assert_eq!(m.tag_label, "Azad");
+    assert_eq!(m.clean_query, "disable numbers");
+  }
+
+  #[test]
+  fn azad_disabled_does_not_match() {
+    let mut cs = connectors();
+    for c in &mut cs {
+      if c.id == AZAD_CONNECTOR_ID {
+        c.enabled = false;
+      }
+    }
     assert_eq!(detect("hey azad disable numbers", &cs), None);
   }
 
@@ -248,6 +267,17 @@ mod tests {
     assert_eq!(m.tag_label, "Azad");
     assert_eq!(m.matched_trigger, "hey azad");
     assert_eq!(m.clean_query, "disable number text replacement");
+  }
+
+  /// Real transcript from Spencer's machine (metrics): "Hey azod, I want you to…"
+  #[test]
+  fn azad_matches_observed_hey_azod_transcript() {
+    let cs = connectors();
+    let m = detect("Hey azod, I want you to disable the automatic", &cs).expect("hey azod");
+    assert_eq!(m.id, AZAD_CONNECTOR_ID);
+    assert_eq!(m.tag_label, "Azad");
+    assert_eq!(m.matched_trigger, "hey azod");
+    assert_eq!(m.clean_query, "I want you to disable the automatic");
   }
 
   #[test]

@@ -3528,6 +3528,10 @@ impl AppController {
     if self.active_connector.is_none() {
       if let Some(m) = connectors::detect(&self.latest_draft, &self.connectors) {
         let id = m.id;
+        eprintln!(
+          "AZAD_CONNECTOR latched id={id} tag={} trigger={:?} clean_query={:?}",
+          m.tag_label, m.matched_trigger, m.clean_query
+        );
         self.active_connector = Some(ActiveConnector {
           id,
           tag_label: m.tag_label,

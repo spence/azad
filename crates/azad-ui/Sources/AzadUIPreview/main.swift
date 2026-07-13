@@ -166,7 +166,7 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
                 id: "azad",
                 displayName: "Azad",
                 trigger: "hey azad",
-                enabled: false,
+                enabled: true,
                 canEnable: true,
                 availabilityState: "unavailable",
                 availabilityMessage: "On-device model not linked yet — voice settings still work for common phrases.",
