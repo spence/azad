@@ -751,14 +751,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             let title = Design.label("Voice commands", size: 12, weight: .semibold)
             let body = Design.wrappingLabel(
                 """
-                After “hey spotify …”:
+                After “hey spotify …” (or “he spotify …”):
                 · pause / play / next / previous
-                · play <song or artist>
+                · play <song> by <artist>
+                · play <artist>  → This Is {Artist} playlist
+                · play radio / radio for <song>
+                · play workout music / lo-fi / chill / …
                 · what song is this / identify (Shazam — coming soon)
-                · identify and play
                 · volume up / volume down
                 · current / what’s playing
-                · like
                 """,
                 size: 11,
                 color: Design.secondaryText

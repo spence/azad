@@ -125,6 +125,38 @@ pub fn current_track() -> Result<String, SpotifyClientError> {
   if artist.is_empty() { Ok(name) } else { Ok(format!("{name} — {artist}")) }
 }
 
+/// `spotify:track:…` for the currently playing track.
+pub fn current_track_uri() -> Result<String, SpotifyClientError> {
+  ensure_app()?;
+  let uri = run_osascript(r#"tell application "Spotify" to spotify url of current track"#)?;
+  if uri.starts_with("spotify:track:") {
+    Ok(uri)
+  } else if uri.is_empty() {
+    Err(SpotifyClientError::NoTrack)
+  } else {
+    // Some builds return https open.spotify.com links — normalize if we can.
+    if let Some(id) = uri.rsplit('/').next().filter(|s| s.len() == 22) {
+      return Ok(format!("spotify:track:{id}"));
+    }
+    Err(SpotifyClientError::NoTrack)
+  }
+}
+
+pub fn player_position_secs() -> Result<f64, SpotifyClientError> {
+  ensure_app()?;
+  let raw = run_osascript(r#"tell application "Spotify" to player position"#)?;
+  raw
+    .parse::<f64>()
+    .map_err(|_| SpotifyClientError::ScriptFailed(format!("Bad player position: {raw}")))
+}
+
+pub fn set_player_position_secs(secs: f64) -> Result<(), SpotifyClientError> {
+  ensure_app()?;
+  let secs = secs.max(0.0);
+  let script = format!(r#"tell application "Spotify" to set player position to {secs}"#);
+  run_osascript(&script).map(|_| ())
+}
+
 pub fn volume_delta(delta: i32) -> Result<(), SpotifyClientError> {
   ensure_app()?;
   let script = format!(
@@ -138,7 +170,7 @@ end tell"#
   run_osascript(&script).map(|_| ())
 }
 
-/// Play a Spotify URI (`spotify:track:…`).
+/// Play a Spotify URI (`spotify:track:…`, playlist, album, radio, …).
 pub fn play_uri(uri: &str) -> Result<(), SpotifyClientError> {
   ensure_app()?;
   if !uri.starts_with("spotify:") {
@@ -153,6 +185,97 @@ pub fn play_uri(uri: &str) -> Result<(), SpotifyClientError> {
 end tell"#
   );
   run_osascript(&script).map(|_| ())
+}
+
+/// Play Spotify's curated-style **This Is {Artist}** playlist (best public match).
+pub fn play_artist_this_is(artist: &str) -> Result<String, SpotifyClientError> {
+  ensure_app()?;
+  let artist = artist.trim();
+  if artist.is_empty() {
+    return Err(SpotifyClientError::SearchFailed("Empty artist".into()));
+  }
+  let canonical = resolve_artist_name(artist).unwrap_or_else(|_| artist.to_string());
+  let playlist_q = format!("This Is {canonical}");
+  match search_best_playlist(&playlist_q, Some(&format!("this is {canonical}"))) {
+    Ok(pl) => {
+      play_uri(&pl.uri)?;
+      thread::sleep(Duration::from_millis(400));
+      Ok(format!("Playing {}", pl.name))
+    }
+    Err(e) => {
+      // Fall back: free-text "This Is …" search without exact title filter.
+      eprintln!("AZAD_SPOTIFY event=this_is_miss artist={canonical:?} err={e}");
+      if let Ok(pl) = search_best_playlist(&playlist_q, None) {
+        play_uri(&pl.uri)?;
+        return Ok(format!("Playing {}", pl.name));
+      }
+      // Last resort: play a top track by the artist so the command still does something.
+      match search_ranked_tracks(&format!("{canonical}")) {
+        Ok(tracks) if !tracks.is_empty() => {
+          let t = &tracks[0];
+          play_uri(&t.uri)?;
+          Ok(format!("No This Is playlist found — playing {} — {}", t.name, t.artists))
+        }
+        _ => Err(SpotifyClientError::SearchFailed(format!(
+          "Couldn’t find a This Is playlist for “{canonical}”."
+        ))),
+      }
+    }
+  }
+}
+
+/// Start song radio. `query = None` uses the currently playing track.
+///
+/// Desktop `spotify:radio:track:…` usually switches context immediately (often to a
+/// related track). We try to preserve playback position when the seed track is still
+/// current after the switch; otherwise radio simply continues with similar music.
+pub fn play_radio(query: Option<&str>) -> Result<String, SpotifyClientError> {
+  ensure_app()?;
+  let (seed_uri, label, saved_pos) = match query {
+    Some(q) if !q.trim().is_empty() => {
+      let tracks = search_ranked_tracks(q.trim())?;
+      let t = tracks
+        .into_iter()
+        .next()
+        .ok_or_else(|| SpotifyClientError::SearchFailed(format!("No track matched “{q}”.")))?;
+      (t.uri, format!("{} — {}", t.name, t.artists), None)
+    }
+    _ => {
+      let uri = current_track_uri()?;
+      let label = current_track().unwrap_or_else(|_| "this song".into());
+      let pos = player_position_secs().ok();
+      (uri, label, pos)
+    }
+  };
+
+  let track_id = seed_uri
+    .strip_prefix("spotify:track:")
+    .ok_or_else(|| SpotifyClientError::ScriptFailed("Not a track URI".into()))?;
+  let radio_uri = format!("spotify:radio:track:{track_id}");
+  play_uri(&radio_uri)?;
+  thread::sleep(Duration::from_millis(600));
+
+  // Best-effort: if radio left us on the seed track, restore position.
+  if let (Some(pos), Ok(now_uri)) = (saved_pos, current_track_uri()) {
+    if now_uri == seed_uri && pos > 1.0 {
+      let _ = set_player_position_secs(pos);
+    }
+  }
+
+  Ok(format!("Playing radio for {label}"))
+}
+
+/// Continuous listen from a public playlist matching a mood/genre phrase.
+pub fn play_genre(genre: &str) -> Result<String, SpotifyClientError> {
+  ensure_app()?;
+  let genre = genre.trim();
+  if genre.is_empty() {
+    return Err(SpotifyClientError::SearchFailed("Empty genre".into()));
+  }
+  let pl = search_best_playlist(genre, None)?;
+  play_uri(&pl.uri)?;
+  thread::sleep(Duration::from_millis(400));
+  Ok(format!("Playing {} ({genre})", pl.name))
 }
 
 /// Open Spotify’s in-app search for `query`.
@@ -428,11 +551,23 @@ fn score_track(title_q: &str, artist_q: Option<&str>, name: &str, artists: &str)
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
   tracks: Option<TracksPage>,
+  playlists: Option<PlaylistsPage>,
+  artists: Option<ArtistsPage>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TracksPage {
   items: Vec<TrackItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistsPage {
+  items: Vec<Option<PlaylistItem>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistsPage {
+  items: Vec<ArtistSearchItem>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -445,6 +580,175 @@ struct TrackItem {
 #[derive(Debug, Deserialize)]
 struct ArtistItem {
   name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistSearchItem {
+  name: String,
+  #[allow(dead_code)]
+  uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistItem {
+  name: String,
+  uri: String,
+  owner: Option<PlaylistOwner>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaylistOwner {
+  id: Option<String>,
+  #[allow(dead_code)]
+  display_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PlaylistHit {
+  uri: String,
+  name: String,
+  score: i32,
+}
+
+fn resolve_artist_name(spoken: &str) -> Result<String, SpotifyClientError> {
+  let token = client_credentials_token()?;
+  let client = reqwest::blocking::Client::builder()
+    .timeout(Duration::from_secs(12))
+    .build()
+    .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  // Try as-spoken and space-collapsed (audio slave → audioslave).
+  let mut queries = vec![spoken.to_string()];
+  let collapsed = collapse_ws(spoken);
+  if collapsed != spoken {
+    queries.push(collapsed);
+  }
+  let mut best: Option<(i32, String)> = None;
+  for q in queries {
+    let url = format!(
+      "https://api.spotify.com/v1/search?type=artist&limit=5&q={}",
+      urlencode_component(&q)
+    );
+    let resp = client
+      .get(&url)
+      .bearer_auth(&token)
+      .send()
+      .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+    if !resp.status().is_success() {
+      continue;
+    }
+    let parsed: SearchResponse =
+      resp.json().map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+    for item in parsed.artists.map(|a| a.items).unwrap_or_default() {
+      let score = score_artist_name(spoken, &item.name);
+      if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+        best = Some((score, item.name));
+      }
+    }
+  }
+  best
+    .filter(|(s, _)| *s >= 40)
+    .map(|(_, name)| name)
+    .ok_or_else(|| SpotifyClientError::SearchFailed(format!("No artist matched “{spoken}”.")))
+}
+
+fn score_artist_name(spoken: &str, catalog: &str) -> i32 {
+  let s = spoken.to_ascii_lowercase();
+  let c = catalog.to_ascii_lowercase();
+  let s_c = collapse_ws(&s);
+  let c_c = collapse_ws(&c);
+  if s == c || s_c == c_c {
+    return 100;
+  }
+  if c.contains(&s) || s.contains(&c) || c_c.contains(&s_c) || s_c.contains(&c_c) {
+    return 70;
+  }
+  let mut score = 0;
+  for tok in s.split_whitespace() {
+    if tok.len() > 1 && c.contains(tok) {
+      score += 15;
+    }
+  }
+  score
+}
+
+fn search_best_playlist(
+  query: &str,
+  prefer_title: Option<&str>,
+) -> Result<PlaylistHit, SpotifyClientError> {
+  let token = client_credentials_token()?;
+  let client = reqwest::blocking::Client::builder()
+    .timeout(Duration::from_secs(12))
+    .build()
+    .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  let url = format!(
+    "https://api.spotify.com/v1/search?type=playlist&limit=15&q={}",
+    urlencode_component(query)
+  );
+  let resp = client
+    .get(&url)
+    .bearer_auth(&token)
+    .send()
+    .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  if !resp.status().is_success() {
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    return Err(SpotifyClientError::SearchFailed(format!(
+      "Playlist search failed ({status}): {}",
+      body.chars().take(120).collect::<String>()
+    )));
+  }
+  let parsed: SearchResponse =
+    resp.json().map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  let items: Vec<PlaylistItem> = parsed
+    .playlists
+    .map(|p| p.items.into_iter().flatten().collect())
+    .unwrap_or_default();
+  if items.is_empty() {
+    return Err(SpotifyClientError::SearchFailed(format!("No playlists matched “{query}”.")));
+  }
+
+  let prefer = prefer_title.map(|s| s.to_ascii_lowercase());
+  let mut best: Option<PlaylistHit> = None;
+  for item in items {
+    let name_l = item.name.to_ascii_lowercase();
+    let mut score = 0i32;
+    if let Some(ref pref) = prefer {
+      if name_l == *pref {
+        score += 120;
+      } else if name_l.starts_with(pref) || name_l.contains(pref) {
+        score += 60;
+      }
+    } else {
+      // Free genre search: prefer shorter titles that contain the query tokens.
+      let q_l = query.to_ascii_lowercase();
+      if name_l == q_l {
+        score += 80;
+      }
+      for tok in q_l.split_whitespace() {
+        if tok.len() > 2 && name_l.contains(tok) {
+          score += 15;
+        }
+      }
+      // Mild preference for shorter playlist names (less spammy).
+      score += (40 - name_l.len().min(40) as i32).max(0);
+    }
+    let owner_id = item.owner.as_ref().and_then(|o| o.id.as_deref()).unwrap_or("");
+    if owner_id == "spotify" {
+      score += 50;
+    }
+    let hit = PlaylistHit { uri: item.uri, name: item.name, score };
+    if best.as_ref().map(|b| hit.score > b.score).unwrap_or(true) {
+      best = Some(hit);
+    }
+  }
+  let best =
+    best.ok_or_else(|| SpotifyClientError::SearchFailed("No playlist candidates".into()))?;
+  if best.score < 20 {
+    return Err(SpotifyClientError::SearchFailed(format!(
+      "No strong playlist match for “{query}”."
+    )));
+  }
+  Ok(best)
 }
 
 struct CachedToken {

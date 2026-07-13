@@ -47,25 +47,46 @@ pub const AZAD_CONNECTOR_ID: &str = "azad";
 /// Built-in Spotify connector id (heuristic → Spotify.app / Shazam).
 pub const SPOTIFY_CONNECTOR_ID: &str = "spotify";
 
-/// Common ASR mis-hearings of "azad" after "hey" (observed: "Hey azod, …").
+/// Common ASR mis-hearings of "azad" after "hey"/"he" (observed: "Hey azod, …").
+/// "he …" is included because the model often drops the trailing /y/ of "hey".
 const AZAD_TRIGGER_ALIASES: &[&str] = &[
+  "he azad",
   "hey azod",
+  "he azod",
   "hey asad",
+  "he asad",
   "hey assad",
+  "he assad",
   "hey asod",
+  "he asod",
   "hey az id",
+  "he az id",
   "hey as odd",
+  "he as odd",
   "hey a zod",
+  "he a zod",
   "hey a zad",
+  "he a zad",
   "hey a sad",
+  "he a sad",
   "hey az at",
+  "he az at",
   "hey as at",
+  "he as at",
   "hey is odd",
+  "he is odd",
 ];
 
-/// Common ASR mis-hearings of "spotify" after "hey".
-const SPOTIFY_TRIGGER_ALIASES: &[&str] =
-  &["hey spotsify", "hey spot ify", "hey spot a fy", "hey spotify"];
+/// Common ASR mis-hearings of "spotify" after "hey"/"he".
+const SPOTIFY_TRIGGER_ALIASES: &[&str] = &[
+  "he spotify",
+  "hey spotsify",
+  "he spotsify",
+  "hey spot ify",
+  "he spot ify",
+  "hey spot a fy",
+  "he spot a fy",
+];
 
 /// The built-in connector registry. Order is stable (settings UI indexes into it).
 /// Claude and Azad default on; Spotify defaults off until the user enables it
@@ -76,7 +97,7 @@ pub fn builtin_connectors() -> Vec<Connector> {
       id: CLAUDE_CONNECTOR_ID,
       display_name: "Claude",
       trigger: "hey claude",
-      trigger_aliases: &[],
+      trigger_aliases: &["he claude"],
       tag_label: "Claude",
       tag_icon: "claude.svg",
       enabled: true,
@@ -354,5 +375,31 @@ mod tests {
     assert_eq!(m.id, SPOTIFY_CONNECTOR_ID);
     assert_eq!(m.tag_label, "Spotify");
     assert_eq!(m.clean_query, "pause");
+  }
+
+  #[test]
+  fn he_alias_matches_all_connectors() {
+    let mut cs = connectors();
+    for c in &mut cs {
+      c.enabled = true;
+    }
+    let claude = detect("he claude summarize this", &cs).expect("he claude");
+    assert_eq!(claude.id, CLAUDE_CONNECTOR_ID);
+    assert_eq!(claude.matched_trigger, "he claude");
+    assert_eq!(claude.clean_query, "summarize this");
+
+    let azad = detect("he azad disable numbers", &cs).expect("he azad");
+    assert_eq!(azad.id, AZAD_CONNECTOR_ID);
+    assert_eq!(azad.matched_trigger, "he azad");
+    assert_eq!(azad.clean_query, "disable numbers");
+
+    let azod = detect("he azod turn off emoji", &cs).expect("he azod");
+    assert_eq!(azod.id, AZAD_CONNECTOR_ID);
+    assert_eq!(azod.matched_trigger, "he azod");
+
+    let spotify = detect("he spotify pause", &cs).expect("he spotify");
+    assert_eq!(spotify.id, SPOTIFY_CONNECTOR_ID);
+    assert_eq!(spotify.matched_trigger, "he spotify");
+    assert_eq!(spotify.clean_query, "pause");
   }
 }

@@ -3258,6 +3258,15 @@ impl AppController {
       SpotifyIntent::PlayQuery { query } => {
         spotify_client::play_query(query).map_err(|e| e.to_string())
       }
+      SpotifyIntent::PlayArtist { artist } => {
+        spotify_client::play_artist_this_is(artist).map_err(|e| e.to_string())
+      }
+      SpotifyIntent::PlayRadio { query } => {
+        spotify_client::play_radio(query.as_deref()).map_err(|e| e.to_string())
+      }
+      SpotifyIntent::PlayGenre { genre } => {
+        spotify_client::play_genre(genre).map_err(|e| e.to_string())
+      }
       SpotifyIntent::Search { query } => spotify_client::open_search(query)
         .map(|_| format!("Opened Spotify search for “{query}”"))
         .map_err(|e| e.to_string()),
