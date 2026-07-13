@@ -120,7 +120,8 @@ MIT. See [LICENSE](LICENSE).
 ### 0.5.1 Unreleased
 
 - Added spoken issue numbers: "number three" becomes "#3" (when number conversion is on).
-- Added a Hey Azad connector (off by default): say “hey azad …” to change text-replacement settings by voice, with Apple Intelligence setup guidance when the on-device model isn’t ready.
+- Added a Hey Azad connector: say “hey azad …” to change text-replacement settings by voice, with Apple Intelligence setup guidance when the on-device model isn’t ready.
+- Added a Hey Spotify connector: say “hey spotify …” to control Spotify (pause/next/play search). Enable only when the Spotify app is installed. Shazam “what song is this” is next.
 
 ### 0.5.0
 

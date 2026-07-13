@@ -172,6 +172,16 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
                 availabilityMessage: "On-device model not linked yet — voice settings still work for common phrases.",
                 showOpenSettings: false
             ),
+            ConnectorRow(
+                id: "spotify",
+                displayName: "Spotify",
+                trigger: "hey spotify",
+                enabled: false,
+                canEnable: true,
+                availabilityState: "available",
+                availabilityMessage: "Say “hey spotify …” to control playback.",
+                showOpenSettings: false
+            ),
         ],
         buildInfo: "build preview · 2026-07-02 19:41"
     )

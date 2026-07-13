@@ -44,6 +44,8 @@ pub struct ConnectorMatch {
 pub const CLAUDE_CONNECTOR_ID: &str = "claude";
 /// Built-in Azad connector id (on-device Apple Intelligence tools).
 pub const AZAD_CONNECTOR_ID: &str = "azad";
+/// Built-in Spotify connector id (heuristic → Spotify.app / Shazam).
+pub const SPOTIFY_CONNECTOR_ID: &str = "spotify";
 
 /// Common ASR mis-hearings of "azad" after "hey" (observed: "Hey azod, …").
 const AZAD_TRIGGER_ALIASES: &[&str] = &[
@@ -61,9 +63,17 @@ const AZAD_TRIGGER_ALIASES: &[&str] = &[
   "hey is odd",
 ];
 
+/// Common ASR mis-hearings of "spotify" after "hey".
+const SPOTIFY_TRIGGER_ALIASES: &[&str] = &[
+  "hey spotsify",
+  "hey spot ify",
+  "hey spot a fy",
+  "hey spotify",
+];
+
 /// The built-in connector registry. Order is stable (settings UI indexes into it).
-/// Both Claude and Azad default on so the overlay chip + strip behave the same
-/// out of the box; users can still disable either in Settings → Connectors.
+/// Claude and Azad default on; Spotify defaults off until the user enables it
+/// (and Spotify.app is installed — enforced in settings).
 pub fn builtin_connectors() -> Vec<Connector> {
   vec![
     Connector {
@@ -84,6 +94,15 @@ pub fn builtin_connectors() -> Vec<Connector> {
       // Text-only chip until a dedicated template asset is bundled.
       tag_icon: "",
       enabled: true,
+    },
+    Connector {
+      id: SPOTIFY_CONNECTOR_ID,
+      display_name: "Spotify",
+      trigger: "hey spotify",
+      trigger_aliases: SPOTIFY_TRIGGER_ALIASES,
+      tag_label: "Spotify",
+      tag_icon: "",
+      enabled: false,
     },
   ]
 }
@@ -318,5 +337,27 @@ mod tests {
     assert_eq!(claude.id, CLAUDE_CONNECTOR_ID);
     let azad = detect("hey azad turn off emoji", &cs).expect("azad");
     assert_eq!(azad.id, AZAD_CONNECTOR_ID);
+  }
+
+  #[test]
+  fn spotify_defaults_disabled() {
+    let cs = connectors();
+    let sp = cs.iter().find(|c| c.id == SPOTIFY_CONNECTOR_ID).expect("spotify");
+    assert!(!sp.enabled);
+    assert_eq!(detect("hey spotify pause", &cs), None);
+  }
+
+  #[test]
+  fn spotify_matches_when_enabled() {
+    let mut cs = connectors();
+    for c in &mut cs {
+      if c.id == SPOTIFY_CONNECTOR_ID {
+        c.enabled = true;
+      }
+    }
+    let m = detect("Hey Spotify, pause", &cs).expect("spotify");
+    assert_eq!(m.id, SPOTIFY_CONNECTOR_ID);
+    assert_eq!(m.tag_label, "Spotify");
+    assert_eq!(m.clean_query, "pause");
   }
 }

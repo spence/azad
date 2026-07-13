@@ -9,6 +9,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private weak var activationLevelValueLabel: NSTextField?
     /// Toggles the “What can I say?” list under the Azad connector when Apple Intelligence isn’t ready.
     private var showAzadVoiceCommands = false
+    /// Toggles the Spotify command list inside the Spotify connector card.
+    private var showSpotifyVoiceCommands = false
 
     init() {
         let window = NSWindow(
@@ -422,6 +424,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             let card: NSView
             if connector.id == "azad" {
                 card = azadConnectorCard(connector, index: index)
+            } else if connector.id == "spotify" {
+                card = spotifyConnectorCard(connector, index: index)
             } else {
                 card = compactConnectorRow(connector, index: index)
             }
@@ -648,9 +652,151 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         view.setContentCompressionResistancePriority(.required, for: .vertical)
     }
 
+    /// Spotify connector card — gated on Spotify.app; in-card command list.
+    private func spotifyConnectorCard(_ connector: ConnectorRow, index: Int) -> NSView {
+        let installed = connector.availabilityState == "available"
+        let expand = showSpotifyVoiceCommands
+
+        let card = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
+        card.layer?.cornerRadius = 8
+        card.setContentHuggingPriority(.required, for: .vertical)
+        card.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let top = NSStackView()
+        top.orientation = .horizontal
+        top.alignment = .centerY
+        top.distribution = .fill
+        top.spacing = 10
+        top.translatesAutoresizingMaskIntoConstraints = false
+
+        let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
+        checkbox.state = connector.enabled ? .on : .off
+        checkbox.isEnabled = connector.canEnable
+        checkbox.tag = index
+        pinIntrinsicVertical(checkbox)
+
+        let logo = connectorLogo(for: connector)
+        pinIntrinsicVertical(logo)
+        let name = Design.label(connector.displayName, size: 13, weight: .medium)
+        pinIntrinsicVertical(name)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentHuggingPriority(.required, for: .vertical)
+        spacer.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        let pill = triggerPill(connector.trigger)
+        pinIntrinsicVertical(pill)
+        for v in [checkbox, logo, name, spacer, pill] {
+            top.addArrangedSubview(v)
+        }
+
+        let statusLabel = Design.label(connector.availabilityMessage, size: 11, color: Design.secondaryText)
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.maximumNumberOfLines = 1
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.spacing = 8
+        actions.alignment = .centerY
+        actions.translatesAutoresizingMaskIntoConstraints = false
+
+        if !installed {
+            let getApp = NSButton(title: "Get Spotify", target: self, action: #selector(openSpotifyDownload(_:)))
+            getApp.bezelStyle = .rounded
+            getApp.controlSize = .small
+            actions.addArrangedSubview(getApp)
+        }
+        let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckSpotify(_:)))
+        recheck.bezelStyle = .rounded
+        recheck.controlSize = .small
+        actions.addArrangedSubview(recheck)
+
+        let actionSpacer = NSView()
+        actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        actions.addArrangedSubview(actionSpacer)
+
+        if installed {
+            let helpTitle = expand ? "Hide commands" : "What can I say?"
+            let help = NSButton(title: helpTitle, target: self, action: #selector(toggleSpotifyVoiceCommands(_:)))
+            help.bezelStyle = .rounded
+            help.controlSize = .small
+            actions.addArrangedSubview(help)
+        }
+
+        card.addSubview(top)
+        card.addSubview(statusLabel)
+        card.addSubview(actions)
+
+        var constraints: [NSLayoutConstraint] = [
+            top.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            top.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            top.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            top.heightAnchor.constraint(equalToConstant: 28),
+            statusLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            statusLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            statusLabel.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 6),
+            actions.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            actions.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            actions.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            actions.heightAnchor.constraint(equalToConstant: 22),
+        ]
+
+        if expand && installed {
+            let divider = ThemedLayerView(fill: Design.border)
+            divider.translatesAutoresizingMaskIntoConstraints = false
+            let title = Design.label("Voice commands", size: 12, weight: .semibold)
+            let body = Design.wrappingLabel(
+                """
+                After “hey spotify …”:
+                · pause / play / next / previous
+                · play <song or artist>
+                · what song is this / identify (Shazam — coming soon)
+                · identify and play
+                · volume up / volume down
+                · current / what’s playing
+                · like
+                """,
+                size: 11,
+                color: Design.secondaryText
+            )
+            body.maximumNumberOfLines = 0
+            card.addSubview(divider)
+            card.addSubview(title)
+            card.addSubview(body)
+            constraints.append(contentsOf: [
+                divider.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                divider.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                divider.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 10),
+                divider.heightAnchor.constraint(equalToConstant: 1),
+                title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                title.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                title.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 10),
+                body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
+                body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            ])
+        } else {
+            constraints.append(actions.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10))
+        }
+        NSLayoutConstraint.activate(constraints)
+        return card
+    }
+
     private func connectorLogo(for connector: ConnectorRow) -> NSView {
-        let isAzad = connector.id == "azad"
-        let fill = isAzad ? Design.accent : Design.claude
+        let fill: NSColor
+        let letter: String?
+        switch connector.id {
+        case "azad":
+            fill = Design.accent
+            letter = "A"
+        case "spotify":
+            fill = NSColor(calibratedRed: 0.114, green: 0.725, blue: 0.329, alpha: 1.0)
+            letter = "♪"
+        default:
+            fill = Design.claude
+            letter = nil
+        }
         let container = ThemedLayerView(fill: fill, radius: 7)
         container.layer?.cornerRadius = 7
         container.widthAnchor.constraint(equalToConstant: 28).isActive = true
@@ -660,8 +806,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         container.setContentCompressionResistancePriority(.required, for: .vertical)
         container.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        if isAzad {
-            let label = Design.label("A", size: 13, weight: .bold, color: .white)
+        if let letter {
+            let label = Design.label(letter, size: 13, weight: .bold, color: .white)
             container.addSubview(label)
             NSLayoutConstraint.activate([
                 label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
@@ -842,6 +988,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func toggleAzadVoiceCommands(_ sender: NSButton) {
         showAzadVoiceCommands.toggle()
         render()
+    }
+
+    @objc private func toggleSpotifyVoiceCommands(_ sender: NSButton) {
+        showSpotifyVoiceCommands.toggle()
+        render()
+    }
+
+    @objc private func openSpotifyDownload(_ sender: NSButton) {
+        if let url = URL(string: "https://www.spotify.com/download/") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func recheckSpotify(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "refresh"))
     }
 
     @objc private func addWord(_ sender: AnyObject) {

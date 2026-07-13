@@ -12,6 +12,8 @@ use crate::apple_lm::{
   self, AvailabilityReport, AvailabilityState, AzadIntent, RemovedWordAction, TextSettingId,
   TextSettingsSnapshot,
 };
+use crate::spotify_client;
+use crate::spotify_cmd::{self, SpotifyIntent};
 use crate::config::AzadConfig;
 use crate::connectors;
 use crate::device::{DeviceController, DeviceEvent};
@@ -419,17 +421,32 @@ struct AppController {
   gateway_protocol_mismatch: Option<String>,
   /// One-shot Hey Azad turn (overlay + apply). Separate from `gateway_conv`.
   azad_turn: Option<AzadTurn>,
+  /// One-shot Hey Spotify turn (overlay + control). Separate from azad/gateway.
+  spotify_turn: Option<SpotifyTurn>,
   /// Cached Apple Intelligence / helper availability for the Connectors pane.
   apple_lm_availability: AvailabilityReport,
   /// Last time we probed availability (throttle background rechecks).
   apple_lm_last_probe: Option<Instant>,
   /// Clean query waiting for Apple Intelligence to become available.
   azad_pending_query: Option<String>,
+  /// Whether Spotify.app is installed (refreshed for settings gate).
+  spotify_app_installed: bool,
 }
 
 /// One-shot Hey Azad conversation card (not sticky multi-turn).
 #[derive(Debug, Clone)]
 struct AzadTurn {
+  tag_label: &'static str,
+  tag_icon: &'static str,
+  query: String,
+  status: ConvStatus,
+  reply: String,
+  error_msg: String,
+}
+
+/// One-shot Hey Spotify conversation card.
+#[derive(Debug, Clone)]
+struct SpotifyTurn {
   tag_label: &'static str,
   tag_icon: &'static str,
   query: String,
@@ -725,12 +742,14 @@ impl AppController {
       gateway_conv: None,
       gateway_protocol_mismatch: None,
       azad_turn: None,
+      spotify_turn: None,
       apple_lm_availability: AvailabilityReport {
         state: AvailabilityState::Unavailable,
         detail: None,
       },
       apple_lm_last_probe: None,
       azad_pending_query: None,
+      spotify_app_installed: spotify_client::spotify_app_installed(),
     }
   }
 
@@ -1605,6 +1624,13 @@ impl AppController {
       self.exit_history_mode();
       return;
     }
+    // Escape ends a Hey Spotify one-shot card.
+    if self.spotify_turn.take().is_some() {
+      self.cancelled = true;
+      self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
+      self.hide_overlay();
+      return;
+    }
     // Escape ends a Hey Azad one-shot card before gateway teardown.
     if self.azad_turn.take().is_some() {
       self.azad_pending_query = None;
@@ -2174,7 +2200,9 @@ impl AppController {
           self.turn_started_at.remove(&turn_id);
           self.raw_handled_turn_id = None;
           if !cleaned.is_empty() && !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-            if self.azad_should_handle_turn() {
+            if self.spotify_should_handle_turn() {
+              self.submit_to_spotify(turn_id, &cleaned);
+            } else if self.azad_should_handle_turn() {
               self.submit_to_azad(turn_id, &cleaned);
             } else if self.gateway_should_handle_turn() {
               self.submit_to_gateway(turn_id, &cleaned);
@@ -2185,9 +2213,13 @@ impl AppController {
               eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
             }
           }
-          // A live gateway/Azad conversation owns the card; only fall back to listening
-          // when no conversation is open.
-          if self.overlay_visible && self.gateway_conv.is_none() && self.azad_turn.is_none() {
+          // A live gateway/Azad/Spotify conversation owns the card; only fall back to
+          // listening when no conversation is open.
+          if self.overlay_visible
+            && self.gateway_conv.is_none()
+            && self.azad_turn.is_none()
+            && self.spotify_turn.is_none()
+          {
             self.render_listening_overlay();
           }
           return;
@@ -2246,7 +2278,9 @@ impl AppController {
         self.raw_handled_turn_id = None;
         self.latest_final = Some(cleaned.clone());
         if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-          if self.azad_should_handle_turn() {
+          if self.spotify_should_handle_turn() {
+            self.submit_to_spotify(turn_id, &cleaned);
+          } else if self.azad_should_handle_turn() {
             self.submit_to_azad(turn_id, &cleaned);
           } else if self.gateway_should_handle_turn() {
             // Route to the gateway instead of pasting; the overlay shows the reply.
@@ -2289,9 +2323,9 @@ impl AppController {
           );
         }
         self.engine_state = EngineState::Idle;
-        // A live gateway/Azad conversation owns the overlay across session recycles — never
-        // hide it here. Torn down only by Escape/close/fatal error.
-        if self.gateway_conv.is_none() && self.azad_turn.is_none() {
+        // A live gateway/Azad/Spotify conversation owns the overlay across session recycles.
+        if self.gateway_conv.is_none() && self.azad_turn.is_none() && self.spotify_turn.is_none()
+        {
           if !self.cancelled
             && self.latest_seen_turn_id > 0
             && self.last_pasted_turn_id != Some(self.latest_seen_turn_id)
@@ -2710,6 +2744,11 @@ impl AppController {
       self.render_azad_overlay();
       return;
     }
+    if self.spotify_turn.is_some() {
+      platform::hide_overlay_top();
+      self.render_spotify_overlay();
+      return;
+    }
 
     if self.split_overlay_visible() {
       let top_text = self.stream_display_text(&self.finalizing_draft);
@@ -2761,6 +2800,10 @@ impl AppController {
       self.render_azad_overlay();
       return;
     }
+    if self.spotify_turn.is_some() {
+      self.render_spotify_overlay();
+      return;
+    }
     let held_active = self.held_top_overlay_active();
     let live_has_text = !self.latest_draft.trim().is_empty();
     if held_active && live_has_text {
@@ -2785,6 +2828,11 @@ impl AppController {
       self.active_connector_tag(),
       self.active_connector_icon(),
     );
+  }
+
+  /// True when this finalized turn must go to Hey Spotify (no paste, no gateway).
+  fn spotify_should_handle_turn(&self) -> bool {
+    self.active_connector.as_ref().map(|a| a.id) == Some(connectors::SPOTIFY_CONNECTOR_ID)
   }
 
   /// True when this finalized turn must go to Hey Azad (no paste, no gateway).
@@ -3079,6 +3127,157 @@ impl AppController {
       self.overlay_visible = true;
     }
     self.render_azad_overlay();
+  }
+
+  /// Submit a finalized Hey Spotify turn: heuristic → Spotify.app control → overlay.
+  /// Never pastes and never opens the Claude gateway or Azad tools.
+  fn submit_to_spotify(&mut self, turn_id: u64, cleaned: &str) {
+    let query = self.strip_active_trigger(cleaned).trim().to_string();
+    let (tag_label, tag_icon) = self
+      .active_connector
+      .as_ref()
+      .map(|a| (a.tag_label, a.tag_icon))
+      .unwrap_or(("Spotify", ""));
+
+    self.spotify_app_installed = spotify_client::spotify_app_installed();
+    if !self.spotify_app_installed {
+      self.spotify_turn = Some(SpotifyTurn {
+        tag_label,
+        tag_icon,
+        query: if query.is_empty() {
+          "hey spotify".into()
+        } else {
+          query.clone()
+        },
+        status: ConvStatus::Error,
+        reply: String::new(),
+        error_msg: "Spotify is not installed. Install Spotify, then enable this connector in Settings."
+          .into(),
+      });
+      self.last_pasted_turn_id = Some(turn_id);
+      self.latest_final = None;
+      self.show_spotify_overlay();
+      return;
+    }
+
+    self.spotify_turn = Some(SpotifyTurn {
+      tag_label,
+      tag_icon,
+      query: if query.is_empty() {
+        "hey spotify".into()
+      } else {
+        query.clone()
+      },
+      status: ConvStatus::Thinking,
+      reply: String::new(),
+      error_msg: String::new(),
+    });
+    self.last_pasted_turn_id = Some(turn_id);
+    self.latest_final = None;
+    self.show_spotify_overlay();
+
+    let intent = spotify_cmd::interpret_spotify_query(&query);
+    eprintln!(
+      "AZAD_SPOTIFY event=interpret turn_id={turn_id} query={:?} intent={:?}",
+      query, intent
+    );
+    self.apply_spotify_intent(intent);
+    self.show_spotify_overlay();
+  }
+
+  fn apply_spotify_intent(&mut self, intent: SpotifyIntent) {
+    let result: Result<String, String> = match &intent {
+      SpotifyIntent::Play => spotify_client::play().map(|_| intent.confirmation_label()).map_err(|e| e.to_string()),
+      SpotifyIntent::Pause => spotify_client::pause().map(|_| intent.confirmation_label()).map_err(|e| e.to_string()),
+      SpotifyIntent::PlayPause => {
+        spotify_client::play_pause().map(|_| intent.confirmation_label()).map_err(|e| e.to_string())
+      }
+      SpotifyIntent::Next => {
+        spotify_client::next_track().map(|_| intent.confirmation_label()).map_err(|e| e.to_string())
+      }
+      SpotifyIntent::Previous => {
+        spotify_client::previous_track()
+          .map(|_| intent.confirmation_label())
+          .map_err(|e| e.to_string())
+      }
+      SpotifyIntent::Like => spotify_client::like_current().map(|_| intent.confirmation_label()).map_err(|e| e.to_string()),
+      SpotifyIntent::Current => spotify_client::current_track().map_err(|e| e.to_string()),
+      SpotifyIntent::PlayQuery { query } => {
+        spotify_client::play_query(query).map_err(|e| e.to_string())
+      }
+      SpotifyIntent::Search { query } => {
+        spotify_client::open_search(query)
+          .map(|_| format!("Opened Spotify search for “{query}”"))
+          .map_err(|e| e.to_string())
+      }
+      SpotifyIntent::VolumeUp => {
+        spotify_client::volume_delta(10).map(|_| intent.confirmation_label()).map_err(|e| e.to_string())
+      }
+      SpotifyIntent::VolumeDown => {
+        spotify_client::volume_delta(-10)
+          .map(|_| intent.confirmation_label())
+          .map_err(|e| e.to_string())
+      }
+      SpotifyIntent::Identify { play } => {
+        // Phase 2: ShazamKit helper. v1: clear message.
+        let _ = play;
+        Err(
+          "Song identify (Shazam) is coming next — try “play <song name>” or pause/next for now."
+            .into(),
+        )
+      }
+      SpotifyIntent::Help => Ok(intent.confirmation_label()),
+      SpotifyIntent::Unsupported { message } => Err(message.clone()),
+    };
+
+    match result {
+      Ok(reply) => {
+        eprintln!("AZAD_SPOTIFY event=ok reply={reply:?}");
+        if let Some(turn) = self.spotify_turn.as_mut() {
+          turn.status = ConvStatus::Done;
+          turn.reply = reply;
+          turn.error_msg.clear();
+        }
+      }
+      Err(err) => {
+        eprintln!("AZAD_SPOTIFY event=error err={err:?}");
+        if let Some(turn) = self.spotify_turn.as_mut() {
+          turn.status = ConvStatus::Error;
+          turn.error_msg = err;
+          turn.reply.clear();
+        }
+      }
+    }
+  }
+
+  fn show_spotify_overlay(&mut self) {
+    if self.spotify_turn.is_none() {
+      return;
+    }
+    if !self.overlay_visible {
+      platform::show_overlay();
+      self.overlay_visible = true;
+    }
+    self.render_spotify_overlay();
+  }
+
+  fn render_spotify_overlay(&self) {
+    let Some(turn) = self.spotify_turn.as_ref() else {
+      return;
+    };
+    let busy_phase = matches!(turn.status, ConvStatus::Thinking | ConvStatus::Streaming)
+      .then_some(self.busy_border_phase);
+    let query = self.stream_display_text_without_trigger_strip(&turn.query);
+    platform::set_overlay_conversation_content(
+      turn.tag_label,
+      turn.tag_icon,
+      &query,
+      &turn.reply,
+      turn.status,
+      &turn.error_msg,
+      &self.activity_history,
+      busy_phase,
+    );
   }
 
   fn render_azad_overlay(&self) {
@@ -3496,8 +3695,8 @@ impl AppController {
 
   #[track_caller]
   fn hide_overlay(&mut self) {
-    // A live gateway/Azad conversation owns the overlay until Esc tears it down first.
-    if self.gateway_conv.is_some() || self.azad_turn.is_some() {
+    // A live gateway/Azad/Spotify conversation owns the overlay until Esc tears it down.
+    if self.gateway_conv.is_some() || self.azad_turn.is_some() || self.spotify_turn.is_some() {
       return;
     }
     self.clear_overlay_pending();
@@ -3624,6 +3823,11 @@ impl AppController {
     self.latest_final = Some(raw_text.clone());
 
     // Opt+Enter while a connector turn is live submits instead of raw-pasting.
+    if self.spotify_should_handle_turn() {
+      self.submit_to_spotify(turn_id, &raw_text);
+      self.maybe_start_deferred_vad_turn();
+      return true;
+    }
     if self.azad_should_handle_turn() {
       self.submit_to_azad(turn_id, &raw_text);
       self.maybe_start_deferred_vad_turn();

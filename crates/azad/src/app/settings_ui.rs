@@ -321,6 +321,14 @@ impl AppController {
         return;
       }
     }
+    // Spotify: hard gate on desktop app install.
+    if enabled && id == connectors::SPOTIFY_CONNECTOR_ID {
+      self.spotify_app_installed = crate::spotify_client::spotify_app_installed();
+      if !self.spotify_app_installed {
+        platform::update_settings_window(self.settings_view_model());
+        return;
+      }
+    }
     let Some(connector) = self.connectors.get_mut(index) else {
       return;
     };
@@ -349,6 +357,7 @@ impl AppController {
 
   pub(super) fn handle_settings_refresh(&mut self) {
     self.refresh_apple_lm_availability(true);
+    self.spotify_app_installed = crate::spotify_client::spotify_app_installed();
     platform::update_settings_window(self.settings_view_model());
   }
 
@@ -492,6 +501,27 @@ impl AppController {
             availability_state: state.as_str().to_string(),
             availability_message: state.message().to_string(),
             show_open_settings: state.show_open_settings(),
+          }
+        } else if c.id == connectors::SPOTIFY_CONNECTOR_ID {
+          let installed = self.spotify_app_installed;
+          ConnectorRowVM {
+            id: c.id.to_string(),
+            display_name: c.display_name.to_string(),
+            trigger: c.trigger.to_string(),
+            enabled: c.enabled && installed,
+            can_enable: installed,
+            availability_state: if installed {
+              "available".to_string()
+            } else {
+              "notInstalled".to_string()
+            },
+            availability_message: if installed {
+              "Say “hey spotify …” to control playback. Shazam identify coming next."
+                .to_string()
+            } else {
+              "Install the Spotify app to enable this connector.".to_string()
+            },
+            show_open_settings: !installed,
           }
         } else {
           ConnectorRowVM {

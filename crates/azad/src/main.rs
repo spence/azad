@@ -19,6 +19,8 @@ mod preferred_store;
 mod settings;
 mod single_instance;
 mod speech;
+mod spotify_client;
+mod spotify_cmd;
 mod transcript_history;
 mod ui_bridge;
 mod ui_model;

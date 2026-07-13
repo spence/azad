@@ -134,11 +134,17 @@ const AZAD_BRAND_R: f64 = 0.290;
 const AZAD_BRAND_G: f64 = 0.478;
 const AZAD_BRAND_B: f64 = 0.922;
 
+// Spotify brand green (#1DB954).
+const SPOTIFY_BRAND_R: f64 = 0.114;
+const SPOTIFY_BRAND_G: f64 = 0.725;
+const SPOTIFY_BRAND_B: f64 = 0.329;
+
 fn connector_brand_rgb(connector_tag: &str) -> (f64, f64, f64) {
-  if connector_tag.eq_ignore_ascii_case("azad")
-    || connector_tag.to_ascii_lowercase().starts_with("azad")
-  {
+  let lower = connector_tag.to_ascii_lowercase();
+  if lower.starts_with("azad") {
     (AZAD_BRAND_R, AZAD_BRAND_G, AZAD_BRAND_B)
+  } else if lower.starts_with("spotify") {
+    (SPOTIFY_BRAND_R, SPOTIFY_BRAND_G, SPOTIFY_BRAND_B)
   } else {
     (CLAUDE_BRAND_R, CLAUDE_BRAND_G, CLAUDE_BRAND_B)
   }
