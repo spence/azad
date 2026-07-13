@@ -516,8 +516,7 @@ impl AppController {
               "notInstalled".to_string()
             },
             availability_message: if installed {
-              "Say “hey spotify …” to control playback. Shazam identify coming next."
-                .to_string()
+              "Say “hey spotify …” to control playback. Shazam identify coming next.".to_string()
             } else {
               "Install the Spotify app to enable this connector.".to_string()
             },

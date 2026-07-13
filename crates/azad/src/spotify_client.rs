@@ -1,10 +1,18 @@
 //! Spotify control for the Hey Spotify connector.
 //!
 //! Transport and play-by-URI use AppleScript against the desktop Spotify app
-//! (`com.spotify.client`). Catalog search uses the `spotify:search:` URL scheme
-//! (opens Spotify’s search UI) when we cannot resolve a track URI without OAuth.
+//! (`com.spotify.client`). Catalog search prefers the Spotify Web API (client
+//! credentials) when credentials are available via env or
+//! `~/Library/Application Support/Azad/spotify_api.json`. Without credentials,
+//! falls back to opening in-app search and committing the top hit with a
+//! synthetic Return key (same Accessibility path as paste).
 
 use std::process::Command;
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use serde::Deserialize;
 
 /// Bundle id of the macOS Spotify desktop app.
 pub const SPOTIFY_BUNDLE_ID: &str = "com.spotify.client";
@@ -14,6 +22,7 @@ pub enum SpotifyClientError {
   AppNotInstalled,
   ScriptFailed(String),
   NoTrack,
+  SearchFailed(String),
   Unsupported(String),
 }
 
@@ -23,27 +32,23 @@ impl std::fmt::Display for SpotifyClientError {
       Self::AppNotInstalled => {
         write!(f, "Spotify is not installed. Install it from spotify.com, then try again.")
       }
-      Self::ScriptFailed(msg) => write!(f, "{msg}"),
+      Self::ScriptFailed(msg) | Self::SearchFailed(msg) | Self::Unsupported(msg) => {
+        write!(f, "{msg}")
+      }
       Self::NoTrack => write!(f, "Nothing is playing right now."),
-      Self::Unsupported(msg) => write!(f, "{msg}"),
     }
   }
 }
 
 /// True if Spotify.app is installed (Launch Services / Applications).
 pub fn spotify_app_installed() -> bool {
-  // NSWorkspace path via `mdfind` / open -Ra is heavy; use known install locations + mdfind.
   let candidates = [
     "/Applications/Spotify.app",
-    &format!(
-      "{}/Applications/Spotify.app",
-      std::env::var("HOME").unwrap_or_default()
-    ),
+    &format!("{}/Applications/Spotify.app", std::env::var("HOME").unwrap_or_default()),
   ];
   if candidates.iter().any(|p| std::path::Path::new(p).is_dir()) {
     return true;
   }
-  // Launch Services query
   let output = Command::new("/usr/bin/mdfind")
     .arg(format!("kMDItemCFBundleIdentifier == '{SPOTIFY_BUNDLE_ID}'"))
     .output();
@@ -74,18 +79,7 @@ fn run_osascript(source: &str) -> Result<String, SpotifyClientError> {
 }
 
 fn ensure_app() -> Result<(), SpotifyClientError> {
-  if spotify_app_installed() {
-    Ok(())
-  } else {
-    Err(SpotifyClientError::AppNotInstalled)
-  }
-}
-
-/// Activate Spotify so Connect / local playback is available.
-#[allow(dead_code)] // used when Shazam/play-uri paths expand
-pub fn activate_spotify() -> Result<(), SpotifyClientError> {
-  ensure_app()?;
-  run_osascript(r#"tell application "Spotify" to activate"#).map(|_| ())
+  if spotify_app_installed() { Ok(()) } else { Err(SpotifyClientError::AppNotInstalled) }
 }
 
 pub fn play() -> Result<(), SpotifyClientError> {
@@ -114,8 +108,6 @@ pub fn previous_track() -> Result<(), SpotifyClientError> {
 }
 
 pub fn like_current() -> Result<(), SpotifyClientError> {
-  // Desktop AppleScript has no first-class "like"; open the track in Spotify as fallback.
-  // Prefer telling Spotify to star via menu is fragile — report current and open like in app.
   ensure_app()?;
   Err(SpotifyClientError::Unsupported(
     "Liking tracks from voice isn’t wired yet — use the heart in Spotify for now.".into(),
@@ -129,11 +121,7 @@ pub fn current_track() -> Result<String, SpotifyClientError> {
   if name.is_empty() {
     return Err(SpotifyClientError::NoTrack);
   }
-  if artist.is_empty() {
-    Ok(name)
-  } else {
-    Ok(format!("{name} — {artist}"))
-  }
+  if artist.is_empty() { Ok(name) } else { Ok(format!("{name} — {artist}")) }
 }
 
 pub fn volume_delta(delta: i32) -> Result<(), SpotifyClientError> {
@@ -150,29 +138,26 @@ end tell"#
 }
 
 /// Play a Spotify URI (`spotify:track:…`).
-#[allow(dead_code)] // Phase 2: Shazam → resolve URI → play
 pub fn play_uri(uri: &str) -> Result<(), SpotifyClientError> {
   ensure_app()?;
   if !uri.starts_with("spotify:") {
     return Err(SpotifyClientError::ScriptFailed("Invalid Spotify URI".into()));
   }
   let escaped = uri.replace('\\', "\\\\").replace('"', "\\\"");
-  let script = format!(r#"tell application "Spotify" to play track "{escaped}""#);
+  // Activate so the desktop client is the active Connect target, then play.
+  let script = format!(
+    r#"tell application "Spotify"
+  activate
+  play track "{escaped}"
+end tell"#
+  );
   run_osascript(&script).map(|_| ())
 }
 
-/// Open Spotify’s in-app search for `query` (no Web API client id required).
+/// Open Spotify’s in-app search for `query`.
 pub fn open_search(query: &str) -> Result<(), SpotifyClientError> {
   ensure_app()?;
-  let encoded: String = query
-    .chars()
-    .map(|c| match c {
-      ' ' => "%20".to_string(),
-      c if c.is_ascii_alphanumeric() || c == '-' || c == '_' => c.to_string(),
-      c => format!("%{:02X}", c as u8),
-    })
-    .collect();
-  // spotify:search: opens the search UI with the query.
+  let encoded = urlencode_component(query);
   let url = format!("spotify:search:{encoded}");
   let status = Command::new("/usr/bin/open")
     .arg(&url)
@@ -185,11 +170,285 @@ pub fn open_search(query: &str) -> Result<(), SpotifyClientError> {
   }
 }
 
-/// Play by free-text query: open search and try to play — v1 opens search UI so the user
-/// can confirm. Later: rspotify resolve top track → play_uri.
+/// Resolve a free-text query to a track and play it in Spotify.app.
+///
+/// Parses optional “title by artist” form, searches the Spotify catalog (Web API
+/// client-credentials when credentials are available), scores candidates, then
+/// `play track` via AppleScript. Without API credentials, opens in-app search
+/// and presses Return to start the top result.
 pub fn play_query(query: &str) -> Result<String, SpotifyClientError> {
+  ensure_app()?;
+  let query = query.trim();
+  if query.is_empty() {
+    return Err(SpotifyClientError::SearchFailed("Empty play query".into()));
+  }
+
+  match search_best_track(query) {
+    Ok(track) => {
+      play_uri(&track.uri)?;
+      // Brief settle so name-of-current-track is reliable.
+      thread::sleep(Duration::from_millis(400));
+      Ok(format!("Playing {} — {}", track.name, track.artists))
+    }
+    Err(api_err) => {
+      eprintln!("AZAD_SPOTIFY event=search_api_miss err={api_err}");
+      play_top_search_result(query)
+    }
+  }
+}
+
+/// Open Spotify search for `query`, wait for results, press Return to play the
+/// highlighted/top hit. Uses Accessibility synthetic keys (not System Events).
+fn play_top_search_result(query: &str) -> Result<String, SpotifyClientError> {
+  // Activate + open search so the desktop client is focused for the keystroke.
+  let _ = run_osascript(r#"tell application "Spotify" to activate"#);
   open_search(query)?;
-  Ok(format!("Opened Spotify search for “{query}”"))
+  // Search UI needs a beat to populate the first row; Down moves off the
+  // search field onto the top track before Return starts playback.
+  thread::sleep(Duration::from_millis(1800));
+  if !crate::platform::post_down_then_return() {
+    let _ = open_search(query);
+    return Err(SpotifyClientError::SearchFailed(format!(
+      "Couldn’t start playback for “{query}”. Grant Accessibility if needed, or set \
+       AZAD_SPOTIFY_CLIENT_ID / AZAD_SPOTIFY_CLIENT_SECRET for catalog search."
+    )));
+  }
+  thread::sleep(Duration::from_millis(900));
+  match current_track() {
+    Ok(t) => Ok(format!("Playing {t}")),
+    Err(_) => Ok(format!("Playing “{query}”")),
+  }
+}
+
+#[derive(Debug, Clone)]
+struct TrackHit {
+  uri: String,
+  name: String,
+  artists: String,
+  score: i32,
+}
+
+fn search_best_track(query: &str) -> Result<TrackHit, SpotifyClientError> {
+  let (title, artist) = split_title_artist(query);
+  let q = build_search_q(&title, artist.as_deref());
+  let token = client_credentials_token()?;
+  let url =
+    format!("https://api.spotify.com/v1/search?type=track&limit=10&q={}", urlencode_component(&q));
+  let client = reqwest::blocking::Client::builder()
+    .timeout(Duration::from_secs(12))
+    .build()
+    .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  let resp = client
+    .get(&url)
+    .bearer_auth(&token)
+    .send()
+    .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  if !resp.status().is_success() {
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    return Err(SpotifyClientError::SearchFailed(format!(
+      "Spotify search failed ({status}): {}",
+      body.chars().take(120).collect::<String>()
+    )));
+  }
+  let parsed: SearchResponse =
+    resp.json().map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  let items = parsed.tracks.map(|t| t.items).unwrap_or_default();
+  if items.is_empty() {
+    return Err(SpotifyClientError::SearchFailed(format!("No Spotify tracks matched “{query}”.")));
+  }
+  let mut best: Option<TrackHit> = None;
+  for item in items {
+    let artists = item.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+    let score = score_track(&title, artist.as_deref(), &item.name, &artists);
+    let hit = TrackHit { uri: item.uri, name: item.name, artists, score };
+    if best.as_ref().map(|b| hit.score > b.score).unwrap_or(true) {
+      best = Some(hit);
+    }
+  }
+  best.ok_or_else(|| SpotifyClientError::SearchFailed("No track candidates".into()))
+}
+
+fn split_title_artist(query: &str) -> (String, Option<String>) {
+  // “butter by bts” / “Butter by BTS”
+  let lower = query.to_ascii_lowercase();
+  if let Some(idx) = lower.rfind(" by ") {
+    let title = query[..idx].trim().to_string();
+    let artist = query[idx + 4..].trim().to_string();
+    if !title.is_empty() && !artist.is_empty() {
+      return (title, Some(artist));
+    }
+  }
+  (query.trim().to_string(), None)
+}
+
+fn build_search_q(title: &str, artist: Option<&str>) -> String {
+  match artist {
+    Some(a) => format!("track:{title} artist:{a}"),
+    None => title.to_string(),
+  }
+}
+
+fn score_track(title_q: &str, artist_q: Option<&str>, name: &str, artists: &str) -> i32 {
+  let tq = title_q.to_ascii_lowercase();
+  let n = name.to_ascii_lowercase();
+  let a = artists.to_ascii_lowercase();
+  let mut score = 0i32;
+  if n == tq {
+    score += 100;
+  } else if n.contains(&tq) || tq.contains(&n) {
+    score += 50;
+  } else {
+    // token overlap
+    for tok in tq.split_whitespace() {
+      if n.contains(tok) {
+        score += 10;
+      }
+    }
+  }
+  if let Some(aq) = artist_q {
+    let aq = aq.to_ascii_lowercase();
+    if a == aq {
+      score += 80;
+    } else if a.contains(&aq) || aq.contains(&a) {
+      score += 40;
+    } else {
+      for tok in aq.split_whitespace() {
+        if a.contains(tok) {
+          score += 15;
+        }
+      }
+    }
+  }
+  score
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchResponse {
+  tracks: Option<TracksPage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TracksPage {
+  items: Vec<TrackItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrackItem {
+  name: String,
+  uri: String,
+  artists: Vec<ArtistItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistItem {
+  name: String,
+}
+
+struct CachedToken {
+  access_token: String,
+  expires_at: Instant,
+}
+
+static TOKEN_CACHE: Mutex<Option<CachedToken>> = Mutex::new(None);
+
+fn client_credentials() -> Result<(String, String), SpotifyClientError> {
+  if let Some(pair) = credentials_from_env() {
+    return Ok(pair);
+  }
+  if let Some(pair) = credentials_from_file() {
+    return Ok(pair);
+  }
+  Err(SpotifyClientError::SearchFailed(
+    "No Spotify API credentials (env AZAD_SPOTIFY_CLIENT_ID/SECRET or \
+     ~/Library/Application Support/Azad/spotify_api.json)."
+      .into(),
+  ))
+}
+
+fn credentials_from_env() -> Option<(String, String)> {
+  let id = std::env::var("AZAD_SPOTIFY_CLIENT_ID")
+    .or_else(|_| std::env::var("SPOTIPY_CLIENT_ID"))
+    .ok()?;
+  let secret = std::env::var("AZAD_SPOTIFY_CLIENT_SECRET")
+    .or_else(|_| std::env::var("SPOTIPY_CLIENT_SECRET"))
+    .ok()?;
+  if id.is_empty() || secret.is_empty() {
+    return None;
+  }
+  Some((id, secret))
+}
+
+fn credentials_from_file() -> Option<(String, String)> {
+  let home = std::env::var("HOME").ok()?;
+  let path =
+    std::path::PathBuf::from(home).join("Library/Application Support/Azad/spotify_api.json");
+  let raw = std::fs::read_to_string(path).ok()?;
+  #[derive(Deserialize)]
+  struct FileCreds {
+    client_id: String,
+    client_secret: String,
+  }
+  let creds: FileCreds = serde_json::from_str(&raw).ok()?;
+  if creds.client_id.is_empty() || creds.client_secret.is_empty() {
+    return None;
+  }
+  Some((creds.client_id, creds.client_secret))
+}
+
+fn client_credentials_token() -> Result<String, SpotifyClientError> {
+  {
+    let guard = TOKEN_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = guard.as_ref() {
+      if Instant::now() < cached.expires_at {
+        return Ok(cached.access_token.clone());
+      }
+    }
+  }
+  let (id, secret) = client_credentials()?;
+  let client = reqwest::blocking::Client::builder()
+    .timeout(Duration::from_secs(12))
+    .build()
+    .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  let resp = client
+    .post("https://accounts.spotify.com/api/token")
+    .basic_auth(&id, Some(&secret))
+    .header("Content-Type", "application/x-www-form-urlencoded")
+    .body("grant_type=client_credentials")
+    .send()
+    .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  if !resp.status().is_success() {
+    return Err(SpotifyClientError::SearchFailed(format!(
+      "Spotify auth failed ({})",
+      resp.status()
+    )));
+  }
+  #[derive(Deserialize)]
+  struct TokenResp {
+    access_token: String,
+    expires_in: u64,
+  }
+  let token: TokenResp =
+    resp.json().map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  let expires_at = Instant::now() + Duration::from_secs(token.expires_in.saturating_sub(60));
+  if let Ok(mut guard) = TOKEN_CACHE.lock() {
+    *guard = Some(CachedToken { access_token: token.access_token.clone(), expires_at });
+  }
+  Ok(token.access_token)
+}
+
+fn urlencode_component(s: &str) -> String {
+  let mut out = String::with_capacity(s.len() * 2);
+  for b in s.as_bytes() {
+    match *b {
+      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+        out.push(*b as char);
+      }
+      b' ' => out.push_str("%20"),
+      _ => out.push_str(&format!("%{b:02X}")),
+    }
+  }
+  out
 }
 
 #[cfg(test)]
@@ -198,7 +457,20 @@ mod tests {
 
   #[test]
   fn install_check_does_not_panic() {
-    // Pure probe; result depends on machine.
     let _ = spotify_app_installed();
+  }
+
+  #[test]
+  fn split_title_artist_parses_by() {
+    let (t, a) = split_title_artist("butter by BTS");
+    assert_eq!(t.to_ascii_lowercase(), "butter");
+    assert_eq!(a.unwrap().to_ascii_lowercase(), "bts");
+  }
+
+  #[test]
+  fn score_prefers_exact_artist() {
+    let high = score_track("butter", Some("bts"), "Butter", "BTS");
+    let low = score_track("butter", Some("bts"), "Butter", "Someone Else");
+    assert!(high > low);
   }
 }

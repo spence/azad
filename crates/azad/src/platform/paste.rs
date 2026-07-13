@@ -134,6 +134,19 @@ pub fn send_auto_submit(mode: AutoSubmitMode) -> bool {
   }
 }
 
+/// Move focus to the first search hit (Down) then commit with Return. Used when
+/// Spotify's search field still has focus after `spotify:search:…`.
+pub fn post_down_then_return() -> bool {
+  if !ensure_accessibility_for_auto_paste() {
+    return false;
+  }
+  const KEYCODE_ARROW_DOWN: u16 = 0x7D;
+  let down_ok = unsafe { send_key_chord(KEYCODE_ARROW_DOWN, CGEventFlags::empty()) };
+  std::thread::sleep(Duration::from_millis(80));
+  let ret_ok = unsafe { send_key_chord(KEYCODE_RETURN, CGEventFlags::empty()) };
+  down_ok && ret_ok
+}
+
 fn is_terminal_like_bundle_id(bundle_id: &str) -> bool {
   matches!(
     bundle_id,

@@ -495,7 +495,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// voice-command help under the action buttons when toggled.
     private func azadConnectorCard(_ connector: ConnectorRow, index: Int) -> NSView {
         let appleIntelReady = connector.availabilityState == "available"
-        let expandCommands = showAzadVoiceCommands && !appleIntelReady
+        // Command cheat-sheet stays available once AI is ready; only setup
+        // actions (Check again / Open Settings) hide when the gate passes.
+        let expandCommands = showAzadVoiceCommands
 
         let card = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
         card.layer?.cornerRadius = 8
@@ -546,33 +548,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         actions.distribution = .fill
         actions.translatesAutoresizingMaskIntoConstraints = false
 
-        if connector.showOpenSettings || !appleIntelReady {
-            let openBtn = NSButton(
-                title: "Open Apple Intelligence Settings",
-                target: self,
-                action: #selector(openSystemSettings(_:))
-            )
-            openBtn.bezelStyle = .rounded
-            openBtn.controlSize = .small
-            actions.addArrangedSubview(openBtn)
+        // Only show setup actions while Apple Intelligence is not ready.
+        if !appleIntelReady {
+            if connector.showOpenSettings {
+                let openBtn = NSButton(
+                    title: "Open Apple Intelligence Settings",
+                    target: self,
+                    action: #selector(openSystemSettings(_:))
+                )
+                openBtn.bezelStyle = .rounded
+                openBtn.controlSize = .small
+                actions.addArrangedSubview(openBtn)
+            }
+            let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckAppleLm(_:)))
+            recheck.bezelStyle = .rounded
+            recheck.controlSize = .small
+            actions.addArrangedSubview(recheck)
         }
-        let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckAppleLm(_:)))
-        recheck.bezelStyle = .rounded
-        recheck.controlSize = .small
-        actions.addArrangedSubview(recheck)
 
         let actionSpacer = NSView()
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         actions.addArrangedSubview(actionSpacer)
 
-        // Right-side: expand this same card with the command list when AI isn’t ready.
-        if !appleIntelReady {
-            let helpTitle = showAzadVoiceCommands ? "Hide commands" : "What can I say?"
-            let help = NSButton(title: helpTitle, target: self, action: #selector(toggleAzadVoiceCommands(_:)))
-            help.bezelStyle = .rounded
-            help.controlSize = .small
-            actions.addArrangedSubview(help)
-        }
+        // Command list is always useful; expand in-card.
+        let helpTitle = showAzadVoiceCommands ? "Hide commands" : "What can I say?"
+        let help = NSButton(title: helpTitle, target: self, action: #selector(toggleAzadVoiceCommands(_:)))
+        help.bezelStyle = .rounded
+        help.controlSize = .small
+        actions.addArrangedSubview(help)
 
         card.addSubview(top)
         card.addSubview(statusLabel)
@@ -700,16 +703,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         actions.alignment = .centerY
         actions.translatesAutoresizingMaskIntoConstraints = false
 
+        // Only show install / recheck while Spotify.app is missing.
         if !installed {
             let getApp = NSButton(title: "Get Spotify", target: self, action: #selector(openSpotifyDownload(_:)))
             getApp.bezelStyle = .rounded
             getApp.controlSize = .small
             actions.addArrangedSubview(getApp)
+            let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckSpotify(_:)))
+            recheck.bezelStyle = .rounded
+            recheck.controlSize = .small
+            actions.addArrangedSubview(recheck)
         }
-        let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckSpotify(_:)))
-        recheck.bezelStyle = .rounded
-        recheck.controlSize = .small
-        actions.addArrangedSubview(recheck)
 
         let actionSpacer = NSView()
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)

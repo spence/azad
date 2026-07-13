@@ -35,7 +35,7 @@ use hotkeys::{
   ClaimedHoldNavigationAction, SpaceHotkeyAction, claimed_hold_navigation_decision,
   current_mod_mask, space_hotkey_decision,
 };
-pub use paste::{PasteResult, insert_text, send_auto_submit};
+pub use paste::{PasteResult, insert_text, post_down_then_return, send_auto_submit};
 pub use permissions::{
   PermissionStatus, accessibility_authorization, ensure_accessibility_for_auto_paste,
   input_monitoring_authorization, microphone_authorization, request_accessibility_permission,
@@ -915,9 +915,7 @@ pub fn open_apple_intelligence_settings() {
     "x-apple.systempreferences:com.apple.preference.speech",
   ];
   for url in CANDIDATES {
-    let status = std::process::Command::new("/usr/bin/open")
-      .arg(url)
-      .status();
+    let status = std::process::Command::new("/usr/bin/open").arg(url).status();
     if matches!(status, Ok(s) if s.success()) {
       return;
     }

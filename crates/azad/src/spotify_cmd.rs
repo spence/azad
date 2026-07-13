@@ -49,8 +49,7 @@ impl SpotifyIntent {
       Self::VolumeUp => "Turning volume up".into(),
       Self::VolumeDown => "Turning volume down".into(),
       Self::Help => {
-        "Try: pause, next, play <song>, what song is this, identify, like, volume up."
-          .into()
+        "Try: pause, next, play <song>, what song is this, identify, like, volume up.".into()
       }
       Self::Unsupported { message } => message.clone(),
     }
@@ -85,12 +84,17 @@ pub fn interpret_spotify_query(query: &str) -> SpotifyIntent {
     "play" | "resume" | "unpause" | "continue" => return SpotifyIntent::Play,
     "play pause" | "playpause" | "toggle" | "toggle play" => return SpotifyIntent::PlayPause,
     "next" | "skip" | "skip song" | "next song" | "next track" => return SpotifyIntent::Next,
-    "previous" | "prev" | "back" | "last song" | "previous song" | "previous track"
-    | "go back" => return SpotifyIntent::Previous,
+    "previous" | "prev" | "back" | "last song" | "previous song" | "previous track" | "go back" => {
+      return SpotifyIntent::Previous;
+    }
     "like" | "heart" | "love" | "save" | "save this" | "like this" | "like song" => {
       return SpotifyIntent::Like;
     }
-    "current" | "now playing" | "whats playing" | "what is playing" | "what's playing"
+    "current"
+    | "now playing"
+    | "whats playing"
+    | "what is playing"
+    | "what's playing"
     | "what song is playing" => return SpotifyIntent::Current,
     "volume up" | "louder" | "turn it up" | "turn up" => return SpotifyIntent::VolumeUp,
     "volume down" | "quieter" | "turn it down" | "turn down" => return SpotifyIntent::VolumeDown,
@@ -102,9 +106,7 @@ pub fn interpret_spotify_query(query: &str) -> SpotifyIntent {
   if let Some(rest) = q.strip_prefix("search ") {
     let rest = rest.trim();
     if !rest.is_empty() {
-      return SpotifyIntent::Search {
-        query: rest.to_string(),
-      };
+      return SpotifyIntent::Search { query: rest.to_string() };
     }
   }
 
@@ -112,9 +114,7 @@ pub fn interpret_spotify_query(query: &str) -> SpotifyIntent {
   if let Some(rest) = q.strip_prefix("play ") {
     let rest = rest.trim();
     if !rest.is_empty() {
-      return SpotifyIntent::PlayQuery {
-        query: rest.to_string(),
-      };
+      return SpotifyIntent::PlayQuery { query: rest.to_string() };
     }
   }
 
@@ -168,13 +168,11 @@ fn match_identify(q: &str) -> Option<SpotifyIntent> {
 fn normalize(query: &str) -> String {
   query
     .chars()
-    .map(|c| {
-      if c.is_ascii_alphanumeric() || c.is_whitespace() {
-        c.to_ascii_lowercase()
-      } else {
-        ' '
-      }
-    })
+    .map(
+      |c| {
+        if c.is_ascii_alphanumeric() || c.is_whitespace() { c.to_ascii_lowercase() } else { ' ' }
+      },
+    )
     .collect::<String>()
     .split_whitespace()
     .collect::<Vec<_>>()
@@ -204,10 +202,7 @@ mod tests {
       interpret_spotify_query("identify this song"),
       SpotifyIntent::Identify { play: false }
     );
-    assert_eq!(
-      interpret_spotify_query("identify"),
-      SpotifyIntent::Identify { play: false }
-    );
+    assert_eq!(interpret_spotify_query("identify"), SpotifyIntent::Identify { play: false });
     assert_eq!(
       interpret_spotify_query("identify and play"),
       SpotifyIntent::Identify { play: true }
@@ -218,15 +213,11 @@ mod tests {
   fn play_query() {
     assert_eq!(
       interpret_spotify_query("play them changes"),
-      SpotifyIntent::PlayQuery {
-        query: "them changes".into()
-      }
+      SpotifyIntent::PlayQuery { query: "them changes".into() }
     );
     assert_eq!(
       interpret_spotify_query("Them Changes"),
-      SpotifyIntent::PlayQuery {
-        query: "them changes".into()
-      }
+      SpotifyIntent::PlayQuery { query: "them changes".into() }
     );
   }
 

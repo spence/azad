@@ -64,12 +64,8 @@ const AZAD_TRIGGER_ALIASES: &[&str] = &[
 ];
 
 /// Common ASR mis-hearings of "spotify" after "hey".
-const SPOTIFY_TRIGGER_ALIASES: &[&str] = &[
-  "hey spotsify",
-  "hey spot ify",
-  "hey spot a fy",
-  "hey spotify",
-];
+const SPOTIFY_TRIGGER_ALIASES: &[&str] =
+  &["hey spotsify", "hey spot ify", "hey spot a fy", "hey spotify"];
 
 /// The built-in connector registry. Order is stable (settings UI indexes into it).
 /// Claude and Azad default on; Spotify defaults off until the user enables it
@@ -119,9 +115,8 @@ pub fn detect(utterance: &str, connectors: &[Connector]) -> Option<ConnectorMatc
     let mut best: Option<&'static str> = None;
     for phrase in connector_triggers(c) {
       if trigger_matches_prefix(utterance, phrase) {
-        let better = best.map_or(true, |b| {
-          phrase.split_whitespace().count() > b.split_whitespace().count()
-        });
+        let better =
+          best.map_or(true, |b| phrase.split_whitespace().count() > b.split_whitespace().count());
         if better {
           best = Some(phrase);
         }

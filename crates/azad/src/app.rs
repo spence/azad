@@ -12,8 +12,6 @@ use crate::apple_lm::{
   self, AvailabilityReport, AvailabilityState, AzadIntent, RemovedWordAction, TextSettingId,
   TextSettingsSnapshot,
 };
-use crate::spotify_client;
-use crate::spotify_cmd::{self, SpotifyIntent};
 use crate::config::AzadConfig;
 use crate::connectors;
 use crate::device::{DeviceController, DeviceEvent};
@@ -28,6 +26,8 @@ use crate::platform::{DeviceMenuModel, DeviceMenuRow, PasteResult, SettingsTab};
 use crate::preferred_store;
 use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
 use crate::speech::{SpeechEvent, SpeechSession, spawn_speech_session};
+use crate::spotify_client;
+use crate::spotify_cmd::{self, SpotifyIntent};
 use crate::transcript_history::TranscriptIndex;
 
 mod history;
@@ -69,6 +69,10 @@ const GATEWAY_STREAM_TIMEOUT: Duration = Duration::from_secs(25);
 const GATEWAY_NO_ACK_MESSAGE: &str =
   "Gateway didn't respond. Is local-agent-gatewayd running and current? — press Esc.";
 const GATEWAY_STALL_MESSAGE: &str = "Claude stopped responding — press Esc to dismiss.";
+/// One-shot command cards (Hey Azad / Hey Spotify) auto-dismiss after success so
+/// the user doesn't need Esc. Claude gateway conversations stay sticky.
+const COMMAND_OVERLAY_SUCCESS_HOLD: Duration = Duration::from_millis(1600);
+const COMMAND_OVERLAY_ERROR_HOLD: Duration = Duration::from_millis(2800);
 const ACTIVATION_LEVEL_MIN_RMS_DB: f32 = -60.0;
 const ACTIVATION_LEVEL_MAX_RMS_DB: f32 = -20.0;
 
@@ -442,6 +446,8 @@ struct AzadTurn {
   status: ConvStatus,
   reply: String,
   error_msg: String,
+  /// When set, `on_tick` clears this card and may hide the overlay.
+  dismiss_at: Option<Instant>,
 }
 
 /// One-shot Hey Spotify conversation card.
@@ -453,6 +459,8 @@ struct SpotifyTurn {
   status: ConvStatus,
   reply: String,
   error_msg: String,
+  /// When set, `on_tick` clears this card and may hide the overlay.
+  dismiss_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2324,8 +2332,7 @@ impl AppController {
         }
         self.engine_state = EngineState::Idle;
         // A live gateway/Azad/Spotify conversation owns the overlay across session recycles.
-        if self.gateway_conv.is_none() && self.azad_turn.is_none() && self.spotify_turn.is_none()
-        {
+        if self.gateway_conv.is_none() && self.azad_turn.is_none() && self.spotify_turn.is_none() {
           if !self.cancelled
             && self.latest_seen_turn_id > 0
             && self.last_pasted_turn_id != Some(self.latest_seen_turn_id)
@@ -2463,6 +2470,7 @@ impl AppController {
 
     self.advance_activity_timeline();
     self.maybe_apply_pending_always_listening_toggle();
+    self.maybe_auto_dismiss_command_overlays();
 
     // A live gateway run animates its own busy glow (its turn has finalized, so the
     // finalize-spinner branch below no longer ticks the phase) and fails closed to an
@@ -2684,6 +2692,8 @@ impl AppController {
       .azad_turn
       .as_ref()
       .is_some_and(|t| matches!(t.status, ConvStatus::Thinking | ConvStatus::Streaming));
+    let command_auto_dismiss = self.azad_turn.as_ref().and_then(|t| t.dismiss_at).is_some()
+      || self.spotify_turn.as_ref().and_then(|t| t.dismiss_at).is_some();
     self.manual_hold_active
       || self.overlay_visible
       || self.history_browsing
@@ -2693,6 +2703,7 @@ impl AppController {
       || self.pending_device_switch_deadline.is_some()
       || gateway_busy
       || azad_busy
+      || command_auto_dismiss
   }
 
   fn needs_interactive_tick(&self, settings_open: bool) -> bool {
@@ -2958,6 +2969,42 @@ impl AppController {
     self.render_conversation_overlay();
   }
 
+  /// Auto-dismiss finished Hey Azad / Hey Spotify cards. Claude stays until Esc.
+  fn maybe_auto_dismiss_command_overlays(&mut self) {
+    let now = Instant::now();
+    let mut dismissed = false;
+    if self
+      .spotify_turn
+      .as_ref()
+      .and_then(|t| t.dismiss_at)
+      .is_some_and(|at| now >= at)
+    {
+      self.spotify_turn = None;
+      dismissed = true;
+    }
+    if self.azad_turn.as_ref().and_then(|t| t.dismiss_at).is_some_and(|at| now >= at) {
+      self.azad_turn = None;
+      self.azad_pending_query = None;
+      dismissed = true;
+    }
+    if !dismissed {
+      return;
+    }
+    // Don't hide if another sticky surface still owns the overlay.
+    if self.gateway_conv.is_some()
+      || self.azad_turn.is_some()
+      || self.spotify_turn.is_some()
+      || self.manual_hold_active
+      || self.history_browsing
+      || self.finalizing_deadline.is_some()
+    {
+      return;
+    }
+    if self.overlay_visible {
+      self.hide_overlay();
+    }
+  }
+
   /// Submit a finalized Hey Azad turn: interpret → apply allowlisted intent → overlay.
   /// Never pastes and never opens the Claude gateway.
   fn submit_to_azad(&mut self, turn_id: u64, cleaned: &str) {
@@ -2980,6 +3027,7 @@ impl AppController {
         status: ConvStatus::Error,
         reply: String::new(),
         error_msg: avail.setup_overlay_message().to_string(),
+        dismiss_at: Some(Instant::now() + COMMAND_OVERLAY_ERROR_HOLD),
       });
       self.last_pasted_turn_id = Some(turn_id);
       self.latest_final = None;
@@ -3005,6 +3053,7 @@ impl AppController {
       status: ConvStatus::Thinking,
       reply: String::new(),
       error_msg: String::new(),
+      dismiss_at: None,
     });
     self.last_pasted_turn_id = Some(turn_id);
     self.latest_final = None;
@@ -3030,6 +3079,7 @@ impl AppController {
         turn.status = ConvStatus::Error;
         turn.error_msg = avail.setup_overlay_message().to_string();
         turn.reply.clear();
+        turn.dismiss_at = Some(Instant::now() + COMMAND_OVERLAY_ERROR_HOLD);
       }
       self.show_azad_overlay();
       return;
@@ -3083,6 +3133,7 @@ impl AppController {
           turn.status = ConvStatus::Done;
           turn.reply = intent.confirmation_label();
           turn.error_msg.clear();
+          turn.dismiss_at = Some(Instant::now() + COMMAND_OVERLAY_SUCCESS_HOLD);
         }
         self.azad_pending_query = None;
       }
@@ -3098,6 +3149,7 @@ impl AppController {
           turn.status = ConvStatus::Done;
           turn.reply = intent.confirmation_label();
           turn.error_msg.clear();
+          turn.dismiss_at = Some(Instant::now() + COMMAND_OVERLAY_SUCCESS_HOLD);
         }
         self.azad_pending_query = None;
       }
@@ -3106,6 +3158,7 @@ impl AppController {
           turn.status = ConvStatus::Error;
           turn.error_msg = message.clone();
           turn.reply.clear();
+          turn.dismiss_at = Some(Instant::now() + COMMAND_OVERLAY_ERROR_HOLD);
         }
       }
       AzadIntent::Help => {
@@ -3113,6 +3166,7 @@ impl AppController {
           turn.status = ConvStatus::Done;
           turn.reply = intent.confirmation_label();
           turn.error_msg.clear();
+          turn.dismiss_at = Some(Instant::now() + COMMAND_OVERLAY_SUCCESS_HOLD);
         }
       }
     }
@@ -3144,15 +3198,13 @@ impl AppController {
       self.spotify_turn = Some(SpotifyTurn {
         tag_label,
         tag_icon,
-        query: if query.is_empty() {
-          "hey spotify".into()
-        } else {
-          query.clone()
-        },
+        query: if query.is_empty() { "hey spotify".into() } else { query.clone() },
         status: ConvStatus::Error,
         reply: String::new(),
-        error_msg: "Spotify is not installed. Install Spotify, then enable this connector in Settings."
-          .into(),
+        error_msg:
+          "Spotify is not installed. Install Spotify, then enable this connector in Settings."
+            .into(),
+        dismiss_at: Some(Instant::now() + COMMAND_OVERLAY_ERROR_HOLD),
       });
       self.last_pasted_turn_id = Some(turn_id);
       self.latest_final = None;
@@ -3163,14 +3215,11 @@ impl AppController {
     self.spotify_turn = Some(SpotifyTurn {
       tag_label,
       tag_icon,
-      query: if query.is_empty() {
-        "hey spotify".into()
-      } else {
-        query.clone()
-      },
+      query: if query.is_empty() { "hey spotify".into() } else { query.clone() },
       status: ConvStatus::Thinking,
       reply: String::new(),
       error_msg: String::new(),
+      dismiss_at: None,
     });
     self.last_pasted_turn_id = Some(turn_id);
     self.latest_final = None;
@@ -3187,37 +3236,37 @@ impl AppController {
 
   fn apply_spotify_intent(&mut self, intent: SpotifyIntent) {
     let result: Result<String, String> = match &intent {
-      SpotifyIntent::Play => spotify_client::play().map(|_| intent.confirmation_label()).map_err(|e| e.to_string()),
-      SpotifyIntent::Pause => spotify_client::pause().map(|_| intent.confirmation_label()).map_err(|e| e.to_string()),
-      SpotifyIntent::PlayPause => {
-        spotify_client::play_pause().map(|_| intent.confirmation_label()).map_err(|e| e.to_string())
-      }
-      SpotifyIntent::Next => {
-        spotify_client::next_track().map(|_| intent.confirmation_label()).map_err(|e| e.to_string())
-      }
-      SpotifyIntent::Previous => {
-        spotify_client::previous_track()
-          .map(|_| intent.confirmation_label())
-          .map_err(|e| e.to_string())
-      }
-      SpotifyIntent::Like => spotify_client::like_current().map(|_| intent.confirmation_label()).map_err(|e| e.to_string()),
+      SpotifyIntent::Play => spotify_client::play()
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
+      SpotifyIntent::Pause => spotify_client::pause()
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
+      SpotifyIntent::PlayPause => spotify_client::play_pause()
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
+      SpotifyIntent::Next => spotify_client::next_track()
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
+      SpotifyIntent::Previous => spotify_client::previous_track()
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
+      SpotifyIntent::Like => spotify_client::like_current()
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
       SpotifyIntent::Current => spotify_client::current_track().map_err(|e| e.to_string()),
       SpotifyIntent::PlayQuery { query } => {
         spotify_client::play_query(query).map_err(|e| e.to_string())
       }
-      SpotifyIntent::Search { query } => {
-        spotify_client::open_search(query)
-          .map(|_| format!("Opened Spotify search for “{query}”"))
-          .map_err(|e| e.to_string())
-      }
-      SpotifyIntent::VolumeUp => {
-        spotify_client::volume_delta(10).map(|_| intent.confirmation_label()).map_err(|e| e.to_string())
-      }
-      SpotifyIntent::VolumeDown => {
-        spotify_client::volume_delta(-10)
-          .map(|_| intent.confirmation_label())
-          .map_err(|e| e.to_string())
-      }
+      SpotifyIntent::Search { query } => spotify_client::open_search(query)
+        .map(|_| format!("Opened Spotify search for “{query}”"))
+        .map_err(|e| e.to_string()),
+      SpotifyIntent::VolumeUp => spotify_client::volume_delta(10)
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
+      SpotifyIntent::VolumeDown => spotify_client::volume_delta(-10)
+        .map(|_| intent.confirmation_label())
+        .map_err(|e| e.to_string()),
       SpotifyIntent::Identify { play } => {
         // Phase 2: ShazamKit helper. v1: clear message.
         let _ = play;
@@ -3237,6 +3286,7 @@ impl AppController {
           turn.status = ConvStatus::Done;
           turn.reply = reply;
           turn.error_msg.clear();
+          turn.dismiss_at = Some(Instant::now() + COMMAND_OVERLAY_SUCCESS_HOLD);
         }
       }
       Err(err) => {
@@ -3245,6 +3295,7 @@ impl AppController {
           turn.status = ConvStatus::Error;
           turn.error_msg = err;
           turn.reply.clear();
+          turn.dismiss_at = Some(Instant::now() + COMMAND_OVERLAY_ERROR_HOLD);
         }
       }
     }
@@ -3336,6 +3387,7 @@ impl AppController {
       status: ConvStatus::Thinking,
       reply: String::new(),
       error_msg: String::new(),
+      dismiss_at: None,
     });
     self.show_azad_overlay();
     let snapshot = self.text_settings_snapshot();
@@ -3748,8 +3800,7 @@ impl AppController {
     }
     // Refresh clean_query with the latched phrase's token count (primary or alias).
     if let Some(active) = self.active_connector.as_mut() {
-      active.clean_query =
-        connectors::strip_trigger(&self.latest_draft, active.matched_trigger);
+      active.clean_query = connectors::strip_trigger(&self.latest_draft, active.matched_trigger);
     }
   }
 
