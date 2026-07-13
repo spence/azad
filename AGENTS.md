@@ -116,5 +116,7 @@ stream, flushed at finalize — no windowed re-decode/stitcher/bailout). For on-
 ## Commit and Scope Hygiene
 
 - This workspace is one Git repository. Keep commits grouped by workstream.
-- Group commits by change domain (state machine, UI, engine, etc.), not by random file order.
+- Group commits by change domain (state machine, UI, engine, text, docs, etc.), not by random file order.
+- **When a workstream is complete, commit it.** Do not leave finished work uncommitted waiting for an explicit "please commit." A workstream is complete when its code/docs are in place, relevant tests pass, and (if it affects app behavior) the app has been redeployed per lifecycle rules above. Prefer one focused commit per workstream; if several independent workstreams finished in the same session, commit each separately.
 - Do not revert unrelated local changes unless explicitly requested.
+- Conventional Commits; never add AI co-author trailers or override git authorship.
