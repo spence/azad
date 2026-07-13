@@ -187,41 +187,63 @@ end tell"#
   run_osascript(&script).map(|_| ())
 }
 
-/// Play Spotify's curated-style **This Is {Artist}** playlist (best public match).
+/// Play Spotify’s official **This Is {Artist}** editorial playlist.
+///
+/// Official “This Is …” lists are Spotify editorial (`37i9d…` IDs). The Web API
+/// search endpoint no longer returns them under client-credentials, so we:
+/// 1. Resolve the artist via search
+/// 2. Read the public artist page HTML for the linked This Is playlist
+/// 3. Fall back to catalog playlist search (exact title), then artist-context play
 pub fn play_artist_this_is(artist: &str) -> Result<String, SpotifyClientError> {
   ensure_app()?;
   let artist = artist.trim();
   if artist.is_empty() {
     return Err(SpotifyClientError::SearchFailed("Empty artist".into()));
   }
-  let canonical = resolve_artist_name(artist).unwrap_or_else(|_| artist.to_string());
-  let playlist_q = format!("This Is {canonical}");
-  match search_best_playlist(&playlist_q, Some(&format!("this is {canonical}"))) {
-    Ok(pl) => {
+
+  let resolved = resolve_artist(artist)?;
+  eprintln!(
+    "AZAD_SPOTIFY event=artist_resolved spoken={artist:?} name={:?} id={}",
+    resolved.name, resolved.id
+  );
+
+  // 1) Official editorial This Is from the artist page (preferred).
+  if let Some(uri) = scrape_this_is_playlist_uri(&resolved.id, &resolved.name) {
+    eprintln!("AZAD_SPOTIFY event=this_is_official uri={uri} artist={:?}", resolved.name);
+    play_uri(&uri)?;
+    thread::sleep(Duration::from_millis(400));
+    return Ok(format!("Playing This Is {}", resolved.name));
+  }
+
+  // 2) Catalog search for an exact-titled “This Is …” playlist (limit ≤ 10).
+  let playlist_q = format!("This Is {}", resolved.name);
+  let prefer = format!("this is {}", resolved.name.to_ascii_lowercase());
+  match search_best_playlist(&playlist_q, Some(&prefer)) {
+    Ok(pl) if pl.score >= 100 => {
+      eprintln!(
+        "AZAD_SPOTIFY event=this_is_catalog uri={} name={:?} score={}",
+        pl.uri, pl.name, pl.score
+      );
       play_uri(&pl.uri)?;
       thread::sleep(Duration::from_millis(400));
-      Ok(format!("Playing {}", pl.name))
+      return Ok(format!("Playing {}", pl.name));
+    }
+    Ok(pl) => {
+      eprintln!(
+        "AZAD_SPOTIFY event=this_is_weak uri={} name={:?} score={}",
+        pl.uri, pl.name, pl.score
+      );
     }
     Err(e) => {
-      // Fall back: free-text "This Is …" search without exact title filter.
-      eprintln!("AZAD_SPOTIFY event=this_is_miss artist={canonical:?} err={e}");
-      if let Ok(pl) = search_best_playlist(&playlist_q, None) {
-        play_uri(&pl.uri)?;
-        return Ok(format!("Playing {}", pl.name));
-      }
-      // Last resort: play a top track by the artist so the command still does something.
-      match search_ranked_tracks(&format!("{canonical}")) {
-        Ok(tracks) if !tracks.is_empty() => {
-          let t = &tracks[0];
-          play_uri(&t.uri)?;
-          Ok(format!("No This Is playlist found — playing {} — {}", t.name, t.artists))
-        }
-        _ => Err(SpotifyClientError::SearchFailed(format!(
-          "Couldn’t find a This Is playlist for “{canonical}”."
-        ))),
-      }
+      eprintln!("AZAD_SPOTIFY event=this_is_search_miss artist={:?} err={e}", resolved.name);
     }
   }
+
+  // 3) Continuous artist context in the desktop app (not a single track).
+  let artist_uri = format!("spotify:artist:{}", resolved.id);
+  play_uri(&artist_uri)?;
+  thread::sleep(Duration::from_millis(400));
+  Ok(format!("Playing {} (This Is playlist unavailable — artist mix)", resolved.name))
 }
 
 /// Start song radio. `query = None` uses the currently playing track.
@@ -584,6 +606,7 @@ struct ArtistItem {
 
 #[derive(Debug, Deserialize)]
 struct ArtistSearchItem {
+  id: String,
   name: String,
   #[allow(dead_code)]
   uri: String,
@@ -610,7 +633,13 @@ struct PlaylistHit {
   score: i32,
 }
 
-fn resolve_artist_name(spoken: &str) -> Result<String, SpotifyClientError> {
+#[derive(Debug, Clone)]
+struct ResolvedArtist {
+  id: String,
+  name: String,
+}
+
+fn resolve_artist(spoken: &str) -> Result<ResolvedArtist, SpotifyClientError> {
   let token = client_credentials_token()?;
   let client = reqwest::blocking::Client::builder()
     .timeout(Duration::from_secs(12))
@@ -622,7 +651,7 @@ fn resolve_artist_name(spoken: &str) -> Result<String, SpotifyClientError> {
   if collapsed != spoken {
     queries.push(collapsed);
   }
-  let mut best: Option<(i32, String)> = None;
+  let mut best: Option<(i32, ResolvedArtist)> = None;
   for q in queries {
     let url = format!(
       "https://api.spotify.com/v1/search?type=artist&limit=5&q={}",
@@ -640,15 +669,99 @@ fn resolve_artist_name(spoken: &str) -> Result<String, SpotifyClientError> {
       resp.json().map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
     for item in parsed.artists.map(|a| a.items).unwrap_or_default() {
       let score = score_artist_name(spoken, &item.name);
+      let resolved = ResolvedArtist { id: item.id, name: item.name };
       if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
-        best = Some((score, item.name));
+        best = Some((score, resolved));
       }
     }
   }
   best
     .filter(|(s, _)| *s >= 40)
-    .map(|(_, name)| name)
+    .map(|(_, a)| a)
     .ok_or_else(|| SpotifyClientError::SearchFailed(format!("No artist matched “{spoken}”.")))
+}
+
+/// Spotify hides official “This Is” playlists from client-credentials search, but
+/// still links them on the public artist page as editorial `37i9d…` playlists.
+fn scrape_this_is_playlist_uri(artist_id: &str, artist_name: &str) -> Option<String> {
+  let url = format!("https://open.spotify.com/artist/{artist_id}");
+  let client = reqwest::blocking::Client::builder()
+    .timeout(Duration::from_secs(12))
+    .build()
+    .ok()?;
+  let resp = client
+    .get(&url)
+    .header(
+      "User-Agent",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
+    )
+    .header("Accept-Language", "en-US,en;q=0.9")
+    .send()
+    .ok()?;
+  if !resp.status().is_success() {
+    eprintln!(
+      "AZAD_SPOTIFY event=this_is_scrape_http status={} artist_id={artist_id}",
+      resp.status()
+    );
+    return None;
+  }
+  let html = resp.text().ok()?;
+  let want = format!("this is {}", artist_name.to_ascii_lowercase());
+  let want_c = collapse_ws(&want);
+
+  // Editorial cards look like: href="/playlist/37i9d…"> … This Is BTS
+  // Floor all slices to char boundaries (HTML has curly quotes / emoji).
+  let mut i = 0;
+  while i < html.len() {
+    let Some(rel) = html[i..].find("/playlist/") else {
+      break;
+    };
+    let start = i + rel;
+    let id_start = start + "/playlist/".len();
+    if id_start >= html.len() {
+      break;
+    }
+    let rest = &html[id_start..];
+    let id_end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
+    let pid = &rest[..id_end];
+    if !pid.starts_with("37i9d") {
+      i = id_start + pid.len().max(1);
+      continue;
+    }
+    let approx_end = id_start.saturating_add(900).min(html.len());
+    let window_end = floor_char_boundary(&html, approx_end);
+    let window = &html[id_start..window_end];
+    let mut plain = String::with_capacity(window.len());
+    let mut in_tag = false;
+    for ch in window.chars() {
+      match ch {
+        '<' => in_tag = true,
+        '>' => in_tag = false,
+        _ if !in_tag => plain.push(ch),
+        _ => {}
+      }
+    }
+    let plain_l = plain.to_ascii_lowercase();
+    let plain_c = collapse_ws(&plain_l);
+    if plain_l.contains(&want) || plain_c.contains(&want_c) {
+      let uri = format!("spotify:playlist:{pid}");
+      eprintln!("AZAD_SPOTIFY event=this_is_scrape_hit uri={uri}");
+      return Some(uri);
+    }
+    i = id_start + pid.len();
+  }
+  eprintln!("AZAD_SPOTIFY event=this_is_scrape_miss artist_id={artist_id} want={want:?}");
+  None
+}
+
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+  if idx >= s.len() {
+    return s.len();
+  }
+  while idx > 0 && !s.is_char_boundary(idx) {
+    idx -= 1;
+  }
+  idx
 }
 
 fn score_artist_name(spoken: &str, catalog: &str) -> i32 {
@@ -680,8 +793,9 @@ fn search_best_playlist(
     .timeout(Duration::from_secs(12))
     .build()
     .map_err(|e| SpotifyClientError::SearchFailed(e.to_string()))?;
+  // Playlist search rejects limit > 10 (400 Invalid limit) on current Web API.
   let url = format!(
-    "https://api.spotify.com/v1/search?type=playlist&limit=15&q={}",
+    "https://api.spotify.com/v1/search?type=playlist&limit=10&q={}",
     urlencode_component(query)
   );
   let resp = client
@@ -936,5 +1050,18 @@ client_secret = "secret456"
       search_query_variants("like a stone", Some("audio slave"), "like a stone by audio slave");
     assert!(v.iter().any(|q| q.contains("audioslave")));
     assert!(v.iter().any(|q| q.contains("track:like a stone")));
+  }
+
+  /// Live: requires network + Spotify.app + spotify.toml. Verifies official This Is.
+  #[test]
+  #[ignore]
+  fn live_this_is_bts_resolves_editorial() {
+    let artist = resolve_artist("BTS").expect("resolve BTS");
+    assert_eq!(artist.name, "BTS");
+    let uri = scrape_this_is_playlist_uri(&artist.id, &artist.name)
+      .expect("scrape This Is BTS from artist page");
+    assert!(uri.starts_with("spotify:playlist:37i9d"), "got {uri}");
+    let msg = play_artist_this_is("BTS").expect("play");
+    assert!(msg.to_ascii_lowercase().contains("this is bts"), "msg={msg}");
   }
 }
