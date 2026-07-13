@@ -487,24 +487,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return card
     }
 
-    /// Azad card: fixed header height; optional expandable command list below.
-    /// Outer wrap + inner panel both stretch to the same full pane width as Claude.
+    /// Single Azad connector card (full pane width). Expands in-place to show
+    /// voice-command help under the action buttons when toggled.
     private func azadConnectorCard(_ connector: ConnectorRow, index: Int) -> NSView {
         let appleIntelReady = connector.availabilityState == "available"
-        let wrap = NSStackView()
-        wrap.orientation = .vertical
-        wrap.alignment = .width
-        wrap.spacing = 8
-        wrap.translatesAutoresizingMaskIntoConstraints = false
-        wrap.setHuggingPriority(.required, for: .vertical)
-        wrap.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let expandCommands = showAzadVoiceCommands && !appleIntelReady
 
         let card = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
         card.layer?.cornerRadius = 8
         card.setContentHuggingPriority(.required, for: .vertical)
         card.setContentCompressionResistancePriority(.required, for: .vertical)
         card.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        card.heightAnchor.constraint(equalToConstant: 96).isActive = true
 
         let top = NSStackView()
         top.orientation = .horizontal
@@ -568,7 +561,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         actions.addArrangedSubview(actionSpacer)
 
-        // Right-side: command cheat sheet when the on-device model isn’t ready.
+        // Right-side: expand this same card with the command list when AI isn’t ready.
         if !appleIntelReady {
             let helpTitle = showAzadVoiceCommands ? "Hide commands" : "What can I say?"
             let help = NSButton(title: helpTitle, target: self, action: #selector(toggleAzadVoiceCommands(_:)))
@@ -580,7 +573,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         card.addSubview(top)
         card.addSubview(statusLabel)
         card.addSubview(actions)
-        NSLayoutConstraint.activate([
+
+        var constraints: [NSLayoutConstraint] = [
             top.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
             top.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
             top.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
@@ -592,59 +586,60 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
             actions.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
             actions.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-            actions.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+            actions.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
             actions.heightAnchor.constraint(equalToConstant: 22),
-        ])
+        ]
 
-        wrap.addArrangedSubview(card)
-        card.widthAnchor.constraint(equalTo: wrap.widthAnchor).isActive = true
-        if showAzadVoiceCommands && !appleIntelReady {
-            let commands = azadVoiceCommandsPanel()
-            commands.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            wrap.addArrangedSubview(commands)
-            commands.widthAnchor.constraint(equalTo: wrap.widthAnchor).isActive = true
+        if expandCommands {
+            let divider = ThemedLayerView(fill: Design.border)
+            divider.translatesAutoresizingMaskIntoConstraints = false
+
+            let title = Design.label("Voice commands (work without Apple Intelligence)", size: 12, weight: .semibold)
+            let body = Design.wrappingLabel(
+                """
+                After “hey azad …”:
+                · enable / disable number text replacement
+                · enable / disable spoken emoji
+                · enable / disable hesitations
+                · enable / disable trailing space after paste
+                · enable / disable repeated-word removal
+                · enable / disable lowercase (except uppercase words)
+                · add the word <word> to removed words
+                · remove the word <word> from removed words
+
+                Example: “hey azad, disable automatic number text replacement”
+                """,
+                size: 11,
+                color: Design.secondaryText
+            )
+            body.maximumNumberOfLines = 0
+
+            card.addSubview(divider)
+            card.addSubview(title)
+            card.addSubview(body)
+            constraints.append(contentsOf: [
+                divider.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                divider.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                divider.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 10),
+                divider.heightAnchor.constraint(equalToConstant: 1),
+
+                title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                title.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                title.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 10),
+
+                body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
+                body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            ])
+        } else {
+            constraints.append(
+                actions.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)
+            )
         }
-        return wrap
-    }
 
-    private func azadVoiceCommandsPanel() -> NSView {
-        let panel = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
-        panel.layer?.cornerRadius = 8
-        panel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let title = Design.label("Voice commands (work without Apple Intelligence)", size: 12, weight: .semibold)
-        let body = Design.wrappingLabel(
-            """
-            After “hey azad …”:
-            · enable / disable number text replacement
-            · enable / disable spoken emoji
-            · enable / disable hesitations
-            · enable / disable trailing space after paste
-            · enable / disable repeated-word removal
-            · enable / disable lowercase (except uppercase words)
-            · add the word <word> to removed words
-            · remove the word <word> from removed words
-
-            Example: “hey azad, disable automatic number text replacement”
-            """,
-            size: 11,
-            color: Design.secondaryText
-        )
-        body.maximumNumberOfLines = 0
-
-        panel.addSubview(title)
-        panel.addSubview(body)
-        NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14),
-            title.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14),
-            title.topAnchor.constraint(equalTo: panel.topAnchor, constant: 12),
-
-            body.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14),
-            body.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14),
-            body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
-            body.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -12),
-        ])
-        return panel
+        NSLayoutConstraint.activate(constraints)
+        return card
     }
 
     /// Prevent NSStackView from stretching chrome (logo, pill, checkbox) to row height.
