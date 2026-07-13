@@ -117,6 +117,10 @@ MIT. See [LICENSE](LICENSE).
 
 ## Changelog
 
+### 0.5.1 Unreleased
+
+- Added spoken issue numbers: "number three" becomes "#3" (when number conversion is on).
+
 ### 0.5.0
 
 - Live transcription now corrects itself in place as you speak.

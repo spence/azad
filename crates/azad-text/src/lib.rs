@@ -382,6 +382,13 @@ fn replace_english_number_words(text: &str) -> String {
             continue;
         }
 
+        if let Some((end, replacement)) = hash_number_phrase(&tokens, i) {
+            out.push_str(&replacement);
+            i = end + 1;
+            changed = true;
+            continue;
+        }
+
         if let Some((end, replacement)) = identifier_number_phrase(&tokens, i) {
             out.push_str(&replacement);
             i = end + 1;
@@ -408,6 +415,63 @@ fn replace_english_number_words(text: &str) -> String {
     }
 
     if changed { out } else { text.to_string() }
+}
+
+/// Spoken issue/ticket form: "number three" / "number twenty five" / "number 3" → "#3" / "#25".
+/// Single unit digits are allowed here (unlike bare "three", which stays prose) because the leading
+/// "number" is the intentional signal. Ordinals and decimals are left alone.
+fn hash_number_phrase(tokens: &[TextToken<'_>], start: usize) -> Option<(usize, String)> {
+    let start_token = tokens.get(start)?;
+    if !start_token.is_word || !start_token.text.eq_ignore_ascii_case("number") {
+        return None;
+    }
+    let next_word_index = next_whitespace_separated_word(tokens, start)?;
+    let next = tokens[next_word_index];
+    if !next.text.is_empty() && next.text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some((next_word_index, format!("#{}", next.text)));
+    }
+    let (number_end, number) = hash_number_at(tokens, next_word_index)?;
+    Some((number_end, format!("#{number}")))
+}
+
+fn hash_number_at(tokens: &[TextToken<'_>], start: usize) -> Option<(usize, String)> {
+    let candidates = number_candidates(tokens, start)?;
+    // Decimals/ordinals after "number" are not issue IDs — leave the whole phrase for generic
+    // conversion ("number three point five" → "number 3.5", "number twenty first" → "number 21st").
+    // Falling back past those words would yield "#3 point five" / "#20 first".
+    if candidates.iter().any(|(_, words)| {
+        words.iter().any(|word| {
+            word.as_str() == "point"
+                || (ordinal_word_value(word).is_some() && decimal_digit(word).is_none())
+        })
+    }) {
+        return None;
+    }
+    // Longest match first so "number one two three and …" becomes "#123 and …" (trailing "and"
+    // is a number-part for "one hundred and three", so the maximal span can overshoot).
+    candidates
+        .into_iter()
+        .rev()
+        .find_map(|(end, words)| parse_hash_number_words(&words).map(|number| (end, number)))
+}
+
+fn parse_hash_number_words(words: &[String]) -> Option<String> {
+    if words.is_empty() {
+        return None;
+    }
+    if let [word] = words {
+        if let Some(digit) = decimal_digit(word) {
+            return Some(char::from(b'0' + digit).to_string());
+        }
+    }
+    if let Some(digits) = parse_digit_word_sequence(words) {
+        return Some(digits);
+    }
+    let cardinal = parse_cardinal(words)?;
+    if scale_only_magnitude(words) {
+        return None;
+    }
+    Some(cardinal)
 }
 
 /// After spoken-number replacement, rewrite `<number> percent` as `<number>%` (e.g. "12 percent"
@@ -1633,6 +1697,10 @@ mod tests {
             ("V twelve", "V12"),
             ("W three C", "W3C"),
             ("WS two", "WS2"),
+            ("number three", "#3"),
+            ("number twelve", "#12"),
+            ("number twenty five", "#25"),
+            ("number 3", "#3"),
         ] {
             assert_eq!(
                 build_paste_text(spoken, options(false, &[], true, true)),
@@ -1709,6 +1777,75 @@ mod tests {
         assert_eq!(
             build_paste_text("12 percent", options(false, &[], true, false)),
             "12 percent"
+        );
+    }
+
+    #[test]
+    fn number_words_convert_spoken_hash_numbers() {
+        assert_eq!(
+            build_paste_text("see number three", options(false, &[], true, true)),
+            "see #3"
+        );
+        assert_eq!(
+            build_paste_text(
+                "Number twenty five is fixed",
+                options(false, &[], true, true)
+            ),
+            "#25 is fixed"
+        );
+        assert_eq!(
+            build_paste_text(
+                "closed number one two three and number 7.",
+                options(false, &[], true, true)
+            ),
+            "closed #123 and #7."
+        );
+        // multi-word cardinals still land as a single #N
+        assert_eq!(
+            build_paste_text("track number one hundred", options(false, &[], true, true)),
+            "track #100"
+        );
+        assert_eq!(
+            build_paste_text(
+                "see number one hundred and three",
+                options(false, &[], true, true)
+            ),
+            "see #103"
+        );
+    }
+
+    #[test]
+    fn number_words_hash_leaves_non_matches_alone() {
+        // bare "number" with no following quantity
+        assert_eq!(
+            build_paste_text("a number of bugs", options(false, &[], true, true)),
+            "a number of bugs"
+        );
+        // ordinals / decimals are not issue-style numbers
+        assert_eq!(
+            build_paste_text("number first", options(false, &[], true, true)),
+            "number first"
+        );
+        assert_eq!(
+            build_paste_text("number twenty first", options(false, &[], true, true)),
+            "number 21st"
+        );
+        assert_eq!(
+            build_paste_text("number three point five", options(false, &[], true, true)),
+            "number 3.5"
+        );
+        // isolated low number-words still stay prose without the "number" signal
+        assert_eq!(
+            build_paste_text("three bugs", options(false, &[], true, true)),
+            "three bugs"
+        );
+    }
+
+    #[test]
+    fn number_words_hash_requires_the_setting() {
+        assert_eq!(
+            build_paste_text("number three", options(false, &[], true, false)),
+            "number three"
         );
     }
 }
