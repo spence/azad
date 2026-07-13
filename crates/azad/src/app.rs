@@ -8,6 +8,10 @@ use asr::devices::DeviceStateSnapshot;
 use asr::pipeline::{DebugStatsEvent, EngineState};
 use azad_text::{DisplayTextOptions, PasteTextOptions, build_display_text, build_paste_text};
 
+use crate::apple_lm::{
+  self, AvailabilityReport, AvailabilityState, AzadIntent, RemovedWordAction, TextSettingId,
+  TextSettingsSnapshot,
+};
 use crate::config::AzadConfig;
 use crate::connectors;
 use crate::device::{DeviceController, DeviceEvent};
@@ -104,6 +108,8 @@ pub enum AppEvent {
     index: usize,
     enabled: bool,
   },
+  SettingsOpenSystemSettings,
+  SettingsRecheckAppleLm,
   SettingsAddRemovedWord(String),
   SettingsRemoveRemovedWord(String),
   SettingsRefresh,
@@ -411,6 +417,25 @@ struct AppController {
   // Set from `server.ready` when the daemon announces a protocol this build wasn't written
   // against (e.g. a stale daemon binary). Holds the user-facing error; submits fail closed.
   gateway_protocol_mismatch: Option<String>,
+  /// One-shot Hey Azad turn (overlay + apply). Separate from `gateway_conv`.
+  azad_turn: Option<AzadTurn>,
+  /// Cached Apple Intelligence / helper availability for the Connectors pane.
+  apple_lm_availability: AvailabilityReport,
+  /// Last time we probed availability (throttle background rechecks).
+  apple_lm_last_probe: Option<Instant>,
+  /// Clean query waiting for Apple Intelligence to become available.
+  azad_pending_query: Option<String>,
+}
+
+/// One-shot Hey Azad conversation card (not sticky multi-turn).
+#[derive(Debug, Clone)]
+struct AzadTurn {
+  tag_label: &'static str,
+  tag_icon: &'static str,
+  query: String,
+  status: ConvStatus,
+  reply: String,
+  error_msg: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -697,6 +722,13 @@ impl AppController {
       gateway_conn: GatewayConnState::Disconnected,
       gateway_conv: None,
       gateway_protocol_mismatch: None,
+      azad_turn: None,
+      apple_lm_availability: AvailabilityReport {
+        state: AvailabilityState::Unavailable,
+        detail: None,
+      },
+      apple_lm_last_probe: None,
+      azad_pending_query: None,
     }
   }
 
@@ -970,6 +1002,14 @@ impl AppController {
       }
       AppEvent::SettingsToggleConnector { index, enabled } => {
         self.handle_settings_toggle_connector(index, enabled)
+      }
+      AppEvent::SettingsOpenSystemSettings => {
+        platform::open_system_settings();
+      }
+      AppEvent::SettingsRecheckAppleLm => {
+        self.refresh_apple_lm_availability(true);
+        platform::update_settings_window(self.settings_view_model());
+        self.maybe_resume_pending_azad();
       }
       AppEvent::SettingsAddRemovedWord(word) => self.handle_settings_add_removed_word(word),
       AppEvent::SettingsRemoveRemovedWord(word) => self.handle_settings_remove_removed_word(word),
@@ -1563,6 +1603,14 @@ impl AppController {
       self.exit_history_mode();
       return;
     }
+    // Escape ends a Hey Azad one-shot card before gateway teardown.
+    if self.azad_turn.take().is_some() {
+      self.azad_pending_query = None;
+      self.cancelled = true;
+      self.dispatch_hotkey_input(HotkeyInput::OverlayCancelled);
+      self.hide_overlay();
+      return;
+    }
     // Escape ends a gateway conversation: close the thread, tear down the socket, and
     // return capture to the normal rule. Takes precedence over the dictation cancel.
     if let Some(conv) = self.gateway_conv.take() {
@@ -2124,7 +2172,9 @@ impl AppController {
           self.turn_started_at.remove(&turn_id);
           self.raw_handled_turn_id = None;
           if !cleaned.is_empty() && !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-            if self.gateway_should_handle_turn() {
+            if self.azad_should_handle_turn() {
+              self.submit_to_azad(turn_id, &cleaned);
+            } else if self.gateway_should_handle_turn() {
               self.submit_to_gateway(turn_id, &cleaned);
             } else if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
               self.last_pasted_turn_id = Some(turn_id);
@@ -2133,9 +2183,9 @@ impl AppController {
               eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
             }
           }
-          // A live gateway conversation owns the card via `submit_to_gateway`; only fall
-          // back to the listening overlay when no conversation is open.
-          if self.overlay_visible && self.gateway_conv.is_none() {
+          // A live gateway/Azad conversation owns the card; only fall back to listening
+          // when no conversation is open.
+          if self.overlay_visible && self.gateway_conv.is_none() && self.azad_turn.is_none() {
             self.render_listening_overlay();
           }
           return;
@@ -2194,7 +2244,9 @@ impl AppController {
         self.raw_handled_turn_id = None;
         self.latest_final = Some(cleaned.clone());
         if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-          if self.gateway_should_handle_turn() {
+          if self.azad_should_handle_turn() {
+            self.submit_to_azad(turn_id, &cleaned);
+          } else if self.gateway_should_handle_turn() {
             // Route to the gateway instead of pasting; the overlay shows the reply.
             self.submit_to_gateway(turn_id, &cleaned);
           } else {
@@ -2235,11 +2287,9 @@ impl AppController {
           );
         }
         self.engine_state = EngineState::Idle;
-        // A live gateway conversation owns the overlay across session recycles — never hide
-        // it here, or the streaming reply (or the "Thinking…"/error state) vanishes the
-        // instant the engine session ends, which is exactly the "it said Thinking then
-        // disappeared" report. The conversation is torn down only by Escape/close/fatal error.
-        if self.gateway_conv.is_none() {
+        // A live gateway/Azad conversation owns the overlay across session recycles — never
+        // hide it here. Torn down only by Escape/close/fatal error.
+        if self.gateway_conv.is_none() && self.azad_turn.is_none() {
           if !self.cancelled
             && self.latest_seen_turn_id > 0
             && self.last_pasted_turn_id != Some(self.latest_seen_turn_id)
@@ -2596,6 +2646,10 @@ impl AppController {
       .gateway_conv
       .as_ref()
       .is_some_and(|c| matches!(c.status, ConvStatus::Thinking | ConvStatus::Streaming));
+    let azad_busy = self
+      .azad_turn
+      .as_ref()
+      .is_some_and(|t| matches!(t.status, ConvStatus::Thinking | ConvStatus::Streaming));
     self.manual_hold_active
       || self.overlay_visible
       || self.history_browsing
@@ -2604,6 +2658,7 @@ impl AppController {
       || self.pending_always_listening_enabled.is_some()
       || self.pending_device_switch_deadline.is_some()
       || gateway_busy
+      || azad_busy
   }
 
   fn needs_interactive_tick(&self, settings_open: bool) -> bool {
@@ -2643,11 +2698,16 @@ impl AppController {
       self.overlay_visible = true;
     }
 
-    // A live gateway conversation owns the whole card; the finalize spinner/split lanes
-    // are suppressed in favor of the streaming reply.
+    // A live gateway/Azad conversation owns the whole card; the finalize spinner/split
+    // lanes are suppressed in favor of the reply.
     if self.gateway_conv.is_some() {
       platform::hide_overlay_top();
       self.render_conversation_overlay();
+      return;
+    }
+    if self.azad_turn.is_some() {
+      platform::hide_overlay_top();
+      self.render_azad_overlay();
       return;
     }
 
@@ -2691,10 +2751,14 @@ impl AppController {
     if self.accessibility_notice_deadline.is_some() {
       return;
     }
-    // During a gateway conversation, follow-up speech keeps the prior exchange on screen
-    // (the activity wave signals listening) rather than swapping in the plain draft view.
+    // During a gateway/Azad conversation, keep the prior exchange on screen rather than
+    // swapping in the plain draft view.
     if self.gateway_conv.is_some() {
       self.render_conversation_overlay();
+      return;
+    }
+    if self.azad_turn.is_some() {
+      self.render_azad_overlay();
       return;
     }
     let held_active = self.held_top_overlay_active();
@@ -2721,6 +2785,11 @@ impl AppController {
       self.active_connector_tag(),
       self.active_connector_icon(),
     );
+  }
+
+  /// True when this finalized turn must go to Hey Azad (no paste, no gateway).
+  fn azad_should_handle_turn(&self) -> bool {
+    self.active_connector.as_ref().map(|a| a.id) == Some(connectors::AZAD_CONNECTOR_ID)
   }
 
   /// True when this finalized turn must go to the gateway instead of being pasted —
@@ -2839,6 +2908,241 @@ impl AppController {
       self.overlay_visible = true;
     }
     self.render_conversation_overlay();
+  }
+
+  /// Submit a finalized Hey Azad turn: interpret → apply allowlisted intent → overlay.
+  /// Never pastes and never opens the Claude gateway.
+  fn submit_to_azad(&mut self, turn_id: u64, cleaned: &str) {
+    let query = self.strip_active_trigger(cleaned).trim().to_string();
+    let (tag_label, tag_icon) = self
+      .active_connector
+      .as_ref()
+      .map(|a| (a.tag_label, a.tag_icon))
+      .unwrap_or(("Azad", ""));
+
+    self.refresh_apple_lm_availability(false);
+    let avail = self.apple_lm_availability.state;
+
+    // Device ineligible: no settings changes and no Settings CTA.
+    if matches!(avail, AvailabilityState::DeviceNotEligible) {
+      self.azad_turn = Some(AzadTurn {
+        tag_label,
+        tag_icon,
+        query: query.clone(),
+        status: ConvStatus::Error,
+        reply: String::new(),
+        error_msg: avail.setup_overlay_message().to_string(),
+      });
+      self.last_pasted_turn_id = Some(turn_id);
+      self.latest_final = None;
+      self.show_azad_overlay();
+      return;
+    }
+
+    // Apple Intelligence off / still downloading: show setup, keep pending, still try
+    // the closed-catalog heuristic so common phrases work while the model installs.
+    if matches!(
+      avail,
+      AvailabilityState::AppleIntelligenceNotEnabled | AvailabilityState::ModelNotReady
+    ) {
+      if !query.is_empty() {
+        self.azad_pending_query = Some(query.clone());
+      }
+    }
+
+    self.azad_turn = Some(AzadTurn {
+      tag_label,
+      tag_icon,
+      query: if query.is_empty() { "hey azad".to_string() } else { query.clone() },
+      status: ConvStatus::Thinking,
+      reply: String::new(),
+      error_msg: String::new(),
+    });
+    self.last_pasted_turn_id = Some(turn_id);
+    self.latest_final = None;
+    self.show_azad_overlay();
+
+    let snapshot = self.text_settings_snapshot();
+    let intent = apple_lm::interpret_query(&query, &snapshot);
+    eprintln!(
+      "AZAD_AZAD_LM event=interpret turn_id={turn_id} avail={} query={:?} intent={:?}",
+      avail.as_str(),
+      query,
+      intent
+    );
+
+    // Prefer setup guidance when AI isn't ready and the phrase wasn't recognized.
+    if !intent.is_actionable()
+      && matches!(
+        avail,
+        AvailabilityState::AppleIntelligenceNotEnabled | AvailabilityState::ModelNotReady
+      )
+    {
+      if let Some(turn) = self.azad_turn.as_mut() {
+        turn.status = ConvStatus::Error;
+        turn.error_msg = avail.setup_overlay_message().to_string();
+        turn.reply.clear();
+      }
+      self.show_azad_overlay();
+      return;
+    }
+
+    self.apply_azad_intent(intent);
+    self.show_azad_overlay();
+  }
+
+  fn text_settings_snapshot(&self) -> TextSettingsSnapshot {
+    TextSettingsSnapshot {
+      trailing_space: self.append_trailing_space_on_paste,
+      deduplicate_words: self.deduplicate_words_on_paste,
+      convert_number_words: self.convert_number_words_on_paste,
+      convert_spoken_emoji: self.convert_spoken_emoji_on_paste,
+      lowercase_except_uppercase: self.lowercase_except_uppercase_words_on_paste,
+      remove_hesitations: self.remove_hesitations_on_paste,
+      removed_words: self.removed_words.clone(),
+    }
+  }
+
+  fn apply_azad_intent(&mut self, intent: AzadIntent) {
+    match &intent {
+      AzadIntent::SetTextSetting { setting, enabled } => {
+        let enabled = *enabled;
+        match setting {
+          TextSettingId::TrailingSpace => {
+            self.handle_settings_toggle_append_trailing_space(enabled);
+          }
+          TextSettingId::DeduplicateWords => {
+            self.handle_settings_toggle_deduplicate_words(enabled);
+          }
+          TextSettingId::ConvertNumberWords => {
+            self.handle_settings_toggle_convert_number_words(enabled);
+          }
+          TextSettingId::ConvertSpokenEmoji => {
+            self.handle_settings_toggle_convert_spoken_emoji(enabled);
+          }
+          TextSettingId::LowercaseExceptUppercase => {
+            self.handle_settings_toggle_lowercase_except_uppercase_words(enabled);
+          }
+          TextSettingId::RemoveHesitations => {
+            self.handle_settings_toggle_remove_hesitations(enabled);
+          }
+        }
+        eprintln!(
+          "AZAD_AZAD_LM event=applied kind=set_text_setting setting={:?} enabled={enabled}",
+          setting
+        );
+        if let Some(turn) = self.azad_turn.as_mut() {
+          turn.status = ConvStatus::Done;
+          turn.reply = intent.confirmation_label();
+          turn.error_msg.clear();
+        }
+        self.azad_pending_query = None;
+      }
+      AzadIntent::ManageRemovedWord { action, word } => {
+        match action {
+          RemovedWordAction::Add => self.handle_settings_add_removed_word(word.clone()),
+          RemovedWordAction::Remove => self.handle_settings_remove_removed_word(word.clone()),
+        }
+        eprintln!(
+          "AZAD_AZAD_LM event=applied kind=manage_removed_word action={action:?} word={word:?}"
+        );
+        if let Some(turn) = self.azad_turn.as_mut() {
+          turn.status = ConvStatus::Done;
+          turn.reply = intent.confirmation_label();
+          turn.error_msg.clear();
+        }
+        self.azad_pending_query = None;
+      }
+      AzadIntent::Unsupported { message } => {
+        if let Some(turn) = self.azad_turn.as_mut() {
+          turn.status = ConvStatus::Error;
+          turn.error_msg = message.clone();
+          turn.reply.clear();
+        }
+      }
+      AzadIntent::Help => {
+        if let Some(turn) = self.azad_turn.as_mut() {
+          turn.status = ConvStatus::Done;
+          turn.reply = intent.confirmation_label();
+          turn.error_msg.clear();
+        }
+      }
+    }
+  }
+
+  fn show_azad_overlay(&mut self) {
+    if self.azad_turn.is_none() {
+      return;
+    }
+    if !self.overlay_visible {
+      platform::show_overlay();
+      self.overlay_visible = true;
+    }
+    self.render_azad_overlay();
+  }
+
+  fn render_azad_overlay(&self) {
+    let Some(turn) = self.azad_turn.as_ref() else {
+      return;
+    };
+    let busy_phase = matches!(turn.status, ConvStatus::Thinking | ConvStatus::Streaming)
+      .then_some(self.busy_border_phase);
+    let query = self.stream_display_text_without_trigger_strip(&turn.query);
+    platform::set_overlay_conversation_content(
+      turn.tag_label,
+      turn.tag_icon,
+      &query,
+      &turn.reply,
+      turn.status,
+      &turn.error_msg,
+      &self.activity_history,
+      busy_phase,
+    );
+  }
+
+  fn refresh_apple_lm_availability(&mut self, force: bool) {
+    const MIN_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+    if !force {
+      if let Some(last) = self.apple_lm_last_probe {
+        if last.elapsed() < MIN_PROBE_INTERVAL {
+          return;
+        }
+      }
+    }
+    self.apple_lm_availability = apple_lm::probe_availability();
+    self.apple_lm_last_probe = Some(Instant::now());
+    eprintln!(
+      "AZAD_AZAD_LM event=availability state={} detail={:?}",
+      self.apple_lm_availability.state.as_str(),
+      self.apple_lm_availability.detail
+    );
+  }
+
+  fn maybe_resume_pending_azad(&mut self) {
+    if !matches!(
+      self.apple_lm_availability.state,
+      AvailabilityState::Available | AvailabilityState::Unavailable
+    ) {
+      return;
+    }
+    let Some(query) = self.azad_pending_query.take() else {
+      return;
+    };
+    // Synthetic turn id 0: already marked last_pasted; just re-run interpret/apply.
+    let (tag_label, tag_icon) = ("Azad", "");
+    self.azad_turn = Some(AzadTurn {
+      tag_label,
+      tag_icon,
+      query: query.clone(),
+      status: ConvStatus::Thinking,
+      reply: String::new(),
+      error_msg: String::new(),
+    });
+    self.show_azad_overlay();
+    let snapshot = self.text_settings_snapshot();
+    let intent = apple_lm::interpret_query(&query, &snapshot);
+    self.apply_azad_intent(intent);
+    self.show_azad_overlay();
   }
 
   fn render_conversation_overlay(&self) {
@@ -3192,12 +3496,8 @@ impl AppController {
 
   #[track_caller]
   fn hide_overlay(&mut self) {
-    // A live gateway conversation owns the overlay: it stays visible — including its error
-    // state — until the user dismisses it with Esc, which tears the conversation down first
-    // (`handle_overlay_cancel` takes `gateway_conv` before calling here). Every other hide
-    // path (manual-hold release, session recycle, finalize cleanup) is a no-op while a
-    // conversation is open, so a failed run can never make the card silently disappear.
-    if self.gateway_conv.is_some() {
+    // A live gateway/Azad conversation owns the overlay until Esc tears it down first.
+    if self.gateway_conv.is_some() || self.azad_turn.is_some() {
       return;
     }
     self.clear_overlay_pending();
@@ -3317,8 +3617,12 @@ impl AppController {
     self.dispatch_hotkey_input(HotkeyInput::SpeechFinalized);
     self.latest_final = Some(raw_text.clone());
 
-    // Opt+Enter while a gateway turn/conversation is live submits the query instead of
-    // raw-pasting; keep the overlay up and capture on.
+    // Opt+Enter while a connector turn is live submits instead of raw-pasting.
+    if self.azad_should_handle_turn() {
+      self.submit_to_azad(turn_id, &raw_text);
+      self.maybe_start_deferred_vad_turn();
+      return true;
+    }
     if self.gateway_should_handle_turn() {
       self.submit_to_gateway(turn_id, &raw_text);
       self.maybe_start_deferred_vad_turn();

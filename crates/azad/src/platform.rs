@@ -129,6 +129,20 @@ const OVERLAY_CONNECTOR_CHIP_ICON_GAP: f64 = 5.0;
 const CLAUDE_BRAND_R: f64 = 0.851;
 const CLAUDE_BRAND_G: f64 = 0.467;
 const CLAUDE_BRAND_B: f64 = 0.341;
+// Azad brand accent for Hey Azad conversation cards (distinct from Claude terracotta).
+const AZAD_BRAND_R: f64 = 0.290;
+const AZAD_BRAND_G: f64 = 0.478;
+const AZAD_BRAND_B: f64 = 0.922;
+
+fn connector_brand_rgb(connector_tag: &str) -> (f64, f64, f64) {
+  if connector_tag.eq_ignore_ascii_case("azad")
+    || connector_tag.to_ascii_lowercase().starts_with("azad")
+  {
+    (AZAD_BRAND_R, AZAD_BRAND_G, AZAD_BRAND_B)
+  } else {
+    (CLAUDE_BRAND_R, CLAUDE_BRAND_G, CLAUDE_BRAND_B)
+  }
+}
 
 // Conversation-mode layout. The query is capped to a few lines (head-kept); the divider
 // is a thin rule with gaps above/below; the reply consumes the remaining space up to the
@@ -876,6 +890,31 @@ pub fn reset_overlay_conversation_views() {
       let _: () = msg_send![refs.conv_reply_text, setString: NSString::alloc(nil).init_str("")];
     }
     hide_conversation_views(refs);
+  }
+}
+
+/// Open the System Settings app via the public NSWorkspace API (no deep-link to a pane).
+pub fn open_system_settings() {
+  unsafe {
+    let _pool = NSAutoreleasePool::new(nil);
+    let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+    if workspace == nil {
+      return;
+    }
+    let bundle_id = NSString::alloc(nil).init_str("com.apple.systempreferences");
+    // Prefer urlForApplication(withBundleIdentifier:) when available.
+    let url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier: bundle_id];
+    if url != nil {
+      let _: bool = msg_send![workspace, openURL: url];
+      return;
+    }
+    // Fallback: launch by bundle id via open command path isn't needed if URL works;
+    // try the modern System Settings id as well.
+    let modern = NSString::alloc(nil).init_str("com.apple.systempreferences");
+    let modern_url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier: modern];
+    if modern_url != nil {
+      let _: bool = msg_send![workspace, openURL: modern_url];
+    }
   }
 }
 
@@ -2665,6 +2704,14 @@ unsafe fn layout_connector_chip(
     NSSize::new(chip_w, OVERLAY_CONNECTOR_CHIP_HEIGHT),
   );
   let _: () = msg_send![refs.connector_chip, setFrame: chip_frame];
+  // Re-tint chip for Claude vs Azad (chip is created once with Claude color at bootstrap).
+  let (br, bg, bb) = connector_brand_rgb(connector_tag);
+  let layer: id = msg_send![refs.connector_chip, layer];
+  if layer != nil {
+    let chip_bg = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, br, bg, bb, 0.90);
+    let chip_bg_cg: id = msg_send![chip_bg, CGColor];
+    let _: () = msg_send![layer, setBackgroundColor: chip_bg_cg];
+  }
   // Unhide the container itself, not just its children: a hidden NSView renders neither
   // its own layer background nor its subviews.
   let _: () = msg_send![refs.connector_chip, setHidden: NO];
@@ -2837,13 +2884,8 @@ unsafe fn render_overlay_conversation(
     if !same {
       let _: () = msg_send![refs.conv_reply_text, setString: new_reply];
       let reply_font: id = msg_send![class!(NSFont), systemFontOfSize: OVERLAY_TEXT_FONT_SIZE];
-      let reply_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(
-        nil,
-        CLAUDE_BRAND_R,
-        CLAUDE_BRAND_G,
-        CLAUDE_BRAND_B,
-        1.0,
-      );
+      let (br, bg, bb) = connector_brand_rgb(connector_tag);
+      let reply_color = NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, br, bg, bb, 1.0);
       let _: () = msg_send![refs.conv_reply_text, setFont: reply_font];
       let _: () = msg_send![refs.conv_reply_text, setTextColor: reply_color];
       reply_changed = true;
@@ -2947,13 +2989,8 @@ unsafe fn render_overlay_conversation(
         0.95,
       )
     } else {
-      NSColor::colorWithCalibratedRed_green_blue_alpha_(
-        nil,
-        CLAUDE_BRAND_R,
-        CLAUDE_BRAND_G,
-        CLAUDE_BRAND_B,
-        0.95,
-      )
+      let (br, bg, bb) = connector_brand_rgb(connector_tag);
+      NSColor::colorWithCalibratedRed_green_blue_alpha_(nil, br, bg, bb, 0.95)
     };
     let _: () = msg_send![refs.conv_status_label, setTextColor: color];
     let status_y = (lower_top - status_h).max(OVERLAY_PAD_BOTTOM + wave_reserve);

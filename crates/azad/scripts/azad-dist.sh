@@ -61,6 +61,9 @@ MLX_HELPER_DIR="${ROOT_DIR}/crates/azad-mlx-asr"
 MLX_HELPER_BUILD_DIR="${ROOT_DIR}/target/swift/azad-mlx-asr"
 MLX_HELPER_SOURCE=""
 MLX_METALLIB_SOURCE=""
+APPLE_LM_DIR="${ROOT_DIR}/crates/azad-apple-lm"
+APPLE_LM_BUILD_DIR="${ROOT_DIR}/target/swift/azad-apple-lm"
+APPLE_LM_SOURCE=""
 UI_DIR="${ROOT_DIR}/crates/azad-ui"
 UI_BUILD_DIR="${ROOT_DIR}/target/swift/azad-ui"
 UI_LIB_SOURCE=""
@@ -112,6 +115,31 @@ build_mlx_helper() {
   fi
 
   build_mlx_metallib
+}
+
+build_apple_lm_helper() {
+  if [[ ! -f "${APPLE_LM_DIR}/Package.swift" ]]; then
+    echo "warn: azad-apple-lm package missing; continuing without helper" >&2
+    APPLE_LM_SOURCE=""
+    return 0
+  fi
+  if ! command -v swift >/dev/null 2>&1; then
+    echo "warn: swift not found; continuing without azad-apple-lm" >&2
+    APPLE_LM_SOURCE=""
+    return 0
+  fi
+  "${ROOT_DIR}/crates/azad-mlx-asr/scripts/swift-build-release.sh" \
+    "$APPLE_LM_DIR" \
+    "$APPLE_LM_BUILD_DIR" || {
+      echo "warn: azad-apple-lm build failed; continuing without helper" >&2
+      APPLE_LM_SOURCE=""
+      return 0
+    }
+  if [[ -x "${APPLE_LM_BUILD_DIR}/release/azad-apple-lm" ]]; then
+    APPLE_LM_SOURCE="${APPLE_LM_BUILD_DIR}/release/azad-apple-lm"
+  else
+    APPLE_LM_SOURCE=""
+  fi
 }
 
 build_ui_library() {
@@ -237,6 +265,9 @@ build_ui_library
 echo "==> Building MLX ASR helper"
 build_mlx_helper
 
+echo "==> Building Apple LM helper"
+build_apple_lm_helper
+
 echo "==> Assembling app bundle"
 mkdir -p "$DIST_DIR"
 touch "${DIST_DIR}/.metadata_never_index"
@@ -246,6 +277,9 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 install -m 755 "$BIN_SOURCE" "${APP_MACOS}/azad"
 install -m 755 "$UI_LIB_SOURCE" "${APP_MACOS}/libAzadUI.dylib"
 install -m 755 "$MLX_HELPER_SOURCE" "${APP_MACOS}/azad-mlx-asr"
+if [[ -n "$APPLE_LM_SOURCE" ]]; then
+  install -m 755 "$APPLE_LM_SOURCE" "${APP_MACOS}/azad-apple-lm"
+fi
 install -m 644 "$MLX_METALLIB_SOURCE" "${APP_MACOS}/mlx.metallib"
 install -m 644 "${CRATE_DIR}/assets/azad-black.png" "${APP_RESOURCES}/azad-black.png"
 install -m 644 "${CRATE_DIR}/assets/azad-white.png" "${APP_RESOURCES}/azad-white.png"

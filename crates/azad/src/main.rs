@@ -3,6 +3,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 mod app;
+mod apple_lm;
 mod config;
 mod connectors;
 mod device;

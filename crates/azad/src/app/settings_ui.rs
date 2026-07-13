@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::connectors;
 use crate::metrics_log;
 use crate::model_download;
 use crate::models::{self, PackStatus};
@@ -309,6 +310,17 @@ impl AppController {
   }
 
   pub(super) fn handle_settings_toggle_connector(&mut self, index: usize, enabled: bool) {
+    let Some(id) = self.connectors.get(index).map(|c| c.id) else {
+      return;
+    };
+    // Azad: refuse enable when the device is ineligible for Apple Intelligence.
+    if enabled && id == connectors::AZAD_CONNECTOR_ID {
+      self.refresh_apple_lm_availability(true);
+      if !self.apple_lm_availability.state.can_enable_connector() {
+        platform::update_settings_window(self.settings_view_model());
+        return;
+      }
+    }
     let Some(connector) = self.connectors.get_mut(index) else {
       return;
     };
@@ -336,6 +348,7 @@ impl AppController {
   }
 
   pub(super) fn handle_settings_refresh(&mut self) {
+    self.refresh_apple_lm_availability(true);
     platform::update_settings_window(self.settings_view_model());
   }
 
@@ -458,17 +471,42 @@ impl AppController {
         self.download_handle.as_ref().is_some_and(|handle| handle.is_paused()),
       ),
       removed_words: self.removed_words.clone(),
-      connectors: self
-        .connectors
-        .iter()
-        .map(|c| ConnectorRowVM {
-          display_name: c.display_name.to_string(),
-          trigger: c.trigger.to_string(),
-          enabled: c.enabled,
-        })
-        .collect(),
+      connectors: self.connector_rows_vm(),
       build_info: format!("build {} · {}", env!("AZAD_BUILD_GIT_SHA"), env!("AZAD_BUILD_TIME")),
     }
+  }
+
+  fn connector_rows_vm(&self) -> Vec<ConnectorRowVM> {
+    self
+      .connectors
+      .iter()
+      .map(|c| {
+        if c.id == connectors::AZAD_CONNECTOR_ID {
+          let state = self.apple_lm_availability.state;
+          ConnectorRowVM {
+            id: c.id.to_string(),
+            display_name: c.display_name.to_string(),
+            trigger: c.trigger.to_string(),
+            enabled: c.enabled,
+            can_enable: state.can_enable_connector(),
+            availability_state: state.as_str().to_string(),
+            availability_message: state.message().to_string(),
+            show_open_settings: state.show_open_settings(),
+          }
+        } else {
+          ConnectorRowVM {
+            id: c.id.to_string(),
+            display_name: c.display_name.to_string(),
+            trigger: c.trigger.to_string(),
+            enabled: c.enabled,
+            can_enable: true,
+            availability_state: "available".to_string(),
+            availability_message: String::new(),
+            show_open_settings: false,
+          }
+        }
+      })
+      .collect()
   }
 }
 

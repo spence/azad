@@ -62,9 +62,18 @@ pub struct OnboardingViewModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorRowVM {
+  pub id: String,
   pub display_name: String,
   pub trigger: String,
   pub enabled: bool,
+  /// Whether the enable checkbox should accept input.
+  pub can_enable: bool,
+  /// Machine-readable availability (`available`, `appleIntelligenceNotEnabled`, …).
+  pub availability_state: String,
+  /// Short status line under the connector row.
+  pub availability_message: String,
+  /// Show the public “Open System Settings” button.
+  pub show_open_settings: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

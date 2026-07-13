@@ -65,6 +65,9 @@ APP_MACOS_DIR="${APP_CONTENTS_DIR}/MacOS"
 APP_RESOURCES_DIR="${APP_CONTENTS_DIR}/Resources"
 MLX_HELPER_DIR="${ROOT_DIR}/crates/azad-mlx-asr"
 MLX_HELPER_BUILD_DIR="${ROOT_DIR}/target/swift/azad-mlx-asr"
+APPLE_LM_DIR="${ROOT_DIR}/crates/azad-apple-lm"
+APPLE_LM_BUILD_DIR="${ROOT_DIR}/target/swift/azad-apple-lm"
+APPLE_LM_SOURCE=""
 MLX_HELPER_SOURCE=""
 MLX_METALLIB_SOURCE=""
 UI_DIR="${ROOT_DIR}/crates/azad-ui"
@@ -158,6 +161,31 @@ build_mlx_helper() {
   fi
 
   build_mlx_metallib
+}
+
+build_apple_lm_helper() {
+  if [[ ! -f "${APPLE_LM_DIR}/Package.swift" ]]; then
+    echo "warn: azad-apple-lm package missing at ${APPLE_LM_DIR}; skipping" >&2
+    APPLE_LM_SOURCE=""
+    return 0
+  fi
+  if ! command -v swift >/dev/null 2>&1; then
+    echo "warn: swift not found; skipping azad-apple-lm" >&2
+    APPLE_LM_SOURCE=""
+    return 0
+  fi
+  "${ROOT_DIR}/crates/azad-mlx-asr/scripts/swift-build-release.sh" \
+    "$APPLE_LM_DIR" \
+    "$APPLE_LM_BUILD_DIR" || {
+      echo "warn: azad-apple-lm build failed; continuing without helper" >&2
+      APPLE_LM_SOURCE=""
+      return 0
+    }
+  if [[ -x "${APPLE_LM_BUILD_DIR}/release/azad-apple-lm" ]]; then
+    APPLE_LM_SOURCE="${APPLE_LM_BUILD_DIR}/release/azad-apple-lm"
+  else
+    APPLE_LM_SOURCE=""
+  fi
 }
 
 build_ui_library() {
@@ -429,12 +457,16 @@ cmd_install() {
   build_binary
   build_ui_library
   build_mlx_helper
+  build_apple_lm_helper
 
   mkdir -p "$APP_MACOS_DIR" "$APP_RESOURCES_DIR"
   install -m 755 "$BIN_SOURCE" "${APP_MACOS_DIR}/azad"
   install -m 755 "$UI_LIB_SOURCE" "${APP_MACOS_DIR}/libAzadUI.dylib"
   if [[ -n "$MLX_HELPER_SOURCE" ]]; then
     install -m 755 "$MLX_HELPER_SOURCE" "${APP_MACOS_DIR}/azad-mlx-asr"
+  fi
+  if [[ -n "$APPLE_LM_SOURCE" ]]; then
+    install -m 755 "$APPLE_LM_SOURCE" "${APP_MACOS_DIR}/azad-apple-lm"
   fi
   if [[ -n "$MLX_METALLIB_SOURCE" ]]; then
     install -m 644 "$MLX_METALLIB_SOURCE" "${APP_MACOS_DIR}/mlx.metallib"

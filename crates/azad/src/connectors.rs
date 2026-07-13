@@ -34,16 +34,33 @@ pub struct ConnectorMatch {
   pub clean_query: String,
 }
 
-/// The built-in connector registry. Seeded with one entry; add more here.
+/// Built-in Claude connector id (Local Agent Gateway).
+pub const CLAUDE_CONNECTOR_ID: &str = "claude";
+/// Built-in Azad connector id (on-device Apple Intelligence tools).
+pub const AZAD_CONNECTOR_ID: &str = "azad";
+
+/// The built-in connector registry. Order is stable (settings UI indexes into it).
+/// Claude defaults on; Azad defaults off until the user enables it.
 pub fn builtin_connectors() -> Vec<Connector> {
-  vec![Connector {
-    id: "claude",
-    display_name: "Claude",
-    trigger: "hey claude",
-    tag_label: "Claude",
-    tag_icon: "claude.svg",
-    enabled: true,
-  }]
+  vec![
+    Connector {
+      id: CLAUDE_CONNECTOR_ID,
+      display_name: "Claude",
+      trigger: "hey claude",
+      tag_label: "Claude",
+      tag_icon: "claude.svg",
+      enabled: true,
+    },
+    Connector {
+      id: AZAD_CONNECTOR_ID,
+      display_name: "Azad",
+      trigger: "hey azad",
+      tag_label: "Azad",
+      // Text-only chip until a dedicated template asset is bundled.
+      tag_icon: "",
+      enabled: false,
+    },
+  ]
 }
 
 /// First enabled connector whose trigger leads the utterance, with its clean query.
@@ -165,5 +182,39 @@ mod tests {
   #[test]
   fn detect_returns_none_without_trigger() {
     assert_eq!(detect("open the door please", &connectors()), None);
+  }
+
+  #[test]
+  fn azad_defaults_disabled_and_does_not_match() {
+    let cs = connectors();
+    let azad = cs.iter().find(|c| c.id == AZAD_CONNECTOR_ID).expect("azad connector");
+    assert!(!azad.enabled);
+    assert_eq!(detect("hey azad disable numbers", &cs), None);
+  }
+
+  #[test]
+  fn azad_matches_when_enabled() {
+    let mut cs = connectors();
+    for c in &mut cs {
+      if c.id == AZAD_CONNECTOR_ID {
+        c.enabled = true;
+      }
+    }
+    let m = detect("Hey Azad, disable number text replacement", &cs).expect("should match");
+    assert_eq!(m.id, AZAD_CONNECTOR_ID);
+    assert_eq!(m.tag_label, "Azad");
+    assert_eq!(m.clean_query, "disable number text replacement");
+  }
+
+  #[test]
+  fn claude_and_azad_triggers_do_not_collide() {
+    let mut cs = connectors();
+    for c in &mut cs {
+      c.enabled = true;
+    }
+    let claude = detect("hey claude summarize this", &cs).expect("claude");
+    assert_eq!(claude.id, CLAUDE_CONNECTOR_ID);
+    let azad = detect("hey azad turn off emoji", &cs).expect("azad");
+    assert_eq!(azad.id, AZAD_CONNECTOR_ID);
   }
 }

@@ -292,6 +292,8 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
       index: index(),
       enabled: bool_value(),
     }),
+    ("settings", "openSystemSettings") => UiEventAction::Send(AppEvent::SettingsOpenSystemSettings),
+    ("settings", "recheckAppleLm") => UiEventAction::Send(AppEvent::SettingsRecheckAppleLm),
     ("settings", "addRemovedWord") => {
       UiEventAction::Send(AppEvent::SettingsAddRemovedWord(event.value.clone().unwrap_or_default()))
     }
@@ -366,6 +368,8 @@ mod tests {
       ("settings", "toggleRemoveHesitations"),
       ("settings", "setListenModifier"),
       ("settings", "toggleConnector"),
+      ("settings", "openSystemSettings"),
+      ("settings", "recheckAppleLm"),
       ("settings", "addRemovedWord"),
       ("settings", "removeRemovedWord"),
       ("settings", "refresh"),
