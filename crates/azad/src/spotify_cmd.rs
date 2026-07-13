@@ -65,7 +65,7 @@ impl SpotifyIntent {
       Self::VolumeUp => "Turning volume up".into(),
       Self::VolumeDown => "Turning volume down".into(),
       Self::Help => {
-        "Try: pause, next, play <song>, play <artist>, play radio for <song>, play workout music."
+        "Try: play <song>, play song <title>, play artist <name>, play radio for <song>, play workout music."
           .into()
       }
       Self::Unsupported { message } => message.clone(),
@@ -148,17 +148,29 @@ pub fn interpret_spotify_query(query: &str) -> SpotifyIntent {
     }
   }
 
-  // "play this is <artist>" / "this is <artist>"
-  if let Some(rest) = strip_one_of(&q, &["play this is ", "this is "]) {
+  // Explicit This Is / artist continuous listen (never inferred from bare "play X").
+  // "play this is BTS", "this is oasis", "play artist BTS", "play music by oasis"
+  if let Some(rest) = strip_one_of(
+    &q,
+    &[
+      "play this is ",
+      "this is ",
+      "play the artist ",
+      "play artist ",
+      "play music by ",
+      "play music from ",
+      "music by ",
+    ],
+  ) {
     if !rest.is_empty() {
       return SpotifyIntent::PlayArtist { artist: rest.to_string() };
     }
   }
 
-  // "play the artist <name>" / "play artist <name>"
-  if let Some(rest) = strip_one_of(&q, &["play the artist ", "play artist "]) {
+  // Explicit song: "play song butter", "play the song like a stone"
+  if let Some(rest) = strip_one_of(&q, &["play the song ", "play song "]) {
     if !rest.is_empty() {
-      return SpotifyIntent::PlayArtist { artist: rest.to_string() };
+      return SpotifyIntent::PlayQuery { query: rest.to_string() };
     }
   }
 
@@ -167,7 +179,7 @@ pub fn interpret_spotify_query(query: &str) -> SpotifyIntent {
     return SpotifyIntent::PlayGenre { genre };
   }
 
-  // "play <query>" — song (with "by") vs artist vs free-text track.
+  // "play <query>" — song by default (title, or "title by artist").
   if let Some(rest) = q.strip_prefix("play ") {
     let rest = rest.trim();
     if !rest.is_empty() {
@@ -175,36 +187,28 @@ pub fn interpret_spotify_query(query: &str) -> SpotifyIntent {
     }
   }
 
-  // Bare remainder without "play".
+  // Bare remainder without "play" — still song-default (e.g. latched "butter by bts").
   if q.split_whitespace().count() >= 1 {
     return classify_play_rest(&q);
   }
 
   SpotifyIntent::Unsupported {
-    message: "Try pause, next, play <song>, play <artist>, or play radio for <song>.".into(),
+    message: "Try: play <song>, play song <title>, play artist <name>, or play radio for <song>."
+      .into(),
   }
 }
 
-/// After stripping a leading "play ", decide track vs artist vs genre.
+/// After stripping a leading "play ", classify the remainder.
+///
+/// Product rule (explicit dialect): bare `play X` is always a **song** search.
+/// This Is / artist requires an explicit prefix handled above.
 fn classify_play_rest(rest: &str) -> SpotifyIntent {
-  // Explicit song form always wins.
-  if rest.contains(" by ") {
-    return SpotifyIntent::PlayQuery { query: rest.to_string() };
-  }
-  // "play workout music" already handled before we get here with "play " prefix —
-  // re-check bare rest for "workout music" style.
+  // Genre still wins when the whole remainder is a known mood phrase.
   if let Some(genre) = match_genre(&format!("play {rest}")) {
     return SpotifyIntent::PlayGenre { genre };
   }
   if let Some(genre) = match_genre(rest) {
     return SpotifyIntent::PlayGenre { genre };
-  }
-
-  // Short-ish name without "by": treat as artist → This Is {Artist}.
-  // Long free text is more often a song title.
-  let tokens = rest.split_whitespace().count();
-  if tokens >= 1 && tokens <= 4 {
-    return SpotifyIntent::PlayArtist { artist: rest.to_string() };
   }
   SpotifyIntent::PlayQuery { query: rest.to_string() }
 }
@@ -355,26 +359,47 @@ mod tests {
   }
 
   #[test]
-  fn play_song_with_by_is_track() {
+  fn play_song_forms_are_track() {
     assert_eq!(
       interpret_spotify_query("play them changes by thundercat"),
       SpotifyIntent::PlayQuery { query: "them changes by thundercat".into() }
     );
+    // Bare "play X" is song-default — never This Is.
+    assert_eq!(
+      interpret_spotify_query("play bts"),
+      SpotifyIntent::PlayQuery { query: "bts".into() }
+    );
+    assert_eq!(
+      interpret_spotify_query("play butter"),
+      SpotifyIntent::PlayQuery { query: "butter".into() }
+    );
+    assert_eq!(
+      interpret_spotify_query("play song like a stone"),
+      SpotifyIntent::PlayQuery { query: "like a stone".into() }
+    );
   }
 
   #[test]
-  fn play_artist_is_this_is_playlist() {
+  fn play_artist_requires_explicit_phrase() {
     assert_eq!(
-      interpret_spotify_query("play bts"),
+      interpret_spotify_query("play artist bts"),
       SpotifyIntent::PlayArtist { artist: "bts".into() }
     );
     assert_eq!(
-      interpret_spotify_query("play audio slave"),
+      interpret_spotify_query("play the artist audio slave"),
       SpotifyIntent::PlayArtist { artist: "audio slave".into() }
     );
     assert_eq!(
       interpret_spotify_query("play this is oasis"),
       SpotifyIntent::PlayArtist { artist: "oasis".into() }
+    );
+    assert_eq!(
+      interpret_spotify_query("this is bts"),
+      SpotifyIntent::PlayArtist { artist: "bts".into() }
+    );
+    assert_eq!(
+      interpret_spotify_query("play music by audioslave"),
+      SpotifyIntent::PlayArtist { artist: "audioslave".into() }
     );
   }
 

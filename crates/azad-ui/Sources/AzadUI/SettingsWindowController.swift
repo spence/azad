@@ -753,13 +753,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 """
                 After “hey spotify …” (or “he spotify …”):
                 · pause / play / next / previous
-                · play <song> by <artist>
-                · play <artist>  → This Is {Artist} playlist
+                · play <song>  or  play <song> by <artist>  → play that track
+                · play song <title>  → same (explicit)
+                · play artist <name>  or  play this is <name>  → This Is playlist
+                · play music by <name>  → This Is playlist
                 · play radio / radio for <song>
                 · play workout music / lo-fi / chill / …
                 · what song is this / identify (Shazam — coming soon)
                 · volume up / volume down
-                · current / what’s playing
                 """,
                 size: 11,
                 color: Design.secondaryText
