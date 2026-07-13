@@ -1,0 +1,18 @@
+# Spotify Web API credentials for Hey Spotify catalog search.
+#
+# Setup:
+#   1. Create a free app at https://developer.spotify.com/dashboard
+#   2. Copy this file to `spotify.toml` in the repo root (gitignored), OR to:
+#        ~/Library/Application Support/Azad/spotify.toml
+#   3. Fill in client_id and client_secret from the Dashboard.
+#   4. Restart Azad (`just restart` from crates/azad).
+#
+# Optional override: set AZAD_SPOTIFY_CONFIG to an absolute path to a TOML file.
+# Env fallbacks: AZAD_SPOTIFY_CLIENT_ID / AZAD_SPOTIFY_CLIENT_SECRET
+#                (or SPOTIPY_CLIENT_ID / SPOTIPY_CLIENT_SECRET)
+#
+# These credentials use the Client Credentials flow (server-to-server search only).
+# Playback still goes through Spotify.app via AppleScript — not the Web API player.
+
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"

@@ -7,6 +7,9 @@ dist-local/
 .codesign.env
 .release.env
 
+# Local Spotify Developer credentials (see spotify.example.toml).
+spotify.toml
+
 # Local legacy checkouts; the publishable workspace does not depend on them.
 crates/asr-rs/
 crates/parakeet-rs/

@@ -2,11 +2,12 @@
 //!
 //! Transport and play-by-URI use AppleScript against the desktop Spotify app
 //! (`com.spotify.client`). Catalog search prefers the Spotify Web API (client
-//! credentials) when credentials are available via env or
-//! `~/Library/Application Support/Azad/spotify_api.json`. Without credentials,
-//! falls back to opening in-app search and committing the top hit with a
-//! synthetic Return key (same Accessibility path as paste).
+//! credentials) when credentials are available via env or a local TOML file
+//! (`spotify.toml` — see `spotify.example.toml`). Without credentials, falls
+//! back to opening in-app search and committing the top hit with a synthetic
+//! Return key (same Accessibility path as paste).
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
@@ -209,8 +210,8 @@ fn play_top_search_result(query: &str) -> Result<String, SpotifyClientError> {
   if !crate::platform::post_down_then_return() {
     let _ = open_search(query);
     return Err(SpotifyClientError::SearchFailed(format!(
-      "Couldn’t start playback for “{query}”. Grant Accessibility if needed, or set \
-       AZAD_SPOTIFY_CLIENT_ID / AZAD_SPOTIFY_CLIENT_SECRET for catalog search."
+      "Couldn’t start playback for “{query}”. Grant Accessibility if needed, or add \
+       spotify.toml (see spotify.example.toml) for catalog search."
     )));
   }
   thread::sleep(Duration::from_millis(900));
@@ -356,12 +357,13 @@ fn client_credentials() -> Result<(String, String), SpotifyClientError> {
   if let Some(pair) = credentials_from_env() {
     return Ok(pair);
   }
-  if let Some(pair) = credentials_from_file() {
+  if let Some(pair) = credentials_from_toml_files() {
     return Ok(pair);
   }
   Err(SpotifyClientError::SearchFailed(
-    "No Spotify API credentials (env AZAD_SPOTIFY_CLIENT_ID/SECRET or \
-     ~/Library/Application Support/Azad/spotify_api.json)."
+    "No Spotify API credentials. Copy spotify.example.toml → spotify.toml \
+     (or ~/Library/Application Support/Azad/spotify.toml), or set \
+     AZAD_SPOTIFY_CLIENT_ID / AZAD_SPOTIFY_CLIENT_SECRET."
       .into(),
   ))
 }
@@ -379,17 +381,46 @@ fn credentials_from_env() -> Option<(String, String)> {
   Some((id, secret))
 }
 
-fn credentials_from_file() -> Option<(String, String)> {
-  let home = std::env::var("HOME").ok()?;
-  let path =
-    std::path::PathBuf::from(home).join("Library/Application Support/Azad/spotify_api.json");
-  let raw = std::fs::read_to_string(path).ok()?;
-  #[derive(Deserialize)]
-  struct FileCreds {
-    client_id: String,
-    client_secret: String,
+/// Search order for TOML credentials (first readable valid file wins):
+/// 1. `AZAD_SPOTIFY_CONFIG` (explicit path)
+/// 2. `~/Library/Application Support/Azad/spotify.toml` (installed app)
+/// 3. `./spotify.toml` (cwd — useful in dev)
+#[derive(Debug, Deserialize)]
+struct SpotifyTomlCreds {
+  client_id: String,
+  client_secret: String,
+}
+
+fn credentials_from_toml_files() -> Option<(String, String)> {
+  for path in credential_toml_candidates() {
+    if let Some(pair) = read_spotify_toml(&path) {
+      eprintln!("AZAD_SPOTIFY event=credentials_loaded path={}", path.display());
+      return Some(pair);
+    }
   }
-  let creds: FileCreds = serde_json::from_str(&raw).ok()?;
+  None
+}
+
+fn credential_toml_candidates() -> Vec<PathBuf> {
+  let mut paths = Vec::new();
+  if let Ok(explicit) = std::env::var("AZAD_SPOTIFY_CONFIG") {
+    let p = PathBuf::from(explicit.trim());
+    if !p.as_os_str().is_empty() {
+      paths.push(p);
+    }
+  }
+  if let Ok(home) = std::env::var("HOME") {
+    paths.push(PathBuf::from(home).join("Library/Application Support/Azad/spotify.toml"));
+  }
+  if let Ok(cwd) = std::env::current_dir() {
+    paths.push(cwd.join("spotify.toml"));
+  }
+  paths
+}
+
+fn read_spotify_toml(path: &Path) -> Option<(String, String)> {
+  let raw = std::fs::read_to_string(path).ok()?;
+  let creds: SpotifyTomlCreds = toml::from_str(&raw).ok()?;
   if creds.client_id.is_empty() || creds.client_secret.is_empty() {
     return None;
   }
@@ -472,5 +503,16 @@ mod tests {
     let high = score_track("butter", Some("bts"), "Butter", "BTS");
     let low = score_track("butter", Some("bts"), "Butter", "Someone Else");
     assert!(high > low);
+  }
+
+  #[test]
+  fn toml_creds_parse() {
+    let raw = r#"
+client_id = "abc123"
+client_secret = "secret456"
+"#;
+    let c: SpotifyTomlCreds = toml::from_str(raw).unwrap();
+    assert_eq!(c.client_id, "abc123");
+    assert_eq!(c.client_secret, "secret456");
   }
 }
