@@ -449,12 +449,14 @@ enum ShutdownSnapshotOutcome {
 
 /// The connector latched for the current turn. `clean_query` is the transcription
 /// with the trigger phrase stripped — held for the deferred routing follow-up; the
-/// paste path does not consume it yet.
+/// paste path does not consume it yet. `matched_trigger` is the exact phrase that
+/// latched (primary or ASR alias) so strip removes the right token count.
 #[derive(Debug, Clone)]
 struct ActiveConnector {
   id: &'static str,
   tag_label: &'static str,
   tag_icon: &'static str,
+  matched_trigger: &'static str,
   #[allow(dead_code)]
   clean_query: String,
 }
@@ -2597,18 +2599,16 @@ impl AppController {
   }
 
   /// `text` with the latched connector's trigger phrase removed, so the matched
-  /// lead-in (e.g. "hey claude") is dropped from the surfaced transcription.
-  /// Returns `text` unchanged when no connector is latched. Applied at the
-  /// user-facing surfaces (display, paste, history); `latest_draft` and the
-  /// finalize state machine keep the full text.
+  /// lead-in (e.g. "hey claude" / "hey azad") is dropped from the surfaced
+  /// transcription and only the connector chip carries the brand. Returns `text`
+  /// unchanged when no connector is latched. Applied at the user-facing surfaces
+  /// (display, paste, history); `latest_draft` and the finalize state machine keep
+  /// the full text.
   fn strip_active_trigger(&self, text: &str) -> String {
     let Some(active) = &self.active_connector else {
       return text.to_string();
     };
-    match self.connectors.iter().find(|c| c.id == active.id) {
-      Some(conn) => connectors::strip_trigger(text, conn.trigger),
-      None => text.to_string(),
-    }
+    connectors::strip_trigger(text, active.matched_trigger)
   }
 
   fn stream_display_text(&self, text: &str) -> String {
@@ -3532,19 +3532,21 @@ impl AppController {
           id,
           tag_label: m.tag_label,
           tag_icon: m.tag_icon,
+          matched_trigger: m.matched_trigger,
           clean_query: m.clean_query,
         });
-        // Warm the socket while the user is still speaking so it's ready by finalize.
+        // Warm the Claude gateway while the user is still speaking so it's ready by finalize.
+        // Azad does not use the gateway — chip + strip only (same live overlay path as Claude).
         if id == gateway::GATEWAY_AGENT {
           self.maybe_begin_gateway_connect();
         }
       }
       return;
     }
-    let id = self.active_connector.as_ref().map(|a| a.id);
-    let trigger = id.and_then(|id| self.connectors.iter().find(|c| c.id == id)).map(|c| c.trigger);
-    if let (Some(trigger), Some(active)) = (trigger, self.active_connector.as_mut()) {
-      active.clean_query = connectors::strip_trigger(&self.latest_draft, trigger);
+    // Refresh clean_query with the latched phrase's token count (primary or alias).
+    if let Some(active) = self.active_connector.as_mut() {
+      active.clean_query =
+        connectors::strip_trigger(&self.latest_draft, active.matched_trigger);
     }
   }
 

@@ -16,6 +16,10 @@ pub struct Connector {
   /// The leading phrase that activates this connector, lowercase and
   /// punctuation-free (matching is case-insensitive and punctuation-tolerant).
   pub trigger: &'static str,
+  /// Extra ASR-friendly phrases that latch the same connector (same rules as `trigger`).
+  /// Prefer the same token count as `trigger` so strip-by-count stays consistent when
+  /// the matched phrase is not stored; `detect` still returns the exact phrase matched.
+  pub trigger_aliases: &'static [&'static str],
   /// Short label shown in the overlay chip when the connector is active.
   pub tag_label: &'static str,
   /// Asset file (in `assets/`, bundled into `Contents/Resources/`) rendered as an
@@ -30,6 +34,8 @@ pub struct ConnectorMatch {
   pub id: &'static str,
   pub tag_label: &'static str,
   pub tag_icon: &'static str,
+  /// The exact trigger phrase that matched (primary or alias) — use for strip.
+  pub matched_trigger: &'static str,
   /// The utterance with the leading trigger phrase removed.
   pub clean_query: String,
 }
@@ -39,6 +45,18 @@ pub const CLAUDE_CONNECTOR_ID: &str = "claude";
 /// Built-in Azad connector id (on-device Apple Intelligence tools).
 pub const AZAD_CONNECTOR_ID: &str = "azad";
 
+/// Common ASR mis-hearings of "azad" after "hey".
+const AZAD_TRIGGER_ALIASES: &[&str] = &[
+  "hey azod",
+  "hey asad",
+  "hey assad",
+  "hey as odd",
+  "hey a zod",
+  "hey a zad",
+  "hey az at",
+  "hey as at",
+];
+
 /// The built-in connector registry. Order is stable (settings UI indexes into it).
 /// Claude defaults on; Azad defaults off until the user enables it.
 pub fn builtin_connectors() -> Vec<Connector> {
@@ -47,6 +65,7 @@ pub fn builtin_connectors() -> Vec<Connector> {
       id: CLAUDE_CONNECTOR_ID,
       display_name: "Claude",
       trigger: "hey claude",
+      trigger_aliases: &[],
       tag_label: "Claude",
       tag_icon: "claude.svg",
       enabled: true,
@@ -55,6 +74,7 @@ pub fn builtin_connectors() -> Vec<Connector> {
       id: AZAD_CONNECTOR_ID,
       display_name: "Azad",
       trigger: "hey azad",
+      trigger_aliases: AZAD_TRIGGER_ALIASES,
       tag_label: "Azad",
       // Text-only chip until a dedicated template asset is bundled.
       tag_icon: "",
@@ -63,14 +83,32 @@ pub fn builtin_connectors() -> Vec<Connector> {
   ]
 }
 
-/// First enabled connector whose trigger leads the utterance, with its clean query.
+/// Every phrase that can activate `connector` (primary first, then aliases).
+pub fn connector_triggers(connector: &Connector) -> impl Iterator<Item = &'static str> + '_ {
+  std::iter::once(connector.trigger).chain(connector.trigger_aliases.iter().copied())
+}
+
+/// First enabled connector whose trigger (or alias) leads the utterance, with its clean query.
 pub fn detect(utterance: &str, connectors: &[Connector]) -> Option<ConnectorMatch> {
   connectors.iter().filter(|c| c.enabled).find_map(|c| {
-    trigger_matches_prefix(utterance, c.trigger).then(|| ConnectorMatch {
+    // Prefer the longest matching phrase so multi-token aliases beat shorter ones.
+    let mut best: Option<&'static str> = None;
+    for phrase in connector_triggers(c) {
+      if trigger_matches_prefix(utterance, phrase) {
+        let better = best.map_or(true, |b| {
+          phrase.split_whitespace().count() > b.split_whitespace().count()
+        });
+        if better {
+          best = Some(phrase);
+        }
+      }
+    }
+    best.map(|matched_trigger| ConnectorMatch {
       id: c.id,
       tag_label: c.tag_label,
       tag_icon: c.tag_icon,
-      clean_query: strip_trigger(utterance, c.trigger),
+      matched_trigger,
+      clean_query: strip_trigger(utterance, matched_trigger),
     })
   })
 }
@@ -111,6 +149,14 @@ mod tests {
 
   fn connectors() -> Vec<Connector> {
     builtin_connectors()
+  }
+
+  fn enable_azad(cs: &mut [Connector]) {
+    for c in cs {
+      if c.id == AZAD_CONNECTOR_ID {
+        c.enabled = true;
+      }
+    }
   }
 
   #[test]
@@ -169,6 +215,7 @@ mod tests {
     assert_eq!(m.id, "claude");
     assert_eq!(m.tag_label, "Claude");
     assert_eq!(m.tag_icon, "claude.svg");
+    assert_eq!(m.matched_trigger, "hey claude");
     assert_eq!(m.clean_query, "open the door");
   }
 
@@ -195,15 +242,40 @@ mod tests {
   #[test]
   fn azad_matches_when_enabled() {
     let mut cs = connectors();
-    for c in &mut cs {
-      if c.id == AZAD_CONNECTOR_ID {
-        c.enabled = true;
-      }
-    }
+    enable_azad(&mut cs);
     let m = detect("Hey Azad, disable number text replacement", &cs).expect("should match");
     assert_eq!(m.id, AZAD_CONNECTOR_ID);
     assert_eq!(m.tag_label, "Azad");
+    assert_eq!(m.matched_trigger, "hey azad");
     assert_eq!(m.clean_query, "disable number text replacement");
+  }
+
+  #[test]
+  fn azad_matches_asr_aliases() {
+    let mut cs = connectors();
+    enable_azad(&mut cs);
+    for spoken in [
+      "hey azod disable numbers",
+      "Hey Azod, turn off emoji",
+      "hey asad enable hesitations",
+      "hey a zod turn on numbers",
+    ] {
+      let m = detect(spoken, &cs).unwrap_or_else(|| panic!("should match alias: {spoken}"));
+      assert_eq!(m.id, AZAD_CONNECTOR_ID, "spoken={spoken}");
+      assert_eq!(m.tag_label, "Azad", "spoken={spoken}");
+      assert!(!m.clean_query.is_empty() || spoken.ends_with("azod"), "spoken={spoken}");
+      // Trigger is out of the clean query (chip owns the brand; body is the request).
+      assert!(!m.clean_query.to_ascii_lowercase().contains("hey "));
+    }
+  }
+
+  #[test]
+  fn azad_alias_strips_three_token_phrase() {
+    let mut cs = connectors();
+    enable_azad(&mut cs);
+    let m = detect("hey a zod disable numbers", &cs).expect("alias");
+    assert_eq!(m.matched_trigger, "hey a zod");
+    assert_eq!(m.clean_query, "disable numbers");
   }
 
   #[test]
