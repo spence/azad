@@ -71,8 +71,8 @@ const GATEWAY_NO_ACK_MESSAGE: &str =
 const GATEWAY_STALL_MESSAGE: &str = "Claude stopped responding — press Esc to dismiss.";
 /// One-shot command cards (Hey Azad / Hey Spotify) auto-dismiss after success so
 /// the user doesn't need Esc. Claude gateway conversations stay sticky.
-const COMMAND_OVERLAY_SUCCESS_HOLD: Duration = Duration::from_millis(1600);
-const COMMAND_OVERLAY_ERROR_HOLD: Duration = Duration::from_millis(2800);
+const COMMAND_OVERLAY_SUCCESS_HOLD: Duration = Duration::from_secs(1);
+const COMMAND_OVERLAY_ERROR_HOLD: Duration = Duration::from_secs(3);
 const ACTIVATION_LEVEL_MIN_RMS_DB: f32 = -60.0;
 const ACTIVATION_LEVEL_MAX_RMS_DB: f32 = -20.0;
 
