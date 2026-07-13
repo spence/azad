@@ -410,72 +410,117 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func connectorsPane(_ model: SettingsViewModel) -> NSView {
         let stack = paneStack()
+        // Don’t let rows stretch to fill leftover pane height.
+        stack.distribution = .gravityAreas
         stack.addArrangedSubview(Design.label("Open an utterance with a connector's phrase to tag it.", size: 12, color: Design.mutedText))
 
         for (index, connector) in model.connectors.enumerated() {
-            let card = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
-            card.orientation = .vertical
-            card.alignment = .leading
-            card.spacing = 8
-            card.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
-            card.translatesAutoresizingMaskIntoConstraints = false
-            card.layer?.cornerRadius = 8
-
-            let row = NSStackView()
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 10
-            row.translatesAutoresizingMaskIntoConstraints = false
-
-            let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
-            checkbox.state = connector.enabled ? .on : .off
-            checkbox.isEnabled = connector.canEnable
-            checkbox.tag = index
-            row.addArrangedSubview(checkbox)
-            row.addArrangedSubview(connectorLogo(for: connector))
-            row.addArrangedSubview(Design.label(connector.displayName, size: 13, weight: .medium))
-            row.addArrangedSubview(NSView())
-            row.addArrangedSubview(triggerPill(connector.trigger))
-            card.addArrangedSubview(row)
-
+            let card: NSView
             if connector.id == "azad" {
-                card.addArrangedSubview(Design.wrappingLabel(
-                    "Say “hey azad …” to change text-replacement settings by voice.",
-                    size: 12,
-                    color: Design.mutedText
-                ))
+                card = azadConnectorCard(connector, index: index)
+            } else {
+                card = compactConnectorRow(connector, index: index)
             }
-            if !connector.availabilityMessage.isEmpty {
-                card.addArrangedSubview(Design.wrappingLabel(
-                    connector.availabilityMessage,
-                    size: 12,
-                    color: Design.secondaryText
-                ))
-            }
-            if connector.showOpenSettings || connector.id == "azad" {
-                let actions = NSStackView()
-                actions.orientation = .horizontal
-                actions.spacing = 8
-                actions.translatesAutoresizingMaskIntoConstraints = false
-                if connector.showOpenSettings {
-                    let openBtn = NSButton(title: "Open System Settings", target: self, action: #selector(openSystemSettings(_:)))
-                    openBtn.bezelStyle = .rounded
-                    actions.addArrangedSubview(openBtn)
-                }
-                if connector.id == "azad" {
-                    let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckAppleLm(_:)))
-                    recheck.bezelStyle = .rounded
-                    actions.addArrangedSubview(recheck)
-                }
-                actions.addArrangedSubview(NSView())
-                card.addArrangedSubview(actions)
-            }
-
             stack.addArrangedSubview(card)
             card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
         return stack
+    }
+
+    /// Original Claude-style fixed-height single row (58pt).
+    private func compactConnectorRow(_ connector: ConnectorRow, index: Int) -> NSView {
+        let row = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.layer?.cornerRadius = 8
+        row.setHuggingPriority(.required, for: .vertical)
+        row.setContentCompressionResistancePriority(.required, for: .vertical)
+        row.heightAnchor.constraint(equalToConstant: 58).isActive = true
+
+        let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
+        checkbox.state = connector.enabled ? .on : .off
+        checkbox.isEnabled = connector.canEnable
+        checkbox.tag = index
+        row.addArrangedSubview(checkbox)
+        row.addArrangedSubview(connectorLogo(for: connector))
+        row.addArrangedSubview(Design.label(connector.displayName, size: 13, weight: .medium))
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentHuggingPriority(.required, for: .vertical)
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(triggerPill(connector.trigger))
+        return row
+    }
+
+    /// Fixed-height Azad card (status + small actions). Does not expand with the pane.
+    private func azadConnectorCard(_ connector: ConnectorRow, index: Int) -> NSView {
+        let card = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
+        card.orientation = .vertical
+        card.alignment = .leading
+        card.spacing = 6
+        card.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.layer?.cornerRadius = 8
+        card.setHuggingPriority(.required, for: .vertical)
+        card.setContentCompressionResistancePriority(.required, for: .vertical)
+        card.heightAnchor.constraint(equalToConstant: 96).isActive = true
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+        let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
+        checkbox.state = connector.enabled ? .on : .off
+        checkbox.isEnabled = connector.canEnable
+        checkbox.tag = index
+        row.addArrangedSubview(checkbox)
+        row.addArrangedSubview(connectorLogo(for: connector))
+        row.addArrangedSubview(Design.label(connector.displayName, size: 13, weight: .medium))
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentHuggingPriority(.required, for: .vertical)
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(triggerPill(connector.trigger))
+        card.addArrangedSubview(row)
+
+        let status = connector.availabilityMessage.isEmpty
+            ? "Say “hey azad …” to change text-replacement settings by voice."
+            : connector.availabilityMessage
+        let statusLabel = Design.label(status, size: 11, color: Design.secondaryText)
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.maximumNumberOfLines = 1
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        card.addArrangedSubview(statusLabel)
+
+        let actions = NSStackView()
+        actions.orientation = .horizontal
+        actions.spacing = 8
+        actions.alignment = .centerY
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        actions.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        if connector.showOpenSettings {
+            let openBtn = NSButton(title: "Open System Settings", target: self, action: #selector(openSystemSettings(_:)))
+            openBtn.bezelStyle = .rounded
+            openBtn.controlSize = .small
+            actions.addArrangedSubview(openBtn)
+        }
+        let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckAppleLm(_:)))
+        recheck.bezelStyle = .rounded
+        recheck.controlSize = .small
+        actions.addArrangedSubview(recheck)
+        let actionSpacer = NSView()
+        actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        actions.addArrangedSubview(actionSpacer)
+        card.addArrangedSubview(actions)
+
+        return card
     }
 
     private func connectorLogo(for connector: ConnectorRow) -> NSView {
