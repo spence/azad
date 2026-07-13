@@ -120,6 +120,7 @@ MIT. See [LICENSE](LICENSE).
 ### 0.5.1 Unreleased
 
 - Added spoken issue numbers: "number three" becomes "#3" (when number conversion is on).
+- Added a Hey Azad connector (off by default): say “hey azad …” to change text-replacement settings by voice, with Apple Intelligence setup guidance when the on-device model isn’t ready.
 
 ### 0.5.0
 
