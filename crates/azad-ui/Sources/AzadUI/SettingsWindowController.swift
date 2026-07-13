@@ -414,6 +414,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let stack = paneStack()
         // Don’t let rows stretch to fill leftover pane height.
         stack.distribution = .gravityAreas
+        // Stretch every arranged card to the full content width so Claude and Azad match.
+        stack.alignment = .width
         stack.addArrangedSubview(Design.label("Open an utterance with a connector's phrase to tag it.", size: 12, color: Design.mutedText))
 
         for (index, connector) in model.connectors.enumerated() {
@@ -423,6 +425,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             } else {
                 card = compactConnectorRow(connector, index: index)
             }
+            // Low horizontal hugging so width is driven by the pane, not content intrinsic size.
+            card.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            card.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             stack.addArrangedSubview(card)
             card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
@@ -431,12 +436,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Claude-style fixed 58pt row. Uses a plain container so logo/pill never stretch
-    /// to the card height (NSStackView `.fill` was blowing them up).
+    /// to the card height (NSStackView `.fill` was blowing them up). Full pane width.
     private func compactConnectorRow(_ connector: ConnectorRow, index: Int) -> NSView {
         let card = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
         card.layer?.cornerRadius = 8
         card.setContentHuggingPriority(.required, for: .vertical)
         card.setContentCompressionResistancePriority(.required, for: .vertical)
+        card.setContentHuggingPriority(.defaultLow, for: .horizontal)
         card.heightAnchor.constraint(equalToConstant: 58).isActive = true
 
         let row = NSStackView()
@@ -482,19 +488,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Azad card: fixed header height; optional expandable command list below.
+    /// Outer wrap + inner panel both stretch to the same full pane width as Claude.
     private func azadConnectorCard(_ connector: ConnectorRow, index: Int) -> NSView {
         let appleIntelReady = connector.availabilityState == "available"
         let wrap = NSStackView()
         wrap.orientation = .vertical
-        wrap.alignment = .leading
+        wrap.alignment = .width
         wrap.spacing = 8
         wrap.translatesAutoresizingMaskIntoConstraints = false
         wrap.setHuggingPriority(.required, for: .vertical)
+        wrap.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let card = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
         card.layer?.cornerRadius = 8
         card.setContentHuggingPriority(.required, for: .vertical)
         card.setContentCompressionResistancePriority(.required, for: .vertical)
+        card.setContentHuggingPriority(.defaultLow, for: .horizontal)
         card.heightAnchor.constraint(equalToConstant: 96).isActive = true
 
         let top = NSStackView()
@@ -588,8 +597,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ])
 
         wrap.addArrangedSubview(card)
+        card.widthAnchor.constraint(equalTo: wrap.widthAnchor).isActive = true
         if showAzadVoiceCommands && !appleIntelReady {
-            wrap.addArrangedSubview(azadVoiceCommandsPanel())
+            let commands = azadVoiceCommandsPanel()
+            commands.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            wrap.addArrangedSubview(commands)
+            commands.widthAnchor.constraint(equalTo: wrap.widthAnchor).isActive = true
         }
         return wrap
     }
@@ -597,6 +610,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func azadVoiceCommandsPanel() -> NSView {
         let panel = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
         panel.layer?.cornerRadius = 8
+        panel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let title = Design.label("Voice commands (work without Apple Intelligence)", size: 12, weight: .semibold)
         let body = Design.wrappingLabel(
