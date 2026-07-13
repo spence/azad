@@ -7,6 +7,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let content = NSView()
     private var shortcutView: ShortcutView?
     private weak var activationLevelValueLabel: NSTextField?
+    /// Toggles the “What can I say?” list under the Azad connector when Apple Intelligence isn’t ready.
+    private var showAzadVoiceCommands = false
 
     init() {
         let window = NSWindow(
@@ -428,67 +430,100 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return stack
     }
 
-    /// Original Claude-style fixed-height single row (58pt).
+    /// Claude-style fixed 58pt row. Uses a plain container so logo/pill never stretch
+    /// to the card height (NSStackView `.fill` was blowing them up).
     private func compactConnectorRow(_ connector: ConnectorRow, index: Int) -> NSView {
-        let row = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-        row.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.layer?.cornerRadius = 8
-        row.setHuggingPriority(.required, for: .vertical)
-        row.setContentCompressionResistancePriority(.required, for: .vertical)
-        row.heightAnchor.constraint(equalToConstant: 58).isActive = true
-
-        let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
-        checkbox.state = connector.enabled ? .on : .off
-        checkbox.isEnabled = connector.canEnable
-        checkbox.tag = index
-        row.addArrangedSubview(checkbox)
-        row.addArrangedSubview(connectorLogo(for: connector))
-        row.addArrangedSubview(Design.label(connector.displayName, size: 13, weight: .medium))
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        spacer.setContentHuggingPriority(.required, for: .vertical)
-        row.addArrangedSubview(spacer)
-        row.addArrangedSubview(triggerPill(connector.trigger))
-        return row
-    }
-
-    /// Fixed-height Azad card (status + small actions). Does not expand with the pane.
-    private func azadConnectorCard(_ connector: ConnectorRow, index: Int) -> NSView {
-        let card = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
-        card.orientation = .vertical
-        card.alignment = .leading
-        card.spacing = 6
-        card.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
-        card.translatesAutoresizingMaskIntoConstraints = false
+        let card = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
         card.layer?.cornerRadius = 8
-        card.setHuggingPriority(.required, for: .vertical)
+        card.setContentHuggingPriority(.required, for: .vertical)
         card.setContentCompressionResistancePriority(.required, for: .vertical)
-        card.heightAnchor.constraint(equalToConstant: 96).isActive = true
+        card.heightAnchor.constraint(equalToConstant: 58).isActive = true
 
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
+        row.distribution = .fill
         row.spacing = 10
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.heightAnchor.constraint(equalToConstant: 28).isActive = true
 
         let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
         checkbox.state = connector.enabled ? .on : .off
         checkbox.isEnabled = connector.canEnable
         checkbox.tag = index
-        row.addArrangedSubview(checkbox)
-        row.addArrangedSubview(connectorLogo(for: connector))
-        row.addArrangedSubview(Design.label(connector.displayName, size: 13, weight: .medium))
+        pinIntrinsicVertical(checkbox)
+
+        let logo = connectorLogo(for: connector)
+        pinIntrinsicVertical(logo)
+
+        let name = Design.label(connector.displayName, size: 13, weight: .medium)
+        pinIntrinsicVertical(name)
+
         let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentHuggingPriority(.required, for: .vertical)
-        row.addArrangedSubview(spacer)
-        row.addArrangedSubview(triggerPill(connector.trigger))
-        card.addArrangedSubview(row)
+        spacer.heightAnchor.constraint(equalToConstant: 1).isActive = true
+
+        let pill = triggerPill(connector.trigger)
+        pinIntrinsicVertical(pill)
+
+        for v in [checkbox, logo, name, spacer, pill] {
+            row.addArrangedSubview(v)
+        }
+
+        card.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            row.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            row.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        return card
+    }
+
+    /// Azad card: fixed header height; optional expandable command list below.
+    private func azadConnectorCard(_ connector: ConnectorRow, index: Int) -> NSView {
+        let appleIntelReady = connector.availabilityState == "available"
+        let wrap = NSStackView()
+        wrap.orientation = .vertical
+        wrap.alignment = .leading
+        wrap.spacing = 8
+        wrap.translatesAutoresizingMaskIntoConstraints = false
+        wrap.setHuggingPriority(.required, for: .vertical)
+
+        let card = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
+        card.layer?.cornerRadius = 8
+        card.setContentHuggingPriority(.required, for: .vertical)
+        card.setContentCompressionResistancePriority(.required, for: .vertical)
+        card.heightAnchor.constraint(equalToConstant: 96).isActive = true
+
+        let top = NSStackView()
+        top.orientation = .horizontal
+        top.alignment = .centerY
+        top.distribution = .fill
+        top.spacing = 10
+        top.translatesAutoresizingMaskIntoConstraints = false
+
+        let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
+        checkbox.state = connector.enabled ? .on : .off
+        checkbox.isEnabled = connector.canEnable
+        checkbox.tag = index
+        pinIntrinsicVertical(checkbox)
+
+        let logo = connectorLogo(for: connector)
+        pinIntrinsicVertical(logo)
+        let name = Design.label(connector.displayName, size: 13, weight: .medium)
+        pinIntrinsicVertical(name)
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentHuggingPriority(.required, for: .vertical)
+        spacer.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        let pill = triggerPill(connector.trigger)
+        pinIntrinsicVertical(pill)
+        for v in [checkbox, logo, name, spacer, pill] {
+            top.addArrangedSubview(v)
+        }
 
         let status = connector.availabilityMessage.isEmpty
             ? "Say “hey azad …” to change text-replacement settings by voice."
@@ -497,16 +532,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.maximumNumberOfLines = 1
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        card.addArrangedSubview(statusLabel)
 
         let actions = NSStackView()
         actions.orientation = .horizontal
         actions.spacing = 8
         actions.alignment = .centerY
+        actions.distribution = .fill
         actions.translatesAutoresizingMaskIntoConstraints = false
-        actions.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        if connector.showOpenSettings {
-            let openBtn = NSButton(title: "Open System Settings", target: self, action: #selector(openSystemSettings(_:)))
+
+        if connector.showOpenSettings || !appleIntelReady {
+            let openBtn = NSButton(
+                title: "Open Apple Intelligence Settings",
+                target: self,
+                action: #selector(openSystemSettings(_:))
+            )
             openBtn.bezelStyle = .rounded
             openBtn.controlSize = .small
             actions.addArrangedSubview(openBtn)
@@ -515,12 +554,89 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         recheck.bezelStyle = .rounded
         recheck.controlSize = .small
         actions.addArrangedSubview(recheck)
+
         let actionSpacer = NSView()
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         actions.addArrangedSubview(actionSpacer)
-        card.addArrangedSubview(actions)
 
-        return card
+        // Right-side: command cheat sheet when the on-device model isn’t ready.
+        if !appleIntelReady {
+            let helpTitle = showAzadVoiceCommands ? "Hide commands" : "What can I say?"
+            let help = NSButton(title: helpTitle, target: self, action: #selector(toggleAzadVoiceCommands(_:)))
+            help.bezelStyle = .rounded
+            help.controlSize = .small
+            actions.addArrangedSubview(help)
+        }
+
+        card.addSubview(top)
+        card.addSubview(statusLabel)
+        card.addSubview(actions)
+        NSLayoutConstraint.activate([
+            top.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            top.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            top.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            top.heightAnchor.constraint(equalToConstant: 28),
+
+            statusLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            statusLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            statusLabel.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 6),
+
+            actions.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            actions.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            actions.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+            actions.heightAnchor.constraint(equalToConstant: 22),
+        ])
+
+        wrap.addArrangedSubview(card)
+        if showAzadVoiceCommands && !appleIntelReady {
+            wrap.addArrangedSubview(azadVoiceCommandsPanel())
+        }
+        return wrap
+    }
+
+    private func azadVoiceCommandsPanel() -> NSView {
+        let panel = ThemedLayerView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
+        panel.layer?.cornerRadius = 8
+
+        let title = Design.label("Voice commands (work without Apple Intelligence)", size: 12, weight: .semibold)
+        let body = Design.wrappingLabel(
+            """
+            After “hey azad …”:
+            · enable / disable number text replacement
+            · enable / disable spoken emoji
+            · enable / disable hesitations
+            · enable / disable trailing space after paste
+            · enable / disable repeated-word removal
+            · enable / disable lowercase (except uppercase words)
+            · add the word <word> to removed words
+            · remove the word <word> from removed words
+
+            Example: “hey azad, disable automatic number text replacement”
+            """,
+            size: 11,
+            color: Design.secondaryText
+        )
+        body.maximumNumberOfLines = 0
+
+        panel.addSubview(title)
+        panel.addSubview(body)
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14),
+            title.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14),
+            title.topAnchor.constraint(equalTo: panel.topAnchor, constant: 12),
+
+            body.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14),
+            body.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14),
+            body.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
+            body.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -12),
+        ])
+        return panel
+    }
+
+    /// Prevent NSStackView from stretching chrome (logo, pill, checkbox) to row height.
+    private func pinIntrinsicVertical(_ view: NSView) {
+        view.setContentHuggingPriority(.required, for: .vertical)
+        view.setContentCompressionResistancePriority(.required, for: .vertical)
     }
 
     private func connectorLogo(for connector: ConnectorRow) -> NSView {
@@ -530,6 +646,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         container.layer?.cornerRadius = 7
         container.widthAnchor.constraint(equalToConstant: 28).isActive = true
         container.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        container.setContentHuggingPriority(.required, for: .vertical)
+        container.setContentHuggingPriority(.required, for: .horizontal)
+        container.setContentCompressionResistancePriority(.required, for: .vertical)
+        container.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         if isAzad {
             let label = Design.label("A", size: 13, weight: .bold, color: .white)
@@ -552,16 +672,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func triggerPill(_ text: String) -> NSView {
         let container = ThemedLayerView(fill: Design.chip, radius: 6)
         container.layer?.cornerRadius = 6
-        container.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
         container.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        container.setContentHuggingPriority(.required, for: .vertical)
+        container.setContentHuggingPriority(.required, for: .horizontal)
+        container.setContentCompressionResistancePriority(.required, for: .vertical)
+        container.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let label = Design.label(text, size: 12, color: Design.secondaryText)
         label.alignment = .center
+        label.setContentHuggingPriority(.required, for: .horizontal)
         container.addSubview(label)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
             label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
             label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
         ])
         return container
     }
@@ -703,6 +828,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func recheckAppleLm(_ sender: NSButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "recheckAppleLm"))
+    }
+
+    @objc private func toggleAzadVoiceCommands(_ sender: NSButton) {
+        showAzadVoiceCommands.toggle()
+        render()
     }
 
     @objc private func addWord(_ sender: AnyObject) {

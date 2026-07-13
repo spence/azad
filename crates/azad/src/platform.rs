@@ -893,29 +893,33 @@ pub fn reset_overlay_conversation_views() {
   }
 }
 
-/// Open the System Settings app via the public NSWorkspace API (no deep-link to a pane).
+/// Open System Settings, preferring the Apple Intelligence & Siri pane when the
+/// OS accepts the preference URL. Falls back to the System Settings app root.
 pub fn open_system_settings() {
-  unsafe {
-    let _pool = NSAutoreleasePool::new(nil);
-    let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-    if workspace == nil {
+  open_apple_intelligence_settings();
+}
+
+/// Best-effort deep link to Apple Intelligence & Siri. Prefer `/usr/bin/open` with
+/// the preference URL (reliable across SDK/objc bridges); fall back to launching
+/// System Settings by bundle id.
+pub fn open_apple_intelligence_settings() {
+  // Pane IDs used for Siri / Apple Intelligence across recent macOS releases.
+  const CANDIDATES: &[&str] = &[
+    "x-apple.systempreferences:com.apple.Siri-Settings.extension",
+    "x-apple.systempreferences:com.apple.preference.speech",
+  ];
+  for url in CANDIDATES {
+    let status = std::process::Command::new("/usr/bin/open")
+      .arg(url)
+      .status();
+    if matches!(status, Ok(s) if s.success()) {
       return;
-    }
-    let bundle_id = NSString::alloc(nil).init_str("com.apple.systempreferences");
-    // Prefer urlForApplication(withBundleIdentifier:) when available.
-    let url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier: bundle_id];
-    if url != nil {
-      let _: bool = msg_send![workspace, openURL: url];
-      return;
-    }
-    // Fallback: launch by bundle id via open command path isn't needed if URL works;
-    // try the modern System Settings id as well.
-    let modern = NSString::alloc(nil).init_str("com.apple.systempreferences");
-    let modern_url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier: modern];
-    if modern_url != nil {
-      let _: bool = msg_send![workspace, openURL: modern_url];
     }
   }
+  // Fallback: open System Settings / System Preferences app.
+  let _ = std::process::Command::new("/usr/bin/open")
+    .args(["-b", "com.apple.systempreferences"])
+    .status();
 }
 
 pub struct HistoryEntryView<'a> {
