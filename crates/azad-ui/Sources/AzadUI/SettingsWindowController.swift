@@ -413,42 +413,94 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(Design.label("Open an utterance with a connector's phrase to tag it.", size: 12, color: Design.mutedText))
 
         for (index, connector) in model.connectors.enumerated() {
-            let row = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
+            let card = ThemedStackView(fill: Design.panel, stroke: Design.border, radius: 8, borderWidth: 1)
+            card.orientation = .vertical
+            card.alignment = .leading
+            card.spacing = 8
+            card.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+            card.translatesAutoresizingMaskIntoConstraints = false
+            card.layer?.cornerRadius = 8
+
+            let row = NSStackView()
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 10
-            row.edgeInsets = NSEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
             row.translatesAutoresizingMaskIntoConstraints = false
-            row.layer?.cornerRadius = 8
-            row.heightAnchor.constraint(equalToConstant: 58).isActive = true
 
             let checkbox = Design.checkbox("", checked: connector.enabled, target: self, action: #selector(toggleConnector(_:)))
             checkbox.state = connector.enabled ? .on : .off
+            checkbox.isEnabled = connector.canEnable
             checkbox.tag = index
             row.addArrangedSubview(checkbox)
-            row.addArrangedSubview(connectorLogo())
+            row.addArrangedSubview(connectorLogo(for: connector))
             row.addArrangedSubview(Design.label(connector.displayName, size: 13, weight: .medium))
             row.addArrangedSubview(NSView())
             row.addArrangedSubview(triggerPill(connector.trigger))
-            stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            card.addArrangedSubview(row)
+
+            if connector.id == "azad" {
+                card.addArrangedSubview(Design.wrappingLabel(
+                    "Say “hey azad …” to change text-replacement settings by voice.",
+                    size: 12,
+                    color: Design.mutedText
+                ))
+            }
+            if !connector.availabilityMessage.isEmpty {
+                card.addArrangedSubview(Design.wrappingLabel(
+                    connector.availabilityMessage,
+                    size: 12,
+                    color: Design.secondaryText
+                ))
+            }
+            if connector.showOpenSettings || connector.id == "azad" {
+                let actions = NSStackView()
+                actions.orientation = .horizontal
+                actions.spacing = 8
+                actions.translatesAutoresizingMaskIntoConstraints = false
+                if connector.showOpenSettings {
+                    let openBtn = NSButton(title: "Open System Settings", target: self, action: #selector(openSystemSettings(_:)))
+                    openBtn.bezelStyle = .rounded
+                    actions.addArrangedSubview(openBtn)
+                }
+                if connector.id == "azad" {
+                    let recheck = NSButton(title: "Check again", target: self, action: #selector(recheckAppleLm(_:)))
+                    recheck.bezelStyle = .rounded
+                    actions.addArrangedSubview(recheck)
+                }
+                actions.addArrangedSubview(NSView())
+                card.addArrangedSubview(actions)
+            }
+
+            stack.addArrangedSubview(card)
+            card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
         return stack
     }
 
-    private func connectorLogo() -> NSView {
-        let container = ThemedLayerView(fill: Design.claude, radius: 7)
+    private func connectorLogo(for connector: ConnectorRow) -> NSView {
+        let isAzad = connector.id == "azad"
+        let fill = isAzad ? Design.accent : Design.claude
+        let container = ThemedLayerView(fill: fill, radius: 7)
         container.layer?.cornerRadius = 7
         container.widthAnchor.constraint(equalToConstant: 28).isActive = true
         container.heightAnchor.constraint(equalToConstant: 28).isActive = true
 
-        let logo = Design.claudeLogoView(size: 18)
-        container.addSubview(logo)
-        NSLayoutConstraint.activate([
-            logo.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            logo.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-        ])
+        if isAzad {
+            let label = Design.label("A", size: 13, weight: .bold, color: .white)
+            container.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            ])
+        } else {
+            let logo = Design.claudeLogoView(size: 18)
+            container.addSubview(logo)
+            NSLayoutConstraint.activate([
+                logo.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                logo.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            ])
+        }
         return container
     }
 
@@ -598,6 +650,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleConnector(_ sender: NSButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "toggleConnector", boolValue: sender.state == .on, index: sender.tag))
+    }
+
+    @objc private func openSystemSettings(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "openSystemSettings"))
+    }
+
+    @objc private func recheckAppleLm(_ sender: NSButton) {
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "recheckAppleLm"))
     }
 
     @objc private func addWord(_ sender: AnyObject) {

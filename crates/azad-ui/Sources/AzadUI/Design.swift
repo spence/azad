@@ -181,6 +181,7 @@ enum Design {
     static let orange = NSColor.systemOrange
     static let red = NSColor.systemRed
     static let claude = NSColor(calibratedRed: 0.851, green: 0.467, blue: 0.341, alpha: 1.0)
+    static let accent = NSColor(calibratedRed: 0.290, green: 0.478, blue: 0.922, alpha: 1.0)
 
     static func cgColor(_ color: NSColor, for view: NSView?) -> CGColor {
         let appearance = view?.effectiveAppearance ?? NSApp.effectiveAppearance

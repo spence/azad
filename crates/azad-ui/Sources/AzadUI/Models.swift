@@ -125,14 +125,33 @@ public struct OnboardingViewModel: Codable {
 }
 
 public struct ConnectorRow: Codable {
+    public let id: String
     public let displayName: String
     public let trigger: String
     public let enabled: Bool
+    public let canEnable: Bool
+    public let availabilityState: String
+    public let availabilityMessage: String
+    public let showOpenSettings: Bool
 
-    public init(displayName: String, trigger: String, enabled: Bool) {
+    public init(
+        id: String,
+        displayName: String,
+        trigger: String,
+        enabled: Bool,
+        canEnable: Bool = true,
+        availabilityState: String = "available",
+        availabilityMessage: String = "",
+        showOpenSettings: Bool = false
+    ) {
+        self.id = id
         self.displayName = displayName
         self.trigger = trigger
         self.enabled = enabled
+        self.canEnable = canEnable
+        self.availabilityState = availabilityState
+        self.availabilityMessage = availabilityMessage
+        self.showOpenSettings = showOpenSettings
     }
 }
 

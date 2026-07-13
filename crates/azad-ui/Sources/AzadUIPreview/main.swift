@@ -160,7 +160,19 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         """,
         model: modelPack(status: tab == .models ? .downloading : .ready, progress: tab == .models ? 51 : 100),
         removedWords: ["like", "actually", "basically", "literally", "right", "okay"],
-        connectors: [ConnectorRow(displayName: "Claude", trigger: "hey claude", enabled: true)],
+        connectors: [
+            ConnectorRow(id: "claude", displayName: "Claude", trigger: "hey claude", enabled: true),
+            ConnectorRow(
+                id: "azad",
+                displayName: "Azad",
+                trigger: "hey azad",
+                enabled: false,
+                canEnable: true,
+                availabilityState: "unavailable",
+                availabilityMessage: "On-device model not linked yet — voice settings still work for common phrases.",
+                showOpenSettings: false
+            ),
+        ],
         buildInfo: "build preview · 2026-07-02 19:41"
     )
 }
