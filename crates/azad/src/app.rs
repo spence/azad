@@ -377,7 +377,7 @@ struct AppController {
   turn_started_at: HashMap<u64, Instant>,
   session_recovery_state: SessionRecoveryState,
   session_fault_window: Vec<Instant>,
-  last_session_error_was_stream_fault: bool,
+  last_session_had_error: bool,
   pending_recovery_restart: bool,
   cancel_vad_show_suppressed_until: Option<Instant>,
   active_pack_id: String,
@@ -724,7 +724,7 @@ impl AppController {
       turn_started_at: HashMap::new(),
       session_recovery_state: SessionRecoveryState::Healthy,
       session_fault_window: Vec::new(),
-      last_session_error_was_stream_fault: false,
+      last_session_had_error: false,
       pending_recovery_restart: false,
       cancel_vad_show_suppressed_until: None,
       active_pack_id,
@@ -915,25 +915,31 @@ impl AppController {
     });
   }
 
-  fn note_stream_fault(&mut self, message: &str) {
+  fn note_session_fault(&mut self, message: &str, is_stream_fault: bool) {
     let now = Instant::now();
     self.prune_session_fault_window(now);
     self.session_fault_window.push(now);
 
     let faults = self.session_fault_window.len();
     self.session_recovery_state = recovery_state_for_fault_count(faults);
-    self.last_session_error_was_stream_fault = true;
+    self.last_session_had_error = true;
     self.pending_recovery_restart = true;
 
     eprintln!(
-      "Azad: stream fault detected faults_window={} recovery_state={:?} message={}",
-      faults, self.session_recovery_state, message
+      "Azad: session fault detected faults_window={} recovery_state={:?} stream_fault={} message={}",
+      faults, self.session_recovery_state, is_stream_fault, message
     );
 
     let body = if self.session_recovery_state == SessionRecoveryState::Degraded {
-      "Audio unstable; waiting for device change or hold hotkey retry"
-    } else {
+      if is_stream_fault {
+        "Audio unstable; waiting for device change or hold hotkey retry"
+      } else {
+        "Transcription unavailable; waiting for hold hotkey retry"
+      }
+    } else if is_stream_fault {
       "Audio stream interrupted; retrying live"
+    } else {
+      "Transcription interrupted; retrying live"
     };
     self.show_overlay_notice(
       "Listening recovering",
@@ -952,16 +958,16 @@ impl AppController {
 
     self.session_recovery_state = SessionRecoveryState::Healthy;
     self.session_fault_window.clear();
-    self.last_session_error_was_stream_fault = false;
+    self.last_session_had_error = false;
     self.pending_recovery_restart = false;
   }
 
   fn should_restart_after_session_end(&mut self) -> bool {
-    if !self.last_session_error_was_stream_fault {
+    if !self.last_session_had_error {
       return true;
     }
 
-    self.last_session_error_was_stream_fault = false;
+    self.last_session_had_error = false;
     let faults = self.session_fault_window.len();
     if allow_immediate_restart_for_fault_count(faults) {
       self.session_recovery_state = SessionRecoveryState::Recovering;
@@ -1197,7 +1203,7 @@ impl AppController {
         session.set_capture_enabled(true);
         session.start_or_resume_manual_hold();
       }
-      self.show_overlay_listening();
+      self.overlay_pending_vad_text = true;
     }
   }
 
@@ -1527,16 +1533,17 @@ impl AppController {
         }
         self.manual_hold_active = true;
         self.hold_saw_speech = false;
-        self.clear_overlay_pending();
         if reset_turn_state {
           self.reset_turn_state_preserving_hotkey_state();
         }
+        // A hold is ready immediately, but the overlay appears only once the
+        // engine produces non-empty text for the turn.
+        self.overlay_pending_vad_text = true;
         self.ensure_session();
         if let Some(session) = &self.session {
           session.set_capture_enabled(true);
           session.start_or_resume_manual_hold();
         }
-        self.show_overlay_listening();
       }
       HotkeyEffect::ReleaseManualHold { should_finalize, has_started_turn } => {
         self.manual_hold_active = false;
@@ -1741,8 +1748,27 @@ impl AppController {
       return;
     }
 
-    if self.session.is_none() && self.should_keep_capture_for_followups() {
+    if self.session.is_none()
+      && self.pending_recovery_restart
+      && self.should_keep_capture_for_followups()
+    {
+      eprintln!(
+        "Azad: recovery restart triggered by device update state={:?}",
+        self.session_recovery_state
+      );
+      self.pending_recovery_restart = false;
+    }
+
+    let should_start_session = self.session.is_none() && self.should_keep_capture_for_followups();
+    if should_start_session {
       self.start_session();
+      if self.manual_hold_active {
+        if let Some(session) = &self.session {
+          session.set_capture_enabled(true);
+          session.start_or_resume_manual_hold();
+        }
+        self.overlay_pending_vad_text = true;
+      }
     }
 
     let Some(next_current) = self.current_device_id().map(ToOwned::to_owned) else {
@@ -1759,15 +1785,6 @@ impl AppController {
       self.pending_device_switch_target = Some(next_current);
       self.pending_device_switch_deadline =
         Some(Instant::now() + Duration::from_millis(DEVICE_SWITCH_RESTART_DEBOUNCE_MS));
-    }
-
-    if self.session.is_none() && self.pending_recovery_restart {
-      eprintln!(
-        "Azad: recovery restart triggered by device update state={:?}",
-        self.session_recovery_state
-      );
-      self.pending_recovery_restart = false;
-      self.start_session();
     }
   }
 
@@ -1881,24 +1898,10 @@ impl AppController {
         self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
       }
       SpeechEvent::TurnStarted { reason, .. } => {
-        // Defensive overlay-arm for engine-side `ManualOverride` turn starts.
-        // The VAD path is fully handled by `SpeechStartedByVad` above (with
-        // its own side effects); the manual path historically had no engine
-        // event at all, so a `start_turn(ManualOverride)` whose hotkey
-        // effect didn't run on the renderer side (e.g. state desync) left
-        // the live overlay hidden through the entire turn — user reported
-        // turn 9 (audit "I'm happy to answer questions" 14 s, 95.5 %).
-        //
-        // Decision is in `turn_started_should_arm_pending`: manual paths
-        // arm only when the overlay is currently hidden. Manual hold's
-        // normal happy path opens the overlay synchronously via
-        // `HotkeyEffect::ActivateManualHold` -> `show_overlay_listening`
-        // BEFORE this event arrives; that path leaves `overlay_visible=true`
-        // and we no-op here. The desync case has `overlay_visible=false`
-        // when this arrives — we arm the flag so the next non-empty
-        // `DraftUpdated` calls `show_overlay_listening`. Crucially do NOT
-        // call `reset_turn_state()`, `hide_overlay()`, or clear
-        // `latest_draft` — manual hold owns those.
+        // Manual turns stay hidden until the first non-empty draft. Re-arm
+        // here as an engine-side backstop in case renderer state was reset
+        // between the hotkey effect and turn creation. VAD turns are armed
+        // by `SpeechStartedByVad` above.
         let armed = turn_started_should_arm_pending(reason, self.overlay_visible);
         if self.debug_stats_enabled {
           let cancel_suppress_active =
@@ -1923,7 +1926,7 @@ impl AppController {
           );
         }
         if armed {
-          self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
+          self.overlay_pending_vad_text = true;
         }
       }
       SpeechEvent::DraftUpdated { turn_id, committed, live, .. } => {
@@ -2092,11 +2095,13 @@ impl AppController {
         self.finalizing_turn_id = Some(turn_id);
         self.clear_held_top_overlay();
         self.raw_handled_turn_id = None;
-        // If we never surfaced any draft text in auto mode, keep overlay hidden.
-        // This avoids noise-only VAD turns flashing the overlay.
+        // Keep every empty turn hidden. An overlay that already contains a
+        // real draft remains visible while that text is finalized.
         let has_visible_text = !self.finalizing_draft.trim().is_empty();
-        if !has_visible_text && !self.overlay_visible && !self.manual_hold_active {
-          self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
+        if !has_visible_text && !self.overlay_visible {
+          self.overlay_pending_vad_text = self.overlay_pending_vad_text
+            || self.manual_hold_active
+            || self.cfg.show_overlay_on_vad_start;
           self.finalizing_deadline = None;
           return;
         }
@@ -2307,7 +2312,7 @@ impl AppController {
               eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
             }
             if should_hide_overlay {
-              self.hide_overlay();
+              self.dismiss_overlay_after_standard_dictation();
             }
           }
         }
@@ -2320,14 +2325,12 @@ impl AppController {
       }
       SpeechEvent::SessionEnded { session_id } => {
         self.log_input_event(InputLogEvent::EngineSessionEnded);
-        let should_restart = self.should_restart_after_session_end() || self.manual_hold_active;
+        let should_restart = self.should_restart_after_session_end();
         if self.debug_stats_enabled {
           eprintln!(
             "AZAD_SESSION_ENDED session_id={session_id} should_restart={should_restart} \
-             always_listening={} manual_hold_active={} last_was_stream_fault={}",
-            self.always_listening_enabled,
-            self.manual_hold_active,
-            self.last_session_error_was_stream_fault,
+             always_listening={} manual_hold_active={} last_session_had_error={}",
+            self.always_listening_enabled, self.manual_hold_active, self.last_session_had_error,
           );
         }
         self.engine_state = EngineState::Idle;
@@ -2382,7 +2385,7 @@ impl AppController {
               session.set_capture_enabled(true);
               session.start_or_resume_manual_hold();
             }
-            self.show_overlay_listening();
+            self.overlay_pending_vad_text = true;
           } else if !self.always_listening_enabled {
             if let Some(session) = &self.session {
               session.set_capture_enabled(false);
@@ -2397,11 +2400,8 @@ impl AppController {
         }
       }
       SpeechEvent::Error { message, .. } => {
-        if is_stream_fault_message(&message) {
-          self.note_stream_fault(&message);
-        } else if self.overlay_visible {
-          platform::set_overlay_notice_content("Error", &message);
-        }
+        let is_stream_fault = is_stream_fault_message(&message);
+        self.note_session_fault(&message, is_stream_fault);
       }
       SpeechEvent::Status { state, detail, .. } => {
         let _ = detail;
@@ -3617,7 +3617,7 @@ impl AppController {
     self.render_device_menu();
     self.session_recovery_state = SessionRecoveryState::Healthy;
     self.session_fault_window.clear();
-    self.last_session_error_was_stream_fault = false;
+    self.last_session_had_error = false;
     self.pending_recovery_restart = false;
     if let Some(session) = &self.session {
       session.release_manual_hold();
@@ -3772,6 +3772,15 @@ impl AppController {
       self.overlay_visible = false;
     }
     platform::reset_overlay_conversation_views();
+  }
+
+  fn dismiss_overlay_after_standard_dictation(&mut self) {
+    // A normal dictation turn supersedes any completed one-shot command card.
+    // Clear its ownership so it cannot veto the post-paste dismissal.
+    self.azad_turn = None;
+    self.azad_pending_query = None;
+    self.spotify_turn = None;
+    self.hide_overlay();
   }
 
   fn reset_turn_state(&mut self) {
@@ -4141,10 +4150,11 @@ mod tests {
     turn_started_should_arm_pending,
   };
   use super::{
-    AppController, AzadConfig, EngineState, FAST_TICK_INTERVAL, HotkeyEffect, IDLE_TICK_INTERVAL,
-    INTERACTIVE_TICK_INTERVAL, LISTEN_TOGGLE_NOTICE_DURATION_MS, ShutdownSnapshotOutcome,
-    effective_removed_words, effective_run_on_startup_enabled, onboarding_view_model_changed,
-    should_keep_capture_live, should_start_device_controller, should_update_selected_device,
+    AppController, AzadConfig, AzadTurn, ConvStatus, EngineState, FAST_TICK_INTERVAL, HotkeyEffect,
+    IDLE_TICK_INTERVAL, INTERACTIVE_TICK_INTERVAL, LISTEN_TOGGLE_NOTICE_DURATION_MS,
+    ShutdownSnapshotOutcome, SpotifyTurn, effective_removed_words,
+    effective_run_on_startup_enabled, onboarding_view_model_changed, should_keep_capture_live,
+    should_start_device_controller, should_update_selected_device,
     start_min_rms_db_for_activation_level,
   };
   use crate::speech::{SpeechEvent, SpeechSession};
@@ -5059,6 +5069,11 @@ mod tests {
       "audio input stream ended after error: The requested device is no longer available"
     ));
     assert!(is_stream_fault_message("failed to open microphone capture: device not found"));
+    assert!(is_stream_fault_message("input device not found for id: BuiltInMicrophoneDevice"));
+    assert!(is_stream_fault_message("no default input device available"));
+    assert!(is_stream_fault_message(
+      "failed to resume CPAL stream on capture-enable: device unavailable"
+    ));
     assert!(!is_stream_fault_message("clipboard write failed"));
   }
 
@@ -5075,6 +5090,19 @@ mod tests {
     assert!(allow_immediate_restart_for_fault_count(1));
     assert!(allow_immediate_restart_for_fault_count(2));
     assert!(!allow_immediate_restart_for_fault_count(3));
+  }
+
+  #[test]
+  fn third_session_error_waits_for_recovery_even_during_manual_hold() {
+    let mut controller = AppController::new(AzadConfig::default());
+    let now = Instant::now();
+    controller.session_fault_window = vec![now, now, now];
+    controller.last_session_had_error = true;
+    controller.manual_hold_active = true;
+
+    assert!(!controller.should_restart_after_session_end());
+    assert_eq!(controller.session_recovery_state, SessionRecoveryState::Degraded);
+    assert!(controller.pending_recovery_restart);
   }
 
   #[test]
@@ -5274,6 +5302,38 @@ mod tests {
   }
 
   #[test]
+  fn standard_dictation_dismisses_stale_one_shot_overlay_owners() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.overlay_visible = true;
+    controller.azad_turn = Some(AzadTurn {
+      tag_label: "Azad",
+      tag_icon: "",
+      query: "old command".to_string(),
+      status: ConvStatus::Done,
+      reply: "done".to_string(),
+      error_msg: String::new(),
+      dismiss_at: None,
+    });
+    controller.azad_pending_query = Some("old command".to_string());
+    controller.spotify_turn = Some(SpotifyTurn {
+      tag_label: "Spotify",
+      tag_icon: "",
+      query: "old command".to_string(),
+      status: ConvStatus::Done,
+      reply: "done".to_string(),
+      error_msg: String::new(),
+      dismiss_at: None,
+    });
+
+    controller.dismiss_overlay_after_standard_dictation();
+
+    assert!(controller.azad_turn.is_none());
+    assert!(controller.azad_pending_query.is_none());
+    assert!(controller.spotify_turn.is_none());
+    assert!(!controller.overlay_visible);
+  }
+
+  #[test]
   fn draft_overlay_shows_when_pending_and_hidden_and_unsuppressed() {
     let action = draft_update_overlay_action(
       /* pending */ true, /* overlay_visible */ false,
@@ -5403,18 +5463,36 @@ mod tests {
 
   #[test]
   fn turn_started_arms_pending_for_manual_when_overlay_hidden() {
-    // Reproduces the turn-9 desync: engine fires TurnStarted{Manual} but the
-    // hotkey effect never ran on the renderer side, so overlay_visible=false.
-    // Predicate must return true so the next DraftUpdated brings the overlay up.
     assert!(turn_started_should_arm_pending(asr::render::TurnStartedReason::Manual, false));
   }
 
   #[test]
   fn turn_started_no_op_for_manual_when_overlay_already_visible() {
-    // Normal manual-hold happy path: HotkeyEffect::ActivateManualHold opened
-    // the overlay synchronously before the engine event arrived. Predicate
-    // must return false so we don't disturb that flow.
     assert!(!turn_started_should_arm_pending(asr::render::TurnStartedReason::Manual, true));
+  }
+
+  #[test]
+  fn manual_turn_stays_hidden_until_text_arrives() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.session = Some(SpeechSession::test(7));
+    controller.manual_hold_active = true;
+
+    controller.handle_speech_event(SpeechEvent::TurnStarted {
+      session_id: 7,
+      reason: asr::render::TurnStartedReason::Manual,
+    });
+
+    assert!(!controller.overlay_visible);
+    assert!(controller.overlay_pending_vad_text);
+
+    controller.handle_speech_event(SpeechEvent::Finalizing {
+      session_id: 7,
+      turn_id: 1,
+      current_draft: String::new(),
+    });
+
+    assert!(!controller.overlay_visible);
+    assert!(controller.finalizing_deadline.is_none());
   }
 
   #[test]

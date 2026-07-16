@@ -66,13 +66,9 @@ pub(super) enum DraftOverlayAction {
 /// non-empty `DraftUpdated` brings the live overlay up.
 ///
 /// VAD-driven turns are handled fully by `SpeechStartedByVad` (which arms the
-/// flag itself with full side effects); this predicate is the narrow defensive
-/// branch for `Manual` (engine-side `ManualOverride`) turns. Manual hold's
-/// hotkey effect normally opens the overlay synchronously *before* the engine
-/// event arrives, leaving `overlay_visible=true` — in that case we no-op so we
-/// don't double-arm. The bug case is `overlay_visible=false` at engine-event-
-/// arrival time (turn 9 desync): arming here gets the overlay shown on the
-/// next `DraftUpdated`.
+/// flag itself with full side effects). Manual turns deliberately remain hidden
+/// while empty, so an engine-side `Manual` start arms the first-text reveal when
+/// no overlay is already visible.
 pub(super) fn turn_started_should_arm_pending(
   reason: asr::render::TurnStartedReason,
   overlay_visible: bool,
@@ -370,7 +366,11 @@ pub(super) fn is_stream_fault_message(message: &str) -> bool {
   msg.contains("audio input stream ended after error")
     || msg.contains("audio input stream error")
     || msg.contains("failed to open microphone capture")
+    || msg.contains("failed to resume cpal stream")
     || msg.contains("requested device is no longer available")
+    || msg.contains("input device not found for id")
+    || msg.contains("no default input device available")
+    || msg.contains("does not support input")
 }
 
 pub(super) fn recovery_state_for_fault_count(faults_in_window: usize) -> SessionRecoveryState {

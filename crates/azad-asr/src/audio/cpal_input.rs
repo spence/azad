@@ -294,17 +294,16 @@ impl CpalInput {
     }
   }
 
-  fn start_capture(&mut self) {
+  fn start_capture(&mut self) -> Result<()> {
     // Resume the CPAL stream only when capture is active so the macOS mic
     // indicator tracks Azad's listen/capture state.
-    if let Err(err) = self.stream.play() {
-      eprintln!("Azad: failed to resume CPAL stream on capture-enable: {err}");
-    }
+    self.stream.play().context("failed to resume CPAL stream on capture-enable")?;
     self.capture_active = true;
     self.clear_backlog();
     // Re-arm the cold-start audio log so the next non-trivial-RMS chunk
     // after this wake fires `AZAD_AUDIO_FIRST_NONZERO`.
     self.first_audio_logged = false;
+    Ok(())
   }
 
   fn stop_capture(&mut self) {
@@ -317,17 +316,18 @@ impl CpalInput {
     self.clear_backlog();
   }
 
-  fn sync_capture_state(&mut self) {
+  fn sync_capture_state(&mut self) -> Result<()> {
     let desired = self.capture_enabled.as_ref().map(|c| c.capture_enabled()).unwrap_or(true);
     if desired == self.capture_active {
-      return;
+      return Ok(());
     }
 
     if desired {
-      self.start_capture();
+      self.start_capture()?;
     } else {
       self.stop_capture();
     }
+    Ok(())
   }
 
   fn shutdown_requested(&self) -> bool {
@@ -375,7 +375,7 @@ impl AudioInput for CpalInput {
           .unwrap_or_else(|| "unknown stream failure".to_string());
         return Err(anyhow!("audio input stream ended after error: {message}"));
       }
-      self.sync_capture_state();
+      self.sync_capture_state()?;
       if !self.capture_active {
         // Stream is still running. Drain whatever's accumulated to a
         // scratch sink so the ring buffer doesn't back up; sleep a beat
@@ -396,7 +396,7 @@ impl AudioInput for CpalInput {
         if self.shutdown_requested() {
           return Ok(None);
         }
-        self.sync_capture_state();
+        self.sync_capture_state()?;
         if !self.capture_active {
           break;
         }

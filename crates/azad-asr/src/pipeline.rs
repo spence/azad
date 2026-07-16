@@ -997,7 +997,6 @@ struct PipelineCore {
   silence_samples: usize,
   vad_avg_ema: f32,
   start_run: usize,
-  idle_vad_cadence: usize,
   start_confirm_chunks: usize,
   /// Cold-start observability: cached `capture_enabled_since` value so we
   /// can detect a fresh wake (false→true) inside `on_chunk` and (a) emit
@@ -1140,7 +1139,6 @@ impl PipelineCore {
       silence_samples: 0,
       vad_avg_ema: 0.0,
       start_run: 0,
-      idle_vad_cadence: 0,
       prev_capture_enable_at: None,
       cold_start_log_until: None,
       cold_start_chunk_idx: 0,
@@ -1243,23 +1241,13 @@ impl PipelineCore {
     // While idle, we already hard-gate very low-energy chunks as non-speech.
     // Skip VAD inference for those chunks to avoid paying model compute cost in silence.
     const HARD_SILENCE_RMS_DB: f32 = -60.0;
-    const IDLE_VAD_INTERVAL_CHUNKS: usize = 2;
     let deep_silence_idle = !self.in_speech && rms_db < HARD_SILENCE_RMS_DB;
-    let cadence_skip_idle = if !self.in_speech && self.start_run == 0 {
-      self.idle_vad_cadence = (self.idle_vad_cadence + 1) % IDLE_VAD_INTERVAL_CHUNKS;
-      self.idle_vad_cadence != 0
-    } else {
-      self.idle_vad_cadence = 0;
-      false
-    };
 
     // Silero can occasionally fail to produce output for a chunk; treat it as decay.
     let alpha = 0.20;
     let mut vad_avg = 0.0f32;
     if deep_silence_idle {
       self.vad_avg_ema = 0.0;
-    } else if cadence_skip_idle {
-      self.vad_avg_ema *= 1.0 - alpha;
     } else {
       let probs = self.vad.probabilities(chunk16)?;
       vad_avg = if probs.is_empty() { 0.0 } else { probs.iter().sum::<f32>() / probs.len() as f32 };
@@ -1330,7 +1318,7 @@ impl PipelineCore {
 
     // Hard override for start-gating only: treat very low energy as non-speech while idle.
     // Do not apply this during an active turn, or quiet speech can be cut off early.
-    if deep_silence_idle || cadence_skip_idle {
+    if deep_silence_idle {
       is_speech = false;
     }
 
