@@ -70,18 +70,11 @@ Expected service/app identifiers:
   - `cargo test -q` (in touched Rust repos, especially `crates/azad`).
 - Validate live runtime for UI/hotkey changes after restart.
 
-## Validation without touching the running app (REQUIRED path)
+## Runtime and Engine Validation
 
-The user daily-drives the installed `Azad.app` and may be mid-transcription at any moment.
-**Never** validate against the running app: do not `just stop`/`restart` it, do not change its
-input device, and do not toggle `AzadAlwaysListeningEnabled` or any other `ai.azad`
-NSUserDefaults key for a test. Doing so hijacks the user's live dictation and mutates their
-settings (e.g. flipping always-listening on). Assume we are NOT competing for GPU/CPU — just do
-not interfere with the app's state.
-
-Run all engine/transcription/EOU validation **UI-less** through the standalone `asr` binary,
-which drives the *exact same pipeline* with no overlay, no paste, no audio device, and no
-`ai.azad` defaults:
+App behavior changes must be installed, restarted, and verified with the lifecycle commands above.
+For repeatable engine/transcription/EOU sweeps, the standalone `asr` binary drives the exact same
+pipeline without overlay or paste behavior:
 
 ```
 cargo build -p azad-asr --bin asr --release
@@ -96,8 +89,8 @@ M="$HOME/Library/Application Support/Azad/models/nemotron-3.5-mlx-bf16-v1"
   <input.wav>                       # add --events-jsonl for the full render-event stream
 ```
 
-Every EOU/VAD knob is a CLI flag, so sweep timing values here — never in the live app. Match the
-app's defaults (see `crates/azad/src/config.rs`), which differ from the `asr` CLI defaults.
+Every EOU/VAD knob is a CLI flag, so use these flags for timing sweeps and match the app's defaults
+(see `crates/azad/src/config.rs`), which differ from the `asr` CLI defaults.
 
 Dual-stream is the only transcription pipeline (an instant live caption plus a persistent refined
 stream, flushed at finalize — no windowed re-decode/stitcher/bailout). For on-device evidence
@@ -109,9 +102,8 @@ stream, flushed at finalize — no windowed re-decode/stitcher/bailout). For on-
   the helper on the default search path).
 - App-side overlay/paste routing is covered by `cargo test -p azad` unit tests (e.g. the
   finalizing-caption replay), which need no models and no running app.
-- If a real-audio/device path is genuinely required, run a SEPARATE headless
-  `asr listen --device "BlackHole 2ch"` and `afplay` into BlackHole — still without changing the
-  running `Azad.app`'s device or settings.
+- If a real-audio/device path is required, a headless `asr listen --device "BlackHole 2ch"` plus
+  `afplay` into BlackHole provides a repeatable device-path test.
 
 ## Commit and Scope Hygiene
 
