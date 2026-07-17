@@ -472,8 +472,8 @@ Visual elements:
 
 ### Current Entry Point
 
-Open history by holding the listen shortcut and pressing `Up`. With the default
-shortcut, this is:
+Open history by holding the listen shortcut and pressing `Up` while the overlay
+is visible. With the default shortcut, this is:
 
 `Hold Option+Space`, then press `Up`.
 
@@ -646,7 +646,7 @@ The listen shortcut is always `Space` plus one or more modifiers. The default is
 
 | Action | Keys | Result |
 |---|---|---|
-| Open history | Hold `Option+Space`, then press `Up` | Cancels capture and opens transcript history, even before speech text appears. |
+| Open history | Hold `Option+Space`, then press `Up` while overlay is visible | Cancels capture and opens transcript history. |
 | Move older | `Up` | Selects an older transcript. |
 | Move newer | `Down` | Selects a newer transcript. |
 | Expand selected | `Right` | Expands selected item if truncated. |

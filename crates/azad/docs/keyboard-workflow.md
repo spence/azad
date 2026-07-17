@@ -55,7 +55,7 @@ History must be enabled for these shortcuts to have useful entries.
 
 | Action | Keys | Result |
 |---|---|---|
-| Open history | Hold `Option+Space`, then press `Up` | Cancels the in-flight capture, stops capture while browsing, and opens transcript history even before speech text appears. You can release `Option+Space` after history opens. |
+| Open history | Hold `Option+Space`, then press `Up` while the overlay is visible | Cancels the in-flight capture, stops capture while browsing, and opens transcript history. You can release `Option+Space` after history opens. |
 | Move older | `Up` | Selects an older transcript. |
 | Move newer | `Down` | Selects a newer transcript. |
 | Expand selected item | `Right` | Expands the selected item if it is truncated. |

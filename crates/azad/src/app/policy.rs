@@ -66,9 +66,9 @@ pub(super) enum DraftOverlayAction {
 /// non-empty `DraftUpdated` brings the live overlay up.
 ///
 /// VAD-driven turns are handled fully by `SpeechStartedByVad` (which arms the
-/// flag itself with full side effects). Manual turns deliberately remain hidden
-/// while empty, so an engine-side `Manual` start arms the first-text reveal when
-/// no overlay is already visible.
+/// flag itself with full side effects). Manual holds normally show the overlay
+/// synchronously; an engine-side `Manual` start arms first-text reveal only as
+/// a recovery path when that overlay is unexpectedly hidden.
 pub(super) fn turn_started_should_arm_pending(
   reason: asr::render::TurnStartedReason,
   overlay_visible: bool,

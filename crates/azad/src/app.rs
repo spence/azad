@@ -1213,7 +1213,7 @@ impl AppController {
         session.set_capture_enabled(true);
         session.start_or_resume_manual_hold();
       }
-      self.overlay_pending_vad_text = true;
+      self.show_overlay_listening();
     }
   }
 
@@ -1521,6 +1521,21 @@ impl AppController {
     }
   }
 
+  fn activate_manual_hold(&mut self, reset_turn_state: bool) {
+    self.manual_hold_active = true;
+    self.hold_saw_speech = false;
+    self.clear_overlay_pending();
+    if reset_turn_state {
+      self.reset_turn_state_preserving_hotkey_state();
+    }
+    self.ensure_session();
+    if let Some(session) = &self.session {
+      session.set_capture_enabled(true);
+      session.start_or_resume_manual_hold();
+    }
+    self.show_overlay_listening();
+  }
+
   fn apply_hotkey_effect(&mut self, effect: HotkeyEffect) {
     match effect {
       HotkeyEffect::InterruptAndToggleAlwaysListening => {
@@ -1541,19 +1556,7 @@ impl AppController {
         if !self.ensure_paste_accessibility_or_disable_listening() {
           return;
         }
-        self.manual_hold_active = true;
-        self.hold_saw_speech = false;
-        if reset_turn_state {
-          self.reset_turn_state_preserving_hotkey_state();
-        }
-        // A hold is ready immediately, but the overlay appears only once the
-        // engine produces non-empty text for the turn.
-        self.overlay_pending_vad_text = true;
-        self.ensure_session();
-        if let Some(session) = &self.session {
-          session.set_capture_enabled(true);
-          session.start_or_resume_manual_hold();
-        }
+        self.activate_manual_hold(reset_turn_state);
       }
       HotkeyEffect::ReleaseManualHold { should_finalize, has_started_turn } => {
         self.manual_hold_active = false;
@@ -1777,7 +1780,7 @@ impl AppController {
           session.set_capture_enabled(true);
           session.start_or_resume_manual_hold();
         }
-        self.overlay_pending_vad_text = true;
+        self.show_overlay_listening();
       }
     }
 
@@ -1908,10 +1911,9 @@ impl AppController {
         self.overlay_pending_vad_text = self.cfg.show_overlay_on_vad_start;
       }
       SpeechEvent::TurnStarted { reason, .. } => {
-        // Manual turns stay hidden until the first non-empty draft. Re-arm
-        // here as an engine-side backstop in case renderer state was reset
-        // between the hotkey effect and turn creation. VAD turns are armed
-        // by `SpeechStartedByVad` above.
+        // Manual holds normally show the overlay synchronously. If session
+        // recovery leaves a manual turn hidden, arm the first draft to restore
+        // it. VAD turns are armed by `SpeechStartedByVad` above.
         let armed = turn_started_should_arm_pending(reason, self.overlay_visible);
         if self.debug_stats_enabled {
           let cancel_suppress_active =
@@ -2395,7 +2397,7 @@ impl AppController {
               session.set_capture_enabled(true);
               session.start_or_resume_manual_hold();
             }
-            self.overlay_pending_vad_text = true;
+            self.show_overlay_listening();
           } else if !self.always_listening_enabled {
             if let Some(session) = &self.session {
               session.set_capture_enabled(false);
@@ -2636,6 +2638,7 @@ impl AppController {
           self.finalizing_turn_id,
         );
       }
+      #[cfg(not(test))]
       platform::show_overlay();
       self.overlay_visible = true;
     }
@@ -4649,6 +4652,19 @@ mod tests {
   }
 
   #[test]
+  fn activating_manual_hold_shows_empty_overlay_immediately() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.session = Some(SpeechSession::test(7));
+
+    controller.activate_manual_hold(false);
+
+    assert!(controller.manual_hold_active);
+    assert!(controller.overlay_visible);
+    assert!(controller.latest_draft.is_empty());
+    assert!(!controller.overlay_pending_vad_text);
+  }
+
+  #[test]
   fn release_manual_hold_without_session_hides_overlay_for_empty_turn() {
     let mut controller = AppController::new(AzadConfig::default());
     controller.overlay_visible = true;
@@ -5479,30 +5495,6 @@ mod tests {
   #[test]
   fn turn_started_no_op_for_manual_when_overlay_already_visible() {
     assert!(!turn_started_should_arm_pending(asr::render::TurnStartedReason::Manual, true));
-  }
-
-  #[test]
-  fn manual_turn_stays_hidden_until_text_arrives() {
-    let mut controller = AppController::new(AzadConfig::default());
-    controller.session = Some(SpeechSession::test(7));
-    controller.manual_hold_active = true;
-
-    controller.handle_speech_event(SpeechEvent::TurnStarted {
-      session_id: 7,
-      reason: asr::render::TurnStartedReason::Manual,
-    });
-
-    assert!(!controller.overlay_visible);
-    assert!(controller.overlay_pending_vad_text);
-
-    controller.handle_speech_event(SpeechEvent::Finalizing {
-      session_id: 7,
-      turn_id: 1,
-      current_draft: String::new(),
-    });
-
-    assert!(!controller.overlay_visible);
-    assert!(controller.finalizing_deadline.is_none());
   }
 
   #[test]
