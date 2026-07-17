@@ -289,6 +289,8 @@ Then:
 ## 16. Testing Strategy
 
 - `src/interaction_sm.rs`: reducer behavior and gesture sequencing.
+- `src/bin/azad_interaction_harness.rs`: process-local raw key/speech sequences through the
+  production key classifier and reducer, with recorded overlay/session effects.
 - `src/app.rs`: adapter + overlay/state invariants and regression tests.
 - behavior docs and tests should evolve together for interaction changes.
 
@@ -296,7 +298,13 @@ When regressions occur:
 
 - add test reproducing the exact event sequence first,
 - fix implementation second,
-- verify both unit and live runtime behavior.
+- run `just interaction-test` and the relevant unit tests,
+- deploy the verified artifact and inspect process health with `just status`.
+
+The active desktop and installed app are not interaction test targets. Tests must not inject global
+keyboard/mouse events, alter the live input device or preferences, or use the user's microphone.
+Test builds use default-only preferences, in-memory transcript history, and no-op paste/auto-submit
+boundaries. See `docs/isolated-interaction-harness.md` for the headless path.
 
 ## 17. Relationship to Azad ASR
 

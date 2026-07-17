@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
+default-run = "azad"
+
+[[bin]]
+name = "azad-interaction-harness"
+path = "src/bin/azad_interaction_harness.rs"
+test = false
+bench = false
 
 [dependencies]
 anyhow = "1.0"

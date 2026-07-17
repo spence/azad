@@ -9,13 +9,14 @@ GitHub Releases. The commands below are for source development.
 ## Commands
 
 ```bash
-just install   # build + install ~/Applications/Azad.app
-just start     # start Azad
-just stop      # stop Azad
-just restart   # stop + start
-just status    # print runtime status
-just logs      # tail stdout/stderr logs
-just uninstall # stop Azad and remove LaunchAgent plist if present
+just interaction-test # isolated shortcut/overlay interaction scenarios
+just install          # build + install ~/Applications/Azad.app
+just start            # start Azad
+just stop             # stop Azad
+just restart          # stop + start
+just status           # print runtime status
+just logs             # tail stdout/stderr logs
+just uninstall        # stop Azad and remove LaunchAgent plist if present
 ```
 
 ## Defaults
@@ -47,5 +48,6 @@ Azad also checks Accessibility permission on startup (required for auto-paste) a
 
 - `docs/keyboard-workflow.md` - User-facing keyboard workflow for dictation, history, and connectors.
 - `docs/keyboard-shortcut-state-machine.md` - Hotkey/VAD interaction rules and transitions.
+- `docs/isolated-interaction-harness.md` - Process-local interaction validation and safety boundary.
 - `SPECIFICATION.md` - architecture, design decisions, subsystem boundaries, and change playbooks.
 - `../../docs/README.md` - repository-wide documentation index.

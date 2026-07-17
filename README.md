@@ -64,7 +64,8 @@ and the checked-in Swift package pins.
 ## Build Commands
 
 ```bash
-just verify                 # doctor + fmt + check + test + Swift helper build + Clippy
+just verify                 # doctor + fmt + check + tests + isolated interaction harness + Swift + Clippy
+just interaction-test       # process-local shortcut/overlay interaction scenarios
 just test-replay            # run ignored ASR replay tests when local models are available
 just test-replay-required   # same, but fail if replay models are missing
 just check                  # cargo check --workspace

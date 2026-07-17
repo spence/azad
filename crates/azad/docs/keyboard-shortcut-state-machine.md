@@ -157,6 +157,9 @@ Bottom=latest_draft"]
 
 ## Test Coverage Mapping
 
+- End-to-end interaction sequences run in a separate headless process via
+  `just interaction-test`. The harness compiles the production raw-key classifier and reducer,
+  then records the overlay/session effects in memory.
 - Reducer sequence coverage lives in `src/interaction_sm.rs` unit tests.
 - Overlay lane logic coverage lives in `src/app.rs` unit tests (`split_overlay_*` and
   completion helpers).
@@ -184,4 +187,6 @@ This section describes why each transition exists and what user-facing goal it p
 - Reducer tests validate pure transition behavior and guard conditions.
 - Adapter tests validate effect application to runtime/session/overlay state.
 - Overlay tests validate lane visibility/completion behavior across turn boundaries.
+- The isolated interaction harness validates raw key and speech-event sequences without registering
+  global hotkeys, opening UI, using audio, reading preferences, or posting desktop input.
 - Regression tests are required for every bug in hotkey toggle, finalize/cancel, and split-lane behavior.

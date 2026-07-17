@@ -68,7 +68,24 @@ Expected service/app identifiers:
 - Add or update unit tests for state-machine and transition changes.
 - Run repo-appropriate tests before finishing:
   - `cargo test -q` (in touched Rust repos, especially `crates/azad`).
-- Validate live runtime for UI/hotkey changes after restart.
+- Run `just interaction-test` for shortcut, overlay-state, and session-control changes.
+- After deployment, use `just status` to verify process health. Do not drive the installed app to
+  validate interactions.
+
+## Desktop Interaction Safety (Non-Negotiable)
+
+The installed `Azad.app` is the user's daily driver, and the active macOS desktop is not a test
+fixture.
+
+- Never post synthetic keyboard or mouse events into the user's login session. This includes
+  `CGEvent`, AppleScript/System Events, HID injection, and similar desktop automation.
+- Never use the installed app, its microphone, its input-device selection, or `ai.azad`
+  `NSUserDefaults` values as test controls.
+- Exercise shortcut-to-overlay behavior with `just interaction-test`. Its JSONL events are consumed
+  only by a separate headless process and cannot reach the window server.
+- Exercise transcription, VAD, and EOU behavior with the standalone `asr` binary described below.
+- A runtime deployment check is limited to install/restart/status and read-only logs or process
+  inspection. It is not permission to synthesize user input.
 
 ## Runtime and Engine Validation
 
@@ -102,6 +119,8 @@ stream, flushed at finalize — no windowed re-decode/stitcher/bailout). For on-
   the helper on the default search path).
 - App-side overlay/paste routing is covered by `cargo test -p azad` unit tests (e.g. the
   finalizing-caption replay), which need no models and no running app.
+- Shortcut-to-overlay interaction sequences are covered by `just interaction-test`; see
+  `crates/azad/docs/isolated-interaction-harness.md`.
 - If a real-audio/device path is required, a headless `asr listen --device "BlackHole 2ch"` plus
   `afplay` into BlackHole provides a repeatable device-path test.
 

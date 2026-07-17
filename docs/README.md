@@ -17,6 +17,7 @@ Project documentation is organized by ownership boundary.
 - [Azad specification](../crates/azad/SPECIFICATION.md): app architecture, interaction state, overlay, paste, settings, and lifecycle contracts.
 - [Keyboard workflow](../crates/azad/docs/keyboard-workflow.md): user-facing keyboard behavior.
 - [Keyboard state machine](../crates/azad/docs/keyboard-shortcut-state-machine.md): engineering contract for hotkey/listen-mode transitions.
+- [Isolated interaction harness](../crates/azad/docs/isolated-interaction-harness.md): process-local shortcut, overlay-state, and session-control validation without desktop input injection.
 - [macOS build notes](../crates/azad/docs/build-macos.md): local macOS build details.
 - [Troubleshooting](../crates/azad/docs/troubleshooting.md): common runtime issues.
 

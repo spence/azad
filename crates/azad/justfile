@@ -26,6 +26,9 @@ build:
 build-release:
     cargo build --release
 
+interaction-test:
+    ./scripts/azad-interaction-test.sh
+
 dist:
     ./scripts/azad-dist.sh
 

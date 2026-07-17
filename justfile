@@ -19,6 +19,9 @@ fmt-check:
 test:
     cargo test -q --workspace
 
+interaction-test:
+    ./crates/azad/scripts/azad-interaction-test.sh
+
 test-replay:
     cargo test -q -p azad-asr --test replay -- --ignored --test-threads=1
 
@@ -51,6 +54,7 @@ verify:
     just fmt-check
     just check
     just test
+    just interaction-test
     just swift-build
     just clippy
 
