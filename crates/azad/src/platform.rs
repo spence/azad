@@ -199,6 +199,9 @@ static SEARCH_FIELD_DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 // the modifier combination can be re-registered live. Tap path is primary; this
 // only fires when Accessibility is denied.
 static HOTKEY_LISTEN_ID: AtomicU32 = AtomicU32::new(0);
+// Registered only while a Carbon-delivered listen shortcut is held so the
+// matching modifier+Up history gesture follows the same input path.
+static HOTKEY_HISTORY_ENTRY_UP_ID: AtomicU32 = AtomicU32::new(0);
 static HOTKEY_ESCAPE_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ENTER_ID: OnceLock<u32> = OnceLock::new();
 static HOTKEY_ENTER_OPTION_ID: OnceLock<u32> = OnceLock::new();
@@ -5492,6 +5495,7 @@ pub fn set_listen_modifiers(mask: u8) {
   if mask == 0 {
     return;
   }
+  set_carbon_history_entry_hotkey_enabled(false);
   let old = LISTEN_MODIFIERS.swap(mask, Ordering::Release);
   if old != mask {
     relink_listen_hotkey_fallback(old, mask);
@@ -5731,7 +5735,7 @@ fn claim_tap_hotkey(
       SpaceHotkeyAction::PassThrough => return false,
       SpaceHotkeyAction::ClaimOnly => return true,
       SpaceHotkeyAction::Press => {
-        crate::app::send_event(AppEvent::HotkeyPressed);
+        crate::app::send_event(AppEvent::HotkeyPressed { carbon_fallback: false });
         return true;
       }
       SpaceHotkeyAction::Release { raw_requested } => {
@@ -5890,10 +5894,20 @@ fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
   let listen_id = HOTKEY_LISTEN_ID.load(Ordering::Relaxed);
   if listen_id != 0 && event.id == listen_id {
     match event.state {
-      HotKeyState::Pressed => crate::app::send_event(AppEvent::HotkeyPressed),
-      HotKeyState::Released => {
-        crate::app::send_event(AppEvent::HotkeyReleased { raw_requested: is_raw_mode_pressed() })
+      HotKeyState::Pressed => {
+        crate::app::send_event(AppEvent::HotkeyPressed { carbon_fallback: true });
       }
+      HotKeyState::Released => {
+        crate::app::send_event(AppEvent::HotkeyReleased { raw_requested: is_raw_mode_pressed() });
+      }
+    }
+    return;
+  }
+
+  let history_entry_id = HOTKEY_HISTORY_ENTRY_UP_ID.load(Ordering::Relaxed);
+  if history_entry_id != 0 && event.id == history_entry_id {
+    if matches!(event.state, HotKeyState::Pressed) {
+      crate::app::send_event(AppEvent::ArrowNavigate(-1));
     }
     return;
   }
@@ -6070,6 +6084,34 @@ fn set_arrow_hotkeys_enabled(enabled: bool) {
         eprintln!("Azad: failed to unregister ArrowDown hotkey: {}", err);
       }
       HOTKEY_ARROWS_REGISTERED.store(false, Ordering::Relaxed);
+    }
+  });
+}
+
+pub fn set_carbon_history_entry_hotkey_enabled(enabled: bool) {
+  let currently_enabled = HOTKEY_HISTORY_ENTRY_UP_ID.load(Ordering::Relaxed) != 0;
+  if currently_enabled == enabled {
+    return;
+  }
+
+  HOTKEY_MANAGER_REF.with(|slot| {
+    let manager_slot = slot.borrow();
+    let Some(manager) = manager_slot.as_ref() else {
+      return;
+    };
+    let modifiers = modifiers_for_mask(LISTEN_MODIFIERS.load(Ordering::Relaxed));
+    let hotkey = HotKey::new(Some(modifiers), Code::ArrowUp);
+
+    if enabled {
+      match manager.register(hotkey) {
+        Ok(()) => HOTKEY_HISTORY_ENTRY_UP_ID.store(hotkey.id(), Ordering::Relaxed),
+        Err(err) => eprintln!("Azad: failed to register history-entry hotkey: {err}"),
+      }
+    } else {
+      if let Err(err) = manager.unregister(hotkey) {
+        eprintln!("Azad: failed to unregister history-entry hotkey: {err}");
+      }
+      HOTKEY_HISTORY_ENTRY_UP_ID.store(0, Ordering::Relaxed);
     }
   });
 }

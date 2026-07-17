@@ -134,7 +134,7 @@ Bottom=latest_draft"]
 
 | Case | Start | Event | Expected behavior |
 |---|---|---|---|
-| 1 | Listen off, idle | `HoldPressed` | Manual hold starts, capture on, overlay shown. |
+| 1 | Listen off, idle | `HoldPressed` | Manual hold starts and capture turns on; overlay stays hidden until text arrives. |
 | 2 | Listen off, manual hold | `HoldReleased` | If turn started, finalize/paste; else close overlay. |
 | 3 | Listen off, idle | Double tap (`Option+Space+Space`) | Enable listen mode without starting hold. |
 | 4 | Listen on, idle | Double tap | Disable listen mode without starting hold. |

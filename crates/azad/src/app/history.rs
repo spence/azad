@@ -23,7 +23,6 @@ impl AppController {
     if should_enter_history_mode(
       self.history_browsing,
       direction,
-      self.overlay_visible,
       self.manual_hold_active,
       manual_hold_recently_released,
     ) {
@@ -301,14 +300,10 @@ impl AppController {
 fn should_enter_history_mode(
   history_browsing: bool,
   direction: i32,
-  overlay_visible: bool,
   manual_hold_active: bool,
   manual_hold_recently_released: bool,
 ) -> bool {
-  !history_browsing
-    && direction == -1
-    && overlay_visible
-    && (manual_hold_active || manual_hold_recently_released)
+  !history_browsing && direction == -1 && (manual_hold_active || manual_hold_recently_released)
 }
 
 #[cfg(test)]
@@ -316,16 +311,15 @@ mod tests {
   use super::should_enter_history_mode;
 
   #[test]
-  fn up_enters_history_during_manual_hold_or_release_grace() {
-    assert!(should_enter_history_mode(false, -1, true, true, false));
-    assert!(should_enter_history_mode(false, -1, true, false, true));
+  fn up_enters_history_during_hidden_manual_hold_or_release_grace() {
+    assert!(should_enter_history_mode(false, -1, true, false));
+    assert!(should_enter_history_mode(false, -1, false, true));
   }
 
   #[test]
   fn up_does_not_enter_history_for_vad_only_or_wrong_direction() {
-    assert!(!should_enter_history_mode(false, -1, true, false, false));
-    assert!(!should_enter_history_mode(true, -1, true, true, true));
-    assert!(!should_enter_history_mode(false, 1, true, true, true));
-    assert!(!should_enter_history_mode(false, -1, false, true, true));
+    assert!(!should_enter_history_mode(false, -1, false, false));
+    assert!(!should_enter_history_mode(true, -1, true, true));
+    assert!(!should_enter_history_mode(false, 1, true, true));
   }
 }

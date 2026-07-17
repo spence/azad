@@ -79,7 +79,9 @@ const ACTIVATION_LEVEL_MAX_RMS_DB: f32 = -20.0;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
   ShutdownRequested,
-  HotkeyPressed,
+  HotkeyPressed {
+    carbon_fallback: bool,
+  },
   HotkeyReleased {
     raw_requested: bool,
   },
@@ -983,8 +985,16 @@ impl AppController {
   fn handle_event(&mut self, event: AppEvent) {
     match event {
       AppEvent::ShutdownRequested => self.handle_shutdown_requested(),
-      AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
-      AppEvent::HotkeyReleased { raw_requested } => self.handle_hotkey_released(raw_requested),
+      AppEvent::HotkeyPressed { carbon_fallback } => {
+        if carbon_fallback {
+          platform::set_carbon_history_entry_hotkey_enabled(true);
+        }
+        self.handle_hotkey_pressed();
+      }
+      AppEvent::HotkeyReleased { raw_requested } => {
+        platform::set_carbon_history_entry_hotkey_enabled(false);
+        self.handle_hotkey_released(raw_requested);
+      }
       AppEvent::FinalizeHotkeyPressed { raw_requested } => {
         self.handle_finalize_hotkey_pressed(raw_requested)
       }
