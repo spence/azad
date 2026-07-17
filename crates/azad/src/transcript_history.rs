@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(dead_code))]
+
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;

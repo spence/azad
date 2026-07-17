@@ -3,16 +3,17 @@ use std::time::Duration;
 use cocoa::appkit::NSPasteboard;
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
-use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
+#[cfg(not(test))]
+use core_graphics::event::CGEventFlags;
+use core_graphics::event::{CGEvent, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::settings::{AutoSubmitMode, PasteMethod};
 
-use super::{
-  AZAD_SYNTHETIC_MARKER, KCG_EVENT_SOURCE_USER_DATA_FIELD, KEYCODE_RETURN,
-  ensure_accessibility_for_auto_paste, nsstring_to_string,
-};
+#[cfg(not(test))]
+use super::{AZAD_SYNTHETIC_MARKER, KCG_EVENT_SOURCE_USER_DATA_FIELD, KEYCODE_RETURN};
+use super::{ensure_accessibility_for_auto_paste, nsstring_to_string};
 
 const KEYCODE_DIRECT_INPUT: u16 = 0x00;
 const KEYCODE_LEFT_COMMAND: u16 = 0x37;
@@ -28,7 +29,9 @@ const PASTE_CHORD_HOLD_MS: u64 = 100;
 // Device-specific modifier bits from IOKit's NX_DEVICE*KEYMASK. Real hardware modifier presses
 // set both the high-level MaskX bit AND the device-specific bit. macOS Screen Sharing forwards
 // events only when the device bit is present.
+#[cfg(not(test))]
 const NX_DEVICELCTLKEYMASK: u64 = 0x0000_0001;
+#[cfg(not(test))]
 const NX_DEVICELSHIFTKEYMASK: u64 = 0x0000_0002;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +124,12 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
   PasteResult::Pasted
 }
 
+#[cfg(test)]
+pub fn send_auto_submit(_mode: AutoSubmitMode) -> bool {
+  true
+}
+
+#[cfg(not(test))]
 pub fn send_auto_submit(mode: AutoSubmitMode) -> bool {
   match mode {
     AutoSubmitMode::Off => true,
@@ -136,6 +145,12 @@ pub fn send_auto_submit(mode: AutoSubmitMode) -> bool {
 
 /// Move focus to the first search hit (Down) then commit with Return. Used when
 /// Spotify's search field still has focus after `spotify:search:…`.
+#[cfg(test)]
+pub fn post_down_then_return() -> bool {
+  true
+}
+
+#[cfg(not(test))]
 pub fn post_down_then_return() -> bool {
   if !ensure_accessibility_for_auto_paste() {
     return false;
@@ -191,6 +206,7 @@ unsafe fn send_direct_text_input(text: &str) -> bool {
   true
 }
 
+#[cfg(not(test))]
 unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   let source = match CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
     Ok(source) => source,

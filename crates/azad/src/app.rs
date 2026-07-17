@@ -655,6 +655,9 @@ impl AppController {
     let active_pack_id = preferred_store::load_active_model_pack()
       .filter(|id| models::pack_by_id(id).is_some())
       .unwrap_or_else(|| models::default_pack().id.to_string());
+    #[cfg(test)]
+    let transcript_index = Some(TranscriptIndex::in_memory_for_tests());
+    #[cfg(not(test))]
     let transcript_index = TranscriptIndex::load();
     let removed_words = preferred_store::migrate_hesitations_out_of_removed_words(
       preferred_store::load_removed_words(),

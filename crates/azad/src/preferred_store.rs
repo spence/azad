@@ -3,7 +3,9 @@ use std::os::raw::c_char;
 
 use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::NSString;
-use objc::{class, msg_send, sel, sel_impl};
+#[cfg(not(test))]
+use objc::class;
+use objc::{msg_send, sel, sel_impl};
 
 use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
 
@@ -31,9 +33,19 @@ const ACCESSIBILITY_PERMISSION_REQUESTED_KEY: &str = "AzadAccessibilityPermissio
 const HISTORY_ENABLED_KEY: &str = "AzadHistoryEnabled";
 const LISTEN_MODIFIERS_KEY: &str = "AzadListenModifiers";
 
+#[cfg(test)]
+fn standard_user_defaults() -> id {
+  nil
+}
+
+#[cfg(not(test))]
+fn standard_user_defaults() -> id {
+  unsafe { msg_send![class!(NSUserDefaults), standardUserDefaults] }
+}
+
 pub fn load_preferred_device_id() -> Option<String> {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return None;
     }
@@ -46,7 +58,7 @@ pub fn load_preferred_device_id() -> Option<String> {
 
 pub fn save_preferred_device_id(device_id: &str) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -59,7 +71,7 @@ pub fn save_preferred_device_id(device_id: &str) {
 
 pub fn load_always_listening_enabled() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return true;
     }
@@ -77,7 +89,7 @@ pub fn load_always_listening_enabled() -> bool {
 
 pub fn save_always_listening_enabled(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -90,7 +102,7 @@ pub fn save_always_listening_enabled(enabled: bool) {
 
 pub fn load_startup_listen_mode() -> StartupListenMode {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return StartupListenMode::default();
     }
@@ -106,7 +118,7 @@ pub fn load_startup_listen_mode() -> StartupListenMode {
 
 pub fn save_startup_listen_mode(mode: StartupListenMode) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -119,7 +131,7 @@ pub fn save_startup_listen_mode(mode: StartupListenMode) {
 
 pub fn load_debug_stats_enabled() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return false;
     }
@@ -137,7 +149,7 @@ pub fn load_debug_stats_enabled() -> bool {
 
 pub fn save_debug_stats_enabled(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -150,7 +162,7 @@ pub fn save_debug_stats_enabled(enabled: bool) {
 
 pub fn load_activation_level() -> i64 {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return 0;
     }
@@ -168,7 +180,7 @@ pub fn load_activation_level() -> i64 {
 
 pub fn save_activation_level(value: i64) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -183,7 +195,7 @@ pub fn save_activation_level(value: i64) {
 /// outside the welcome/settings checkbox handlers.
 pub fn load_run_on_startup_enabled() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return false;
     }
@@ -201,7 +213,7 @@ pub fn load_run_on_startup_enabled() -> bool {
 
 pub fn save_run_on_startup_enabled(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -217,7 +229,7 @@ pub fn save_run_on_startup_enabled(enabled: bool) {
 /// explicitly completed (or is mid-) onboarding.
 pub fn load_onboarding_complete() -> Option<bool> {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return None;
     }
@@ -235,7 +247,7 @@ pub fn load_onboarding_complete() -> Option<bool> {
 
 pub fn save_onboarding_complete(complete: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -248,7 +260,7 @@ pub fn save_onboarding_complete(complete: bool) {
 
 pub fn load_accessibility_permission_requested() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return false;
     }
@@ -266,7 +278,7 @@ pub fn load_accessibility_permission_requested() -> bool {
 
 pub fn save_accessibility_permission_requested(requested: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -279,7 +291,7 @@ pub fn save_accessibility_permission_requested(requested: bool) {
 
 pub fn load_history_enabled() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return true;
     }
@@ -297,7 +309,7 @@ pub fn load_history_enabled() -> bool {
 
 pub fn save_history_enabled(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -312,7 +324,7 @@ pub fn save_history_enabled(enabled: bool) {
 /// returning user with no preference keeps the compiled default (Option).
 pub fn load_listen_modifiers() -> Option<u8> {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return None;
     }
@@ -330,7 +342,7 @@ pub fn load_listen_modifiers() -> Option<u8> {
 
 pub fn save_listen_modifiers(mask: u8) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -342,7 +354,7 @@ pub fn save_listen_modifiers(mask: u8) {
 
 pub fn load_paste_method() -> PasteMethod {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return PasteMethod::default();
     }
@@ -358,7 +370,7 @@ pub fn load_paste_method() -> PasteMethod {
 
 pub fn save_paste_method(method: PasteMethod) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -371,7 +383,7 @@ pub fn save_paste_method(method: PasteMethod) {
 
 pub fn load_auto_submit_mode() -> AutoSubmitMode {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return AutoSubmitMode::default();
     }
@@ -387,7 +399,7 @@ pub fn load_auto_submit_mode() -> AutoSubmitMode {
 
 pub fn save_auto_submit_mode(mode: AutoSubmitMode) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -400,7 +412,7 @@ pub fn save_auto_submit_mode(mode: AutoSubmitMode) {
 
 pub fn load_overlay_position() -> OverlayPosition {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return OverlayPosition::default();
     }
@@ -416,7 +428,7 @@ pub fn load_overlay_position() -> OverlayPosition {
 
 pub fn save_overlay_position(pos: OverlayPosition) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -429,7 +441,7 @@ pub fn save_overlay_position(pos: OverlayPosition) {
 
 pub fn load_append_trailing_space_on_paste() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return true;
     }
@@ -447,7 +459,7 @@ pub fn load_append_trailing_space_on_paste() -> bool {
 
 pub fn save_append_trailing_space_on_paste(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -460,7 +472,7 @@ pub fn save_append_trailing_space_on_paste(enabled: bool) {
 
 pub fn load_deduplicate_words_on_paste() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return false;
     }
@@ -478,7 +490,7 @@ pub fn load_deduplicate_words_on_paste() -> bool {
 
 pub fn save_deduplicate_words_on_paste(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -491,7 +503,7 @@ pub fn save_deduplicate_words_on_paste(enabled: bool) {
 
 pub fn load_convert_number_words_on_paste() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return false;
     }
@@ -509,7 +521,7 @@ pub fn load_convert_number_words_on_paste() -> bool {
 
 pub fn save_convert_number_words_on_paste(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -522,7 +534,7 @@ pub fn save_convert_number_words_on_paste(enabled: bool) {
 
 pub fn load_convert_spoken_emoji_on_paste() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return false;
     }
@@ -540,7 +552,7 @@ pub fn load_convert_spoken_emoji_on_paste() -> bool {
 
 pub fn save_convert_spoken_emoji_on_paste(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -553,7 +565,7 @@ pub fn save_convert_spoken_emoji_on_paste(enabled: bool) {
 
 pub fn load_lowercase_except_uppercase_words_on_paste() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return false;
     }
@@ -571,7 +583,7 @@ pub fn load_lowercase_except_uppercase_words_on_paste() -> bool {
 
 pub fn save_lowercase_except_uppercase_words_on_paste(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -584,7 +596,7 @@ pub fn save_lowercase_except_uppercase_words_on_paste(enabled: bool) {
 
 pub fn load_remove_hesitations_on_paste() -> bool {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return true;
     }
@@ -602,7 +614,7 @@ pub fn load_remove_hesitations_on_paste() -> bool {
 
 pub fn save_remove_hesitations_on_paste(enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -615,7 +627,7 @@ pub fn save_remove_hesitations_on_paste(enabled: bool) {
 
 pub fn load_active_model_pack() -> Option<String> {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return None;
     }
@@ -628,7 +640,7 @@ pub fn load_active_model_pack() -> Option<String> {
 
 pub fn save_active_model_pack(pack_id: &str) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -644,7 +656,7 @@ pub const BUILT_IN_HESITATIONS: &[&str] =
 
 fn bool_for_key(key_name: &str) -> Option<bool> {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return None;
     }
@@ -660,7 +672,7 @@ fn bool_for_key(key_name: &str) -> Option<bool> {
 
 fn save_bool_for_key(key_name: &str, enabled: bool) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -676,7 +688,7 @@ pub fn is_built_in_hesitation(word: &str) -> bool {
 
 pub fn load_removed_words() -> Vec<String> {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return Vec::new();
     }
@@ -712,7 +724,7 @@ pub fn migrate_hesitations_out_of_removed_words(words: Vec<String>) -> Vec<Strin
 
 pub fn save_removed_words(words: &[String]) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
@@ -728,7 +740,7 @@ pub fn save_removed_words(words: &[String]) {
 /// enabled set; `Some(vec![])` means the user explicitly disabled every connector.
 pub fn load_enabled_connector_ids() -> Option<Vec<String>> {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return None;
     }
@@ -755,7 +767,7 @@ pub fn load_enabled_connector_ids() -> Option<Vec<String>> {
 
 pub fn save_enabled_connector_ids(ids: &[String]) {
   unsafe {
-    let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+    let defaults = standard_user_defaults();
     if defaults == nil {
       return;
     }
