@@ -1412,6 +1412,24 @@ mod tests {
     }
 
     #[test]
+    fn build_paste_text_converts_requested_spoken_emoji_aliases() {
+        assert_eq!(
+            build_paste_text(
+                "asterisk emoji blocked emoji in progress emoji gray check emoji grey check emoji gray checkbox emoji grey checkbox emoji clock emoji waiting emoji canceled emoji play emoji",
+                emoji_options(false, &[], true, false)
+            ),
+            "✳️ ⛔ 🚧 ☑️ ☑️ ☑️ ☑️ 🕑 🕑 🚫 ▶️"
+        );
+        assert_eq!(
+            build_paste_text(
+                "black box emoji blue box emoji brown box emoji green box emoji orange box emoji purple box emoji red box emoji white box emoji yellow box emoji",
+                emoji_options(false, &[], true, false)
+            ),
+            "⬛ 🟦 🟫 🟩 🟧 🟪 🟥 ⬜ 🟨"
+        );
+    }
+
+    #[test]
     fn build_paste_text_converts_plural_emoji_trigger() {
         assert_eq!(
             build_paste_text(
