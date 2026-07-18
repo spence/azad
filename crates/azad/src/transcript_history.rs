@@ -201,13 +201,9 @@ impl TranscriptIndex {
     self.cache.get(index).map(|e| e.ts_ms)
   }
 
-  /// Ranked FTS5 search. Empty / pure-whitespace query short-circuits to
-  /// the cache in newest-first order (with empty `match_ranges`), matching
-  /// the no-filter behaviour. Tokens are split on whitespace; non-alnum
-  /// punctuation is stripped; each token is a prefix-phrase
-  /// (`"<token>"*`). Tokens are joined by space (FTS5 implicit AND) so all
-  /// must appear. Results sorted by BM25 (best first) with recency as the
-  /// tiebreak.
+  /// FTS5 search in newest-first order, matching the unfiltered history list.
+  /// Empty / pure-whitespace queries short-circuit to the cache with empty
+  /// `match_ranges`. Tokens are prefix phrases joined with FTS5 implicit AND.
   pub fn search(&self, query: &str, limit: usize) -> Vec<HistoryHit> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -245,7 +241,7 @@ impl TranscriptIndex {
        FROM transcripts_fts \
        JOIN transcripts t ON t.id = transcripts_fts.rowid \
        WHERE transcripts_fts MATCH ? \
-       ORDER BY bm25(transcripts_fts) ASC, t.ts_ms DESC \
+       ORDER BY t.ts_ms DESC, t.id DESC \
        LIMIT ?",
     ) {
       Ok(s) => s,
@@ -636,6 +632,28 @@ mod tests {
     idx.append(3, "", "the unrelated entry");
     let hits = idx.search("trans", 10);
     assert_eq!(hits.len(), 2);
+  }
+
+  #[test]
+  fn filtered_search_returns_newest_first() {
+    let idx = open_in_memory();
+    for (ts_ms, turn_id, text) in [
+      (1_000_i64, 1_i64, "overlay overlay overlay overlay"),
+      (3_000, 3, "overlay newest"),
+      (2_000, 2, "overlay middle"),
+    ] {
+      idx
+        .conn
+        .execute(
+          "INSERT INTO transcripts(ts_ms, turn_id, draft_text, final_text) VALUES (?, ?, '', ?)",
+          params![ts_ms, turn_id, text],
+        )
+        .unwrap();
+    }
+
+    let hits = idx.search("overlay", 10);
+    let timestamps: Vec<_> = hits.iter().map(|hit| hit.ts_ms).collect();
+    assert_eq!(timestamps, vec![3_000, 2_000, 1_000]);
   }
 
   #[test]
