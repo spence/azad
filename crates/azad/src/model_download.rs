@@ -166,13 +166,15 @@ async fn download_pack(
     let part_path = PathBuf::from(format!("{}.part", dest.display()));
     download_file(
       &client,
-      file_def.url,
-      &part_path,
-      file_def.size_bytes,
+      DownloadFileRequest {
+        url: file_def.url,
+        dest: &part_path,
+        expected_size: file_def.size_bytes,
+        pack_id: pack.id,
+        bytes_total,
+      },
       control,
-      pack.id,
       &mut bytes_done,
-      bytes_total,
     )
     .await?;
     control.wait_if_paused()?;
@@ -189,16 +191,21 @@ async fn download_pack(
   Ok(())
 }
 
+struct DownloadFileRequest<'a> {
+  url: &'a str,
+  dest: &'a Path,
+  expected_size: u64,
+  pack_id: &'a str,
+  bytes_total: u64,
+}
+
 async fn download_file(
   client: &reqwest::Client,
-  url: &str,
-  dest: &Path,
-  expected_size: u64,
+  request: DownloadFileRequest<'_>,
   control: &DownloadControl,
-  pack_id: &str,
   bytes_done: &mut u64,
-  bytes_total: u64,
 ) -> Result<(), String> {
+  let DownloadFileRequest { url, dest, expected_size, pack_id, bytes_total } = request;
   let bytes_before_file = *bytes_done;
   let mut offset = resumable_download_len(dest, url, expected_size)?;
   *bytes_done = bytes_before_file + offset;
@@ -528,8 +535,8 @@ fn send_progress(pack_id: &str, bytes_done: u64, bytes_total: u64) {
 #[cfg(test)]
 mod tests {
   use super::{
-    DOWNLOAD_CONNECT_TIMEOUT, DownloadControl, DownloadHandle, download_file, partial_download_len,
-    range_header,
+    DOWNLOAD_CONNECT_TIMEOUT, DownloadControl, DownloadFileRequest, DownloadHandle, download_file,
+    partial_download_len, range_header,
   };
   use std::fs;
   use std::io::{Read, Write};
@@ -602,13 +609,15 @@ mod tests {
         let mut bytes_done = 0;
         download_file(
           &client,
-          &url,
-          &worker_path,
-          worker_data.len() as u64,
+          DownloadFileRequest {
+            url: &url,
+            dest: &worker_path,
+            expected_size: worker_data.len() as u64,
+            pack_id: "test-pack",
+            bytes_total: worker_data.len() as u64,
+          },
           &worker_control,
-          "test-pack",
           &mut bytes_done,
-          worker_data.len() as u64,
         )
         .await
         .unwrap();
@@ -658,13 +667,15 @@ mod tests {
         let mut bytes_done = 0;
         download_file(
           &client,
-          &url,
-          &worker_path,
-          worker_data.len() as u64,
+          DownloadFileRequest {
+            url: &url,
+            dest: &worker_path,
+            expected_size: worker_data.len() as u64,
+            pack_id: "test-pack",
+            bytes_total: worker_data.len() as u64,
+          },
           &worker_control,
-          "test-pack",
           &mut bytes_done,
-          worker_data.len() as u64,
         )
         .await
         .unwrap();
@@ -780,13 +791,15 @@ mod tests {
         let mut bytes_done = 0;
         download_file(
           &client,
-          &url,
-          &path,
-          data.len() as u64,
+          DownloadFileRequest {
+            url: &url,
+            dest: &path,
+            expected_size: data.len() as u64,
+            pack_id: "test-pack",
+            bytes_total: data.len() as u64,
+          },
           &control,
-          "test-pack",
           &mut bytes_done,
-          data.len() as u64,
         )
         .await
         .unwrap();

@@ -447,7 +447,7 @@ fn search_ranked_tracks(query: &str) -> Result<Vec<TrackHit>, SpotifyClientError
   }
 
   let mut ranked: Vec<TrackHit> = best_by_uri.into_values().collect();
-  ranked.sort_by(|a, b| b.score.cmp(&a.score));
+  ranked.sort_by_key(|hit| std::cmp::Reverse(hit.score));
   // Drop near-zero garbage when we have better hits.
   if ranked.iter().any(|h| h.score >= 40) {
     ranked.retain(|h| h.score >= 20);

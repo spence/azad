@@ -137,7 +137,7 @@ pub fn detect(utterance: &str, connectors: &[Connector]) -> Option<ConnectorMatc
     for phrase in connector_triggers(c) {
       if trigger_matches_prefix(utterance, phrase) {
         let better =
-          best.map_or(true, |b| phrase.split_whitespace().count() > b.split_whitespace().count());
+          best.is_none_or(|b| phrase.split_whitespace().count() > b.split_whitespace().count());
         if better {
           best = Some(phrase);
         }

@@ -852,7 +852,7 @@ impl AppController {
     let live_text = self.strip_active_trigger(&self.latest_draft);
     if let Some(turn_id) = self
       .current_turn_id
-      .or_else(|| if self.latest_seen_turn_id > 0 { Some(self.latest_seen_turn_id) } else { None })
+      .or((self.latest_seen_turn_id > 0).then_some(self.latest_seen_turn_id))
     {
       let text = live_text.trim();
       if !text.is_empty() {
@@ -3056,10 +3056,9 @@ impl AppController {
     if matches!(
       avail,
       AvailabilityState::AppleIntelligenceNotEnabled | AvailabilityState::ModelNotReady
-    ) {
-      if !query.is_empty() {
-        self.azad_pending_query = Some(query.clone());
-      }
+    ) && !query.is_empty()
+    {
+      self.azad_pending_query = Some(query.clone());
     }
 
     self.azad_turn = Some(AzadTurn {

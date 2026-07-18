@@ -4114,7 +4114,7 @@ mod tests {
 
   #[test]
   fn eou_emission_text_is_preserved() {
-    let emissions = vec![
+    let emissions = [
       EouEmission { audio_samples: 1_000, delta_chars: 3, text: " on".into() },
       EouEmission { audio_samples: 2_000, delta_chars: 9, text: " AWS Nitro".into() },
       EouEmission { audio_samples: 3_000, delta_chars: 5, text: ", uh".into() },
@@ -4653,14 +4653,11 @@ mod tests {
       "raise it by ten per and allot more",
       "raise it by ten percent and allotment more",
     );
-    match event {
-      super::DebugStatsEvent::PartialAuditResult { emitted_kind, edit_distance, exact, .. } => {
-        assert_eq!(emitted_kind, "dual_final");
-        assert_eq!(edit_distance, 2);
-        assert!(!exact);
-      }
-      other => panic!("expected PartialAuditResult, got {other:?}"),
-    }
+    let super::DebugStatsEvent::PartialAuditResult { emitted_kind, edit_distance, exact, .. } =
+      event;
+    assert_eq!(emitted_kind, "dual_final");
+    assert_eq!(edit_distance, 2);
+    assert!(!exact);
   }
 
   #[test]
@@ -4673,13 +4670,9 @@ mod tests {
       "the plan is unchanged",
       "the plan is unchanged",
     );
-    match event {
-      super::DebugStatsEvent::PartialAuditResult { edit_distance, exact, .. } => {
-        assert_eq!(edit_distance, 0);
-        assert!(exact);
-      }
-      other => panic!("expected PartialAuditResult, got {other:?}"),
-    }
+    let super::DebugStatsEvent::PartialAuditResult { edit_distance, exact, .. } = event;
+    assert_eq!(edit_distance, 0);
+    assert!(exact);
   }
 
   #[test]

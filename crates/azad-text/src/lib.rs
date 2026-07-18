@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn generated_emoji_phrase_map_has_expected_coverage() {
-        assert!(EMOJI_PHRASE_COUNT >= 3_800);
+        const { assert!(EMOJI_PHRASE_COUNT >= 3_800) };
     }
 
     #[test]
