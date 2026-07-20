@@ -997,6 +997,8 @@ struct PipelineCore {
   silence_samples: usize,
   vad_avg_ema: f32,
   start_run: usize,
+  /// Blocks automatic restarts after an empty VAD turn until VAD falls below its start threshold.
+  vad_rearm_required: bool,
   start_confirm_chunks: usize,
   /// Cold-start observability: cached `capture_enabled_since` value so we
   /// can detect a fresh wake (false→true) inside `on_chunk` and (a) emit
@@ -1098,6 +1100,10 @@ fn activation_level_blocks_start(
   !in_speech && is_speech && rms_db < start_min_rms_db
 }
 
+fn vad_rearm_still_required(required: bool, vad_avg: f32, vad_on: f32) -> bool {
+  required && vad_avg >= vad_on
+}
+
 impl PipelineCore {
   fn new(
     input_spec: AudioSpec,
@@ -1139,6 +1145,7 @@ impl PipelineCore {
       silence_samples: 0,
       vad_avg_ema: 0.0,
       start_run: 0,
+      vad_rearm_required: false,
       prev_capture_enable_at: None,
       cold_start_log_until: None,
       cold_start_chunk_idx: 0,
@@ -1370,6 +1377,13 @@ impl PipelineCore {
       let auto_vad_enabled = self.controls.as_ref().map(|c| c.auto_vad_enabled()).unwrap_or(true);
       if !auto_vad_enabled {
         self.start_run = 0;
+        return Ok(());
+      }
+
+      if self.vad_rearm_required {
+        self.start_run = 0;
+        self.vad_rearm_required =
+          vad_rearm_still_required(self.vad_rearm_required, vad_avg, vad_on);
         return Ok(());
       }
 
@@ -2038,6 +2052,7 @@ impl PipelineCore {
 
   fn finish_turn(&mut self, already_pulsed: bool) -> Result<()> {
     let draft = self.current_finalize_draft();
+    let empty_vad_turn = self.turn_started_by_vad && draft.is_empty();
     if !already_pulsed {
       self.emit_finalizing_pulse();
     }
@@ -2046,6 +2061,11 @@ impl PipelineCore {
     self.tracker.reset();
     self.eou_draft.clear();
     self.turn_started_by_vad = false;
+    self.vad_rearm_required = empty_vad_turn;
+    if empty_vad_turn {
+      self.vad.reset().context("failed to reset CoreML VAD after empty turn")?;
+      self.vad_avg_ema = 0.0;
+    }
     Ok(())
   }
 
@@ -2890,7 +2910,7 @@ mod tests {
     finalizing_pulse_plan, freeze_cosmetic_live_display_churn, live_display_can_replace,
     live_stream_output_gap, normalize_chunk_case, plan_live_draft_render,
     plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stabilize_live_display_replacement, stitch_incremental_text,
+    stabilize_live_display_replacement, stitch_incremental_text, vad_rearm_still_required,
   };
 
   /// The 25 captured incremental partials from turn 41 (debug-recording
@@ -3042,6 +3062,14 @@ mod tests {
     assert!(!activation_level_blocks_start(false, true, -35.0, -40.0));
     assert!(!activation_level_blocks_start(false, false, -45.0, -40.0));
     assert!(!activation_level_blocks_start(true, true, -45.0, -40.0));
+  }
+
+  #[test]
+  fn vad_rearm_waits_for_a_below_threshold_chunk() {
+    assert!(vad_rearm_still_required(true, 0.30, 0.30));
+    assert!(vad_rearm_still_required(true, 0.31, 0.30));
+    assert!(!vad_rearm_still_required(true, 0.29, 0.30));
+    assert!(!vad_rearm_still_required(false, 0.31, 0.30));
   }
 
   #[test]

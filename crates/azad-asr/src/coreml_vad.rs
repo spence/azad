@@ -65,6 +65,11 @@ impl CoreMlVadProcessor {
       .collect()
   }
 
+  pub fn reset(&mut self) -> Result<()> {
+    self.command(json!({ "type": "reset" }))?;
+    Ok(())
+  }
+
   fn command(&mut self, payload: Value) -> Result<Value> {
     serde_json::to_writer(&mut self.stdin, &payload)
       .context("failed to encode CoreML VAD command")?;
