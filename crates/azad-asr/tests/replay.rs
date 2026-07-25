@@ -15,6 +15,16 @@
 //!      input.
 //!   4. Fix the code. The test flips green.
 //!
+//! Red-then-green only proves the fixture models *a* bug. When a fixture is composed rather than
+//! replayed whole — a gap length, a hotkey landing on a chosen chunk, a splice point — every free
+//! parameter must be **measured from the logs and swept across their range**, never picked as a
+//! plausible-sounding value. A single invented value can sit on the safe side of a threshold the
+//! real distribution straddles, and then the suite certifies a fix that does nothing on the
+//! device. That is not hypothetical: `manual_finalize_does_not_restart_a_turn_on_room_tone`
+//! originally pressed Enter 320 ms after the last word, went green on a fix that production logs
+//! then showed changed nothing, and only caught the real failure once the Enter placement was
+//! swept to include a press landing on the final syllable.
+//!
 //! Because the pipeline needs MLX Nemotron and Silero VAD, every test in this
 //! file is `#[ignore]` by default — `cargo test -p azad-asr` skips them, so contributors without
 //! models on disk don't see spurious failures. To run them:
