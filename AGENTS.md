@@ -114,6 +114,11 @@ stream, flushed at finalize — no windowed re-decode/stitcher/bailout). For on-
 (per-turn caption churn, finalize latency, correction magnitude), use
 `python3 crates/azad-asr/scripts/live_metrics.py report <sidecar-dir>`.
 
+For post-turn responsiveness ("it went dead for a few seconds after the paste"), use
+`python3 crates/azad-asr/scripts/restart_report.py --since-restart` — it reads the app's own
+`TOON_TURN_START restart_gap_ms` / `TOON_TURN_TIMEOUT` / `TOON_VAD_REARM` lines and reports phantom
+restarts, turns discarded mid-speech, and held starts. Needs debug stats on.
+
 - Pinned-fixture regressions: `cargo test -p azad-asr --test replay -- --ignored --test-threads=1`
   (`AZAD_TEST_REQUIRE_MODELS=1` to hard-fail instead of skip; needs `AZAD_MLX_ASR_HELPER` set or
   the helper on the default search path).
