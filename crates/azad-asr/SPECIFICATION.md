@@ -111,7 +111,13 @@ Finalize path:
 
 - emit `FinalLine` with the best draft (draft-history safety net),
 - emit `Finalizing`,
-- flush the refined session and emit `ReplaceLine` with the refined final (or the draft if the refined session was empty).
+- flush the refined session and emit `ReplaceLine` with the refined final (or the draft if the refined session was empty),
+- clear the VAD start gate (`reset_vad_start_gate`) so the next turn is decided by fresh audio.
+
+The empty-turn timeout treats the refined stream's text as evidence too: it fires regardless of
+current VAD state, so keying only on the live draft let it discard a turn the user was mid-way
+through speaking. The restart block it arms is bounded by the pre-roll window, so a block can cost
+start latency but never words.
 
 ## 5. Dual-Stream Refinement Design
 
@@ -253,6 +259,10 @@ Rules:
 - Hotkey semantics must not leak into engine logic.
 - Engine must remain usable from non-Azad hosts.
 - Finalization must always produce deterministic turn completion events.
+- A turn boundary must leave the VAD start gate cleared. No turn may be opened by the smoothed
+  residue of the previous one — the gate scores `max(raw, ema)`, so a stale EMA alone clears
+  `vad_thold` on room tone and spawns a phantom turn that occupies seconds and swallows the start
+  of the user's next utterance.
 - Debug recording must remain optional and non-blocking.
 - The live caption must never rewrite settled text beyond the bounded mutable tail.
 

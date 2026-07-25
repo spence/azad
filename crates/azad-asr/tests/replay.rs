@@ -783,10 +783,9 @@ fn run_post_finalize_paced(
 /// the very next chunk of room tone re-opens a turn. Nothing was said; the turn is pure VAD
 /// hysteresis.
 ///
-/// The engine must not open a turn on room tone just because it was mid-utterance a moment ago.
-///
-/// KNOWN RED on `main` — this is the pinned reproduction, landed ahead of the fix. It reports one
-/// phantom turn opening 160 ms after the finalize.
+/// `finish_turn` now clears the gate (`reset_vad_start_gate`), so the same room tone scores its
+/// raw value and stays shut. Pre-fix this reported a phantom turn opening 160 ms after the
+/// finalize at `vad_prob = 0.028`, which then occupied 2.56 s.
 #[test]
 #[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn manual_finalize_does_not_restart_a_turn_on_room_tone() {
@@ -820,22 +819,23 @@ fn manual_finalize_does_not_restart_a_turn_on_room_tone() {
 
 /// **User-visible consequence — "I start talking again and nothing happens."**
 ///
-/// The phantom turn from the test above is still open when the user resumes, so their words are
-/// swallowed into a turn that VAD opened on room tone seconds earlier. That turn is still
-/// text-less when it hits `should_timeout_empty_vad_turn` (`eou_max_silence_ms * 3` = 3 s of wall
-/// clock), which fires whether or not VAD currently says speech. The turn is discarded with an
-/// empty draft — nothing pasted, nothing shown — and because it counts as an *empty VAD turn* it
-/// arms `vad_rearm_required` and resets the Silero VAD mid-word. The rearm gate then refuses every
-/// automatic start until a chunk scores below `vad_thold`, which does not happen while the user is
-/// still talking. Production logs show 6.4 % of all turns dying on this timeout, over half of them
-/// with VAD reporting speech more than 2 s in.
+/// Pre-fix, the phantom turn from the test above was still open when the user resumed, so their
+/// words were swallowed into a turn VAD had opened on room tone seconds earlier. That turn was
+/// still text-less when it hit `should_timeout_empty_vad_turn` (`eou_max_silence_ms * 3` = 3 s of
+/// wall clock), which fires whether or not VAD currently says speech. It was discarded with an
+/// empty draft — nothing pasted, nothing shown — and, counting as an *empty VAD turn*, it armed
+/// the restart block and reset the Silero VAD mid-word. The block then refused every automatic
+/// start until a chunk scored below `vad_thold`, which does not happen while somebody is talking.
+/// Production logs had 6.4 % of all turns dying on this timeout, over half with VAD reporting
+/// speech more than 2 s in; this fixture measured 3040 ms of speech dropped.
+///
+/// Three defences hold it now: no phantom turn to resume into, the refined stream counts as text
+/// so the timeout cannot discard a turn whose words merely have not reached the live draft yet,
+/// and the restart block expires after the pre-roll window so it can cost latency but never words.
 ///
 /// Runs at 1x wall-clock speed: the timeout is wall-clock gated, so a free-running replay cannot
-/// see it. The resume offset is swept because where the user lands inside the phantom decides
-/// whether the timeout catches them.
-///
-/// KNOWN RED on `main` — this is the pinned reproduction, landed ahead of the fix. Resuming
-/// 2560 ms after the last word costs 3040 ms of speech, dropped with no overlay and no transcript.
+/// see it. The resume offset is swept because where the user lands inside the phantom decided
+/// whether the timeout caught them.
 #[test]
 #[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn speech_resumed_into_a_phantom_turn_is_not_discarded() {

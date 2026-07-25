@@ -997,8 +997,10 @@ struct PipelineCore {
   silence_samples: usize,
   vad_avg_ema: f32,
   start_run: usize,
-  /// Blocks automatic restarts after an empty VAD turn until VAD falls below its start threshold.
-  vad_rearm_required: bool,
+  /// Chunks of automatic-restart block remaining after an empty VAD turn. Cleared early by the
+  /// first sub-threshold chunk; bounded by [`PipelineCore::vad_rearm_hold_chunks`] so it can never
+  /// go deaf to a real utterance for longer than pre-roll can recover.
+  vad_rearm_chunks: u32,
   start_confirm_chunks: usize,
   /// Cold-start observability: cached `capture_enabled_since` value so we
   /// can detect a fresh wake (false→true) inside `on_chunk` and (a) emit
@@ -1100,8 +1102,21 @@ fn activation_level_blocks_start(
   !in_speech && is_speech && rms_db < start_min_rms_db
 }
 
-fn vad_rearm_still_required(required: bool, vad_avg: f32, vad_on: f32) -> bool {
-  required && vad_avg >= vad_on
+/// Confidence the start gate scores against `vad_thold`. The raw per-chunk probability and the
+/// smoothed EMA are maxed so a genuine speech onset starts a turn on its first chunk without
+/// waiting for the EMA to climb — which is also why the EMA must be cleared at a turn boundary
+/// (see [`PipelineCore::reset_vad_start_gate`]): left alone it keeps the score above the gate on
+/// pure room tone.
+fn vad_score(vad_avg: f32, vad_avg_ema: f32) -> f32 {
+  vad_avg.max(vad_avg_ema)
+}
+
+/// Remaining hold on the post-empty-turn restart block, given this chunk's raw VAD probability.
+/// Clears the instant VAD falls below the start threshold, and otherwise expires on its own after
+/// the armed number of chunks so the block can never outlast the pre-roll window — anything it
+/// delays is still recovered from pre-roll when the turn does start.
+fn vad_rearm_chunks_after(remaining: u32, vad_avg: f32, vad_on: f32) -> u32 {
+  if vad_avg < vad_on { 0 } else { remaining.saturating_sub(1) }
 }
 
 impl PipelineCore {
@@ -1145,7 +1160,7 @@ impl PipelineCore {
       silence_samples: 0,
       vad_avg_ema: 0.0,
       start_run: 0,
-      vad_rearm_required: false,
+      vad_rearm_chunks: 0,
       prev_capture_enable_at: None,
       cold_start_log_until: None,
       cold_start_chunk_idx: 0,
@@ -1272,7 +1287,7 @@ impl PipelineCore {
       }
     }
 
-    let score = vad_avg.max(self.vad_avg_ema);
+    let score = vad_score(vad_avg, self.vad_avg_ema);
     let mut is_speech = score >= effective_thold;
     let start_min_rms_db = self
       .controls
@@ -1380,10 +1395,9 @@ impl PipelineCore {
         return Ok(());
       }
 
-      if self.vad_rearm_required {
+      if self.vad_rearm_chunks > 0 {
         self.start_run = 0;
-        self.vad_rearm_required =
-          vad_rearm_still_required(self.vad_rearm_required, vad_avg, vad_on);
+        self.vad_rearm_chunks = vad_rearm_chunks_after(self.vad_rearm_chunks, vad_avg, vad_on);
         return Ok(());
       }
 
@@ -2061,12 +2075,37 @@ impl PipelineCore {
     self.tracker.reset();
     self.eou_draft.clear();
     self.turn_started_by_vad = false;
-    self.vad_rearm_required = empty_vad_turn;
+    self.reset_vad_start_gate();
+    self.vad_rearm_chunks = if empty_vad_turn { self.vad_rearm_hold_chunks() } else { 0 };
     if empty_vad_turn {
       self.vad.reset().context("failed to reset CoreML VAD after empty turn")?;
-      self.vad_avg_ema = 0.0;
     }
     Ok(())
+  }
+
+  /// Clear the VAD start gate at a turn boundary.
+  ///
+  /// `vad_avg_ema` is a smoothed speech estimate that only decays ~20 % per chunk, so a turn
+  /// finalized by hand (Enter, the common case) hands the idle gate an EMA still near 1.0 —
+  /// several times `vad_thold`. With `vad_start_chunks = 1` the next chunk of room tone then
+  /// opens a turn on nothing, and that phantom turn cannot end until the EMA crawls back under
+  /// the much lower in-speech floor, so it occupies ~1.5-3 s, swallows the start of whatever the
+  /// user says next, and finally dies as an empty VAD turn.
+  ///
+  /// Zeroing re-arms the EMA's self-seed branch so the next chunk seeds straight from raw VAD.
+  /// Responsiveness is unaffected: the gate scores [`vad_score`], so a genuine continuation still
+  /// starts on its first chunk.
+  fn reset_vad_start_gate(&mut self) {
+    self.vad_avg_ema = 0.0;
+    self.start_run = 0;
+  }
+
+  /// How long the post-empty-turn restart block may hold, in chunks. Capped at the pre-roll window
+  /// so that whatever the block delays is still recovered from pre-roll — a block can cost
+  /// start latency, never words.
+  fn vad_rearm_hold_chunks(&self) -> u32 {
+    let pre_roll_samples = u64::from(self.cfg.pre_roll_ms) * u64::from(TARGET_SR) / 1000;
+    pre_roll_samples.div_ceil(CHUNK_SAMPLES as u64).max(1) as u32
   }
 
   /// Dual-stream finalize: emit the live draft immediately, then flush the continuously-fed
@@ -2184,7 +2223,7 @@ impl PipelineCore {
 
   fn abort_turn(&mut self) {
     self.in_speech = false;
-    self.start_run = 0;
+    self.reset_vad_start_gate();
     self.silence_samples = 0;
     self.pre_roll.clear();
     self.turn_audio.clear();
@@ -2222,7 +2261,13 @@ impl PipelineCore {
       return false;
     }
 
-    let has_text = !self.tracker.full_text().trim().is_empty() || !self.eou_draft.trim().is_empty();
+    // The refined 560 ms stream counts as evidence too. It routinely has words before the live
+    // 80 ms stream does, and this timeout fires whether or not VAD currently reports speech — so
+    // consulting only the live draft let it discard a turn the user was in the middle of
+    // speaking, taking their opening words with it.
+    let has_text = !self.tracker.full_text().trim().is_empty()
+      || !self.eou_draft.trim().is_empty()
+      || !self.live_display.live_refined_text.trim().is_empty();
     if has_text {
       return false;
     }
@@ -2910,7 +2955,7 @@ mod tests {
     finalizing_pulse_plan, freeze_cosmetic_live_display_churn, live_display_can_replace,
     live_stream_output_gap, normalize_chunk_case, plan_live_draft_render,
     plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stabilize_live_display_replacement, stitch_incremental_text, vad_rearm_still_required,
+    stabilize_live_display_replacement, stitch_incremental_text, vad_rearm_chunks_after, vad_score,
   };
 
   /// The 25 captured incremental partials from turn 41 (debug-recording
@@ -3066,10 +3111,35 @@ mod tests {
 
   #[test]
   fn vad_rearm_waits_for_a_below_threshold_chunk() {
-    assert!(vad_rearm_still_required(true, 0.30, 0.30));
-    assert!(vad_rearm_still_required(true, 0.31, 0.30));
-    assert!(!vad_rearm_still_required(true, 0.29, 0.30));
-    assert!(!vad_rearm_still_required(false, 0.31, 0.30));
+    assert_eq!(vad_rearm_chunks_after(10, 0.30, 0.30), 9);
+    assert_eq!(vad_rearm_chunks_after(10, 0.31, 0.30), 9);
+    assert_eq!(vad_rearm_chunks_after(10, 0.29, 0.30), 0);
+    assert_eq!(vad_rearm_chunks_after(0, 0.31, 0.30), 0);
+  }
+
+  /// The block must expire on its own. Held open by sustained above-threshold audio it would
+  /// otherwise refuse to start a turn for as long as the user keeps talking.
+  #[test]
+  fn vad_rearm_expires_even_while_vad_stays_hot() {
+    let mut remaining = 3;
+    for _ in 0..3 {
+      assert!(remaining > 0);
+      remaining = vad_rearm_chunks_after(remaining, 1.0, 0.30);
+    }
+    assert_eq!(remaining, 0, "rearm block must not outlive its armed window");
+  }
+
+  /// A turn boundary has to leave the start gate unable to fire on room tone. The gate scores
+  /// `max(raw, ema)`, so a stale post-utterance EMA alone clears `vad_thold` on silence — the
+  /// phantom-turn bug. Cleared, the same room tone scores its raw value and stays shut, while a
+  /// real onset still opens the gate on its first chunk.
+  #[test]
+  fn cleared_start_gate_ignores_room_tone_but_still_catches_speech() {
+    let room_tone = 0.028;
+    let stale_ema = 0.93;
+    assert!(vad_score(room_tone, stale_ema) >= 0.30, "stale EMA re-opens a turn on room tone");
+    assert!(vad_score(room_tone, 0.0) < 0.30);
+    assert!(vad_score(0.807, 0.0) >= 0.30, "cleared gate must still start on a real onset");
   }
 
   #[test]
