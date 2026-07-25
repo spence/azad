@@ -641,12 +641,14 @@ struct Dictation {
 }
 
 impl Dictation {
-  /// `enter_after_ms` is the human gap between the last word and the Enter press.
-  fn new(clips: &SourceClips, enter_after_ms: usize) -> Self {
+  /// `enter_offset_chunks` places the Enter press relative to the end of the utterance. Positive
+  /// is the human gap after the last word; negative lands it while the voice is still trailing,
+  /// which production logs show is the majority of real finalizes.
+  fn new(clips: &SourceClips, enter_offset_chunks: isize) -> Self {
     let mut audio = clips.tone(640);
     audio.extend_from_slice(&clips.speech_a);
-    let last_speech_chunk = audio.len() / CHUNK_SAMPLES;
-    Self { audio, finish_at_chunk: last_speech_chunk + chunks_for_ms(enter_after_ms) }
+    let end_of_speech = (audio.len() / CHUNK_SAMPLES) as isize;
+    Self { audio, finish_at_chunk: (end_of_speech + enter_offset_chunks).max(0) as usize }
   }
 
   fn then_tone(mut self, clips: &SourceClips, ms: usize) -> Self {
@@ -790,31 +792,38 @@ fn run_post_finalize_paced(
 #[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn manual_finalize_does_not_restart_a_turn_on_room_tone() {
   let clips = SourceClips::load();
-  // Enter 320 ms after the last word, then 5 s of the same room tone the mic was already
-  // recording — long enough for a phantom turn to be born, stall, and finalize.
-  let d = Dictation::new(&clips, 320).then_tone(&clips, 5_000);
-  let Some(run) = run_post_finalize("manual-finalize-room-tone", &d.audio, d.finish_at_chunk)
-  else {
-    return;
-  };
+  // Two placements of the Enter press, then 5 s of the room tone the mic was already recording —
+  // long enough for a phantom turn to be born, stall, and finalize. `+2` is the tidy case (320 ms
+  // of room tone first). `-1` lands Enter on the final syllable, so the chunk the idle gate sees
+  // next is still fully voiced: clearing the EMA alone does not help there, because the raw
+  // probability re-opens the turn and the EMA's self-seed branch reloads it to ~0.9 in one chunk.
+  // Production logs caught that second case; only the block held by `reset_vad_start_gate` closes
+  // it.
+  for enter_offset in [2isize, -1] {
+    let d = Dictation::new(&clips, enter_offset).then_tone(&clips, 5_000);
+    let tag = format!("manual-finalize-room-tone-enter{enter_offset:+}");
+    let Some(run) = run_post_finalize(&tag, &d.audio, d.finish_at_chunk) else {
+      return;
+    };
 
-  let after: Vec<usize> = run
-    .trace
-    .turn_starts
-    .iter()
-    .copied()
-    .filter(|c| *c > run.finish_chunk)
-    .collect();
-  assert!(
-    after.is_empty(),
-    "engine opened {} phantom turn(s) on room tone after the manual finalize \
-     (finalize at chunk {}, restarts at chunks {:?}, all turn starts {:?}); \
-     stale vad_avg_ema is re-triggering the start gate",
-    after.len(),
-    run.finish_chunk,
-    after,
-    run.trace.turn_starts,
-  );
+    let after: Vec<usize> = run
+      .trace
+      .turn_starts
+      .iter()
+      .copied()
+      .filter(|c| *c > run.finish_chunk)
+      .collect();
+    assert!(
+      after.is_empty(),
+      "Enter at chunk offset {enter_offset:+}: engine opened {} phantom turn(s) on room tone \
+       after the manual finalize (finalize at chunk {}, restarts at chunks {:?}, all turn starts \
+       {:?}); the start gate is re-triggering on the audio the finished turn already claimed",
+      after.len(),
+      run.finish_chunk,
+      after,
+      run.trace.turn_starts,
+    );
+  }
 }
 
 /// **User-visible consequence — "I start talking again and nothing happens."**
@@ -871,4 +880,45 @@ fn speech_resumed_into_a_phantom_turn_is_not_discarded() {
     "speech resumed into the phantom turn was discarded:\n  {}",
     failures.join("\n  ")
   );
+}
+
+/// The cost side of the restart block, pinned. Holding the start gate after a finalize is only
+/// acceptable because it is bounded by the pre-roll window: talk straight through your own Enter
+/// press, with no pause at all for the block to clear on, and the block runs its full length —
+/// but pre-roll must still hand every one of those words to the turn that follows.
+///
+/// This is the case the block could plausibly break, so it is asserted on words, not on turn
+/// bookkeeping.
+#[test]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
+fn talking_through_a_manual_finalize_still_transcribes_the_continuation() {
+  let clips = SourceClips::load();
+  // Enter lands on the final syllable and the next utterance follows with no gap whatsoever.
+  let mut d = Dictation::new(&clips, -1);
+  d.audio.extend_from_slice(&clips.speech_b);
+  let d = d.then_tone(&clips, 2_000);
+
+  let Some(run) = run_post_finalize("talk-through-finalize", &d.audio, d.finish_at_chunk) else {
+    return;
+  };
+
+  let transcript = run.trace.transcript();
+  assert!(
+    run.trace.turn_starts.iter().any(|c| *c > run.finish_chunk),
+    "no turn ever opened for the continuation; turn starts {:?} (Enter at chunk {}), \
+     transcript {transcript:?}",
+    run.trace.turn_starts,
+    run.finish_chunk,
+  );
+  // Anchors from the start and the end of the continuation: pre-roll has to cover the words
+  // spoken while the block was held, not just the ones after it expired.
+  for must in ["fonts", "mapping"] {
+    assert!(
+      transcript.contains(must),
+      "continuation lost `{must}` — the restart block dropped words pre-roll should have \
+       covered. Turn starts {:?} (Enter at chunk {}), transcript: {transcript:?}",
+      run.trace.turn_starts,
+      run.finish_chunk,
+    );
+  }
 }

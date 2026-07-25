@@ -1024,6 +1024,10 @@ struct PipelineCore {
   turn_id: u64,
   turn_audio: Vec<f32>,
   turn_started_at: Instant,
+  /// When the previous turn ended, so `TOON_TURN_START` can report `restart_gap_ms`. A small gap
+  /// after a turn that produced text is the phantom-turn signature — the engine re-triggering on
+  /// the audio the finished turn already claimed rather than on anything new.
+  last_turn_ended_at: Option<Instant>,
   turn_started_by_vad: bool,
   // Per-turn timing of the synchronous streaming `transcribe_chunk`, summarized as TOON_LIVE_LAG at
   // finalize. When the live decode is slower than real time, the live caption falls behind the
@@ -1168,6 +1172,7 @@ impl PipelineCore {
       turn_id: 0,
       turn_audio: Vec::new(),
       turn_started_at: Instant::now(),
+      last_turn_ended_at: None,
       turn_started_by_vad: false,
       stream_decode_ms_total: 0,
       stream_decode_chunks: 0,
@@ -1280,6 +1285,12 @@ impl PipelineCore {
         // `alpha`, instead of locking it in.
         self.vad_seed_grace_chunks -= 1;
         self.vad_avg_ema = alpha * vad_avg + (1.0 - alpha) * self.vad_avg_ema;
+      } else if self.vad_rearm_chunks > 0 {
+        // Post-turn restart block: hold the smoothed estimate at zero. The audio it would smooth
+        // is the tail of the turn that just finished, and the self-seed branch below would load
+        // that tail's probability wholesale — so the block would delay the phantom by a chunk or
+        // two rather than prevent it, which is exactly what production caught.
+        self.vad_avg_ema = 0.0;
       } else if self.vad_avg_ema == 0.0 {
         self.vad_avg_ema = vad_avg;
       } else {
@@ -1397,7 +1408,20 @@ impl PipelineCore {
 
       if self.vad_rearm_chunks > 0 {
         self.start_run = 0;
-        self.vad_rearm_chunks = vad_rearm_chunks_after(self.vad_rearm_chunks, vad_avg, vad_on);
+        let before = self.vad_rearm_chunks;
+        self.vad_rearm_chunks = vad_rearm_chunks_after(before, vad_avg, vad_on);
+        // Only the held chunks are worth a line — a block that clears on the first quiet chunk is
+        // the normal path and would drown the log.
+        if self.debug_stats_enabled() && vad_avg >= vad_on {
+          eprintln!(
+            "TOON_VAD_REARM ts_ms={} action={} chunks_left={} vad_prob={:.3} thold={:.3}",
+            now_ms(),
+            if self.vad_rearm_chunks == 0 { "expired" } else { "hold" },
+            self.vad_rearm_chunks,
+            vad_avg,
+            vad_on,
+          );
+        }
         return Ok(());
       }
 
@@ -1434,6 +1458,20 @@ impl PipelineCore {
     // Guard against false-positive VAD starts that produce no draft text and never
     // naturally transition back to idle (e.g. noisy environments hovering near threshold).
     if self.should_timeout_empty_vad_turn() {
+      // Discards the turn's audio outright, so it needs its own line: `is_speech=true` here means
+      // it fired on somebody who was still talking.
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_TURN_TIMEOUT ts_ms={} turn_id={} elapsed_ms={} audio_samples={} \
+           vad_prob={:.3} is_speech={}",
+          now_ms(),
+          self.turn_id,
+          self.turn_started_at.elapsed().as_millis(),
+          self.turn_audio.len(),
+          vad_avg,
+          is_speech,
+        );
+      }
       if self.tentative_active {
         self.commit_finalize_from_tentative()?;
       } else {
@@ -1671,11 +1709,15 @@ impl PipelineCore {
     // force-start when post-mortem-debugging an "overlay never showed up" turn.
     if self.debug_stats_enabled() {
       eprintln!(
-        "TOON_TURN_START ts_ms={} turn_id={} reason={:?} audio_samples={}",
+        "TOON_TURN_START ts_ms={} turn_id={} reason={:?} audio_samples={} restart_gap_ms={}",
         now_ms(),
         self.turn_id,
         reason,
         self.turn_audio.len(),
+        self
+          .last_turn_ended_at
+          .map(|t| t.elapsed().as_millis().to_string())
+          .unwrap_or_else(|| "none".to_string()),
       );
     }
 
@@ -2076,36 +2118,40 @@ impl PipelineCore {
     self.eou_draft.clear();
     self.turn_started_by_vad = false;
     self.reset_vad_start_gate();
-    self.vad_rearm_chunks = if empty_vad_turn { self.vad_rearm_hold_chunks() } else { 0 };
     if empty_vad_turn {
       self.vad.reset().context("failed to reset CoreML VAD after empty turn")?;
     }
     Ok(())
   }
 
-  /// Clear the VAD start gate at a turn boundary.
+  /// Shut the VAD start gate at a turn boundary so the audio the turn just claimed cannot open the
+  /// next one.
   ///
-  /// `vad_avg_ema` is a smoothed speech estimate that only decays ~20 % per chunk, so a turn
-  /// finalized by hand (Enter, the common case) hands the idle gate an EMA still near 1.0 —
-  /// several times `vad_thold`. With `vad_start_chunks = 1` the next chunk of room tone then
-  /// opens a turn on nothing, and that phantom turn cannot end until the EMA crawls back under
-  /// the much lower in-speech floor, so it occupies ~1.5-3 s, swallows the start of whatever the
-  /// user says next, and finally dies as an empty VAD turn.
+  /// Two carriers, and both have to be cut. `vad_avg_ema` is a smoothed estimate that decays only
+  /// ~20 % per chunk, so a hand-finalized turn (Enter, the common case) leaves it near 1.0 —
+  /// several times `vad_thold` — and with `vad_start_chunks = 1` the next chunk of room tone opens
+  /// a turn on nothing. Zeroing it is not enough on its own, because the gate scores
+  /// [`vad_score`]: when Enter lands while the voice is still trailing, the *raw* probability is
+  /// already above the threshold and re-opens the turn anyway, whereupon the EMA's self-seed
+  /// branch reloads it to ~0.9 in a single chunk and the phantom is back. So the block also holds
+  /// until VAD has been observed below the start threshold once.
   ///
-  /// Zeroing re-arms the EMA's self-seed branch so the next chunk seeds straight from raw VAD.
-  /// Responsiveness is unaffected: the gate scores [`vad_score`], so a genuine continuation still
-  /// starts on its first chunk.
+  /// The block is checked after `take_force_start`, so it never delays push-to-talk, and it
+  /// self-clears on the first sub-threshold chunk — a normal pause costs one chunk. Only somebody
+  /// talking straight through their own finalize is held, and only for
+  /// [`vad_rearm_hold_chunks`](Self::vad_rearm_hold_chunks).
   fn reset_vad_start_gate(&mut self) {
     self.vad_avg_ema = 0.0;
     self.start_run = 0;
+    self.vad_rearm_chunks = self.vad_rearm_hold_chunks();
   }
 
-  /// How long the post-empty-turn restart block may hold, in chunks. Capped at the pre-roll window
-  /// so that whatever the block delays is still recovered from pre-roll — a block can cost
+  /// Upper bound on the restart block, in chunks. Floored to the pre-roll window so whatever the
+  /// block delays is still recovered from pre-roll when the turn does open — a block can cost
   /// start latency, never words.
   fn vad_rearm_hold_chunks(&self) -> u32 {
     let pre_roll_samples = u64::from(self.cfg.pre_roll_ms) * u64::from(TARGET_SR) / 1000;
-    pre_roll_samples.div_ceil(CHUNK_SAMPLES as u64).max(1) as u32
+    (pre_roll_samples / CHUNK_SAMPLES as u64).max(1) as u32
   }
 
   /// Dual-stream finalize: emit the live draft immediately, then flush the continuously-fed
@@ -2223,6 +2269,7 @@ impl PipelineCore {
 
   fn abort_turn(&mut self) {
     self.in_speech = false;
+    self.last_turn_ended_at = Some(Instant::now());
     self.reset_vad_start_gate();
     self.silence_samples = 0;
     self.pre_roll.clear();
@@ -2277,6 +2324,7 @@ impl PipelineCore {
   }
 
   fn complete_turn_after_finish(&mut self) {
+    self.last_turn_ended_at = Some(Instant::now());
     if self.stop_after_turn {
       self.session_complete = true;
       self.in_speech = false;
