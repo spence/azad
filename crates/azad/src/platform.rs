@@ -4,7 +4,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use cocoa::appkit::{
@@ -15,8 +15,6 @@ use cocoa::appkit::{
 use cocoa::base::{NO, YES, id, nil};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use core_graphics::event::CGEventFlags;
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use objc::Encode;
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
@@ -32,8 +30,9 @@ mod paste;
 mod permissions;
 
 use hotkeys::{
-  ClaimedHoldNavigationAction, SpaceHotkeyAction, claimed_hold_navigation_decision,
-  current_mod_mask, space_hotkey_decision,
+  ClaimedHoldNavigationAction, EventTapMaintenanceAction, EventTapObservation,
+  EventTapRestartReason, SpaceHotkeyAction, claimed_hold_navigation_decision, current_mod_mask,
+  event_tap_maintenance_action, space_hotkey_decision,
 };
 pub use paste::{PasteResult, insert_text, post_down_then_return, send_auto_submit};
 pub use permissions::{
@@ -172,11 +171,9 @@ const NS_VIEW_MIN_X_MARGIN: u64 = 1 << 0;
 const NS_VIEW_WIDTH_SIZABLE: u64 = 1 << 1;
 const NS_VIEW_HEIGHT_SIZABLE: u64 = 1 << 4;
 const NSEVENT_MODIFIER_FLAG_OPTION: u64 = 1 << 19;
-const HOLD_HOTKEY_KEY: Code = Code::Space;
-
 // The listen hotkey is always Space; only the modifier combination is
 // user-configurable (>=1 required, default Option). Our own 4-bit mask so it
-// serializes cleanly and is independent of CGEventFlags / global_hotkey.
+// serializes cleanly and is independent of CGEventFlags.
 pub const MOD_SHIFT: u8 = 1;
 pub const MOD_CONTROL: u8 = 2;
 pub const MOD_OPTION: u8 = 4;
@@ -195,31 +192,15 @@ static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static DEVICE_HEADER_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static DEVICE_ROW_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static SEARCH_FIELD_DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
-// Carbon-fallback id for the listen hotkey. Mutable (AtomicU32, 0 = unset) so
-// the modifier combination can be re-registered live. Tap path is primary; this
-// only fires when Accessibility is denied.
-static HOTKEY_LISTEN_ID: AtomicU32 = AtomicU32::new(0);
-// Registered only while a Carbon-delivered listen shortcut is held so the
-// matching modifier+Up history gesture follows the same input path.
-static HOTKEY_HISTORY_ENTRY_UP_ID: AtomicU32 = AtomicU32::new(0);
-static HOTKEY_ESCAPE_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_ENTER_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_ENTER_OPTION_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_NUMPAD_ENTER_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_NUMPAD_ENTER_OPTION_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_ARROW_UP_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_ARROW_DOWN_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_ARROW_LEFT_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_ARROW_RIGHT_ID: OnceLock<u32> = OnceLock::new();
-static HOTKEY_ESCAPE_REGISTERED: AtomicBool = AtomicBool::new(false);
-static HOTKEY_ENTER_REGISTERED: AtomicBool = AtomicBool::new(false);
-static HOTKEY_ARROWS_REGISTERED: AtomicBool = AtomicBool::new(false);
-// Toggled separately from `HOTKEY_ARROWS_REGISTERED` because Left only dismisses
+static HOTKEY_ESCAPE_ENABLED: AtomicBool = AtomicBool::new(false);
+static HOTKEY_ENTER_ENABLED: AtomicBool = AtomicBool::new(false);
+static HOTKEY_ARROWS_ENABLED: AtomicBool = AtomicBool::new(false);
+// Toggled separately from `HOTKEY_ARROWS_ENABLED` because Left only dismisses
 // while history-browse mode is active, not whenever the overlay is visible.
-static HOTKEY_ARROW_LEFT_REGISTERED: AtomicBool = AtomicBool::new(false);
-// Right is registered while history-browse mode is active (to expand the
+static HOTKEY_ARROW_LEFT_ENABLED: AtomicBool = AtomicBool::new(false);
+// Right is enabled while history-browse mode is active (to expand the
 // selected entry). Tracked separately for the same reason as Left.
-static HOTKEY_ARROW_RIGHT_REGISTERED: AtomicBool = AtomicBool::new(false);
+static HOTKEY_ARROW_RIGHT_ENABLED: AtomicBool = AtomicBool::new(false);
 // Mirrors the app's `debug_stats_enabled` so platform-side renderers can
 // emit `OVERLAY_*` log lines under the same gate as the engine's `TOON_*`
 // logs. Set via `set_overlay_debug_logs_enabled` from app.rs whenever the
@@ -246,6 +227,9 @@ static OVERLAY_ACCEPTS_KEY_INPUT: AtomicBool = AtomicBool::new(false);
 // the user releases the modifier first.
 static EVENT_TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static EVENT_TAP_INSTALL_STARTED: AtomicBool = AtomicBool::new(false);
+static EVENT_TAP_INSTALL_RETRY_AFTER_MS: AtomicU64 = AtomicU64::new(0);
+static EVENT_TAP_GENERATION: AtomicU64 = AtomicU64::new(0);
+static EVENT_TAP_DISABLED_REASON: AtomicU8 = AtomicU8::new(0);
 static SPACE_HOLD_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 // Tag value stamped onto every synthetic CGEvent Azad posts (via `send_key_chord`). The tap
@@ -264,6 +248,7 @@ const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 const KCG_KEYBOARD_EVENT_KEYCODE_FIELD: u32 = 9;
 const KCG_KEYBOARD_EVENT_AUTOREPEAT_FIELD: u32 = 8;
 const KCG_EVENT_SOURCE_USER_DATA_FIELD: u32 = 42;
+const EVENT_TAP_HEALTH_INTERVAL_SECONDS: f64 = 1.0;
 
 thread_local! {
     static OVERLAY_REFS: RefCell<Option<OverlayRefs>> = const { RefCell::new(None) };
@@ -290,7 +275,6 @@ thread_local! {
     static DEVICE_ROW_IDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static DEVICE_ROW_VIEW_REFS: RefCell<Vec<id>> = const { RefCell::new(Vec::new()) };
     static DEVICE_MENU_MODEL: RefCell<DeviceMenuModel> = RefCell::new(DeviceMenuModel::default());
-    static HOTKEY_MANAGER_REF: RefCell<Option<GlobalHotKeyManager>> = const { RefCell::new(None) };
     // Short-TTL cache of the active-window display frame so ActiveWindow mode
     // doesn't do synchronous Accessibility IPC on every streaming reposition.
     static ACTIVE_WINDOW_SCREEN_CACHE: RefCell<Option<(NSRect, Instant)>> =
@@ -421,15 +405,13 @@ pub fn run_app() {
     STATUS_DELEGATE_PTR.store(delegate as usize, Ordering::Release);
 
     setup_status_bar(delegate);
-    // Seed the configured listen-hotkey modifiers before installing the hotkeys,
-    // so the Carbon fallback registers the right chord and the tap reads it from
-    // the first keystroke. Absent pref keeps the compiled default (Option).
+    // Seed the configured listen-hotkey modifiers before installing the tap.
+    // Absent pref keeps the compiled default (Option).
     if let Some(mask) = crate::preferred_store::load_listen_modifiers() {
       if mask != 0 {
         LISTEN_MODIFIERS.store(mask, Ordering::Release);
       }
     }
-    install_global_hotkeys();
     ensure_hotkey_event_tap_if_accessibility_granted();
 
     let _: () = msg_send![app, setDelegate: delegate];
@@ -1041,6 +1023,10 @@ fn set_overlay_notice_content_styled(
   }
 }
 
+pub fn hold_hotkey_overlaps_raw_modifier() -> bool {
+  LISTEN_MODIFIERS.load(Ordering::Relaxed) & MOD_OPTION != 0
+}
+
 pub fn is_option_pressed() -> bool {
   unsafe {
     let flags: u64 = msg_send![class!(NSEvent), modifierFlags];
@@ -1050,10 +1036,6 @@ pub fn is_option_pressed() -> bool {
 
 pub fn is_raw_mode_pressed() -> bool {
   is_option_pressed()
-}
-
-pub fn hold_hotkey_overlaps_raw_modifier() -> bool {
-  LISTEN_MODIFIERS.load(Ordering::Relaxed) & MOD_OPTION != 0
 }
 
 fn register_delegate_class() -> &'static Class {
@@ -5455,24 +5437,6 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   refs
 }
 
-/// Translate our MOD_* mask to global_hotkey Modifiers for the Carbon fallback.
-fn modifiers_for_mask(mask: u8) -> Modifiers {
-  let mut mods = Modifiers::empty();
-  if mask & MOD_SHIFT != 0 {
-    mods |= Modifiers::SHIFT;
-  }
-  if mask & MOD_CONTROL != 0 {
-    mods |= Modifiers::CONTROL;
-  }
-  if mask & MOD_OPTION != 0 {
-    mods |= Modifiers::ALT;
-  }
-  if mask & MOD_COMMAND != 0 {
-    mods |= Modifiers::META;
-  }
-  mods
-}
-
 pub fn listen_modifiers() -> u8 {
   LISTEN_MODIFIERS.load(Ordering::Relaxed)
 }
@@ -5487,150 +5451,155 @@ pub fn set_overlay_position(pos: OverlayPosition) {
   OVERLAY_POSITION.store(pos.ui_index() as u8, Ordering::Release);
 }
 
-/// Apply a new listen-modifier mask live. The HID tap reads the atomic on the
-/// next keystroke (no re-arm); the Carbon fallback is re-registered so the OLD
-/// chord stops triggering too (only fires when Accessibility is denied, but
-/// must still be correct). No-op for an empty mask. Caller persists.
+/// Apply a new listen-modifier mask to the next HID-tap keystroke. Caller persists.
 pub fn set_listen_modifiers(mask: u8) {
   if mask == 0 {
     return;
   }
-  set_carbon_history_entry_hotkey_enabled(false);
-  let old = LISTEN_MODIFIERS.swap(mask, Ordering::Release);
-  if old != mask {
-    relink_listen_hotkey_fallback(old, mask);
-  }
+  LISTEN_MODIFIERS.store(mask, Ordering::Release);
 }
 
-fn relink_listen_hotkey_fallback(old_mask: u8, new_mask: u8) {
-  HOTKEY_MANAGER_REF.with(|slot| {
-    let borrow = slot.borrow();
-    let Some(manager) = borrow.as_ref() else {
-      return;
-    };
-    let old = HotKey::new(Some(modifiers_for_mask(old_mask)), HOLD_HOTKEY_KEY);
-    let old_id = old.id();
-    let _ = manager.unregister(old);
-    let new = HotKey::new(Some(modifiers_for_mask(new_mask)), HOLD_HOTKEY_KEY);
-    let new_id = new.id();
-    match manager.register(new) {
-      Ok(()) => HOTKEY_LISTEN_ID.store(new_id, Ordering::Relaxed),
-      Err(err) => {
-        eprintln!("Azad: failed to re-register listen hotkey fallback: {err}");
-        // Roll back so a working chord remains registered.
-        let rollback = HotKey::new(Some(modifiers_for_mask(old_mask)), HOLD_HOTKEY_KEY);
-        let _ = manager.register(rollback);
-        HOTKEY_LISTEN_ID.store(old_id, Ordering::Relaxed);
-      }
-    }
-  });
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct EventTapInformation {
+  event_tap_id: u32,
+  tap_point: u32,
+  options: u32,
+  events_of_interest: u64,
+  tapping_process: libc::pid_t,
+  process_being_tapped: libc::pid_t,
+  enabled: bool,
+  min_usec_latency: f32,
+  avg_usec_latency: f32,
+  max_usec_latency: f32,
 }
 
-fn install_global_hotkeys() {
-  let manager = match GlobalHotKeyManager::new() {
-    Ok(manager) => manager,
-    Err(err) => {
-      eprintln!("Azad: failed to initialize global hotkey manager: {}", err);
-      return;
-    }
-  };
-
-  let listen_mods = modifiers_for_mask(LISTEN_MODIFIERS.load(Ordering::Relaxed));
-  let hotkey = HotKey::new(Some(listen_mods), HOLD_HOTKEY_KEY);
-  let hotkey_id = hotkey.id();
-
-  if let Err(err) = manager.register(hotkey) {
-    eprintln!("Azad: failed to register listen hotkey (might be in use): {}", err);
-    return;
-  }
-
-  HOTKEY_LISTEN_ID.store(hotkey_id, Ordering::Relaxed);
-
-  let escape_hotkey = HotKey::new(None, Code::Escape);
-  let _ = HOTKEY_ESCAPE_ID.set(escape_hotkey.id());
-  let enter_hotkey = HotKey::new(None, Code::Enter);
-  let _ = HOTKEY_ENTER_ID.set(enter_hotkey.id());
-  let enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::Enter);
-  let _ = HOTKEY_ENTER_OPTION_ID.set(enter_option_hotkey.id());
-  let numpad_enter_hotkey = HotKey::new(None, Code::NumpadEnter);
-  let _ = HOTKEY_NUMPAD_ENTER_ID.set(numpad_enter_hotkey.id());
-  let numpad_enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::NumpadEnter);
-  let _ = HOTKEY_NUMPAD_ENTER_OPTION_ID.set(numpad_enter_option_hotkey.id());
-  let arrow_up_hotkey = HotKey::new(None, Code::ArrowUp);
-  let _ = HOTKEY_ARROW_UP_ID.set(arrow_up_hotkey.id());
-  let arrow_down_hotkey = HotKey::new(None, Code::ArrowDown);
-  let _ = HOTKEY_ARROW_DOWN_ID.set(arrow_down_hotkey.id());
-  let arrow_left_hotkey = HotKey::new(None, Code::ArrowLeft);
-  let _ = HOTKEY_ARROW_LEFT_ID.set(arrow_left_hotkey.id());
-  let arrow_right_hotkey = HotKey::new(None, Code::ArrowRight);
-  let _ = HOTKEY_ARROW_RIGHT_ID.set(arrow_right_hotkey.id());
-
-  GlobalHotKeyEvent::set_event_handler(Some(|event| {
-    handle_global_hotkey_event(event);
-  }));
-
-  HOTKEY_MANAGER_REF.with(|slot| {
-    slot.borrow_mut().replace(manager);
-  });
-}
-
-/// Install a low-level HID-tap that claims the hotkeys Azad cares about before any foreground
-/// app (VNC viewers, remote-desktop clients, etc.) can intercept them. Runs on a dedicated
-/// thread so slow work on the main thread never causes macOS to disable the tap for timeout.
-///
-/// Authorized by **Accessibility**, which Azad already requires: this is an *active*
-/// tap (`kCGEventTapOptionDefault`) that can consume the hotkey, and active taps are
-/// gated on Accessibility — not Input Monitoring (that gates listen-only taps). So once
-/// Accessibility is granted the tap succeeds, including over screen-sharing. If it still
-/// fails to create we fall back silently to the Carbon `RegisterEventHotKey` path — which
-/// works in most apps but gets swallowed by VNC clients that install their own HID tap.
+/// Install the HID tap that owns all global shortcut interception.
 fn install_hotkey_event_tap() {
   std::thread::Builder::new()
     .name("azad-hotkey-tap".to_string())
-    .spawn(|| unsafe {
-      let events_of_interest = (1u64 << KCG_EVENT_KEY_DOWN) | (1u64 << KCG_EVENT_KEY_UP);
+    .spawn(|| {
+      // SAFETY: The worker owns every Core Foundation object it creates and releases them before
+      // starting the next tap generation.
+      unsafe { run_hotkey_event_tap() }
+    })
+    .expect("spawn hotkey-tap thread");
+}
 
-      let tap = CGEventTapCreate(
+unsafe fn run_hotkey_event_tap() {
+  let events_of_interest = event_tap_mask();
+  let mut install_reason = "startup";
+  loop {
+    // SAFETY: The callback has the required ABI and remains valid for the tap's lifetime.
+    let tap = unsafe {
+      CGEventTapCreate(
         KCG_HID_EVENT_TAP,
         KCG_HEAD_INSERT_EVENT_TAP,
         KCG_EVENT_TAP_OPTION_DEFAULT,
         events_of_interest,
         event_tap_callback,
         std::ptr::null_mut(),
-      );
-      if tap.is_null() {
-        EVENT_TAP_INSTALL_STARTED.store(false, Ordering::Release);
-        eprintln!(
-          "Azad: couldn't install HID event tap — grant Accessibility in System Settings so the \
-           active tap can claim hotkeys over VNC / screen-sharing clients. Falling back to Carbon."
-        );
-        return;
-      }
-      EVENT_TAP_PORT.store(tap, Ordering::Release);
+      )
+    };
+    if tap.is_null() {
+      event_tap_install_failed("create_failed");
+      return;
+    }
 
-      let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
-      if source.is_null() {
-        eprintln!("Azad: failed to create run-loop source for HID event tap");
-        CFRelease(tap.cast());
-        EVENT_TAP_PORT.store(std::ptr::null_mut(), Ordering::Release);
-        return;
-      }
+    // SAFETY: `tap` is a live CFMachPort returned by `CGEventTapCreate`.
+    let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0) };
+    if source.is_null() {
+      // SAFETY: `tap` has not been released elsewhere.
+      unsafe { CFRelease(tap.cast()) };
+      event_tap_install_failed("run_loop_source_failed");
+      return;
+    }
 
-      CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+    // SAFETY: The source and tap remain retained until this generation is torn down below.
+    let run_loop = unsafe { CFRunLoopGetCurrent() };
+    unsafe {
+      CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
       CGEventTapEnable(tap, true);
-      CFRelease(source.cast());
+    }
+    EVENT_TAP_PORT.store(tap, Ordering::Release);
+    let generation = EVENT_TAP_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    log_event_tap_generation("installed", install_reason, generation, None);
 
-      // CFRunLoopRun blocks forever, driving the tap callback on this thread.
-      CFRunLoopRun();
-    })
-    .expect("spawn hotkey-tap thread");
+    let (restart_reason, avg_latency_us) = loop {
+      // The bounded run keeps callback delivery event-driven while providing a health boundary
+      // for taps that remain nominally enabled after their delivery port stalls.
+      // SAFETY: `run_loop` and its source remain live throughout this loop.
+      unsafe {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, EVENT_TAP_HEALTH_INTERVAL_SECONDS, 0);
+      }
+
+      let observation = event_tap_observation(events_of_interest);
+      let avg_latency_us = event_tap_latency(observation);
+      // SAFETY: This worker owns `tap`; it cannot be released while the health check runs.
+      let port_valid = unsafe { CFMachPortIsValid(tap) != 0 };
+      // SAFETY: `tap` remains live until the generation cleanup below.
+      let api_enabled = unsafe { CGEventTapIsEnabled(tap) };
+      let disabled_reason = take_event_tap_disabled_reason();
+
+      match event_tap_maintenance_action(port_valid, api_enabled, observation) {
+        EventTapMaintenanceAction::None => {
+          if let Some(reason) = disabled_reason {
+            log_event_tap_generation("reenabled", reason, generation, avg_latency_us);
+          }
+        }
+        EventTapMaintenanceAction::Enable => {
+          // SAFETY: `tap` remains live until the generation cleanup below.
+          unsafe { CGEventTapEnable(tap, true) };
+          // SAFETY: `tap` remains live until the generation cleanup below.
+          if unsafe { CGEventTapIsEnabled(tap) } {
+            log_event_tap_generation(
+              "reenabled",
+              disabled_reason.unwrap_or("health_check"),
+              generation,
+              avg_latency_us,
+            );
+          } else {
+            break ("enable_failed", avg_latency_us);
+          }
+        }
+        EventTapMaintenanceAction::Recreate(reason) => {
+          break (event_tap_restart_reason(reason), avg_latency_us);
+        }
+      }
+    };
+
+    log_event_tap_generation("recreate", restart_reason, generation, avg_latency_us);
+    EVENT_TAP_PORT.store(std::ptr::null_mut(), Ordering::Release);
+    SPACE_HOLD_CLAIMED.store(false, Ordering::Release);
+    // SAFETY: This worker owns the source and tap and no callback can run after removal.
+    unsafe {
+      CFRunLoopRemoveSource(run_loop, source, kCFRunLoopCommonModes);
+      CFMachPortInvalidate(tap);
+      CFRelease(source.cast());
+      CFRelease(tap.cast());
+    }
+    install_reason = restart_reason;
+  }
+}
+
+fn event_tap_install_failed(reason: &'static str) {
+  log_event_tap("install_failed", reason, None);
+  EVENT_TAP_PORT.store(std::ptr::null_mut(), Ordering::Release);
+  EVENT_TAP_INSTALL_RETRY_AFTER_MS
+    .store(crate::input_log::now_epoch_ms().max(0) as u64 + 1_000, Ordering::Release);
+  EVENT_TAP_INSTALL_STARTED.store(false, Ordering::Release);
 }
 
 pub fn ensure_hotkey_event_tap_if_accessibility_granted() {
   if EVENT_TAP_INSTALL_STARTED.load(Ordering::Acquire) {
     return;
   }
+  let now_ms = crate::input_log::now_epoch_ms().max(0) as u64;
+  if now_ms < EVENT_TAP_INSTALL_RETRY_AFTER_MS.load(Ordering::Acquire) {
+    return;
+  }
   if accessibility_authorization() != PermissionStatus::Granted {
+    EVENT_TAP_INSTALL_RETRY_AFTER_MS.store(now_ms + 1_000, Ordering::Release);
     return;
   }
   if EVENT_TAP_INSTALL_STARTED
@@ -5639,6 +5608,83 @@ pub fn ensure_hotkey_event_tap_if_accessibility_granted() {
   {
     install_hotkey_event_tap();
   }
+}
+
+fn event_tap_mask() -> u64 {
+  (1u64 << KCG_EVENT_KEY_DOWN) | (1u64 << KCG_EVENT_KEY_UP)
+}
+
+fn event_tap_observation(events_of_interest: u64) -> EventTapObservation {
+  let mut count = 0;
+  // SAFETY: A null list requests only the current tap count.
+  if unsafe { CGGetEventTapList(0, std::ptr::null_mut(), &mut count) } != 0 {
+    return EventTapObservation::Unavailable;
+  }
+  let mut taps = vec![EventTapInformation::default(); count as usize];
+  let capacity = count;
+  // SAFETY: `taps` has storage for `capacity` records and remains live for the call.
+  if unsafe { CGGetEventTapList(capacity, taps.as_mut_ptr(), &mut count) } != 0 {
+    return EventTapObservation::Unavailable;
+  }
+  let process_id = std::process::id() as libc::pid_t;
+  taps
+    .iter()
+    .take(count.min(capacity) as usize)
+    .find(|tap| {
+      tap.tapping_process == process_id
+        && tap.tap_point == KCG_HID_EVENT_TAP
+        && tap.options == KCG_EVENT_TAP_OPTION_DEFAULT
+        && tap.events_of_interest == events_of_interest
+    })
+    .map_or(EventTapObservation::Missing, |tap| EventTapObservation::Present {
+      enabled: tap.enabled,
+      avg_latency_us: tap.avg_usec_latency,
+    })
+}
+
+fn event_tap_latency(observation: EventTapObservation) -> Option<f32> {
+  match observation {
+    EventTapObservation::Present { avg_latency_us, .. } => Some(avg_latency_us),
+    EventTapObservation::Unavailable | EventTapObservation::Missing => None,
+  }
+}
+
+fn event_tap_restart_reason(reason: EventTapRestartReason) -> &'static str {
+  match reason {
+    EventTapRestartReason::InvalidPort => "invalid_port",
+    EventTapRestartReason::Missing => "missing",
+    EventTapRestartReason::StaleLatency => "stale_latency",
+  }
+}
+
+fn take_event_tap_disabled_reason() -> Option<&'static str> {
+  match EVENT_TAP_DISABLED_REASON.swap(0, Ordering::AcqRel) {
+    1 => Some("timeout"),
+    2 => Some("user_input"),
+    _ => None,
+  }
+}
+
+fn log_event_tap(action: &'static str, reason: &'static str, avg_latency_us: Option<f32>) {
+  log_event_tap_generation(
+    action,
+    reason,
+    EVENT_TAP_GENERATION.load(Ordering::Acquire),
+    avg_latency_us,
+  );
+}
+
+fn log_event_tap_generation(
+  action: &'static str,
+  reason: &'static str,
+  generation: u64,
+  avg_latency_us: Option<f32>,
+) {
+  crate::input_log::append_hotkey_tap(action, reason, generation, avg_latency_us);
+  eprintln!(
+    "AZAD_HOTKEY_TAP action={action} reason={reason} generation={generation} \
+     avg_latency_us={avg_latency_us:?}"
+  );
 }
 
 extern "C" fn event_tap_callback(
@@ -5652,6 +5698,10 @@ extern "C" fn event_tap_callback(
   if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT
     || event_type == KCG_EVENT_TAP_DISABLED_BY_USER_INPUT
   {
+    EVENT_TAP_DISABLED_REASON.store(
+      if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT { 1 } else { 2 },
+      Ordering::Release,
+    );
     let tap = EVENT_TAP_PORT.load(Ordering::Acquire);
     if !tap.is_null() {
       unsafe { CGEventTapEnable(tap, true) };
@@ -5735,7 +5785,7 @@ fn claim_tap_hotkey(
       SpaceHotkeyAction::PassThrough => return false,
       SpaceHotkeyAction::ClaimOnly => return true,
       SpaceHotkeyAction::Press => {
-        crate::app::send_event(AppEvent::HotkeyPressed { carbon_fallback: false });
+        crate::app::send_event(AppEvent::HotkeyPressed);
         return true;
       }
       SpaceHotkeyAction::Release { raw_requested } => {
@@ -5760,14 +5810,14 @@ fn claim_tap_hotkey(
 
   // Overlay-only hotkeys. Claim both keydown and keyup so the underlying app never sees either
   // half of the chord. Event dispatch only fires on keydown.
-  if HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed) && keycode == KEYCODE_ESCAPE {
+  if HOTKEY_ESCAPE_ENABLED.load(Ordering::Relaxed) && keycode == KEYCODE_ESCAPE {
     if is_keydown {
       crate::app::send_event(AppEvent::OverlayCancel);
     }
     return true;
   }
 
-  if HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
+  if HOTKEY_ENTER_ENABLED.load(Ordering::Relaxed)
     && (keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER)
   {
     if is_shift {
@@ -5782,7 +5832,7 @@ fn claim_tap_hotkey(
     return true;
   }
 
-  if HOTKEY_ARROWS_REGISTERED.load(Ordering::Relaxed) {
+  if HOTKEY_ARROWS_ENABLED.load(Ordering::Relaxed) {
     if keycode == KEYCODE_ARROW_UP {
       if is_keydown {
         crate::app::send_event(AppEvent::ArrowNavigate(-1));
@@ -5797,14 +5847,14 @@ fn claim_tap_hotkey(
     }
   }
 
-  if HOTKEY_ARROW_LEFT_REGISTERED.load(Ordering::Relaxed) && keycode == KEYCODE_ARROW_LEFT {
+  if HOTKEY_ARROW_LEFT_ENABLED.load(Ordering::Relaxed) && keycode == KEYCODE_ARROW_LEFT {
     if is_keydown {
       crate::app::send_event(AppEvent::HistoryCollapse);
     }
     return true;
   }
 
-  if HOTKEY_ARROW_RIGHT_REGISTERED.load(Ordering::Relaxed) && keycode == KEYCODE_ARROW_RIGHT {
+  if HOTKEY_ARROW_RIGHT_ENABLED.load(Ordering::Relaxed) && keycode == KEYCODE_ARROW_RIGHT {
     if is_keydown {
       crate::app::send_event(AppEvent::HistoryExpand);
     }
@@ -5840,12 +5890,7 @@ fn claim_tap_search_input(
   let is_command = (flags & CGEventFlags::CGEventFlagCommand.bits()) != 0;
   let is_shift = (flags & CGEventFlags::CGEventFlagShift.bits()) != 0;
 
-  // Enter short-circuit: paste the selected history entry. Done here as a
-  // belt-and-suspenders fix — `claim_tap_hotkey` should already handle
-  // Enter, but its dispatch is gated on `HOTKEY_ENTER_REGISTERED`, and
-  // when the panel is key + the search field is first responder there
-  // were occurrences of Enter not pasting. This direct claim is
-  // independent of that gate.
+  // Keep search-mode paste independent from the ordinary overlay finalize gate.
   //
   // Shift+Enter still passes through here too, mirroring the bypass in
   // `claim_tap_hotkey` so a soft-return chord lands in the focused app even
@@ -5890,230 +5935,16 @@ fn claim_tap_search_input(
   true
 }
 
-fn handle_global_hotkey_event(event: GlobalHotKeyEvent) {
-  let listen_id = HOTKEY_LISTEN_ID.load(Ordering::Relaxed);
-  if listen_id != 0 && event.id == listen_id {
-    match event.state {
-      HotKeyState::Pressed => {
-        crate::app::send_event(AppEvent::HotkeyPressed { carbon_fallback: true });
-      }
-      HotKeyState::Released => {
-        crate::app::send_event(AppEvent::HotkeyReleased { raw_requested: is_raw_mode_pressed() });
-      }
-    }
-    return;
-  }
-
-  let history_entry_id = HOTKEY_HISTORY_ENTRY_UP_ID.load(Ordering::Relaxed);
-  if history_entry_id != 0 && event.id == history_entry_id {
-    if matches!(event.state, HotKeyState::Pressed) {
-      crate::app::send_event(AppEvent::ArrowNavigate(-1));
-    }
-    return;
-  }
-
-  if let Some(escape_id) = HOTKEY_ESCAPE_ID.get().copied() {
-    if event.id == escape_id
-      && HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed)
-      && matches!(event.state, HotKeyState::Pressed)
-    {
-      crate::app::send_event(AppEvent::OverlayCancel);
-      return;
-    }
-  }
-
-  let is_enter_hotkey = HOTKEY_ENTER_ID.get().is_some_and(|id| event.id == *id)
-    || HOTKEY_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id)
-    || HOTKEY_NUMPAD_ENTER_ID.get().is_some_and(|id| event.id == *id)
-    || HOTKEY_NUMPAD_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id);
-  let is_option_enter_hotkey = HOTKEY_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id)
-    || HOTKEY_NUMPAD_ENTER_OPTION_ID.get().is_some_and(|id| event.id == *id);
-  if is_enter_hotkey
-    && HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed)
-    && matches!(event.state, HotKeyState::Pressed)
-  {
-    crate::app::send_event(AppEvent::FinalizeHotkeyPressed {
-      raw_requested: is_option_enter_hotkey,
-    });
-    return;
-  }
-
-  if HOTKEY_ARROWS_REGISTERED.load(Ordering::Relaxed) && matches!(event.state, HotKeyState::Pressed)
-  {
-    if HOTKEY_ARROW_UP_ID.get().is_some_and(|id| event.id == *id) {
-      crate::app::send_event(AppEvent::ArrowNavigate(-1));
-      return;
-    }
-    if HOTKEY_ARROW_DOWN_ID.get().is_some_and(|id| event.id == *id) {
-      crate::app::send_event(AppEvent::ArrowNavigate(1));
-      return;
-    }
-  }
-
-  if HOTKEY_ARROW_LEFT_REGISTERED.load(Ordering::Relaxed)
-    && matches!(event.state, HotKeyState::Pressed)
-    && HOTKEY_ARROW_LEFT_ID.get().is_some_and(|id| event.id == *id)
-  {
-    crate::app::send_event(AppEvent::HistoryCollapse);
-    return;
-  }
-
-  if HOTKEY_ARROW_RIGHT_REGISTERED.load(Ordering::Relaxed)
-    && matches!(event.state, HotKeyState::Pressed)
-    && HOTKEY_ARROW_RIGHT_ID.get().is_some_and(|id| event.id == *id)
-  {
-    crate::app::send_event(AppEvent::HistoryExpand);
-  }
-}
-
 fn set_escape_hotkey_enabled(enabled: bool) {
-  let currently_enabled = HOTKEY_ESCAPE_REGISTERED.load(Ordering::Relaxed);
-  if currently_enabled == enabled {
-    return;
-  }
-
-  HOTKEY_MANAGER_REF.with(|slot| {
-    let mut manager_slot = slot.borrow_mut();
-    let Some(manager) = manager_slot.as_mut() else {
-      return;
-    };
-
-    let escape_hotkey = HotKey::new(None, Code::Escape);
-    let result =
-      if enabled { manager.register(escape_hotkey) } else { manager.unregister(escape_hotkey) };
-
-    match result {
-      Ok(()) => {
-        HOTKEY_ESCAPE_REGISTERED.store(enabled, Ordering::Relaxed);
-      }
-      Err(err) => {
-        eprintln!(
-          "Azad: failed to {} Escape hotkey: {}",
-          if enabled { "register" } else { "unregister" },
-          err
-        );
-      }
-    }
-  });
+  HOTKEY_ESCAPE_ENABLED.store(enabled, Ordering::Release);
 }
 
 fn set_enter_hotkey_enabled(enabled: bool) {
-  let currently_enabled = HOTKEY_ENTER_REGISTERED.load(Ordering::Relaxed);
-  if currently_enabled == enabled {
-    return;
-  }
-
-  HOTKEY_MANAGER_REF.with(|slot| {
-    let mut manager_slot = slot.borrow_mut();
-    let Some(manager) = manager_slot.as_mut() else {
-      return;
-    };
-
-    let enter_hotkey = HotKey::new(None, Code::Enter);
-    let enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::Enter);
-    let numpad_enter_hotkey = HotKey::new(None, Code::NumpadEnter);
-    let numpad_enter_option_hotkey = HotKey::new(Some(Modifiers::ALT), Code::NumpadEnter);
-
-    if enabled {
-      match manager.register(enter_hotkey) {
-        Ok(()) => {
-          HOTKEY_ENTER_REGISTERED.store(true, Ordering::Relaxed);
-        }
-        Err(err) => {
-          eprintln!("Azad: failed to register Enter hotkey: {}", err);
-          return;
-        }
-      }
-
-      if let Err(err) = manager.register(enter_option_hotkey) {
-        eprintln!("Azad: failed to register Option+Enter hotkey: {}", err);
-      }
-      if let Err(err) = manager.register(numpad_enter_hotkey) {
-        eprintln!("Azad: failed to register NumpadEnter hotkey: {}", err);
-      }
-      if let Err(err) = manager.register(numpad_enter_option_hotkey) {
-        eprintln!("Azad: failed to register Option+NumpadEnter hotkey: {}", err);
-      }
-      return;
-    }
-
-    if let Err(err) = manager.unregister(enter_hotkey) {
-      eprintln!("Azad: failed to unregister Enter hotkey: {}", err);
-    }
-    if let Err(err) = manager.unregister(enter_option_hotkey) {
-      eprintln!("Azad: failed to unregister Option+Enter hotkey: {}", err);
-    }
-    if let Err(err) = manager.unregister(numpad_enter_hotkey) {
-      eprintln!("Azad: failed to unregister NumpadEnter hotkey: {}", err);
-    }
-    if let Err(err) = manager.unregister(numpad_enter_option_hotkey) {
-      eprintln!("Azad: failed to unregister Option+NumpadEnter hotkey: {}", err);
-    }
-    HOTKEY_ENTER_REGISTERED.store(false, Ordering::Relaxed);
-  });
+  HOTKEY_ENTER_ENABLED.store(enabled, Ordering::Release);
 }
 
 fn set_arrow_hotkeys_enabled(enabled: bool) {
-  let currently_enabled = HOTKEY_ARROWS_REGISTERED.load(Ordering::Relaxed);
-  if currently_enabled == enabled {
-    return;
-  }
-
-  HOTKEY_MANAGER_REF.with(|slot| {
-    let mut manager_slot = slot.borrow_mut();
-    let Some(manager) = manager_slot.as_mut() else {
-      return;
-    };
-
-    let arrow_up = HotKey::new(None, Code::ArrowUp);
-    let arrow_down = HotKey::new(None, Code::ArrowDown);
-
-    if enabled {
-      if let Err(err) = manager.register(arrow_up) {
-        eprintln!("Azad: failed to register ArrowUp hotkey: {}", err);
-      }
-      if let Err(err) = manager.register(arrow_down) {
-        eprintln!("Azad: failed to register ArrowDown hotkey: {}", err);
-      }
-      HOTKEY_ARROWS_REGISTERED.store(true, Ordering::Relaxed);
-    } else {
-      if let Err(err) = manager.unregister(arrow_up) {
-        eprintln!("Azad: failed to unregister ArrowUp hotkey: {}", err);
-      }
-      if let Err(err) = manager.unregister(arrow_down) {
-        eprintln!("Azad: failed to unregister ArrowDown hotkey: {}", err);
-      }
-      HOTKEY_ARROWS_REGISTERED.store(false, Ordering::Relaxed);
-    }
-  });
-}
-
-pub fn set_carbon_history_entry_hotkey_enabled(enabled: bool) {
-  let currently_enabled = HOTKEY_HISTORY_ENTRY_UP_ID.load(Ordering::Relaxed) != 0;
-  if currently_enabled == enabled {
-    return;
-  }
-
-  HOTKEY_MANAGER_REF.with(|slot| {
-    let manager_slot = slot.borrow();
-    let Some(manager) = manager_slot.as_ref() else {
-      return;
-    };
-    let modifiers = modifiers_for_mask(LISTEN_MODIFIERS.load(Ordering::Relaxed));
-    let hotkey = HotKey::new(Some(modifiers), Code::ArrowUp);
-
-    if enabled {
-      match manager.register(hotkey) {
-        Ok(()) => HOTKEY_HISTORY_ENTRY_UP_ID.store(hotkey.id(), Ordering::Relaxed),
-        Err(err) => eprintln!("Azad: failed to register history-entry hotkey: {err}"),
-      }
-    } else {
-      if let Err(err) = manager.unregister(hotkey) {
-        eprintln!("Azad: failed to unregister history-entry hotkey: {err}");
-      }
-      HOTKEY_HISTORY_ENTRY_UP_ID.store(0, Ordering::Relaxed);
-    }
-  });
+  HOTKEY_ARROWS_ENABLED.store(enabled, Ordering::Release);
 }
 
 pub fn set_overlay_debug_logs_enabled(enabled: bool) {
@@ -6162,57 +5993,11 @@ fn overlay_debug_logs_enabled() -> bool {
 }
 
 pub fn set_arrow_left_hotkey_enabled(enabled: bool) {
-  let currently_enabled = HOTKEY_ARROW_LEFT_REGISTERED.load(Ordering::Relaxed);
-  if currently_enabled == enabled {
-    return;
-  }
-
-  HOTKEY_MANAGER_REF.with(|slot| {
-    let mut manager_slot = slot.borrow_mut();
-    let Some(manager) = manager_slot.as_mut() else {
-      return;
-    };
-
-    let arrow_left = HotKey::new(None, Code::ArrowLeft);
-    if enabled {
-      if let Err(err) = manager.register(arrow_left) {
-        eprintln!("Azad: failed to register ArrowLeft hotkey: {}", err);
-      }
-      HOTKEY_ARROW_LEFT_REGISTERED.store(true, Ordering::Relaxed);
-    } else {
-      if let Err(err) = manager.unregister(arrow_left) {
-        eprintln!("Azad: failed to unregister ArrowLeft hotkey: {}", err);
-      }
-      HOTKEY_ARROW_LEFT_REGISTERED.store(false, Ordering::Relaxed);
-    }
-  });
+  HOTKEY_ARROW_LEFT_ENABLED.store(enabled, Ordering::Release);
 }
 
 pub fn set_arrow_right_hotkey_enabled(enabled: bool) {
-  let currently_enabled = HOTKEY_ARROW_RIGHT_REGISTERED.load(Ordering::Relaxed);
-  if currently_enabled == enabled {
-    return;
-  }
-
-  HOTKEY_MANAGER_REF.with(|slot| {
-    let mut manager_slot = slot.borrow_mut();
-    let Some(manager) = manager_slot.as_mut() else {
-      return;
-    };
-
-    let arrow_right = HotKey::new(None, Code::ArrowRight);
-    if enabled {
-      if let Err(err) = manager.register(arrow_right) {
-        eprintln!("Azad: failed to register ArrowRight hotkey: {}", err);
-      }
-      HOTKEY_ARROW_RIGHT_REGISTERED.store(true, Ordering::Relaxed);
-    } else {
-      if let Err(err) = manager.unregister(arrow_right) {
-        eprintln!("Azad: failed to unregister ArrowRight hotkey: {}", err);
-      }
-      HOTKEY_ARROW_RIGHT_REGISTERED.store(false, Ordering::Relaxed);
-    }
-  });
+  HOTKEY_ARROW_RIGHT_ENABLED.store(enabled, Ordering::Release);
 }
 
 // AXValueType tags from <ApplicationServices/.../AXValue.h>.
@@ -6251,6 +6036,12 @@ unsafe extern "C" {
   ) -> *mut c_void;
 
   fn CGEventTapEnable(tap: *mut c_void, enable: bool);
+  fn CGEventTapIsEnabled(tap: *mut c_void) -> bool;
+  fn CGGetEventTapList(
+    max_number_of_taps: u32,
+    tap_list: *mut EventTapInformation,
+    event_tap_count: *mut u32,
+  ) -> i32;
 
   fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
   fn CGEventGetFlags(event: *mut c_void) -> u64;
@@ -6266,15 +6057,19 @@ unsafe extern "C" {
     port: *mut c_void,
     order: isize,
   ) -> *mut c_void;
+  fn CFMachPortInvalidate(port: *mut c_void);
+  fn CFMachPortIsValid(port: *mut c_void) -> u8;
 
   fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+  fn CFRunLoopRemoveSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
 
   fn CFRunLoopGetCurrent() -> *mut c_void;
-  fn CFRunLoopRun();
+  fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, return_after_source_handled: u8) -> i32;
 
   fn CFRelease(cf: *const c_void);
 
   static kCFRunLoopCommonModes: *const c_void;
+  static kCFRunLoopDefaultMode: *const c_void;
 }
 
 unsafe fn assign_status_icon(status_item: id) {

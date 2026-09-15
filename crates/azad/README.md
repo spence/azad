@@ -42,7 +42,7 @@ Azad requires macOS microphone permission.
 - Then restart Azad:
   - `just restart`
 
-Azad also checks Accessibility permission on startup (required for auto-paste) and opens the Accessibility settings pane if it is missing.
+Azad also checks Accessibility permission on startup (required for global shortcuts and auto-paste) and opens the Accessibility settings pane if it is missing.
 
 ## Behavior Docs
 

@@ -93,11 +93,61 @@ pub(super) fn claimed_hold_navigation_decision(
   }
 }
 
+pub(super) const EVENT_TAP_MAX_HEALTHY_LATENCY_US: f32 = 30_000_000.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum EventTapObservation {
+  Unavailable,
+  Missing,
+  Present { enabled: bool, avg_latency_us: f32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EventTapRestartReason {
+  InvalidPort,
+  Missing,
+  StaleLatency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EventTapMaintenanceAction {
+  None,
+  Enable,
+  Recreate(EventTapRestartReason),
+}
+
+pub(super) fn event_tap_maintenance_action(
+  port_valid: bool,
+  api_enabled: bool,
+  observation: EventTapObservation,
+) -> EventTapMaintenanceAction {
+  if !port_valid {
+    return EventTapMaintenanceAction::Recreate(EventTapRestartReason::InvalidPort);
+  }
+  if !api_enabled {
+    return EventTapMaintenanceAction::Enable;
+  }
+  match observation {
+    EventTapObservation::Unavailable => EventTapMaintenanceAction::None,
+    EventTapObservation::Missing => {
+      EventTapMaintenanceAction::Recreate(EventTapRestartReason::Missing)
+    }
+    EventTapObservation::Present { enabled: false, .. } => EventTapMaintenanceAction::Enable,
+    EventTapObservation::Present { avg_latency_us, .. }
+      if !avg_latency_us.is_finite() || avg_latency_us > EVENT_TAP_MAX_HEALTHY_LATENCY_US =>
+    {
+      EventTapMaintenanceAction::Recreate(EventTapRestartReason::StaleLatency)
+    }
+    EventTapObservation::Present { .. } => EventTapMaintenanceAction::None,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::{
-    ClaimedHoldNavigationAction, SpaceHotkeyAction, SpaceHotkeyDecision,
-    claimed_hold_navigation_decision, space_hotkey_decision,
+    ClaimedHoldNavigationAction, EventTapMaintenanceAction, EventTapObservation,
+    EventTapRestartReason, SpaceHotkeyAction, SpaceHotkeyDecision,
+    claimed_hold_navigation_decision, event_tap_maintenance_action, space_hotkey_decision,
   };
   use crate::platform::{KEYCODE_ARROW_DOWN, KEYCODE_ARROW_UP, MOD_OPTION};
 
@@ -180,6 +230,66 @@ mod tests {
     assert_eq!(
       claimed_hold_navigation_decision(true, KEYCODE_ARROW_DOWN, true),
       ClaimedHoldNavigationAction::PassThrough
+    );
+  }
+
+  #[test]
+  fn healthy_event_tap_needs_no_maintenance() {
+    assert_eq!(
+      event_tap_maintenance_action(
+        true,
+        true,
+        EventTapObservation::Present { enabled: true, avg_latency_us: 250.0 },
+      ),
+      EventTapMaintenanceAction::None
+    );
+  }
+
+  #[test]
+  fn ordinary_event_delivery_spike_does_not_recreate_tap() {
+    assert_eq!(
+      event_tap_maintenance_action(
+        true,
+        true,
+        EventTapObservation::Present { enabled: true, avg_latency_us: 1_930_101.6 },
+      ),
+      EventTapMaintenanceAction::None
+    );
+  }
+
+  #[test]
+  fn disabled_event_tap_is_reenabled_before_recreation() {
+    assert_eq!(
+      event_tap_maintenance_action(
+        true,
+        false,
+        EventTapObservation::Present { enabled: false, avg_latency_us: 0.0 },
+      ),
+      EventTapMaintenanceAction::Enable
+    );
+  }
+
+  #[test]
+  fn missing_or_invalid_event_tap_is_recreated() {
+    assert_eq!(
+      event_tap_maintenance_action(true, true, EventTapObservation::Missing),
+      EventTapMaintenanceAction::Recreate(EventTapRestartReason::Missing)
+    );
+    assert_eq!(
+      event_tap_maintenance_action(false, true, EventTapObservation::Unavailable),
+      EventTapMaintenanceAction::Recreate(EventTapRestartReason::InvalidPort)
+    );
+  }
+
+  #[test]
+  fn pathological_event_tap_latency_triggers_recreation() {
+    assert_eq!(
+      event_tap_maintenance_action(
+        true,
+        true,
+        EventTapObservation::Present { enabled: true, avg_latency_us: 2_491_336_700.0 },
+      ),
+      EventTapMaintenanceAction::Recreate(EventTapRestartReason::StaleLatency)
     );
   }
 }

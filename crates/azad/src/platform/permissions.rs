@@ -86,9 +86,7 @@ pub fn microphone_authorization() -> PermissionStatus {
 }
 
 pub fn input_monitoring_authorization() -> PermissionStatus {
-  // IOHIDAccessType: 0 Granted, 1 Denied, 2 Unknown. The HID event tap that
-  // claims hotkeys over screen-sharing needs this; without it we fall back to
-  // Carbon hotkeys, so it is optional.
+  // IOHIDAccessType: 0 Granted, 1 Denied, 2 Unknown.
   let access = unsafe { IOHIDCheckAccess(KIOHID_REQUEST_TYPE_LISTEN_EVENT) };
   match access {
     0 => PermissionStatus::Granted,

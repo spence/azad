@@ -1,7 +1,7 @@
 //! Process-local interaction runner for Azad shortcut and overlay scenarios.
 //!
 //! This binary intentionally does not import Azad's AppKit platform module,
-//! global-hotkey registration, preferences, microphone, or paste code. Inputs
+//! system hotkey registration, preferences, microphone, or paste code. Inputs
 //! are JSONL messages delivered only to this process. The production
 //! interaction reducer is compiled from the same source file used by `azad`.
 

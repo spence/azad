@@ -79,9 +79,7 @@ const ACTIVATION_LEVEL_MAX_RMS_DB: f32 = -20.0;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
   ShutdownRequested,
-  HotkeyPressed {
-    carbon_fallback: bool,
-  },
+  HotkeyPressed,
   HotkeyReleased {
     raw_requested: bool,
   },
@@ -988,16 +986,8 @@ impl AppController {
   fn handle_event(&mut self, event: AppEvent) {
     match event {
       AppEvent::ShutdownRequested => self.handle_shutdown_requested(),
-      AppEvent::HotkeyPressed { carbon_fallback } => {
-        if carbon_fallback {
-          platform::set_carbon_history_entry_hotkey_enabled(true);
-        }
-        self.handle_hotkey_pressed();
-      }
-      AppEvent::HotkeyReleased { raw_requested } => {
-        platform::set_carbon_history_entry_hotkey_enabled(false);
-        self.handle_hotkey_released(raw_requested);
-      }
+      AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
+      AppEvent::HotkeyReleased { raw_requested } => self.handle_hotkey_released(raw_requested),
       AppEvent::FinalizeHotkeyPressed { raw_requested } => {
         self.handle_finalize_hotkey_pressed(raw_requested)
       }
@@ -2447,6 +2437,7 @@ impl AppController {
   }
 
   fn on_tick(&mut self) {
+    platform::ensure_hotkey_event_tap_if_accessibility_granted();
     if self.pending_onboarding {
       self.pending_onboarding = false;
       self.onboarding_active = true;
@@ -2457,7 +2448,6 @@ impl AppController {
       self.last_onboarding_view_model = Some(model);
     }
     if self.onboarding_active {
-      platform::ensure_hotkey_event_tap_if_accessibility_granted();
       self.start_device_controller();
       // Push the dynamic state (download status, the "Get started" gate, and
       // permission indicators) so the welcome window updates live as the
@@ -2469,7 +2459,6 @@ impl AppController {
       }
     }
     if platform::settings_window_is_open() {
-      platform::ensure_hotkey_event_tap_if_accessibility_granted();
       self.start_device_controller();
       platform::refresh_settings_permissions(
         platform::accessibility_authorization(),

@@ -72,7 +72,7 @@ Explicit environment variables override values from `.release.env`.
 ## Permissions
 
 - Microphone permission is required for transcription.
-- Accessibility permission is required for synthetic paste into the focused app.
+- Accessibility permission is required for global shortcuts and synthetic paste into the focused app.
 
 Reset and relaunch:
 

@@ -125,7 +125,10 @@ Important:
 
 - listen mode can be toggled by menu and double-tap hotkey.
 - menu toggle should remain available; while active turn is in progress it may defer and apply after boundary.
-- missing Accessibility permission disables listening and surfaces an overlay notice.
+- one active HID event tap owns all global shortcut capture and propagation control.
+- overlay state gates Enter, Escape, and navigation without registering additional shortcuts.
+- the tap is recreated when its port is invalid, its registration disappears, or latency indicates a stall.
+- missing Accessibility permission disables global shortcuts and listening and surfaces an overlay notice.
 
 This ensures the app does not keep capturing speech when auto-paste cannot execute.
 

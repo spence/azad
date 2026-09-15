@@ -1,10 +1,9 @@
 //! Input + lifecycle logging for after-the-fact bug repros.
 //!
 //! Appends one JSON line per user input or engine lifecycle event to
-//! `~/Library/Logs/Azad/input.log`. Each entry carries a millisecond timestamp,
-//! an event payload, and a small state snapshot so a future reader can replay
-//! the user's keystroke sequence against the contemporaneous app state without
-//! needing to instrument the app live.
+//! `~/Library/Logs/Azad/input.log`. Input entries include a small state snapshot;
+//! platform lifecycle entries omit app state because they can originate outside
+//! the controller thread.
 //!
 //! Privacy: text content is NEVER logged — only character counts and turn ids.
 //! For the actual drafts, cross-reference the debug-recordings sidecar JSONs.
@@ -19,11 +18,13 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde::Serialize;
 
 const INPUT_LOG_SCHEMA_VERSION: u8 = 1;
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+static INPUT_LOG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InputLogEntry {
@@ -91,27 +92,56 @@ pub enum InputLogEvent {
   RawFallbackFired { turn_id: u64 },
 }
 
+#[derive(Serialize)]
+struct HotkeyTapLogEntry<'a> {
+  schema_version: u8,
+  ts_ms: i64,
+  event: &'static str,
+  action: &'a str,
+  reason: &'a str,
+  generation: u64,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  avg_latency_us: Option<f32>,
+}
+
 /// Append `entry` to the input log. Best-effort — failures are silent because
 /// logging must never crash the app or block the audio thread. No-op under
 /// `cfg(test)` so unit tests that exercise input handlers don't pollute the
 /// real `~/Library/Logs/Azad/input.log`.
 pub fn append(entry: &InputLogEntry) {
+  append_json(entry);
+}
+
+pub fn append_hotkey_tap(action: &str, reason: &str, generation: u64, avg_latency_us: Option<f32>) {
+  append_json(&HotkeyTapLogEntry {
+    schema_version: schema_version(),
+    ts_ms: now_epoch_ms(),
+    event: "hotkey_tap_lifecycle",
+    action,
+    reason,
+    generation,
+    avg_latency_us,
+  });
+}
+
+fn append_json(entry: &impl Serialize) {
   if cfg!(test) {
     let _ = entry;
     return;
   }
+  let Ok(_guard) = INPUT_LOG_LOCK.lock() else { return };
   let path = input_log_path();
   let parent = path.parent().map(PathBuf::from);
   if let Some(parent) = parent {
     let _ = fs::create_dir_all(&parent);
   }
   rotate_if_needed(&path);
-  let Ok(line) = serde_json::to_string(entry) else {
+  let Ok(mut line) = serde_json::to_string(entry) else {
     return;
   };
+  line.push('\n');
   if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
     let _ = file.write_all(line.as_bytes());
-    let _ = file.write_all(b"\n");
   }
 }
 
@@ -147,7 +177,7 @@ fn input_log_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-  use super::{InputLogEntry, InputLogEvent, StateSnapshot, schema_version};
+  use super::{HotkeyTapLogEntry, InputLogEntry, InputLogEvent, StateSnapshot, schema_version};
 
   fn empty_state() -> StateSnapshot {
     StateSnapshot {
@@ -238,5 +268,23 @@ mod tests {
     assert!(line.contains("\"turn_id\":42"));
     assert!(line.contains("\"text_chars\":4"));
     assert!(line.contains("\"reason\":\"hidden_without_visible_draft\""));
+  }
+
+  #[test]
+  fn hotkey_tap_lifecycle_entry_omits_app_state() {
+    let entry = HotkeyTapLogEntry {
+      schema_version: 1,
+      ts_ms: 0,
+      event: "hotkey_tap_lifecycle",
+      action: "recreate",
+      reason: "stale_latency",
+      generation: 2,
+      avg_latency_us: Some(2_491_336_700.0),
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(line.contains("\"event\":\"hotkey_tap_lifecycle\""));
+    assert!(line.contains("\"action\":\"recreate\""));
+    assert!(line.contains("\"reason\":\"stale_latency\""));
+    assert!(!line.contains("\"state\""));
   }
 }
