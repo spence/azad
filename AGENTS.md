@@ -5,9 +5,13 @@
 This workspace is a single-repository speech transcription system centered on the `Azad` macOS menu bar app.
 The project is focused on low-latency transcription, reliable hotkey/VAD interaction state, and predictable paste behavior.
 
-## Responsibilities
+## Agent responsibilities
 
-- Redeploy Azad after making changes that affect app behavior, UI, hotkeys, settings, logging, or app state by running `just install`, `just restart` (or `just start`), and verifying with `just status` that the updated app is live.
+<!-- Durable project-specific completion contracts only. Keep procedures in scripts or runbooks. -->
+
+- **Live application deployment** — Applies when: a change affects app behavior, UI, hotkeys,
+  settings, logging, or app state. Complete when: the updated Azad app is installed and running.
+  Execute and verify with: `just install && just restart && just status`.
 
 ## Quick Ramp-Up (Start Here)
 
