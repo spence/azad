@@ -2,12 +2,21 @@
 
 Investigation: 2026-09-28, with SIP-enabled verification on 2026-09-29 UTC.
 Source baseline: `da639bc`.
-Status: goal remains open. A privileged device-capture prototype survives the
-Secure Input and consuming-event-tap cases that defeated the app-level mechanisms.
-It is not an integrated Azad fix or an unconditional ownership guarantee. The
-owner has approved adopting device-level capture with a root helper and an
-approved virtual-keyboard driver. Implementation and integrated verification
-remain open. No shortcut changes or host driver installation have been made.
+Status: closed by owner decision, 2026-09-29. Device-level capture (a root helper
+that seized keyboards and forwarded unclaimed input through the Karabiner DriverKit virtual
+keyboard) was implemented, verified in SIP-enabled VMs and deployed on catalyst, then reverted
+the same day. The owner does not want Azad to act while any app holds Secure Input ("i dont want
+azad to work while secure input is open") and does not want a privileged component reading
+keystrokes ahead of Secure Input. The virtual keyboard also dropped the built-in keyboard's Apple
+brightness keys. Azad again uses the event tap, which macOS blinds during Secure Input, without
+Carbon registrations. The implementation and its evidence are in git history up to `e0364b9`
+(`crates/azad-capture`).
+
+A read-only watcher on catalyst later showed 1Password holding Secure Input for a few seconds
+around unlock, including while Jump Desktop was frontmost; Jump Desktop itself did not hold it
+during that test. The failure diagnosed below had Jump Desktop holding it in the background.
+
+The findings below record the original investigation.
 
 ## Accepted implementation direction
 

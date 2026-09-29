@@ -1,9 +1,0 @@
-{"kind":"ready","active":1,"key_window":1}
-{"kind":"flags","keycode":58,"flags":524288,"repeat":0,"chars_len":0}
-{"kind":"flags","keycode":58,"flags":0,"repeat":0,"chars_len":0}
-{"kind":"flags","keycode":56,"flags":131072,"repeat":0,"chars_len":0}
-{"kind":"down","keycode":36,"flags":131072,"repeat":0,"chars_len":1}
-{"kind":"up","keycode":36,"flags":131072,"repeat":0,"chars_len":1}
-{"kind":"flags","keycode":56,"flags":0,"repeat":0,"chars_len":0}
-{"kind":"text","value":"\n"}
-{"kind":"done","active":1,"key_window":1}

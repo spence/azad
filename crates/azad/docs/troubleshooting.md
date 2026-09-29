@@ -13,6 +13,19 @@ just install
 just start
 ```
 
+## Shortcuts Do Nothing
+
+While any app holds Secure Input (a focused password field, a password manager unlocking, some
+remote-desktop prompts), macOS delivers no keys to Azad's event tap, so shortcuts are unavailable
+by design. Find the app holding it:
+
+```bash
+ioreg -l -w 0 | grep -o 'kCGSSessionSecureInputPID"=[0-9]*'
+ps -o comm= -p <pid>
+```
+
+Shortcuts return when that app releases Secure Input.
+
 ## Check Launchd State
 
 ```bash

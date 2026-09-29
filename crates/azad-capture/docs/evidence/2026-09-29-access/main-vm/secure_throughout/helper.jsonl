@@ -1,9 +1,0 @@
-{"client":2,"event":"client_connected"}
-{"event":"client_hello","protocol":1}
-{"event":"status","status":{"capture":"no_capturable_keyboard","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"observing","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
-{"event":"status","status":{"capture":"capturing","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
-{"event":"status","status":{"capture":"capturing","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"yielded","transport":"USB","vendor_id":1452},{"kind":"remapper_output","product":"Karabiner DriverKit VirtualHIDKeyboard 1.8.0","product_id":6032,"seized_reports":0,"state":"seized","transport":"","vendor_id":65261}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
-{"actions":24,"batches":56,"claimed_edges":40,"event":"counters","forward_errors":0,"forward_posts":16,"forwarded_edges":16,"rejected_clients":0}
-{"event":"status","status":{"capture":"capturing","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
-{"client":2,"event":"client_disconnected"}
-{"event":"status","status":{"capture":"idle","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}

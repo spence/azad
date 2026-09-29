@@ -1,9 +1,0 @@
-{"kind":"ready","active":1,"key_window":1}
-{"kind":"flags","keycode":58,"flags":524288,"repeat":0,"chars_len":0}
-{"kind":"flags","keycode":58,"flags":0,"repeat":0,"chars_len":0}
-{"kind":"flags","keycode":55,"flags":1048576,"repeat":0,"chars_len":0}
-{"kind":"down","keycode":9,"flags":1048576,"repeat":0,"chars_len":1}
-{"kind":"up","keycode":9,"flags":1048576,"repeat":0,"chars_len":1}
-{"kind":"flags","keycode":55,"flags":0,"repeat":0,"chars_len":0}
-{"kind":"text","value":"awerty fixture two "}
-{"kind":"done","active":1,"key_window":1}

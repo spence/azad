@@ -1,3 +1,0 @@
-{"event":"app_connected","wall_ms":1790670959555}
-{"event":"received","message":{"status":{"capture":"permission_denied","devices":[],"driver":"ready","permission":"denied","seized_devices":0,"unavailable_devices":[]},"type":"status"},"received_ns":971955830541}
-{"event":"app_done","wall_ms":1790670971680}

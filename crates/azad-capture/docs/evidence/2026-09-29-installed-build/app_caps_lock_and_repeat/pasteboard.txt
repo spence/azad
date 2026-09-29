@@ -1,4 +1,0 @@
-
-⏺ Monitor event: {"scenario": "app_history_search_french", "passed": true, "checks": {"all_reports_posted": true, "app_client_accepted": true, "layout_selected": true, "history_opened": true, "search_typed…
-
-The driver is Karabiner's Apple-approved virtual HID driver (pinned to v8.6.0, SHA-256 verified) — needed since the helper exclusively holds your keyboard and must relay typing through a virtual one, which requires an entitlement only this signed driver already has. It now shows activated enabled, and VM smoke tests have 5 passed (plus one pasteboard false alarm) with 4 still running.

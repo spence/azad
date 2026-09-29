@@ -128,6 +128,7 @@ Important:
 - one active HID event tap owns all global shortcut capture and propagation control.
 - overlay state gates Enter, Escape, and navigation without registering additional shortcuts.
 - the tap is recreated when its port is invalid, its registration disappears, or latency indicates a stall.
+- shortcuts are intentionally unavailable while any app holds Secure Input: macOS delivers no keys to event taps then, and Azad must not read keystrokes ahead of Secure Input (no privileged device capture, no Carbon hotkeys).
 - missing Accessibility permission disables global shortcuts and listening and surfaces an overlay notice.
 
 This ensures the app does not keep capturing speech when auto-paste cannot execute.

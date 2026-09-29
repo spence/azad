@@ -1,4 +1,0 @@
-{"event":"source_ready","wall_ms":1790677448117}
-{"event":"report","index":0,"keys":[],"modifiers":4,"secure":false,"t_ns":490555934750}
-{"event":"report","index":1,"keys":[44],"modifiers":4,"secure":false,"t_ns":490681042666}
-{"error":"Broken pipe (os error 32)","event":"post_failed","index":2}

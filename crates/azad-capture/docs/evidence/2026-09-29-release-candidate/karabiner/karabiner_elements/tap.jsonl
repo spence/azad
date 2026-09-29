@@ -1,6 +1,0 @@
-{"event":"tap_ready","consume":1}
-{"event":"tap_key","type":"down","keycode":36}
-{"event":"tap_key","type":"up","keycode":36}
-{"event":"tap_key","type":"down","keycode":0}
-{"event":"tap_key","type":"up","keycode":0}
-{"event":"tap_done","downs":2,"ups":2,"flags":4}

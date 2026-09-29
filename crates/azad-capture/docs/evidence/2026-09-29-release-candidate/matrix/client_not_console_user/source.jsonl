@@ -1,8 +1,0 @@
-{"event":"source_ready","wall_ms":1790677588876}
-{"event":"report","index":0,"keys":[],"modifiers":4,"secure":false,"t_ns":631315498166}
-{"event":"report","index":1,"keys":[44],"modifiers":4,"secure":false,"t_ns":631441504666}
-{"event":"report","index":2,"keys":[],"modifiers":4,"secure":false,"t_ns":634943446958}
-{"event":"report","index":3,"keys":[],"modifiers":0,"secure":false,"t_ns":635071931250}
-{"event":"report","index":4,"keys":[4],"modifiers":0,"secure":false,"t_ns":638072467375}
-{"event":"report","index":5,"keys":[],"modifiers":0,"secure":false,"t_ns":638197596375}
-{"event":"source_done","reports":6}

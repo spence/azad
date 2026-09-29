@@ -1,6 +1,0 @@
-{"event":"source_ready","wall_ms":1790678361071}
-{"event":"report","index":0,"keys":[],"modifiers":4,"secure":false,"t_ns":1403507920083}
-{"event":"report","index":1,"keys":[44],"modifiers":4,"secure":false,"t_ns":1403633033666}
-{"event":"report","index":2,"keys":[44],"modifiers":0,"secure":false,"t_ns":1404336418375}
-{"event":"report","index":3,"keys":[],"modifiers":0,"secure":false,"t_ns":1404463090458}
-{"event":"source_done","reports":4}
