@@ -26,8 +26,15 @@ static FILE *output;
 @end
 
 int main(int argc, char **argv) {
+  // Runs only in a disposable VirtualMac guest, or, when built for the owner-attended physical
+  // keyboard session (-DAZAD_OWNER_SESSION), only with AZAD_OWNER_SESSION=1 set by that session.
   char model[128] = {0}; size_t size = sizeof(model);
+#ifdef AZAD_OWNER_SESSION
+  const char *owner = getenv("AZAD_OWNER_SESSION");
+  if (!owner || strcmp(owner, "1")) return 70;
+#else
   if (sysctlbyname("hw.model", model, &size, NULL, 0) || strncmp(model, "VirtualMac", 10)) return 70;
+#endif
   if (argc < 3) return 64;
   output = fopen(argv[1], "w");
   double seconds = atof(argv[2]);
