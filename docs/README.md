@@ -24,7 +24,8 @@ Project documentation is organized by ownership boundary.
 ## Keyboard Capture
 
 - [azad-capture](../crates/azad-capture/src/lib.rs): root helper that captures shortcuts below application event taps and forwards other input through the virtual keyboard driver.
-- [Access verification](../crates/azad-capture/docs/access-verification.md): SIP-enabled VM evidence for the capture boundary (interference, permissions, coexistence).
+- [Release-candidate verification](../crates/azad-capture/docs/verification.md): SIP-enabled VM evidence for one build: interference, permissions, onboarding, upgrade, coexistence, integrated shortcuts and failure recovery.
+- [Deployment](../crates/azad-capture/docs/deployment.md): one-time setup on a Mac, updates, rollback.
 - [Hotkey reliability investigation](../crates/azad/docs/hotkey-reliability-investigation.md): why app-level hooks were replaced with device-level capture.
 
 ## ASR Runtime

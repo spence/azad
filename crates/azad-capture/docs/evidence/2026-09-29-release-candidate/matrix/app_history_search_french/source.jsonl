@@ -1,0 +1,12 @@
+{"event":"source_ready","wall_ms":1790677733774}
+{"event":"report","index":0,"keys":[],"modifiers":4,"secure":false,"t_ns":776210254333}
+{"event":"report","index":1,"keys":[44],"modifiers":4,"secure":false,"t_ns":776333891541}
+{"event":"report","index":2,"keys":[44,82],"modifiers":4,"secure":false,"t_ns":776834022583}
+{"event":"report","index":3,"keys":[44],"modifiers":4,"secure":false,"t_ns":776958590458}
+{"event":"report","index":4,"keys":[],"modifiers":4,"secure":false,"t_ns":777083414000}
+{"event":"report","index":5,"keys":[],"modifiers":0,"secure":false,"t_ns":777208568041}
+{"event":"report","index":6,"keys":[4],"modifiers":0,"secure":false,"t_ns":777815676666}
+{"event":"report","index":7,"keys":[],"modifiers":0,"secure":false,"t_ns":777938826541}
+{"event":"report","index":8,"keys":[40],"modifiers":0,"secure":false,"t_ns":778742395958}
+{"event":"report","index":9,"keys":[],"modifiers":0,"secure":false,"t_ns":778867588916}
+{"event":"source_done","reports":10}

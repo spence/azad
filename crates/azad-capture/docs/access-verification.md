@@ -1,5 +1,9 @@
 # Device-capture access verification
 
+> This records the first helper build (`05aca379…`). The release candidate reran every
+> scenario here, plus integration and failure scenarios, on one frozen build: see
+> [verification.md](verification.md).
+
 Verification date: 2026-09-29 UTC. Source: `azad-capture` at the commit that adds this file.
 Scope: the capture boundary of `MS-CAPTURE-ACCESS` (helper, driver client, permission,
 coexistence). The Azad app is not wired to the helper yet; an authenticated fixture client stands

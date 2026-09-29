@@ -1,0 +1,15 @@
+{"kind":"ready","active":1,"key_window":1}
+{"kind":"down","keycode":0,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"up","keycode":0,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"down","keycode":36,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"up","keycode":36,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"down","keycode":53,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"up","keycode":53,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"down","keycode":126,"flags":10485760,"repeat":0,"chars_len":1}
+{"kind":"up","keycode":126,"flags":10485760,"repeat":0,"chars_len":1}
+{"kind":"flags","keycode":56,"flags":131072,"repeat":0,"chars_len":0}
+{"kind":"down","keycode":0,"flags":131072,"repeat":0,"chars_len":1}
+{"kind":"up","keycode":0,"flags":131072,"repeat":0,"chars_len":1}
+{"kind":"flags","keycode":56,"flags":0,"repeat":0,"chars_len":0}
+{"kind":"text","value":"Aa\n"}
+{"kind":"done","active":1,"key_window":1}

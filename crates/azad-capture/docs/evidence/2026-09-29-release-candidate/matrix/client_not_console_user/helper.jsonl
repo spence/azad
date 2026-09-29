@@ -1,0 +1,8 @@
+{"client":1,"event":"client_disconnected"}
+{"event":"status","status":{"capture":"idle","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"client":2,"event":"client_connected"}
+{"event":"status","status":{"capture":"idle","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"event":"client_hello","protocol":1}
+{"event":"status","status":{"capture":"idle","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452},{"key_translation":false,"kind":"remapper_output","pointer":false,"product":"Karabiner DriverKit VirtualHIDKeyboard 1.8.0","product_id":6032,"seized_reports":0,"state":"closed","transport":"","vendor_id":65261}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"client":2,"event":"client_disconnected"}
+{"event":"status","status":{"capture":"idle","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}

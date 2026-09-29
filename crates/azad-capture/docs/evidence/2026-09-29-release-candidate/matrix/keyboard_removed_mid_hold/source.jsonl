@@ -1,0 +1,4 @@
+{"event":"source_ready","wall_ms":1790677519807}
+{"event":"report","index":0,"keys":[],"modifiers":4,"secure":false,"t_ns":562248057708}
+{"event":"report","index":1,"keys":[44],"modifiers":4,"secure":false,"t_ns":562373631541}
+{"event":"source_removed_with_keys_held","index":1}

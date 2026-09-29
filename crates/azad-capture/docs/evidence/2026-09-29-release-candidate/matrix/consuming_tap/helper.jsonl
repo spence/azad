@@ -1,0 +1,11 @@
+{"client_owns_console":true,"event":"console_session"}
+{"client":8,"event":"client_connected"}
+{"event":"status","status":{"capture":"no_capturable_keyboard","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"observing","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"event":"client_hello","protocol":1}
+{"event":"status","status":{"capture":"capturing","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
+{"event":"status","status":{"capture":"capturing","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"yielded","transport":"USB","vendor_id":1452},{"key_translation":false,"kind":"remapper_output","pointer":false,"product":"Karabiner DriverKit VirtualHIDKeyboard 1.8.0","product_id":6032,"seized_reports":0,"state":"seized","transport":"","vendor_id":65261}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
+{"actions":66,"batches":161,"claimed_edges":96,"event":"counters","forward_errors":3,"forward_posts":67,"forwarded_edges":70,"rejected_clients":0}
+{"event":"status","status":{"capture":"capturing","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
+{"actions":69,"batches":173,"claimed_edges":102,"event":"counters","forward_errors":3,"forward_posts":73,"forwarded_edges":76,"rejected_clients":0}
+{"client":8,"event":"client_disconnected"}
+{"event":"status","status":{"capture":"idle","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}

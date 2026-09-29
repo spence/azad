@@ -1,0 +1,10 @@
+{"event":"app_connected","wall_ms":1790678085511}
+{"event":"received","message":{"status":{"capture":"no_capturable_keyboard","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"observing","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]},"type":"status"},"received_ns":1124933028500}
+{"event":"received","message":{"status":{"capture":"capturing","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]},"type":"status"},"received_ns":1124933602750}
+{"event":"received","message":{"status":{"capture":"capturing","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"yielded","transport":"USB","vendor_id":1452},{"key_translation":false,"kind":"remapper_output","pointer":false,"product":"Karabiner DriverKit VirtualHIDKeyboard 1.8.0","product_id":6032,"seized_reports":0,"state":"seized","transport":"","vendor_id":65261}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]},"type":"status"},"received_ns":1125995459791}
+{"event":"received","message":{"action":{"kind":"hotkey_pressed"},"timestamp_ns":1130132876750,"type":"action"},"received_ns":1130133095791}
+{"event":"received","message":{"action":{"kind":"hotkey_released","raw_requested":true},"timestamp_ns":1130254506000,"type":"action"},"received_ns":1130254709833}
+{"event":"received","message":{"action":{"kind":"hotkey_pressed"},"timestamp_ns":1130375413333,"type":"action"},"received_ns":1130375627875}
+{"event":"received","message":{"action":{"direction":-1,"kind":"navigate"},"timestamp_ns":1130500567208,"type":"action"},"received_ns":1130501202125}
+{"event":"helper_closed","wall_ms":1790678091150}
+{"event":"app_done","wall_ms":1790678091150}

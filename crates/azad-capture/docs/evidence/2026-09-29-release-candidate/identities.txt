@@ -1,0 +1,14 @@
+source_commit: 6ded6d1 (product); evaluator 7187d4c + ssh retry
+app:
+  Identifier=ai.azad
+  CDHash=bb32743888e8e867adfa3ce8ed9b4d2bed8217d0
+  TeamIdentifier=35A87BDK48
+  executable_sha256: 9b9ae340f8b6fc3b6ed42e0eaccfe55b52575b08d5c5ba9dad09c15832425853
+helper:
+  Identifier=ai.azad.capture
+  CodeDirectory v=20500 size=2107 flags=0x10000(runtime) hashes=59+3 location=embedded
+  CDHash=ebb686bdfd9a87c6c927162fc63cf06b3e09bb53
+  TeamIdentifier=35A87BDK48
+  executable_sha256: b4d7a364c16756d4bf4df3cfce830cc4119ffbf75436fb40c9f850a9828f109e
+driver: org.pqrs.Karabiner-DriverKit-VirtualHIDDevice 1.8.0 (team G43BCU2T37); main VM package 8.6.0 sha256 ff8c7fdc5e25387c7805fc7509a0fa9cf98f69ba582704f717fddcae47424387; Karabiner VM: Karabiner-Elements 16.3.0 (package 8.5.0)
+guest: macOS 26.6.2, SIP enabled, Gatekeeper assessments enabled

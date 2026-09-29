@@ -1,0 +1,7 @@
+{"kind":"ready","active":1,"key_window":1}
+{"kind":"flags","keycode":58,"flags":524288,"repeat":0,"chars_len":0}
+{"kind":"flags","keycode":58,"flags":0,"repeat":0,"chars_len":0}
+{"kind":"down","keycode":0,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"up","keycode":0,"flags":0,"repeat":0,"chars_len":1}
+{"kind":"text","value":"a"}
+{"kind":"done","active":1,"key_window":1}

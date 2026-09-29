@@ -1,0 +1,24 @@
+[2026-09-29 08:22:53.652] [debug] [core_service (daemon)] receiver is terminated
+[2026-09-29 08:22:54.816] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968672) hid device events monitor is started (observed).
+[2026-09-29 08:22:54.846] [info] [core_service (daemon)] Virtual USB Keyboard (device_id:4294968063) hid device events monitor is started (grabbed).
+[2026-09-29 08:22:54.849] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969119) hid device events monitor is started (observed).
+[2026-09-29 08:23:54.303] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968672) is terminated.
+[2026-09-29 08:23:56.997] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969187) hid device events monitor is started (observed).
+[2026-09-29 08:24:10.110] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969211) is terminated.
+[2026-09-29 08:26:21.004] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969386) is terminated.
+[2026-09-29 08:35:03.776] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969187) is terminated.
+[2026-09-29 08:35:06.313] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969748) hid device events monitor is started (observed).
+[2026-09-29 08:35:20.503] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969779) is terminated.
+[2026-09-29 10:22:44.577] [debug] [core_service (daemon)] receiver is terminated
+[2026-09-29 10:22:46.156] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968569) hid device events monitor is started (observed).
+[2026-09-29 10:22:46.185] [info] [core_service (daemon)] Virtual USB Keyboard (device_id:4294968070) hid device events monitor is started (grabbed).
+[2026-09-29 10:22:46.188] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968621) hid device events monitor is started (observed).
+[2026-09-29 10:23:11.803] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968569) is terminated.
+[2026-09-29 10:24:40.194] [debug] [core_service (daemon)] receiver is terminated
+[2026-09-29 10:24:41.402] [info] [core_service (daemon)] Virtual USB Keyboard (device_id:4294968094) hid device events monitor is started (grabbed).
+[2026-09-29 10:24:41.406] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968598) hid device events monitor is started (observed).
+[2026-09-29 10:26:06.488] [debug] [core_service (daemon)] receiver is terminated
+[2026-09-29 10:26:07.839] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968548) hid device events monitor is started (observed).
+[2026-09-29 10:26:07.877] [info] [core_service (daemon)] Virtual USB Keyboard (device_id:4294968100) hid device events monitor is started (grabbed).
+[2026-09-29 10:26:09.888] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294968575) hid device events monitor is started (observed).
+[2026-09-29 10:38:21.964] [info] [core_service (daemon)] Karabiner DriverKit VirtualHIDKeyboard 1.8.0 (device_id:4294969234) is terminated.

@@ -1,0 +1,10 @@
+	pid = 3718
+{"event":"status","status":{"capture":"no_capturable_keyboard","devices":[{"key_translation":false,"kind":"keyboard","po
+{"event":"status","status":{"capture":"capturing","devices":[{"key_translation":false,"kind":"keyboard","pointer":false,
+AZAD_CAPTURE status capture=NoCapturableKeyboard permission=Granted driver=Ready seized=0 unavailable=[]
+AZAD_CAPTURE status capture=Capturing permission=Granted driver=Ready seized=1 unavailable=[]
+Identifier=ai.azad.capture
+CDHash=ebb686bdfd9a87c6c927162fc63cf06b3e09bb53
+TeamIdentifier=35A87BDK48
+b4d7a364c16756d4bf4df3cfce830cc4119ffbf75436fb40c9f850a9828f109e
+ai.azad.capture|2

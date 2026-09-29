@@ -1,0 +1,135 @@
+{
+ "vm": "azad-capture-ke-1790669986",
+ "guest": [
+  "26.6.2",
+  "System Integrity Protection status: enabled.",
+  "assessments enabled",
+  "*\t*\tG43BCU2T37\torg.pqrs.Karabiner-DriverKit-VirtualHIDDevice (1.8.0/1.8.0)\torg.pqrs.Karabiner-DriverKit-VirtualHIDDevice\t[activated enabled]"
+ ],
+ "results": [
+  {
+   "scenario": "karabiner_elements",
+   "about": "Karabiner-Elements 16.3.0 is installed, owns the VM keyboard and runs its own driver daemon. Azad attaches to that daemon, yields the physical keyboard, captures Karabiner's output keyboard, and Karabiner never grabs Azad's output. Needs a VM with Karabiner-Elements set up.",
+   "passed": true,
+   "checks": {
+    "all_reports_posted": true,
+    "actions_exact": true,
+    "timestamps_monotonic": true,
+    "no_claimed_key_reaches_foreground_or_tap": true,
+    "shift_return_once": true,
+    "shift_return_keeps_shift": true,
+    "ordinary_a_once": true,
+    "no_stuck_modifier_on_a": true,
+    "seized_device_reported": true,
+    "tap_consumed_forwarded_keys": true,
+    "karabiner_output_seized_by_azad": true,
+    "physical_keyboard_left_to_karabiner": true,
+    "karabiner_grabbed_physical_keyboard": true,
+    "karabiner_never_grabbed_driver_keyboards": true,
+    "single_driver_daemon": true
+   },
+   "observed": {
+    "actions": [
+     {
+      "kind": "hotkey_pressed"
+     },
+     {
+      "kind": "hotkey_released",
+      "raw_requested": true
+     },
+     {
+      "kind": "hotkey_pressed"
+     },
+     {
+      "direction": -1,
+      "kind": "navigate"
+     },
+     {
+      "kind": "hotkey_released",
+      "raw_requested": false
+     },
+     {
+      "kind": "finalize",
+      "raw_requested": false
+     },
+     {
+      "kind": "cancel"
+     },
+     {
+      "direction": -1,
+      "kind": "navigate"
+     },
+     {
+      "direction": 1,
+      "kind": "navigate"
+     },
+     {
+      "kind": "history_collapse"
+     },
+     {
+      "kind": "history_expand"
+     },
+     {
+      "kind": "finalize",
+      "raw_requested": false
+     }
+    ],
+    "claimed_leaks": [],
+    "foreground_key_events": [],
+    "tap_key_events": [
+     [
+      "down",
+      36
+     ],
+     [
+      "up",
+      36
+     ],
+     [
+      "down",
+      0
+     ],
+     [
+      "up",
+      0
+     ]
+    ],
+    "secure_steps": [],
+    "source_reports": 28,
+    "helper_rejections": [],
+    "owner": [],
+    "final_status": {
+     "capture": "idle",
+     "devices": [
+      {
+       "key_translation": false,
+       "kind": "keyboard",
+       "pointer": false,
+       "product": "Virtual USB Keyboard",
+       "product_id": 33029,
+       "seized_reports": 0,
+       "state": "closed",
+       "transport": "USB",
+       "vendor_id": 1452
+      },
+      {
+       "key_translation": true,
+       "kind": "remapper_output",
+       "pointer": false,
+       "product": "Karabiner DriverKit VirtualHIDKeyboard 1.8.0",
+       "product_id": 591,
+       "seized_reports": 0,
+       "state": "closed",
+       "transport": "",
+       "vendor_id": 1452
+      }
+     ],
+     "driver": "ready",
+     "permission": "granted",
+     "seized_devices": 0,
+     "unavailable_devices": []
+    }
+   }
+  }
+ ]
+}

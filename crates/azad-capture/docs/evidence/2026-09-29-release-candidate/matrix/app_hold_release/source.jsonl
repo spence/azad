@@ -1,0 +1,6 @@
+{"event":"source_ready","wall_ms":1790677627507}
+{"event":"report","index":0,"keys":[],"modifiers":4,"secure":false,"t_ns":669941393333}
+{"event":"report","index":1,"keys":[44],"modifiers":4,"secure":false,"t_ns":670069690166}
+{"event":"report","index":2,"keys":[44],"modifiers":0,"secure":false,"t_ns":670772045083}
+{"event":"report","index":3,"keys":[],"modifiers":0,"secure":false,"t_ns":670897181958}
+{"event":"source_done","reports":4}
