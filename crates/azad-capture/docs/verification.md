@@ -117,12 +117,37 @@ delayed-delivery negative control).
 - A guest reboot clears `/tmp`, where the VM fixtures live; the matrix now fails scenarios whose
   source did not play instead of passing them vacuously.
 
-## Not yet proven
+## Host deployment
 
-- Physical keyboards: the built-in keyboard and Keychron Q6 HE, including F-row and fn
-  translation, Globe, Caps Lock LED, mouse keys and key repeat on real hardware.
-- Sleep and wake.
-- Host deployment of this build.
+`just install` on catalyst produced app CDHash `7d2063098eef24e0b643fce4b30a32e826818853` and
+the release candidate's helper CDHash `ebb686bd…`. Product source is unchanged since `6ded6d1`.
+That exact bundle passed the app, app-crash and hung-app scenarios in the release-candidate VM
+before the host restarted into it ([record](evidence/2026-09-29-installed-build/)).
 
-These need the owner at the Mac; `deployment.md` and `tests/physical/session.py` describe that
-session.
+On the host, onboarding followed `deployment.md`:
+
+1. Driver approval.
+2. Login Items approval (`registration=RequiresApproval`, then the helper ran from the bundle).
+3. Input Monitoring for "Azad Capture": `permission_denied`, then
+   `permission_granted_restart`, then `capturing`.
+
+The helper seized the built-in keyboard, the Keychron Q6 HE and two keyboard interfaces of a
+Razer mouse. The running processes carry the tested CDHashes
+([read-only record](evidence/2026-09-29-installed-build/host-deployment.txt)).
+
+## Physical keyboards
+
+The first owner-attended session ([record](evidence/2026-09-29-physical/)) showed Azad
+receiving the correct actions from both the built-in keyboard and the Keychron, including
+Option+Space under Secure Input. The owner confirmed that the F-row, the Globe key and the
+Keychron's media keys work.
+
+Its test window crashed at launch, so every check of what reached the foreground is void. The
+consuming-tap step could not run from the owner's terminal, and no sleep occurred. The session
+tool now fails loudly and has a focused `--rerun` for the window-dependent steps, validated in
+the VM.
+
+A Tart VM cannot sleep: `pmset sleepnow` fails with `0xe00002e2`. Sleep and wake are therefore
+recorded on the host during normal use by `tests/physical/sleep_wake_watch.py`. It records the
+kernel sleep/wake times, helper status and counters, Azad event names and held-modifier state,
+and nothing typed.
