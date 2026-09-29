@@ -1,0 +1,35 @@
+# Host deployment, read-only checks on catalyst (2026-09-29T18:56:05Z)
+hw.model: MacBookPro18,4; macOS 26.5
+
+## just status (capture section)
+Keyboard capture helper (ai.azad.capture):
+	state = running
+	program identifier = Contents/Library/Helpers/Azad Capture.app/Contents/MacOS/azad-capture (mode: 2)
+	pid = 73524
+		state = active
+		state = active
+  {"event":"status","status":{"capture":"capturing","devices":[{"key_translation":true,"kind":"keyboard","pointer":false,"product":"Apple Internal Keyboard / Trackpad","product_id":834,"seized_reports":0,"state":"seized","transport":"SPI","vendor_id":1452},{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Razer DeathAdder V3 Pro","product_id":182,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":5426},{"key_translation":false,"kind":"keyboard","pointer":false,"product":"Razer DeathAdder V3 Pro","product_id":182,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":5426},{"key_translation":false,"kind":"keyboard","pointer":true,"product":"Keychron Q6 HE","product_id":2912,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":13364}],"driver":"ready","permission":"granted","seized_devices":4,"unavailable_devices":[]}}
+
+## running processes
+pid 73354: /Users/spencer/Applications/Azad.app/Contents/MacOS/azad
+  Identifier=ai.azad
+  CDHash=7d2063098eef24e0b643fce4b30a32e826818853
+  TeamIdentifier=35A87BDK48
+pid 73524: /Users/spencer/Applications/Azad.app/Contents/Library/Helpers/Azad Capture.app/Contents/MacOS/azad-capture
+  Identifier=ai.azad.capture
+  CDHash=ebb686bdfd9a87c6c927162fc63cf06b3e09bb53
+  TeamIdentifier=35A87BDK48
+
+## launchd
+	state = running
+	program = /Users/spencer/Applications/Azad.app/Contents/MacOS/azad
+	pid = 73354
+	state = running
+	program identifier = Contents/Library/Helpers/Azad Capture.app/Contents/MacOS/azad-capture (mode: 2)
+	pid = 73524
+
+## driver
+*	*	G43BCU2T37	org.pqrs.Karabiner-DriverKit-VirtualHIDDevice (1.8.0/1.8.0)	org.pqrs.Karabiner-DriverKit-VirtualHIDDevice	[activated enabled]
+
+## helper counters (content-free)
+{"actions":75,"batches":2772,"claimed_edges":94,"event":"counters","forward_errors":0,"forward_posts":2678,"forwarded_edges":2678,"rejected_clients":4}

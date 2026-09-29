@@ -13,9 +13,7 @@ use std::time::{Duration, Instant};
 
 use azad_capture::clock::now_nanos;
 use azad_capture::policy::{KeyAction, KeyContext};
-use azad_capture::protocol::{
-  AppMessage, HelperMessage, HelperStatus, PROTOCOL_VERSION, SOCKET_PATH,
-};
+use azad_capture::protocol::{AppMessage, HelperMessage, HelperStatus, PROTOCOL_VERSION};
 
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
@@ -24,6 +22,11 @@ use objc::{class, msg_send, sel, sel_impl};
 use crate::app::{AppEvent, send_event};
 
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(not(test))]
+const HELPER_SOCKET: &str = azad_capture::protocol::SOCKET_PATH;
+/// Unit tests must never reach the installed helper.
+#[cfg(test)]
+const HELPER_SOCKET: &str = "/nonexistent/ai.azad.capture.sock";
 /// Bounds a main-thread write if the helper stops reading.
 const WRITE_TIMEOUT: Duration = Duration::from_millis(50);
 
@@ -52,7 +55,7 @@ pub fn start(context: KeyContext) {
   CONNECTION.lock().unwrap_or_else(|poison| poison.into_inner()).context = context;
   let _ = thread::Builder::new().name("azad-capture-client".into()).spawn(|| {
     loop {
-      if let Ok(stream) = UnixStream::connect(SOCKET_PATH) {
+      if let Ok(stream) = UnixStream::connect(HELPER_SOCKET) {
         run_connection(stream);
       }
       thread::sleep(RECONNECT_INTERVAL);
