@@ -1,24 +1,45 @@
 # Hotkey reliability investigation
 
 Investigation: 2026-09-28. Source baseline: `da639bc`.
-Status: recommendation, not an implemented or fully verified application fix.
+Status: goal remains open. A privileged device-capture prototype survives the
+Secure Input and consuming-event-tap cases that defeated the app-level mechanisms.
+It is not an integrated Azad fix or an unconditional ownership guarantee. Shipping
+it would add a root helper and an approved virtual-keyboard driver; that product
+scope needs an owner decision. No shortcut changes or host driver installation
+have been made.
 
 ## Finding
 
-Keep the existing keyboard shortcuts and interaction semantics unchanged.
-The strongest practical recommendation within Azad's current app architecture is
-one shared shortcut handler supplied by an active HID event tap and registered
-system hotkeys (`RegisterEventHotKey`). They cover different failure conditions;
-the registration path is not redundant with the tap.
+Keep the existing keyboard shortcuts and interaction semantics unchanged. The
+tap-plus-Carbon proposal is insufficient for the requested reliability: a later
+consuming HID tap blocked both in the isolated test. Completing that investigation
+did not complete the user's goal.
+
+The stronger candidate is a privileged input broker: exclusively read the keyboard
+device, send claimed actions directly to Azad, and forward unclaimed input through
+a signed virtual-HID driver. This operates below application event taps. The
+prototype received and suppressed the fixture shortcuts during Secure Input and
+in the presence of a consuming tap, while forwarding ordinary typing. It also
+released the device when deliberately crashed.
 
 A tap that exists and reports enabled can still receive no keyboard events.
 Secure Input is one demonstrated cause. Recreating the tap does not remove that
 system-wide gate. Another application can also install an earlier consuming tap.
 Neither API provides unconditional priority over every other application.
 
+The remaining hard boundary is exclusive device ownership. A second privileged
+reader was rejected with `kIOReturnExclusiveAccess` and received no input while
+the first reader owned the device. An existing device-level keyboard tool needs
+cooperation or an explicitly verified forwarding arrangement, not another
+competing grab. Host inspection found no running Karabiner, Kanata, KMonad,
+SteerMouse, or BetterTouchTool process and no installed HID system extension;
+that is an observation about this Mac, not proof of universal compatibility.
+
 This investigation changes no application code, bindings, host preferences or
-permissions, or installed runtime. No input was injected into the user's desktop. Runtime
-experiments used a separate disposable macOS VM, stopped and deleted afterward.
+permissions, or installed runtime. No input was injected into the user's desktop.
+Runtime experiments used disposable macOS VMs with guest-only synthetic input.
+Both VMs were stopped and deleted after their experiments; no test keyboard
+service or driver was installed on the host.
 
 ## Read-only observations on the affected Mac
 
@@ -88,45 +109,123 @@ the headless classifier/reducer sequences, not macOS delivery or suppression.
 Registration success, enabled status, and reducer tests must not be reported as
 proof of real keyboard capture.
 
-## Minimal implementation recommendation
+## Rejected as a complete solution: tap plus registrations
 
-The affected surface is the platform capture adapter and its tests, not the
-transcription engine or interaction model.
+System registrations demonstrated useful coverage during Secure Input. Restoring
+them could address that narrower failure, but the consuming-tap counterexample
+rules out presenting them as the requested solution. No Carbon restoration has
+been implemented. Polling, tap recreation, or additional Fn bindings do not
+resolve that counterexample.
 
-1. Restore system hotkey registrations for the **existing** shortcut policy and
-   feed the same semantic handler as the HID tap. Keep the required registrations
-   available during Secure Input instead of waiting for a polling-based switch.
-   A missing tap callback cannot activate a fallback by itself.
-2. Preserve exact contextual ownership: hold/double-tap stay global; history
-   entry stays conditional on the claimed Space hold; Enter/Escape and history
-   navigation stay conditional on the existing overlay gates. Preserve configured
-   modifier superset matching, Option raw behavior, Numpad Enter, and Shift+Enter
-   pass-through. Carbon's exact-combination matching must not narrow or broaden
-   those existing rules.
-3. Share pressed-key state across sources so one physical gesture emits one
-   action. Explicitly test Secure Input changing during a hold, modifier release
-   before Space release, autorepeat, and a key-up arriving through a different
-   source. The steady-state API tests above do not prove these transitions.
-4. Preserve Azad's synthetic-paste bypass. Carbon notifications do not carry the
-   tap's existing synthetic-event marker in the same form. Auto-submit must not
-   be recaptured; an app-level integration test is required before deployment.
-5. Distinguish denied permission, failed registration, disabled/invalid tap,
-   Secure Input, and upstream consumption in diagnostics. Log transitions and
-   source/action counts without logging unrelated keystrokes or text. Do not
-   treat an enabled but silent tap as evidence that hotkeys are healthy, or
-   restart continuously just because no keys arrive.
+## Device-level capture evidence
 
-The related history text-entry path needs explicit verification before claiming
-the whole history workflow works during Secure Input. Its tap currently captures
-printable text; shortcut registration is not a replacement for arbitrary text
-input. The existing nonactivating NSPanel, NSTextField, and text-change delegate
-are the first path to verify for normal focused text delivery. This investigation
-does not claim that path is already verified under Secure Input.
+A second disposable VM used the published, signed and notarized
+Karabiner-DriverKit-VirtualHIDDevice package 8.6.0, whose active driver reports
+1.8.0. The package was installed and approved only in the VM. The source and relay
+clients used pinned revision `ba98de7fae2d529b9debe82890765dc66246f4ff`.
 
-If implemented, update the existing tap-only comments/documentation and isolated
-adapter tests in the same focused change. Do not restore a second independent
-action-dispatch tree, add app-specific branches, change shortcuts, or change the
-interaction reducer without a demonstrated need.
+The test topology was:
+
+```text
+signed virtual source keyboard (fixture only)
+  -> root IOHIDManager exclusive reader
+       -> claimed press/release counters
+       -> unclaimed reports -> separate signed virtual output keyboard
+            -> competing event tap -> foreground AppKit key sink
+```
+
+The virtual source produces actual device reports, unlike `CGEventPost` or VNC
+input. Source and output have different fixture product IDs; the relay cannot
+recapture its own output. Every native input-producing/capturing fixture refuses to run
+unless the machine identifies as `VirtualMac`. The host only compiled the probes
+and controlled the explicitly owned VM over SSH. VNC was used for guest driver
+approval, not as the device-input oracle: control tests showed that VNC keystrokes
+reached the tap but bypassed the raw device reader.
+
+The sequence contains 25 reports: two Option+Space presses, Up while Space is
+held, Option release before Space release, Return, Escape, all four arrows,
+Numpad Enter, intentional Shift+Return pass-through, and ordinary `a` typing.
+The fixture claims ten key-down actions with their matching releases. Its
+contextual policy is deliberately simplified; it is not Azad's interaction
+reducer and does not prove the double-tap action or overlay behavior.
+
+| Check | Observed result |
+|---|---|
+| Root nonexclusive device reader, Secure Input on | Received all 28 relevant HID element changes; the HID event tap received zero key events. |
+| Exclusive reader with consuming tap, Secure Input off | Reader received all 28 changes; tap and foreground sink received zero key events. |
+| Relay baseline | Received 25 reports and claimed ten actions; the sink received only Shift+Return and `a` down/up, four events total. |
+| Relay with Secure Input on throughout | Same 25 reports and ten actions, with matched releases; only the four pass-through events reached the sink. |
+| Secure Input enabled during the first Space hold, then disabled; consuming tap active | Same 25 reports and ten actions. The consuming tap saw only the four forwarded pass-through events, never the claimed keys. |
+| Relay intentionally exits with status 86 during the second Space hold | Subsequent input reached the foreground sink without restarting the source or OS. Ordinary `a` arrived with no stuck Option/Shift modifier. Claimed-key protection is absent while the helper is down. |
+| Second root exclusive reader while the first owns the source device | Both its manager/device opens reported `0xe00002c5` (`kIOReturnExclusiveAccess`); it received zero values while the owner received all 28. |
+
+In a follow-up ownership-release probe, a reader whose opens had failed remained
+silent after the owner exited, despite the source emitting its full sequence.
+Merely leaving that failed reader alive was not recovery; a production broker
+needs explicit failed-open/reacquisition handling.
+
+Apple's open-source
+[IOHIDDevice ownership logic](https://github.com/apple-oss-distributions/IOHIDFamily/blob/777ccd9698845aadf711e32d843c8c9b777431d9/IOHIDFamily/IOHIDDevice.cpp)
+rejects a different client while an exclusive owner exists and releases that
+ownership when the owner closes. Its
+[IOHIDLibUserClient implementation](https://github.com/apple-oss-distributions/IOHIDFamily/blob/777ccd9698845aadf711e32d843c8c9b777431d9/IOHIDFamily/IOHIDLibUserClient.cpp)
+also distinguishes privileged clients from the Secure Input gate. These source
+paths explain the observations; the VM tests establish behavior on the tested OS,
+not source equivalence with Apple's shipped kernel.
+
+This is an established architecture, not a new event-tap priority trick:
+[Karabiner's architecture](https://karabiner-elements.pqrs.org/docs/help/advanced-topics/security/)
+and [capture discussion](https://github.com/pqrs-org/Karabiner-Elements/blob/d130433e5854eeff125f6ed45f6ac1bdad0aeeab/DEVELOPMENT.md)
+describe device-level capture. The
+[virtual driver integration interface](https://github.com/pqrs-org/Karabiner-DriverKit-VirtualHIDDevice/blob/ba98de7fae2d529b9debe82890765dc66246f4ff/README.md)
+supports third-party clients. Its published signed package avoids making a new
+Azad-owned driver identity a prerequisite for the prototype. Kanata's
+[macOS setup](https://github.com/jtroo/kanata/blob/main/docs/setup-macos.md)
+documents the same root/driver dependency and exclusive-owner conflict; an
+established remapper is not exempt from that conflict either.
+
+### What remains unproved
+
+- The guest has SIP disabled. Permission grants and signed-helper deployment on
+  a normal SIP-enabled installation have not been validated. There is no proposal
+  to disable SIP on the user's Mac.
+- The source is a virtual fixture, not a built-in, USB, or Bluetooth keyboard.
+  The relay decodes that fixture's report format, not arbitrary keyboard report
+  descriptors. A generic adapter must normalize batched HID elements before
+  shortcut classification: the initial probe delivered Space before Option
+  within one report, so per-element immediate classification would miss a chord.
+- No production Azad adapter, overlay, history text input, paste bypass, key
+  repeat, multi-keyboard modifiers, sleep/wake, session switching, reconnect, or
+  output-driver failure recovery has been verified with this mechanism.
+- The crash test establishes restored ordinary input in that run, not a
+  crash-proof service or absence of a temporary capture gap. A hung helper also
+  needs a bounded fail-open path; process-exit cleanup alone is insufficient.
+- Events injected above the device layer need separate analysis. The device
+  proof covers keyboard-originated input, not every software-generated key event.
+- Seizing an existing remapper's virtual output is only a possible integration
+  if that remapper forwards the required keys. It cannot recover keys the owner
+  discards, and has not been validated here.
+
+### Implementation boundary
+
+The focused product change would be a platform input broker plus its lifecycle
+and tests, not a rewrite of ASR, UI, or the interaction state machine. Before
+shipping, the existing classifier must receive normalized input with one source
+of pressed-key ownership. Preserve hold/double-tap, history only during the
+claimed Space hold, contextual Enter/Escape/arrows, modifier supersets, Option
+raw mode, Numpad Enter, Shift+Enter bypass, and synthetic-paste bypass.
+
+The helper would read all keyboard reports to forward unclaimed input. That
+creates a privileged trust boundary: keep arbitrary text out of logs and app IPC,
+authenticate the app connection, and release devices if the forwarding path or
+consumer cannot operate safely. Treat permission denial and device-ownership
+conflicts as explicit states, not as an enabled-but-silent success. Verify both
+claimed-key suppression and ordinary-input delivery under injected failures.
+
+Adding a root keyboard service and a user-approved driver changes installation,
+security, and coexistence obligations materially. The research supports further
+isolated implementation of this candidate, not silently installing those
+components into the user's working environment. The original goal stays open.
 
 ## Limits and alternatives
 
@@ -142,14 +241,10 @@ interaction reducer without a demonstrated need.
   a registered shortcut also does not prove microphone, paste, or accessibility
   operations are permitted. Permission failure must be distinguished from
   hook failure, not hidden behind repeated restart attempts.
-- **Lower-level capture:** Karabiner demonstrates a stronger hardware path using
-  privileged device seizure plus a virtual-HID driver. This carries root services,
-  system-extension approval, device ownership, and substantially broader keyboard
-  responsibilities. It was researched, not installed or tested here. It is not
-  a small Azad reliability fix, and does not justify promising victory over any
-  competing privileged device owner. See its
-  [architecture](https://karabiner-elements.pqrs.org/docs/help/advanced-topics/security/)
-  and [capture-method discussion](https://github.com/pqrs-org/Karabiner-Elements/blob/main/DEVELOPMENT.md).
+- **Lower-level capture:** The VM prototype above addresses the reproduced
+  event-tap and Secure Input failures. It does not override a different exclusive
+  device owner or grant its own revoked permissions. Cooperation or an explicit
+  compatibility constraint is required at that boundary.
 
 Before shipping a capture-adapter fix, verify its actual production adapter and
 existing interaction harness in isolation, including foreground pass-through,
