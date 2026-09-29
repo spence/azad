@@ -5,7 +5,7 @@ Project documentation is organized by ownership boundary.
 ## Root
 
 - [README](../README.md): install, source development, requirements, and release notes.
-- [PROJECT](../PROJECT.md): active cleanup and product-quality plan.
+- [PROJECT](../PROJECT.md): charter and pre-Burndown plan/history; use `burn status` for current work.
 - [Quality plan](quality-plan.md): cleanup phases and refactor order.
 - [Release process](release-process.md): local signed/notarized DMG release process.
 - [Surface design specification](design-agent-surface-spec.md): design-agent brief

@@ -18,13 +18,23 @@ The project is focused on low-latency transcription, reliable hotkey/VAD interac
 When taking over a task, do this first:
 
 1. Confirm which repo you are changing (most app issues are in `crates/azad`).
-2. Read `PROJECT.md` at workspace root for current goals.
+2. Run `burn guide`, `burn status`, and `burn next` for current work; use
+   `burn show <citation>` for its scope and acceptance criteria.
 3. For hotkey/session behavior, read:
    - `crates/azad/docs/keyboard-shortcut-state-machine.md`
    - `crates/azad/src/interaction_sm.rs`
    - `crates/azad/src/app.rs`
 4. Check current local changes across repos before editing:
    - `git -C <repo> status --short`
+
+## Work Tracking
+
+Burndown is the source of truth for current work, status, estimates, gates, and escalations.
+The committed `.burn-project` selects this project. `PROJECT.md` preserves the charter and
+pre-adoption plan; its unchecked items are not automatically active Burndown commitments.
+Keep authored designs and evidence in Git and register them with `burn asset register`.
+Use typed workflows (`burn <noun> help`), preview structured mutations with `--dry-run`,
+and close work only against committed evidence. Do not mirror live status in Markdown.
 
 ## Repository Map
 

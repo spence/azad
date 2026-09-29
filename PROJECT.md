@@ -1,7 +1,12 @@
 # Charter
 Runtime Agent Design delivers low-latency transcription with deterministic hotkey/listen-mode behavior and predictable overlay/paste UX in the Azad macOS app.
 
-Active milestones:
+Burndown now owns live work tracking. Run `burn guide`, `burn status`, and `burn next`;
+the device-level keyboard capture work is `OBJ-RELIABLE-HOTKEYS`.
+The milestones below preserve the pre-adoption plan and history, not current status.
+Unchecked items have not been imported as new commitments.
+
+Milestones listed as active before Burndown adoption:
 - Repository Quality Cleanup
 - Runtime Module Boundary Cleanup
 
