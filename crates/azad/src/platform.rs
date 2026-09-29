@@ -363,7 +363,7 @@ pub fn run_app() {
     if let Some(mask) = crate::preferred_store::load_listen_modifiers() {
       set_listen_modifiers(mask);
     }
-    capture::start();
+    capture::start(key_context(*KEY_SURFACES.lock().unwrap_or_else(|poison| poison.into_inner())));
     schedule_capture_heartbeat(delegate);
 
     let _: () = msg_send![app, setDelegate: delegate];

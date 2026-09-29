@@ -1,0 +1,29 @@
+[
+ {
+  "modifiers": 4
+ },
+ {
+  "modifiers": 4,
+  "keys": [
+   44
+  ],
+  "hold_ms": 60
+ },
+ {
+  "modifiers": 4,
+  "hold_ms": 60
+ },
+ {
+  "modifiers": 4,
+  "keys": [
+   44
+  ],
+  "hold_ms": 60
+ },
+ {
+  "modifiers": 4
+ },
+ {
+  "hold_ms": 1500
+ }
+]

@@ -34,15 +34,27 @@ int main(int argc, char **argv) {
   @autoreleasepool {
     NSApplication *app = [NSApplication sharedApplication];
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+    // Cmd+V becomes paste: through the Edit menu's key equivalent, as in any app.
+    NSMenu *menu = [[NSMenu alloc] init];
+    NSMenuItem *editItem = [[NSMenuItem alloc] init];
+    NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [edit addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+    editItem.submenu = edit;
+    [menu addItem:[[NSMenuItem alloc] init]];
+    [menu addItem:editItem];
+    app.mainMenu = menu;
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(200, 200, 480, 240)
                                                    styleMask:NSWindowStyleMaskTitled
                                                      backing:NSBackingStoreBuffered
                                                        defer:NO];
     SinkView *view = [[SinkView alloc] initWithFrame:window.contentView.bounds];
+    // Ordinary typing and pastes land in a text view, so delivered text can be compared.
+    NSTextView *text = [[NSTextView alloc] initWithFrame:view.bounds];
+    [view addSubview:text];
     window.contentView = view;
     window.title = @"azad-capture sink";
     [window makeKeyAndOrderFront:nil];
-    [window makeFirstResponder:view];
+    [window makeFirstResponder:text];
     // Records every key event dispatched to this application, independent of responder state.
     [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged
                                           handler:^NSEvent *(NSEvent *event) {
@@ -63,6 +75,8 @@ int main(int argc, char **argv) {
       fflush(output);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"kind": @"text", @"value": text.string ?: @""} options:0 error:nil];
+      fprintf(output, "%s\n", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding].UTF8String);
       fprintf(output, "{\"kind\":\"done\",\"active\":%d,\"key_window\":%d}\n", app.isActive ? 1 : 0, window.isKeyWindow ? 1 : 0);
       fclose(output);
       exit(0);

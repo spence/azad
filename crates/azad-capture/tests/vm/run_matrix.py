@@ -55,6 +55,46 @@ SHORTCUT_ACTIONS = [
     {"kind": "finalize", "raw_requested": False},
 ]
 
+# Scenarios against the installed Azad.app (with its SMAppService helper) as the client. The
+# guest needs Azad installed, onboarding complete, Accessibility granted, and the three history
+# fixture entries ("qwerty fixture one" newest, "awerty fixture two", "zebra fixture three").
+APP_SCENARIOS = {
+    "app_hold_release": {
+        "about": "Option+Space hold with listening off; Option released before Space.",
+        "script": "app-hold.json",
+    },
+    "app_double_tap_on": {
+        "about": "Two quick Option+Space taps turn always-listening on.",
+        "script": "app-double-tap.json", "listen_after": True,
+    },
+    "app_double_tap_off": {
+        "about": "Two quick Option+Space taps turn always-listening back off.",
+        "script": "app-double-tap.json", "listen_after": False,
+    },
+    "app_history_search_us": {
+        "about": "Hold+Up opens history; the key at HID 0x04 types 'a' on the US layout, "
+                 "filters to 'awerty fixture two', and Enter pastes it into the foreground app.",
+        "script": "app-history.json", "layout": "com.apple.keylayout.US",
+        "pasted": "awerty fixture two",
+    },
+    "app_history_search_french": {
+        "about": "The same keys on the French (AZERTY) layout type 'q', so history search is "
+                 "resolved with the active layout and pastes 'qwerty fixture one'.",
+        "script": "app-history.json", "layout": "com.apple.keylayout.French",
+        "pasted": "qwerty fixture one",
+    },
+    "app_overlay_keys": {
+        "about": "During a hold: Shift+Return reaches the foreground, Down navigates, keypad "
+                 "Enter finalizes, Escape cancels; none of the claimed keys reach the foreground.",
+        "script": "app-overlay-keys.json",
+    },
+    "app_ordinary_typing": {
+        "about": "With the overlay hidden, a, Return, Escape, Up and Shift+A all reach the "
+                 "foreground exactly once and Azad handles none of them.",
+        "script": "app-typing.json",
+    },
+}
+
 SCENARIOS = {
     "baseline": {
         "about": "Secure Input off, no competing tap.",
@@ -288,6 +328,84 @@ def scenario_script(name, spec):
     return "\n".join(lines) + "\n"
 
 
+def app_scenario_script(name, spec):
+    run = f"{GUEST}/run/{name}"
+    script = f"{GUEST}/scenarios/{spec['script']}"
+    input_log = '"$HOME/Library/Logs/Azad/input.log"'
+    lines = [
+        "set -u",
+        f"D={run}; B={GUEST}/bin",
+        "rm -rf $D && mkdir -p $D",
+        f"wc -l < {input_log} > $D/applogstart",
+        sudo(f"wc -l < {HELPER_LOG}") + " > $D/logstart",
+        "echo '' | pbcopy",
+        f"$B/layout {spec.get('layout', 'com.apple.keylayout.US')} > $D/layout.json",
+        "open -n $B/Sink.app --args $D/sink.jsonl 20",
+        "sleep 2",
+        sudo(f"$B/fixture-keyboard --script {script} --settle-ms 3000") + " > $D/source.jsonl 2>&1",
+        "sleep 3",
+        f"tail -n +$(( $(cat $D/applogstart) + 1 )) {input_log} > $D/app.jsonl",
+        sudo(f"tail -n +$(( $(cat $D/logstart) + 1 )) {HELPER_LOG}") + " > $D/helper.jsonl",
+        "pbpaste > $D/pasteboard.txt",
+        "defaults read ai.azad AzadAlwaysListeningEnabled > $D/listen.txt 2>/dev/null || echo 0 > $D/listen.txt",
+        "$B/layout com.apple.keylayout.US > /dev/null",
+        "sleep 14",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def evaluate_app(name, spec, dest):
+    app = [r for r in jsonl(os.path.join(dest, "app.jsonl")) if r.get("event") != "keyboard_capture"]
+    sink = jsonl(os.path.join(dest, "sink.jsonl"))
+    helper = jsonl(os.path.join(dest, "helper.jsonl"))
+    source = [r for r in jsonl(os.path.join(dest, "source.jsonl")) if r.get("event") == "report"]
+    pasted = open(os.path.join(dest, "pasteboard.txt")).read().strip()
+    listen = open(os.path.join(dest, "listen.txt")).read().strip() == "1"
+    events = [r["event"] for r in app]
+    downs = [r for r in sink if r.get("kind") == "down"]
+    text = next((r["value"] for r in sink if r.get("kind") == "text"), "")
+    keys = [r["keycode"] for r in downs]
+    rejected = [r for r in helper if r.get("event") == "client_rejected"]
+    script = json.load(open(os.path.join(FIXTURES, "scenarios", spec["script"])))
+    checks = {"all_reports_posted": len(source) == len(script), "app_client_accepted": not rejected}
+    if name == "app_hold_release":
+        checks["events"] = events == ["hotkey_pressed", "hotkey_released"]
+        checks["released_non_raw"] = app[-1:] and app[-1].get("raw_requested") is False
+        checks["space_not_delivered"] = 49 not in keys
+    elif name.startswith("app_double_tap"):
+        checks["two_presses"] = events.count("hotkey_pressed") == 2
+        checks["listen_state"] = listen == spec["listen_after"]
+        checks["space_not_delivered"] = 49 not in keys
+    elif name.startswith("app_history_search"):
+        layout = json.load(open(os.path.join(dest, "layout.json")))
+        checks["layout_selected"] = layout.get("current") == spec["layout"]
+        checks["history_opened"] = any(
+            r["event"] == "arrow_navigate" and r.get("direction") == -1 for r in app)
+        checks["search_typed"] = any(
+            r["event"] == "history_search_edit" and r.get("kind") == "append"
+            and r.get("chars_appended") == 1 for r in app)
+        checks["pasted_match"] = pasted == spec["pasted"]
+        checks["foreground_received_paste"] = text.strip() == spec["pasted"]
+        checks["paste_was_synthetic_cmd_v"] = any(
+            r["keycode"] == 9 and r["flags"] & 0x100000 for r in downs)
+        checks["search_key_not_delivered"] = 0 not in keys and 12 not in keys
+        checks["claimed_keys_not_delivered"] = not ({49, 126, 36} & set(keys))
+    elif name == "app_overlay_keys":
+        checks["events"] = [e for e in events if e != "hotkey_released"] == [
+            "hotkey_pressed", "arrow_navigate", "finalize_hotkey_pressed", "overlay_cancel"]
+        checks["shift_return_delivered_once"] = [
+            r for r in downs if r["keycode"] == 36] and all(
+            r["flags"] & SHIFT for r in downs if r["keycode"] == 36) and keys.count(36) == 1
+        checks["claimed_keys_not_delivered"] = not ({49, 125, 76, 53} & set(keys))
+    elif name == "app_ordinary_typing":
+        checks["no_app_events"] = events == []
+        checks["each_key_once"] = sorted(keys) == sorted([0, 36, 53, 126, 0])
+    return {"scenario": name, "about": spec["about"], "passed": all(bool(v) for v in checks.values()),
+            "checks": {k: bool(v) for k, v in checks.items()},
+            "observed": {"events": events, "foreground_keys": keys, "foreground_text": text,
+                         "pasteboard": pasted, "always_listening": listen}}
+
+
 def collect(vm, name, out):
     data = vm.ssh_bytes(f"tar czf - -C {GUEST}/run/{name} .")
     dest = os.path.join(out, name)
@@ -517,6 +635,17 @@ def main():
         install(vm, args.stage_dir)
     os.makedirs(args.out, exist_ok=True)
     results = []
+    for name, spec in APP_SCENARIOS.items():
+        if not args.only or name not in args.only:
+            continue
+        print(f"== {name}", flush=True)
+        if not args.evaluate_only:
+            vm.ssh(app_scenario_script(name, spec), timeout=240)
+            collect(vm, name, args.out)
+        result = evaluate_app(name, spec, os.path.join(args.out, name))
+        results.append(result)
+        print(json.dumps({"scenario": name, "passed": result["passed"], "checks": result["checks"]}),
+              flush=True)
     for name, spec in SCENARIOS.items():
         if args.only and name not in args.only:
             continue

@@ -46,8 +46,10 @@ const KEY_CONTEXT_NONE: KeyContext = KeyContext {
   search_input: false,
 };
 
-/// Starts connecting to the helper in the background; reconnects whenever it goes away.
-pub fn start() {
+/// Starts connecting to the helper in the background with the app's current key context;
+/// reconnects whenever it goes away.
+pub fn start(context: KeyContext) {
+  CONNECTION.lock().unwrap_or_else(|poison| poison.into_inner()).context = context;
   let _ = thread::Builder::new().name("azad-capture-client".into()).spawn(|| {
     loop {
       if let Ok(stream) = UnixStream::connect(SOCKET_PATH) {
