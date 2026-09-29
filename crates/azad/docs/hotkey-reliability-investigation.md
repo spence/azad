@@ -4,10 +4,38 @@ Investigation: 2026-09-28, with SIP-enabled verification on 2026-09-29 UTC.
 Source baseline: `da639bc`.
 Status: goal remains open. A privileged device-capture prototype survives the
 Secure Input and consuming-event-tap cases that defeated the app-level mechanisms.
-It is not an integrated Azad fix or an unconditional ownership guarantee. Shipping
-it would add a root helper and an approved virtual-keyboard driver; that product
-scope needs an owner decision. No shortcut changes or host driver installation
-have been made.
+It is not an integrated Azad fix or an unconditional ownership guarantee. The
+owner has approved adopting device-level capture with a root helper and an
+approved virtual-keyboard driver. Implementation and integrated verification
+remain open. No shortcut changes or host driver installation have been made.
+
+## Accepted implementation direction
+
+Owner ruling, 2026-09-29 UTC: "yes, we should adopt the device level capture."
+This resolves the adoption decision, not the implementation or verification gaps.
+
+The replacement touches the following existing boundaries:
+
+- Capture: replace the HID event tap, maintenance thread, tap-only atomics and
+  diagnostics with a device-capture helper and explicit acquisition/permission
+  status. Do not retain competing global capture paths.
+- Dispatch: preserve capture timestamps and press/release ownership through the
+  helper-to-app connection. Reuse one complete key policy in the helper and
+  isolated harness; keep the interaction reducer and ASR architecture.
+- History: replace dependence on tap-provided Unicode with layout-aware input
+  delivery for the existing search field. Preserve the current chords and
+  Shift+Enter pass-through.
+- Lifecycle: include the signed helper, approved virtual driver, permission
+  onboarding, authenticated app connection, and fail-open device release in
+  installation, startup, shutdown, and recovery verification.
+- Tests and guidance: update the isolated harness and OS-level VM checks to
+  exercise the production capture adapter, forwarding, and failure paths;
+  migrate tap-specific build, installation, troubleshooting, and behavior docs.
+
+The installed app is not a test fixture. Integrated VM verification precedes host
+installation; host deployment checks remain install/restart/status and read-only
+inspection. Another exclusive device owner is an explicit coexistence condition,
+not something to resolve by terminating unrelated applications.
 
 ## Finding
 
