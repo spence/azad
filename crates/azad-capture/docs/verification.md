@@ -150,4 +150,6 @@ the VM.
 A Tart VM cannot sleep: `pmset sleepnow` fails with `0xe00002e2`. Sleep and wake are therefore
 recorded on the host during normal use by `tests/physical/sleep_wake_watch.py`. It records the
 kernel sleep/wake times, helper status and counters, Azad event names and held-modifier state,
-and nothing typed.
+and nothing typed. After a real sleep the helper re-seized the re-enumerated USB keyboards,
+Option+Space reached Azad, typing was forwarded with no errors, and no modifier stayed held
+([record](evidence/2026-09-29-sleep-wake/)).
