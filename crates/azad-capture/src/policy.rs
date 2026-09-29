@@ -54,6 +54,7 @@ pub fn is_text_key(key: u16) -> bool {
 /// Overlay state that decides which keys Azad claims. The app publishes it; the helper applies
 /// it to the next key edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct KeyContext {
   pub listen_modifiers: u8,
   pub escape: bool,

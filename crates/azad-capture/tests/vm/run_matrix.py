@@ -89,6 +89,14 @@ SCENARIOS = {
                  "and launchd restarts the helper.",
         "script": "shortcuts.json", "tap": None, "expect": "fail_open", "kill_at_report": 4,
     },
+    "app_hang_releases_context": {
+        "about": "The app publishes a history-search context (all typing claimed) and then stops "
+                 "heartbeating while staying connected. After the lease lapses the helper keeps "
+                 "only the listen chord: typing and Return reach the foreground again.",
+        "script": "hang.json", "tap": None, "expect": "hang_fail_open", "silent_after_ms": 1500,
+        "context": {"listen_modifiers": 4, "escape": True, "enter": True, "arrows": True,
+                    "arrow_left": True, "arrow_right": True, "search_input": True},
+    },
     "karabiner_elements": {
         "about": "Karabiner-Elements 16.3.0 is installed, owns the VM keyboard and runs its own "
                  "driver daemon. Azad attaches to that daemon, yields the physical keyboard, "
@@ -223,7 +231,9 @@ sleep 3
 def scenario_script(name, spec):
     run = f"{GUEST}/run/{name}"
     client = "fixture-intruder" if spec.get("client") == "intruder" else "fixture-app"
-    context = json.dumps(OVERLAY_CONTEXT)
+    context = json.dumps(spec.get("context", OVERLAY_CONTEXT))
+    if spec.get("silent_after_ms"):
+        client += f" --silent-after-ms {spec['silent_after_ms']}"
     lines = [
         "set -u",
         f"D={run}; B={GUEST}/bin",
@@ -370,6 +380,17 @@ def evaluate(name, spec, dest):
         if spec.get("owner"):
             checks["remapper_output_seized"] = any(d["kind"] == "remapper_output" for d in seized)
             checks["source_owned_by_remapper"] = any(d["product_id"] == 0x1790 for d in owned)
+    elif expect == "hang_fail_open":
+        expired = [r for r in helper if r.get("event") == "context_lease_expired"]
+        checks["lease_expired_logged"] = bool(expired)
+        checks["typing_reaches_foreground_after_lease"] = (
+            sum(1 for r in sink_down if r["keycode"] == KEY_A) == 1
+            and sum(1 for r in sink_down if r["keycode"] == RETURN) == 1)
+        checks["listen_chord_still_claimed"] = (
+            actions == [{"kind": "hotkey_pressed"}, {"kind": "hotkey_released", "raw_requested": False}]
+            and not any(r["keycode"] == 49 for r in sink_down))
+        checks["no_search_keys_claimed_after_lease"] = not any(
+            a.get("kind") in ("search_key", "finalize") for a in actions)
     elif expect == "fail_open":
         before = open(os.path.join(dest, "pid-before.txt")).read().split()
         after = open(os.path.join(dest, "pid-after.txt")).read().split()

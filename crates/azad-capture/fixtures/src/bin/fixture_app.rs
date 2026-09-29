@@ -1,7 +1,9 @@
 //! Stands in for the Azad app: connects to the helper, publishes a key context, and records
 //! every helper message with its local receipt time.
 //!
-//! Usage: fixture-app --context <json> --seconds N
+//! Usage: fixture-app --context <json> --seconds N [--silent-after-ms N]
+//! Heartbeats every 250 ms like the app's main thread; `--silent-after-ms` stops them while
+//! staying connected, modelling a hung app.
 //! Must be signed with identifier `ai.azad` by the helper's team to be accepted.
 
 use std::io::{BufRead, BufReader, Write};
@@ -10,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use azad_capture::ipc::{AppMessage, PROTOCOL_VERSION, SOCKET_PATH};
+use azad_capture::ipc::{AppMessage, HEARTBEAT_INTERVAL, PROTOCOL_VERSION, SOCKET_PATH};
 use azad_capture::policy::KeyContext;
 use azad_capture::sys::now_nanos;
 use azad_capture_fixtures::*;
@@ -38,6 +40,23 @@ fn main() {
     }
   }
   println!("{}", json!({ "event": "app_connected", "wall_ms": wall_ms() }));
+  let silent_after = arg(&args, "--silent-after-ms").map(|v| v.parse::<u64>().expect("silent"));
+  let mut heartbeat = stream.try_clone().expect("clone stream");
+  std::thread::spawn(move || {
+    let started = Instant::now();
+    let mut line = serde_json::to_string(&AppMessage::Heartbeat).expect("heartbeat");
+    line.push('\n');
+    loop {
+      if silent_after.is_some_and(|ms| started.elapsed() >= Duration::from_millis(ms)) {
+        println!("{}", json!({ "event": "heartbeat_stopped", "wall_ms": wall_ms() }));
+        return;
+      }
+      if heartbeat.write_all(line.as_bytes()).is_err() {
+        return;
+      }
+      std::thread::sleep(HEARTBEAT_INTERVAL);
+    }
+  });
   let deadline = Instant::now() + Duration::from_secs(seconds);
   stream.set_read_timeout(Some(Duration::from_millis(200))).ok();
   let mut reader = BufReader::new(stream);

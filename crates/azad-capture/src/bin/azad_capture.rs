@@ -78,6 +78,8 @@ struct Core {
   manager: &'static mut Manager,
   engine: Engine,
   context: KeyContext,
+  context_renewed: u64,
+  lease_expired: bool,
   client: Option<(u64, ClientSender)>,
   driver: Arc<Mutex<Option<Arc<vhid::Client>>>>,
   driver_state: ServiceState,
@@ -95,6 +97,30 @@ impl Core {
     self.client.is_some()
       && self.permission == Permission::Granted
       && self.driver_state.can_forward()
+  }
+
+  /// The app's context while its lease is current. A hung app keeps only the listen chord: its
+  /// overlay or search context would otherwise keep claiming Enter, Escape, arrows or all
+  /// typing system-wide with nobody handling them.
+  fn effective_context(&self) -> KeyContext {
+    if self.lease_expired {
+      KeyContext { listen_modifiers: self.context.listen_modifiers, ..KeyContext::default() }
+    } else {
+      self.context
+    }
+  }
+
+  fn check_lease(&mut self) {
+    if self.client.is_none() {
+      return;
+    }
+    let silent = now_nanos().saturating_sub(self.context_renewed);
+    let expired = silent > ipc::CONTEXT_LEASE.as_nanos() as u64;
+    if expired != self.lease_expired {
+      self.lease_expired = expired;
+      let event = if expired { "context_lease_expired" } else { "context_lease_renewed" };
+      log(json!({ "event": event, "silent_ms": silent / 1_000_000 }));
+    }
   }
 
   fn driver_status(&self) -> DriverStatus {
@@ -166,12 +192,17 @@ impl Core {
       }
       for event in events {
         let outcome = match event {
-          DeviceEvent::Batch { device, values, timestamp } => {
+          DeviceEvent::Batch { device, values, timestamp, translation } => {
+            if let Some(translation) = translation {
+              self.engine.set_translation(device, translation);
+            }
             self.counters.batches += 1;
-            self.engine.apply_batch(device, &values, timestamp, &self.context)
+            let context = self.effective_context();
+            self.engine.apply_batch(device, &values, timestamp, &context)
           }
           DeviceEvent::Released { device } => {
-            self.engine.remove_device(device, now_nanos(), &self.context)
+            let context = self.effective_context();
+            self.engine.remove_device(device, now_nanos(), &context)
           }
           DeviceEvent::Changed => continue,
         };
@@ -237,6 +268,8 @@ impl Core {
         }
         self.client = Some((id, sender));
         self.context = KeyContext::default();
+        self.context_renewed = now_nanos();
+        self.lease_expired = false;
         self.last_status = None;
         log(json!({ "event": "client_connected", "client": id }));
       }
@@ -244,7 +277,9 @@ impl Core {
         if self.client.as_ref().map(|(current, _)| *current) != Some(id) {
           return true;
         }
+        self.context_renewed = now_nanos();
         match message {
+          AppMessage::Heartbeat => {}
           AppMessage::Hello { protocol } => {
             log(json!({ "event": "client_hello", "protocol": protocol }));
           }
@@ -301,6 +336,7 @@ impl Core {
       unsafe { IOHIDRequestAccess(kIOHIDRequestTypeListenEvent) };
       self.access_requested = true;
     }
+    self.check_lease();
     self.ticks += 1;
     if self.ticks % COUNTERS_EVERY_TICKS == 0 {
       let counters = json!({
@@ -420,6 +456,8 @@ fn run() {
     manager,
     engine: Engine::new(),
     context: KeyContext::default(),
+    context_renewed: 0,
+    lease_expired: false,
     client: None,
     driver: driver.clone(),
     driver_state: ServiceState::default(),

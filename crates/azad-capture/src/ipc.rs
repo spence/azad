@@ -28,9 +28,20 @@ const LOCAL_PEERTOKEN: libc::c_int = 6;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppMessage {
-  Hello { protocol: u32 },
-  Context { context: KeyContext },
+  Hello {
+    protocol: u32,
+  },
+  Context {
+    context: KeyContext,
+  },
+  /// Sent from the app's main thread at `HEARTBEAT_INTERVAL`; renews the context lease.
+  Heartbeat,
 }
+
+/// How often the app renews its context lease.
+pub const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// A context not renewed for this long is treated as coming from a hung app.
+pub const CONTEXT_LEASE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +96,7 @@ pub struct DeviceSummary {
   pub transport: String,
   pub state: String,
   pub seized_reports: u64,
+  pub key_translation: bool,
 }
 
 impl From<&DeviceInfo> for DeviceSummary {
@@ -107,6 +119,7 @@ impl From<&DeviceInfo> for DeviceSummary {
       transport: info.transport.clone(),
       state,
       seized_reports: info.seized_reports,
+      key_translation: info.key_translation,
     }
   }
 }

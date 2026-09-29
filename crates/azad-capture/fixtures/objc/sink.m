@@ -50,6 +50,11 @@ int main(int argc, char **argv) {
       [view record:event kind:kind];
       return event;
     }];
+    // Media and brightness keys arrive as system-defined events, which only a global monitor sees.
+    [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskSystemDefined handler:^(NSEvent *event) {
+      fprintf(output, "{\"kind\":\"system\",\"subtype\":%d,\"data1\":%ld}\n", (int)event.subtype, (long)event.data1);
+      fflush(output);
+    }];
     [app activateIgnoringOtherApps:YES];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
       [app activateIgnoringOtherApps:YES];

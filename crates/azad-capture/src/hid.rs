@@ -10,7 +10,7 @@ use std::ptr;
 
 use serde::Serialize;
 
-use crate::engine::Usage;
+use crate::engine::{DeviceTranslation, Usage};
 use crate::sys::*;
 use crate::vhid::{
   AZAD_OUTPUT_PRODUCT_ID, AZAD_OUTPUT_VENDOR_ID, VIRTUAL_KEYBOARD_MANUFACTURER,
@@ -53,6 +53,8 @@ pub struct DeviceInfo {
   pub transport: String,
   pub state: DeviceState,
   pub seized_reports: u64,
+  /// The keyboard publishes OS key translations (F-row, fn combinations) the helper applies.
+  pub key_translation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,8 @@ pub enum DeviceEvent {
     device: u64,
     values: Vec<(Usage, bool)>,
     timestamp: u64,
+    /// Present for keyboards with OS key translations, with the F-key mode read at this batch.
+    translation: Option<DeviceTranslation>,
   },
   /// A seized device stopped delivering input (removed or released).
   Released {
@@ -85,6 +89,7 @@ struct Device {
   info: DeviceInfo,
   open_options: Option<IOOptionBits>,
   held: BTreeSet<Usage>,
+  translation: Option<DeviceTranslation>,
 }
 
 pub struct Manager {
@@ -258,10 +263,13 @@ impl Manager {
         transport,
         state: DeviceState::Closed,
         seized_reports: 0,
+        key_translation: false,
       },
       open_options: None,
       held: BTreeSet::new(),
+      translation: read_translation(device),
     });
+    boxed.info.key_translation = boxed.translation.is_some();
     let context: *mut Device = &mut *boxed;
     // SAFETY: `context` stays valid until the device is removed and unscheduled.
     unsafe {
@@ -434,8 +442,74 @@ impl Device {
       self.info.seized_reports += 1;
       // SAFETY: Invoked from an IOKit callback on the main run loop, where the manager lives.
       let manager = unsafe { &mut *self.manager };
-      manager.push(DeviceEvent::Batch { device: self.service_id, values, timestamp });
+      let translation = self.translation.clone().map(|mut translation| {
+        translation.standard_function_keys = standard_function_keys(self.device);
+        translation
+      });
+      manager.push(DeviceEvent::Batch { device: self.service_id, values, timestamp, translation });
     }
+  }
+}
+
+/// Searches the device's registry subtree (its HID event service) for `key`; returns a retained
+/// value or null.
+fn service_property(device: IOHIDDeviceRef, key: &str) -> CFTypeRef {
+  let key = CfString::new(key);
+  // SAFETY: `device` is live; the search returns a retained object or null.
+  unsafe {
+    IORegistryEntrySearchCFProperty(
+      IOHIDDeviceGetService(device),
+      c"IOService".as_ptr(),
+      key.0,
+      kCFAllocatorDefault,
+      kIORegistryIterateRecursively,
+    )
+  }
+}
+
+fn service_string(device: IOHIDDeviceRef, key: &str) -> Option<String> {
+  let value = service_property(device, key);
+  // SAFETY: `value` is null or a retained CF object released here.
+  unsafe {
+    let text = cf_string(value);
+    if !value.is_null() {
+      CFRelease(value);
+    }
+    text
+  }
+}
+
+fn read_translation(device: IOHIDDeviceRef) -> Option<DeviceTranslation> {
+  let fn_function =
+    service_string(device, "FnFunctionUsageMap").map(|t| DeviceTranslation::parse_map(&t));
+  let fn_keyboard =
+    service_string(device, "FnKeyboardUsageMap").map(|t| DeviceTranslation::parse_map(&t));
+  if fn_function.is_none() && fn_keyboard.is_none() {
+    return None;
+  }
+  Some(DeviceTranslation {
+    fn_function: fn_function.unwrap_or_default(),
+    fn_keyboard: fn_keyboard.unwrap_or_default(),
+    standard_function_keys: standard_function_keys(device),
+  })
+}
+
+/// Reads the live "standard function keys" setting the HID system applies to this keyboard.
+fn standard_function_keys(device: IOHIDDeviceRef) -> bool {
+  let properties = service_property(device, "HIDEventServiceProperties");
+  if properties.is_null() {
+    return false;
+  }
+  // SAFETY: `properties` is a retained CF object; the mode value is borrowed from it.
+  unsafe {
+    let mode = if CFGetTypeID(properties) == CFDictionaryGetTypeID() {
+      let key = CfString::new("HIDFKeyMode");
+      cf_i64(CFDictionaryGetValue(properties, key.0))
+    } else {
+      None
+    };
+    CFRelease(properties);
+    mode == Some(1)
   }
 }
 

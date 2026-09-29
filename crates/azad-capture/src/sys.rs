@@ -58,6 +58,7 @@ pub const kCFNumberSInt64Type: CFIndex = 4;
 pub const kSecCSDefaultFlags: u32 = 0;
 pub const kSecCSSigningInformation: u32 = 2;
 pub const kCFStringEncodingUTF8: u32 = 0x0800_0100;
+pub const kIORegistryIterateRecursively: u32 = 1;
 
 #[repr(C)]
 pub struct CFRunLoopSourceContext {
@@ -99,6 +100,7 @@ unsafe extern "C" {
   pub fn CFGetTypeID(value: CFTypeRef) -> CFTypeID;
   pub fn CFNumberGetTypeID() -> CFTypeID;
   pub fn CFStringGetTypeID() -> CFTypeID;
+  pub fn CFDictionaryGetTypeID() -> CFTypeID;
   pub fn CFNumberGetValue(number: CFNumberRef, kind: CFIndex, out: *mut c_void) -> Boolean;
   pub fn CFStringCreateWithCString(
     allocator: CFAllocatorRef,
@@ -174,6 +176,14 @@ unsafe extern "C" {
   ) -> kern_return_t;
   pub fn IOObjectRelease(object: io_object_t) -> kern_return_t;
   pub fn IORegistryEntryGetRegistryEntryID(entry: io_object_t, id: *mut u64) -> kern_return_t;
+  pub fn IORegistryEntrySearchCFProperty(
+    entry: io_object_t,
+    plane: *const c_char,
+    key: CFStringRef,
+    allocator: CFAllocatorRef,
+    options: u32,
+  ) -> CFTypeRef;
+  pub fn IOHIDDeviceGetService(device: IOHIDDeviceRef) -> io_service_t;
   pub fn IOHIDDeviceCreate(allocator: CFAllocatorRef, service: io_service_t) -> IOHIDDeviceRef;
   pub fn IOHIDDeviceOpen(device: IOHIDDeviceRef, options: IOOptionBits) -> IOReturn;
   pub fn IOHIDDeviceClose(device: IOHIDDeviceRef, options: IOOptionBits) -> IOReturn;

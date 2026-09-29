@@ -5,7 +5,7 @@
 //! in one report, so the engine applies a whole batch at once and orders the resulting edges:
 //! modifier presses, key releases, key presses, then modifier releases.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::policy::{KeyAction, KeyContext, KeyPolicy, modifier_bit};
 
@@ -42,6 +42,49 @@ impl Usage {
       _ => false,
     }
   }
+}
+
+/// Apple top case "keyboard fn" (the fn/Globe key on Apple keyboards).
+pub const APPLE_FN: Usage = Usage::new(PAGE_APPLE_TOP_CASE, 0x03);
+
+/// Per-device key translations the OS would have applied to that keyboard. Apple keyboards
+/// publish `FnFunctionUsageMap` (F-row to media/brightness keys) and `FnKeyboardUsageMap`
+/// (fn+arrow to Home/End and similar) on their HID service; the OS applies them per device, so
+/// once the device is seized the helper must apply them before forwarding.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceTranslation {
+  pub fn_function: HashMap<Usage, Usage>,
+  pub fn_keyboard: HashMap<Usage, Usage>,
+  /// The "Use F1, F2, etc. keys as standard function keys" setting for this keyboard.
+  pub standard_function_keys: bool,
+}
+
+impl DeviceTranslation {
+  /// Parses a usage map property: comma-separated `0xPPPPUUUU` pairs, from then to.
+  pub fn parse_map(text: &str) -> HashMap<Usage, Usage> {
+    let values: Vec<u32> = text
+      .split(',')
+      .filter_map(|item| u32::from_str_radix(item.trim().trim_start_matches("0x"), 16).ok())
+      .collect();
+    values
+      .chunks_exact(2)
+      .map(|pair| (usage_from_packed(pair[0]), usage_from_packed(pair[1])))
+      .collect()
+  }
+
+  fn translate(&self, usage: Usage, fn_held: bool) -> Usage {
+    if fn_held && let Some(target) = self.fn_keyboard.get(&usage) {
+      return *target;
+    }
+    match self.fn_function.get(&usage) {
+      Some(target) if fn_held == self.standard_function_keys => *target,
+      _ => usage,
+    }
+  }
+}
+
+fn usage_from_packed(value: u32) -> Usage {
+  Usage::new(value >> 16, value & 0xffff)
 }
 
 /// Capture time of a batch, in nanoseconds on the host's monotonic clock.
@@ -81,7 +124,9 @@ pub struct BatchOutcome {
 
 #[derive(Debug, Default)]
 pub struct Engine {
-  devices: HashMap<u64, BTreeSet<Usage>>,
+  /// Per device: each held physical usage and the usage it was forwarded as.
+  devices: HashMap<u64, BTreeMap<Usage, Usage>>,
+  translations: HashMap<u64, DeviceTranslation>,
   pressed: BTreeMap<Usage, u32>,
   policy: KeyPolicy,
   last_forward: ForwardState,
@@ -102,7 +147,12 @@ impl Engine {
     &self.last_forward
   }
 
-  /// Applies one report's worth of element values from `device`.
+  pub fn set_translation(&mut self, device: u64, translation: DeviceTranslation) {
+    self.translations.insert(device, translation);
+  }
+
+  /// Applies one report's worth of element values from `device`. A key keeps the translation
+  /// chosen at its press, so its release matches even if fn changed in between.
   pub fn apply_batch(
     &mut self,
     device: u64,
@@ -111,13 +161,29 @@ impl Engine {
     context: &KeyContext,
   ) -> BatchOutcome {
     let held = self.devices.entry(device).or_default();
+    let fn_released = values.iter().any(|&(usage, down)| usage == APPLE_FN && !down);
+    let fn_pressed = values.iter().any(|&(usage, down)| usage == APPLE_FN && down);
+    let fn_held = fn_pressed || (held.contains_key(&APPLE_FN) && !fn_released);
+    let translation = self.translations.get(&device);
     let mut edges = Vec::new();
-    for &(usage, down) in values {
-      if !usage.is_forwardable() {
+    for &(physical, down) in values {
+      if !physical.is_forwardable() {
         continue;
       }
-      let changed = if down { held.insert(usage) } else { held.remove(&usage) };
-      if !changed {
+      let usage = if down {
+        if held.contains_key(&physical) {
+          continue;
+        }
+        let usage = translation.map_or(physical, |t| t.translate(physical, fn_held));
+        held.insert(physical, usage);
+        usage
+      } else {
+        match held.remove(&physical) {
+          Some(usage) => usage,
+          None => continue,
+        }
+      };
+      if !usage.is_forwardable() {
         continue;
       }
       let count = self.pressed.entry(usage).or_insert(0);
@@ -144,11 +210,12 @@ impl Engine {
     timestamp: Timestamp,
     context: &KeyContext,
   ) -> BatchOutcome {
+    self.translations.remove(&device);
     let Some(held) = self.devices.remove(&device) else {
       return BatchOutcome::default();
     };
     let mut edges = Vec::new();
-    for usage in held {
+    for usage in held.into_values() {
       if let Some(count) = self.pressed.get_mut(&usage) {
         *count -= 1;
         if *count == 0 {
@@ -381,6 +448,88 @@ mod tests {
     let forward = outcome.forward.unwrap();
     assert_eq!(forward.consumer, vec![0xE9]);
     assert_eq!(forward.apple_top_case, vec![0x03]);
+  }
+
+  // Read from a MacBook Pro's built-in keyboard service (Apple Internal Keyboard / Trackpad).
+  const BUILT_IN_FN_FUNCTION: &str = "0x0007003a,0x00ff0005,0x0007003b,0x00ff0004,0x0007003c,0xff010010,0x0007003d,0x000c0221,0x0007003e,0x000c00cf,0x0007003f,0x0001009b,0x00070040,0x000c00b4,0x00070041,0x000c00cd,0x00070042,0x000c00b3,0x00070043,0x000c00e2,0x00070044,0x000c00ea,0x00070045,0x000c00e9";
+  const BUILT_IN_FN_KEYBOARD: &str = "0x00070050,0x0007004a,0x00070052,0x0007004b,0x0007002a,0x0007004c,0x0007004f,0x0007004d,0x00070051,0x0007004e,0x00070028,0x00070058";
+  const F1: Usage = Usage::new(PAGE_KEYBOARD, 0x3A);
+  const F6: Usage = Usage::new(PAGE_KEYBOARD, 0x3F);
+  const F12: Usage = Usage::new(PAGE_KEYBOARD, 0x45);
+  const LEFT: Usage = Usage::new(PAGE_KEYBOARD, usage::LEFT_ARROW as u32);
+
+  fn built_in(standard_function_keys: bool) -> DeviceTranslation {
+    DeviceTranslation {
+      fn_function: DeviceTranslation::parse_map(BUILT_IN_FN_FUNCTION),
+      fn_keyboard: DeviceTranslation::parse_map(BUILT_IN_FN_KEYBOARD),
+      standard_function_keys,
+    }
+  }
+
+  #[test]
+  fn built_in_f_row_forwards_media_keys_by_default() {
+    let mut engine = Engine::new();
+    engine.set_translation(1, built_in(false));
+    let brightness = engine.apply_batch(1, &[(F1, true)], 1, &context());
+    assert_eq!(brightness.forward.unwrap().apple_top_case, vec![0x05]);
+    engine.apply_batch(1, &[(F1, false)], 2, &context());
+    let dnd = engine.apply_batch(1, &[(F6, true)], 3, &context());
+    assert_eq!(dnd.forward.unwrap().generic_desktop, vec![0x9B]);
+    engine.apply_batch(1, &[(F6, false)], 4, &context());
+    let volume = engine.apply_batch(1, &[(F12, true)], 5, &context());
+    assert_eq!(volume.forward.unwrap().consumer, vec![0xE9]);
+  }
+
+  #[test]
+  fn fn_f_key_forwards_the_function_key() {
+    let mut engine = Engine::new();
+    engine.set_translation(1, built_in(false));
+    let outcome = engine.apply_batch(1, &[(FN, true), (F1, true)], 1, &context());
+    let forward = outcome.forward.unwrap();
+    assert_eq!(forward.keyboard, vec![0x3A]);
+    assert_eq!(forward.apple_top_case, vec![0x03]);
+  }
+
+  #[test]
+  fn standard_function_key_mode_inverts_fn() {
+    let mut engine = Engine::new();
+    engine.set_translation(1, built_in(true));
+    assert_eq!(
+      engine.apply_batch(1, &[(F1, true)], 1, &context()).forward.unwrap().keyboard,
+      vec![0x3A]
+    );
+    engine.apply_batch(1, &[(F1, false)], 2, &context());
+    let media = engine.apply_batch(1, &[(FN, true), (F1, true)], 3, &context()).forward.unwrap();
+    assert_eq!(media.apple_top_case, vec![0x03, 0x05]);
+  }
+
+  #[test]
+  fn fn_arrow_forwards_home_and_release_matches_after_fn_lifts() {
+    let mut engine = Engine::new();
+    engine.set_translation(1, built_in(false));
+    engine.apply_batch(1, &[(FN, true)], 1, &context());
+    let home = engine.apply_batch(1, &[(LEFT, true)], 2, &context());
+    assert_eq!(home.forward.unwrap().keyboard, vec![0x4A]);
+    engine.apply_batch(1, &[(FN, false)], 3, &context());
+    let release = engine.apply_batch(1, &[(LEFT, false)], 4, &context());
+    assert_eq!(release.forward.unwrap(), ForwardState::default());
+  }
+
+  #[test]
+  fn fn_return_becomes_keypad_enter_for_the_policy() {
+    let mut engine = Engine::new();
+    engine.set_translation(1, built_in(false));
+    let ctx = KeyContext { enter: true, ..context() };
+    engine.apply_batch(1, &[(FN, true)], 1, &ctx);
+    let outcome = engine.apply_batch(1, &[(RETURN, true)], 2, &ctx);
+    assert_eq!(actions(&outcome), vec![KeyAction::Finalize { raw_requested: false }]);
+  }
+
+  #[test]
+  fn keyboards_without_maps_forward_f_keys_unchanged() {
+    let mut engine = Engine::new();
+    let outcome = engine.apply_batch(2, &[(F1, true)], 1, &context());
+    assert_eq!(outcome.forward.unwrap().keyboard, vec![0x3A]);
   }
 
   #[test]
