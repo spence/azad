@@ -1,6 +1,7 @@
 # Hotkey reliability investigation
 
-Investigation: 2026-09-28. Source baseline: `da639bc`.
+Investigation: 2026-09-28, with SIP-enabled verification on 2026-09-29 UTC.
+Source baseline: `da639bc`.
 Status: goal remains open. A privileged device-capture prototype survives the
 Secure Input and consuming-event-tap cases that defeated the app-level mechanisms.
 It is not an integrated Azad fix or an unconditional ownership guarantee. Shipping
@@ -38,8 +39,9 @@ that is an observation about this Mac, not proof of universal compatibility.
 This investigation changes no application code, bindings, host preferences or
 permissions, or installed runtime. No input was injected into the user's desktop.
 Runtime experiments used disposable macOS VMs with guest-only synthetic input.
-Both VMs were stopped and deleted after their experiments; no test keyboard
-service or driver was installed on the host.
+The first two VMs were stopped and deleted after their experiments. A third VM
+provided the SIP-enabled verification below and is stopped under a temporary
+Reap lease. No test keyboard service or driver was installed on the host.
 
 ## Read-only observations on the affected Mac
 
@@ -186,9 +188,10 @@ established remapper is not exempt from that conflict either.
 
 ### What remains unproved
 
-- The guest has SIP disabled. Permission grants and signed-helper deployment on
-  a normal SIP-enabled installation have not been validated. There is no proposal
-  to disable SIP on the user's Mac.
+- Signed-helper installation and permission onboarding have not been validated.
+  The follow-up below proves the mechanism with SIP enabled, but its processes
+  inherit the fixture image's preauthorized SSH launch context. It does not prove
+  a newly installed Azad helper's permission behavior.
 - The source is a virtual fixture, not a built-in, USB, or Bluetooth keyboard.
   The relay decodes that fixture's report format, not arbitrary keyboard report
   descriptors. A generic adapter must normalize batched HID elements before
@@ -205,6 +208,35 @@ established remapper is not exempt from that conflict either.
 - Seizing an existing remapper's virtual output is only a possible integration
   if that remapper forwards the required keys. It cannot recover keys the owner
   discards, and has not been validated here.
+
+### SIP-enabled follow-up
+
+A fresh macOS 26.6.2 VM was booted into its own Recovery environment to enable
+SIP, then booted normally. `csrutil status` reported enabled, and Gatekeeper was
+enabled with `spctl --global-enable`; `spctl --status` reported assessments
+enabled. The same signed/notarized package was installed and approved through
+the guest's System Settings authentication flow. `systemextensionsctl list`
+reported the driver `activated enabled`. Neither the host's security policy nor
+its installed software was changed.
+
+The unchanged, VM-guarded native fixtures then produced these results:
+
+| Check | Observed result |
+|---|---|
+| Relay baseline, SIP and Gatekeeper enabled | 25 reports, ten claimed presses and ten matching releases. The foreground sink received only Shift+Return and `a` down/up: four events. |
+| Secure Input enabled during the first Space hold, then disabled; consuming HID tap active | 25 reports, ten claimed presses and ten matching releases. The tap received only the four intentional pass-through events; the foreground sink received none because the tap consumed those four. |
+
+The second run includes a Space release while Secure Input is active and another
+after Option has been released. This closes the earlier SIP-disabled-only
+limitation for the tested device mechanism, not the production integration or
+physical-keyboard gaps above.
+
+No TCC database writes were used in this VM. A read-only inspection showed that
+the base image already authorized `/usr/libexec/sshd-keygen-wrapper` for
+Accessibility and other automation services. The tap probe reported trusted.
+Consequently, normal permission onboarding for an independently launched,
+signed Azad helper is still a separate acceptance check; inherited SSH trust
+must not be presented as proof of that onboarding.
 
 ### Implementation boundary
 
