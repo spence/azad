@@ -1,0 +1,14 @@
+source_commit: 4726211 (product source identical to 6ded6d1: git diff 6ded6d1..HEAD is empty for crates/azad, crates/azad-capture/{src,bundle,scripts}, Cargo.toml, Cargo.lock)
+built_by: just install on catalyst, installed at ~/Applications/Azad.app
+app:
+  Identifier=ai.azad
+  CDHash=7d2063098eef24e0b643fce4b30a32e826818853
+  TeamIdentifier=35A87BDK48
+  executable_sha256: 604ed877a22c85409d1a6e9dbb9decd19894bff3a1b5ba98c8a1e538aeacdc72
+helper:
+  Identifier=ai.azad.capture
+  CodeDirectory v=20500 size=2107 flags=0x10000(runtime) hashes=59+3 location=embedded
+  CDHash=ebb686bdfd9a87c6c927162fc63cf06b3e09bb53
+  TeamIdentifier=35A87BDK48
+  executable_sha256: e5ad4e7f1ddb4e7026e4089fa94f567b5b144b6a6ba3805669b63d92403288b0
+  note: helper CDHash (which hashes every code page) equals the release candidate's; the file SHA-256 also covers the embedded signature, which is re-created with a new signing time on each build
