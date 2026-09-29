@@ -1,0 +1,10 @@
+# Host, read-only (2026-09-29T21:48:45Z)
+azad pid 21604
+Identifier=ai.azad
+CDHash=7e0ec1937881bbeee871e0238f8df8d534bda954
+TeamIdentifier=35A87BDK48
+AZAD_HOTKEY_TAP action=recreate reason=stale_latency generation=2 avg_latency_us=Some(56652096.0)
+AZAD_HOTKEY_TAP action=installed reason=stale_latency generation=3 avg_latency_us=None
+capture helper process: none
+helper in bundle: none
+virtual keyboards (VID 0xfeed) in hidutil list: 0

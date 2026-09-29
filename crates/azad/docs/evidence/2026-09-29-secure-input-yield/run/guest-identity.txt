@@ -1,0 +1,3 @@
+Identifier=ai.azad
+CDHash=7e0ec1937881bbeee871e0238f8df8d534bda954
+TeamIdentifier=35A87BDK48
