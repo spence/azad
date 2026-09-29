@@ -541,7 +541,7 @@ impl AppController {
 
 #[cfg(test)]
 mod tests {
-  use crate::platform::{MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
+  use azad_capture::policy::{MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
 
   use super::{
     onboarding_get_started_enabled, should_accept_download_event,

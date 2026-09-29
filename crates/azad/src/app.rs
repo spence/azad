@@ -79,7 +79,11 @@ const ACTIVATION_LEVEL_MAX_RMS_DB: f32 = -20.0;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
   ShutdownRequested,
-  HotkeyPressed,
+  /// The listen chord went down; `captured_at` is when the key was pressed, not when this event
+  /// is handled, so queued events keep their spacing for double-tap detection.
+  HotkeyPressed {
+    captured_at: Instant,
+  },
   HotkeyReleased {
     raw_requested: bool,
   },
@@ -151,15 +155,20 @@ pub enum AppEvent {
   /// containing the term (case-insensitive substring) and highlights the
   /// match. Empty string clears the filter.
   HistorySearchChanged(String),
-  /// HID-tap captured a printable keystroke while history mode is active —
-  /// append it to the search query.
-  HistorySearchAppend(String),
-  /// HID-tap captured a backspace — drop the last character of the query.
+  /// The capture helper claimed a text key while history search is active; it is resolved
+  /// with the current keyboard layout and appended.
+  HistorySearchKey {
+    usage: u16,
+    modifiers: u8,
+  },
+  /// Backspace in history search — drop the last character of the query.
   HistorySearchBackspace,
-  /// HID-tap captured Option+Backspace — drop the trailing word.
+  /// Option+Backspace in history search — drop the trailing word.
   HistorySearchDeleteWord,
-  /// HID-tap captured Cmd+Backspace — clear the entire query.
+  /// Cmd+Backspace in history search — clear the entire query.
   HistorySearchClear,
+  /// The keyboard capture helper connected, disconnected, or changed status.
+  KeyboardCaptureStatusChanged,
   Speech(SpeechEvent),
   Device(DeviceEvent),
   Gateway(crate::gateway::GatewayEvent),
@@ -169,6 +178,12 @@ static EVENT_TX: OnceLock<Sender<AppEvent>> = OnceLock::new();
 static EVENT_RX: OnceLock<Mutex<Receiver<AppEvent>>> = OnceLock::new();
 static CONTROLLER: OnceLock<Mutex<AppController>> = OnceLock::new();
 static HOTKEY_CLOCK_START: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds on the interaction reducer's clock for an instant, clamped at clock start.
+fn hotkey_clock_ms(at: Instant) -> u64 {
+  let start = *HOTKEY_CLOCK_START.get_or_init(Instant::now);
+  at.saturating_duration_since(start).as_millis() as u64
+}
 static TERMINATION_SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 /// Heartbeat log cadence. Only emits while `AzadDebugStatsEnabled` is set, so it's quiet for
@@ -180,6 +195,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) const FAST_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const INTERACTIVE_TICK_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_TICK_INTERVAL: Duration = Duration::from_secs(1);
+const CAPTURE_NOTICE_DURATION: Duration = Duration::from_secs(6);
 
 pub fn run() {
   let (tx, rx) = mpsc::channel::<AppEvent>();
@@ -328,6 +344,11 @@ struct AppController {
   pending_always_listening_enabled: Option<bool>,
 
   manual_hold_active: bool,
+  /// Keyboard capture helper registration, checked once runtime input is allowed.
+  capture_registration: Option<platform::HelperRegistration>,
+  capture_access_requested: bool,
+  /// Capture problems already shown this run, so each is announced once.
+  capture_notices_shown: std::collections::HashSet<&'static str>,
   manual_hold_history_grace_until: Option<Instant>,
   hold_saw_speech: bool,
   overlay_visible: bool,
@@ -678,6 +699,9 @@ impl AppController {
       always_listening_enabled,
       pending_always_listening_enabled: None,
       manual_hold_active: false,
+      capture_registration: None,
+      capture_access_requested: false,
+      capture_notices_shown: std::collections::HashSet::new(),
       manual_hold_history_grace_until: None,
       hold_saw_speech: false,
       overlay_visible: false,
@@ -768,10 +792,9 @@ impl AppController {
     self.refresh_models_ready();
     platform::set_overlay_position(self.overlay_position);
     eprintln!(
-      "AZAD_PERMISSIONS accessibility={:?} microphone={:?} input_monitoring={:?}",
+      "AZAD_PERMISSIONS accessibility={:?} microphone={:?}",
       platform::accessibility_authorization(),
       platform::microphone_authorization(),
-      platform::input_monitoring_authorization(),
     );
     // Seed onboarding for users who predate the welcome flow: an unset flag plus
     // an already-downloaded model means a returning user — mark them onboarded so
@@ -986,7 +1009,7 @@ impl AppController {
   fn handle_event(&mut self, event: AppEvent) {
     match event {
       AppEvent::ShutdownRequested => self.handle_shutdown_requested(),
-      AppEvent::HotkeyPressed => self.handle_hotkey_pressed(),
+      AppEvent::HotkeyPressed { captured_at } => self.handle_hotkey_pressed(captured_at),
       AppEvent::HotkeyReleased { raw_requested } => self.handle_hotkey_released(raw_requested),
       AppEvent::FinalizeHotkeyPressed { raw_requested } => {
         self.handle_finalize_hotkey_pressed(raw_requested)
@@ -1077,7 +1100,12 @@ impl AppController {
       AppEvent::HistoryExpand => self.handle_history_expand(),
       AppEvent::HistoryCollapse => self.handle_history_collapse(),
       AppEvent::HistorySearchChanged(query) => self.handle_history_search_changed(query),
-      AppEvent::HistorySearchAppend(s) => self.handle_history_search_append(&s),
+      AppEvent::HistorySearchKey { usage, modifiers } => {
+        if let Some(text) = platform::search_key_text(usage, modifiers) {
+          self.handle_history_search_append(&text);
+        }
+      }
+      AppEvent::KeyboardCaptureStatusChanged => self.handle_keyboard_capture_status(),
       AppEvent::HistorySearchBackspace => self.handle_history_search_backspace(),
       AppEvent::HistorySearchDeleteWord => self.handle_history_search_delete_word(),
       AppEvent::HistorySearchClear => self.handle_history_search_clear(),
@@ -1214,7 +1242,7 @@ impl AppController {
     self.pending_onboarding || self.onboarding_active || !self.onboarding_complete
   }
 
-  fn handle_hotkey_pressed(&mut self) {
+  fn handle_hotkey_pressed(&mut self, captured_at: Instant) {
     if self.onboarding_blocks_runtime_input() {
       return;
     }
@@ -1236,7 +1264,7 @@ impl AppController {
     }
     self.cancel_vad_show_suppressed_until = None;
     self.dispatch_hotkey_input(HotkeyInput::HoldPressed {
-      now_ms: self.hotkey_now_ms(),
+      now_ms: hotkey_clock_ms(captured_at),
       snapshot: self.hotkey_snapshot(),
     });
   }
@@ -1402,9 +1430,79 @@ impl AppController {
     self.apply_always_listening_state(target, true);
   }
 
-  fn hotkey_now_ms(&self) -> u64 {
-    let start = HOTKEY_CLOCK_START.get_or_init(Instant::now);
-    start.elapsed().as_millis() as u64
+  fn handle_keyboard_capture_status(&mut self) {
+    use azad_capture::protocol::{CaptureStatus, DriverStatus, Permission};
+    let status = platform::keyboard_capture_status();
+    self.log_input_event(InputLogEvent::KeyboardCapture {
+      connected: status.is_some(),
+      capturing: status.as_ref().is_some_and(|s| s.capture == CaptureStatus::Capturing),
+    });
+    let Some(status) = status else { return };
+    if status.permission != Permission::Granted {
+      if !self.capture_access_requested {
+        self.capture_access_requested = true;
+        platform::request_helper_input_monitoring();
+      }
+      self.show_capture_notice(
+        "input_monitoring",
+        "Keyboard shortcuts are off",
+        "Allow Azad Capture in Privacy & Security → Input Monitoring",
+      );
+    } else if matches!(status.driver, DriverStatus::ServiceUnavailable | DriverStatus::NotActivated)
+    {
+      self.show_capture_notice(
+        "driver",
+        "Keyboard shortcuts are off",
+        "Install and allow the Karabiner virtual keyboard driver",
+      );
+    } else if status.driver == DriverStatus::VersionMismatch {
+      self.show_capture_notice(
+        "driver_version",
+        "Keyboard shortcuts are off",
+        "Update the Karabiner virtual keyboard driver",
+      );
+    } else if let Some(device) = status.unavailable_devices.first() {
+      self.show_capture_notice(
+        "unavailable_device",
+        "Shortcuts unavailable on a keyboard",
+        &format!("Another app holds {device}"),
+      );
+    }
+  }
+
+  /// Registers the capture helper once runtime input is allowed and points the user at the
+  /// approval it still needs.
+  fn ensure_keyboard_capture(&mut self) {
+    if self.capture_registration.is_some() || self.onboarding_blocks_runtime_input() {
+      return;
+    }
+    let registration = platform::ensure_helper_registered();
+    eprintln!("AZAD_CAPTURE registration={registration:?}");
+    match &registration {
+      platform::HelperRegistration::Enabled => {}
+      platform::HelperRegistration::RequiresApproval => {
+        platform::open_login_items_settings();
+        self.show_capture_notice(
+          "login_items",
+          "Keyboard shortcuts are off",
+          "Allow Azad in Login Items & Extensions",
+        );
+      }
+      platform::HelperRegistration::NotFound | platform::HelperRegistration::Failed(_) => {
+        self.show_capture_notice(
+          "helper_missing",
+          "Keyboard shortcuts are off",
+          "Reinstall Azad: its keyboard helper is missing",
+        );
+      }
+    }
+    self.capture_registration = Some(registration);
+  }
+
+  fn show_capture_notice(&mut self, problem: &'static str, title: &str, body: &str) {
+    if self.capture_notices_shown.insert(problem) {
+      self.show_overlay_notice(title, body, CAPTURE_NOTICE_DURATION);
+    }
   }
 
   fn hotkey_snapshot(&self) -> RuntimeSnapshot {
@@ -2437,7 +2535,7 @@ impl AppController {
   }
 
   fn on_tick(&mut self) {
-    platform::ensure_hotkey_event_tap_if_accessibility_granted();
+    self.ensure_keyboard_capture();
     if self.pending_onboarding {
       self.pending_onboarding = false;
       self.onboarding_active = true;
@@ -4222,7 +4320,7 @@ mod tests {
     controller.always_listening_enabled = false;
     controller.raw_finalize_requested = false;
 
-    controller.handle_hotkey_pressed();
+    controller.handle_hotkey_pressed(Instant::now());
     controller.handle_hotkey_released(true);
     controller.handle_finalize_hotkey_pressed(true);
     controller.handle_menu_toggle_always_listening();

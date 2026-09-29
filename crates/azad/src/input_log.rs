@@ -90,18 +90,8 @@ pub enum InputLogEvent {
   /// looked stuck (`engine_state == Idle && finalizing_turn_id.is_some() &&
   /// !finalizing_draft.empty() && last_pasted_turn_id != finalizing_turn_id`).
   RawFallbackFired { turn_id: u64 },
-}
-
-#[derive(Serialize)]
-struct HotkeyTapLogEntry<'a> {
-  schema_version: u8,
-  ts_ms: i64,
-  event: &'static str,
-  action: &'a str,
-  reason: &'a str,
-  generation: u64,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  avg_latency_us: Option<f32>,
+  /// The keyboard capture helper connection or capture state changed.
+  KeyboardCapture { connected: bool, capturing: bool },
 }
 
 /// Append `entry` to the input log. Best-effort — failures are silent because
@@ -110,18 +100,6 @@ struct HotkeyTapLogEntry<'a> {
 /// real `~/Library/Logs/Azad/input.log`.
 pub fn append(entry: &InputLogEntry) {
   append_json(entry);
-}
-
-pub fn append_hotkey_tap(action: &str, reason: &str, generation: u64, avg_latency_us: Option<f32>) {
-  append_json(&HotkeyTapLogEntry {
-    schema_version: schema_version(),
-    ts_ms: now_epoch_ms(),
-    event: "hotkey_tap_lifecycle",
-    action,
-    reason,
-    generation,
-    avg_latency_us,
-  });
 }
 
 fn append_json(entry: &impl Serialize) {
@@ -177,7 +155,7 @@ fn input_log_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-  use super::{HotkeyTapLogEntry, InputLogEntry, InputLogEvent, StateSnapshot, schema_version};
+  use super::{InputLogEntry, InputLogEvent, StateSnapshot, schema_version};
 
   fn empty_state() -> StateSnapshot {
     StateSnapshot {
@@ -268,23 +246,5 @@ mod tests {
     assert!(line.contains("\"turn_id\":42"));
     assert!(line.contains("\"text_chars\":4"));
     assert!(line.contains("\"reason\":\"hidden_without_visible_draft\""));
-  }
-
-  #[test]
-  fn hotkey_tap_lifecycle_entry_omits_app_state() {
-    let entry = HotkeyTapLogEntry {
-      schema_version: 1,
-      ts_ms: 0,
-      event: "hotkey_tap_lifecycle",
-      action: "recreate",
-      reason: "stale_latency",
-      generation: 2,
-      avg_latency_us: Some(2_491_336_700.0),
-    };
-    let line = serde_json::to_string(&entry).unwrap();
-    assert!(line.contains("\"event\":\"hotkey_tap_lifecycle\""));
-    assert!(line.contains("\"action\":\"recreate\""));
-    assert!(line.contains("\"reason\":\"stale_latency\""));
-    assert!(!line.contains("\"state\""));
   }
 }

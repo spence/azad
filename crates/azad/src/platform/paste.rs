@@ -11,10 +11,10 @@ use objc::{class, msg_send, sel, sel_impl};
 
 use crate::settings::{AutoSubmitMode, PasteMethod};
 
-#[cfg(not(test))]
-use super::{AZAD_SYNTHETIC_MARKER, KCG_EVENT_SOURCE_USER_DATA_FIELD, KEYCODE_RETURN};
 use super::{ensure_accessibility_for_auto_paste, nsstring_to_string};
 
+#[cfg(not(test))]
+const KEYCODE_RETURN: u16 = 0x24;
 const KEYCODE_DIRECT_INPUT: u16 = 0x00;
 const KEYCODE_LEFT_COMMAND: u16 = 0x37;
 const KEYCODE_RIGHT_COMMAND: u16 = 0x36;
@@ -229,16 +229,11 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
     CGEventFlags::from_bits_truncate(flags.bits() | device_bit)
   };
 
-  let stamp = |event: &CGEvent| {
-    event.set_integer_value_field(KCG_EVENT_SOURCE_USER_DATA_FIELD, AZAD_SYNTHETIC_MARKER);
-  };
-
   if let Some(modifier_key) = modifier_key {
     let Ok(mod_down) = CGEvent::new_keyboard_event(source.clone(), modifier_key, true) else {
       return false;
     };
     mod_down.set_flags(chord_flags);
-    stamp(&mod_down);
     mod_down.post(CGEventTapLocation::HID);
   }
 
@@ -248,7 +243,6 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   if !chord_flags.is_empty() {
     key_down.set_flags(chord_flags);
   }
-  stamp(&key_down);
   key_down.post(CGEventTapLocation::HID);
 
   let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), keycode, false) else {
@@ -257,12 +251,10 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   if !chord_flags.is_empty() {
     key_up.set_flags(chord_flags);
   }
-  stamp(&key_up);
   key_up.post(CGEventTapLocation::HID);
 
   if let Some(modifier_key) = modifier_key {
     if let Ok(mod_up) = CGEvent::new_keyboard_event(source, modifier_key, false) {
-      stamp(&mod_up);
       mod_up.post(CGEventTapLocation::HID);
     }
   }

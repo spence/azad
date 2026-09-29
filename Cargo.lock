@@ -131,6 +131,7 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "azad-asr",
+ "azad-capture",
  "azad-text",
  "cocoa",
  "core-graphics 0.24.0",

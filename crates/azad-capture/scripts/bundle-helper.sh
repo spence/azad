@@ -11,7 +11,7 @@ CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$(cd "$CRATE_DIR/../.." && pwd)"
 VERSION="$(awk -F '"' '/^version =/ { print $2; exit }' "$ROOT_DIR/Cargo.toml")"
 
-cargo build --release -p azad-capture --manifest-path "$ROOT_DIR/Cargo.toml"
+cargo build --release -p azad-capture --features helper --manifest-path "$ROOT_DIR/Cargo.toml"
 BUNDLE="$OUT/Azad Capture.app"
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS"

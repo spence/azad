@@ -83,13 +83,6 @@ pub struct CFRunLoopTimerContext {
   pub copy_description: *const c_void,
 }
 
-#[repr(C)]
-#[derive(Default)]
-pub struct mach_timebase_info_data_t {
-  pub numer: u32,
-  pub denom: u32,
-}
-
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
   pub static kCFAllocatorDefault: CFAllocatorRef;
@@ -278,11 +271,6 @@ unsafe extern "C" {
   ) -> OSStatus;
 }
 
-unsafe extern "C" {
-  pub fn mach_timebase_info(info: *mut mach_timebase_info_data_t) -> kern_return_t;
-  pub fn mach_absolute_time() -> u64;
-}
-
 /// Owned CoreFoundation string.
 pub struct CfString(pub CFStringRef);
 
@@ -347,19 +335,4 @@ pub unsafe fn cf_i64(value: CFTypeRef) -> Option<i64> {
   (ok != 0).then_some(out)
 }
 
-/// Nanoseconds for a `mach_absolute_time` value.
-pub fn mach_to_nanos(ticks: u64) -> u64 {
-  static TIMEBASE: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
-  let (numer, denom) = *TIMEBASE.get_or_init(|| {
-    let mut info = mach_timebase_info_data_t::default();
-    // SAFETY: `info` is a valid out-parameter.
-    unsafe { mach_timebase_info(&mut info) };
-    (info.numer.max(1) as u64, info.denom.max(1) as u64)
-  });
-  ((ticks as u128 * numer as u128) / denom as u128) as u64
-}
-
-pub fn now_nanos() -> u64 {
-  // SAFETY: No preconditions.
-  mach_to_nanos(unsafe { mach_absolute_time() })
-}
+pub use crate::clock::{mach_to_nanos, now_nanos};

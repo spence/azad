@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use azad_capture::ipc::{AppMessage, HEARTBEAT_INTERVAL, PROTOCOL_VERSION, SOCKET_PATH};
 use azad_capture::policy::KeyContext;
+use azad_capture::protocol::{AppMessage, HEARTBEAT_INTERVAL, PROTOCOL_VERSION, SOCKET_PATH};
 use azad_capture::sys::now_nanos;
 use azad_capture_fixtures::*;
 

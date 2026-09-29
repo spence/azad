@@ -8,9 +8,15 @@ license.workspace = true
 description = "Device-level keyboard capture helper for Azad"
 publish = false
 
+[features]
+default = []
+# IOKit device capture, peer authentication and platform bindings for the helper binary.
+helper = []
+
 [[bin]]
 name = "azad-capture"
 path = "src/bin/azad_capture.rs"
+required-features = ["helper"]
 test = false
 bench = false
 

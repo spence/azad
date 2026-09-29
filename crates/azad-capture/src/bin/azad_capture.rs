@@ -18,11 +18,12 @@ use serde_json::json;
 
 use azad_capture::engine::{BatchOutcome, Engine, ForwardState};
 use azad_capture::hid::{DeviceEvent, DeviceState, Manager, Mode};
-use azad_capture::ipc::{
-  self, AppMessage, CaptureStatus, ClientEvent, ClientSender, DeviceSummary, DriverStatus,
-  HelperMessage, HelperStatus, Permission,
-};
+use azad_capture::ipc::{self, ClientEvent, ClientSender};
 use azad_capture::policy::KeyContext;
+use azad_capture::protocol::{
+  self, AppMessage, CaptureStatus, DeviceSummary, DriverStatus, HelperMessage, HelperStatus,
+  Permission,
+};
 use azad_capture::sys::*;
 use azad_capture::vhid::{self, ServiceState};
 
@@ -35,6 +36,7 @@ const EX_TEMPFAIL: i32 = 75;
 const COUNTERS_EVERY_TICKS: u32 = 20;
 const RESCAN_EVERY_TICKS: u32 = 20;
 const ACCESS_PROBE_EVERY_TICKS: u32 = 8;
+const UPDATE_CHECK_EVERY_TICKS: u32 = 20;
 
 static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 static SEIZED: AtomicU64 = AtomicU64::new(0);
@@ -90,6 +92,8 @@ struct Core {
   last_counters: Option<String>,
   last_posted: ForwardState,
   ticks: u32,
+  /// Identity of the executable this process started from; a change means it was updated.
+  executable: Option<(u64, i64)>,
 }
 
 impl Core {
@@ -115,7 +119,7 @@ impl Core {
       return;
     }
     let silent = now_nanos().saturating_sub(self.context_renewed);
-    let expired = silent > ipc::CONTEXT_LEASE.as_nanos() as u64;
+    let expired = silent > protocol::CONTEXT_LEASE.as_nanos() as u64;
     if expired != self.lease_expired {
       self.lease_expired = expired;
       let event = if expired { "context_lease_expired" } else { "context_lease_renewed" };
@@ -303,6 +307,15 @@ impl Core {
   }
 
   fn tick(&mut self) {
+    if self.ticks % UPDATE_CHECK_EVERY_TICKS == 0
+      && self.executable.is_some()
+      && executable_identity() != self.executable
+    {
+      // An app update replaced the helper; exit so launchd starts the new one. Exiting
+      // releases every seized keyboard.
+      log(json!({ "event": "executable_updated_exit" }));
+      shutdown(self);
+    }
     // SAFETY: No preconditions.
     let access = unsafe { IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) };
     let permission = if access == kIOHIDAccessTypeGranted {
@@ -468,6 +481,7 @@ fn run() {
     last_counters: None,
     last_posted: ForwardState::default(),
     ticks: 0,
+    executable: executable_identity(),
   }));
   // SAFETY: Set once on the main thread before the run loop starts; read only on this thread.
   unsafe { CORE = core };
@@ -478,7 +492,7 @@ fn run() {
     "version": env!("CARGO_PKG_VERSION"),
     "client_requirement": requirement,
   }));
-  if let Err(error) = ipc::serve(ipc::SOCKET_PATH, requirement, |event| {
+  if let Err(error) = ipc::serve(protocol::SOCKET_PATH, requirement, |event| {
     inbox().push(External::Client(event));
   }) {
     log(json!({ "event": "ipc_failed", "error": error.to_string() }));
@@ -561,15 +575,21 @@ fn shutdown(core: &mut Core) -> ! {
     client.shutdown();
   }
   stop_owned_driver_daemon();
-  let _ = std::fs::remove_file(ipc::SOCKET_PATH);
+  let _ = std::fs::remove_file(protocol::SOCKET_PATH);
   log(json!({ "event": "stopped" }));
   std::process::exit(0);
+}
+
+fn executable_identity() -> Option<(u64, i64)> {
+  use std::os::unix::fs::MetadataExt;
+  let metadata = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
+  Some((metadata.ino(), metadata.mtime()))
 }
 
 /// Replaces this process with a fresh copy; devices are closed (none are seized without a grant).
 fn restart_self() -> ! {
   stop_owned_driver_daemon();
-  let _ = std::fs::remove_file(ipc::SOCKET_PATH);
+  let _ = std::fs::remove_file(protocol::SOCKET_PATH);
   if let Ok(exe) = std::env::current_exe() {
     let error = std::os::unix::process::CommandExt::exec(&mut Command::new(exe));
     log(json!({ "event": "restart_failed", "error": error.to_string() }));
