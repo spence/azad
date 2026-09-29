@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/azad",
+    "crates/azad-capture",
+    "crates/azad-capture/fixtures",
     "crates/azad-asr",
     "crates/azad-text",
 ]

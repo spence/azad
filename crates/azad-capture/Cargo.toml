@@ -1,0 +1,20 @@
+[package]
+name = "azad-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Device-level keyboard capture helper for Azad"
+publish = false
+
+[[bin]]
+name = "azad-capture"
+path = "src/bin/azad_capture.rs"
+test = false
+bench = false
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
