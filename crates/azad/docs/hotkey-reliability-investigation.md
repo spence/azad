@@ -216,7 +216,8 @@ claimed Space hold, contextual Enter/Escape/arrows, modifier supersets, Option
 raw mode, Numpad Enter, Shift+Enter bypass, and synthetic-paste bypass.
 
 The helper would read all keyboard reports to forward unclaimed input. That
-creates a privileged trust boundary: keep arbitrary text out of logs and app IPC,
+creates a privileged trust boundary: keep unrelated typing out of logs and app
+IPC, limit app delivery to claimed shortcuts and explicitly owned history input,
 authenticate the app connection, and release devices if the forwarding path or
 consumer cannot operate safely. Treat permission denial and device-ownership
 conflicts as explicit states, not as an enabled-but-silent success. Verify both
@@ -226,6 +227,67 @@ Adding a root keyboard service and a user-approved driver changes installation,
 security, and coexistence obligations materially. The research supports further
 isolated implementation of this candidate, not silently installing those
 components into the user's working environment. The original goal stays open.
+
+### Integration review: shared logic and timing
+
+A source review and process-local replay at `18a1978` narrowed the work needed to
+connect a device reader to the existing app. This is not evidence of OS capture
+or a diagnosis of the reported live failure.
+
+- `src/platform/hotkeys.rs` shares Space and claimed-hold-plus-Up decisions with
+  the isolated harness. Enter/Escape, the other arrows, and history text capture
+  remain in `claim_tap_hotkey` / `claim_tap_search_input` in `src/platform.rs`.
+  A broker should reuse the production decisions, not the harness's separate
+  Enter/Escape implementation. The ASR engine and interaction reducer do not
+  need replacement merely to change the capture source.
+- The seven built-in `just interaction-test` scenarios passed, but an additional
+  Shift+Enter trace produced `finalize_requested`, with `finalize_requests=1`.
+  The production callback explicitly returns pass-through for Shift+Enter. The
+  harness also has no key variants for Numpad Enter, Left/Right, or printable
+  history text. Therefore these seven passing scenarios cannot certify the
+  proposed adapter's full binding policy. No installed-app test was performed.
+- `AppEvent::HotkeyPressed` carries no timestamp. `handle_hotkey_pressed` calls
+  `hotkey_now_ms()` when processing the queued event; `drain_events` can process
+  several pending events together. Replaying presses at 1000 and 2000 ms (with a
+  release between) through the shared reducer produced two manual holds. Giving
+  that same key sequence compressed processing times of 2000 and 2002 ms instead
+  produced `listen_enabled`. This demonstrates the consequence of losing capture
+  timing, not an observed main-thread stall on the user's Mac. A helper adapter
+  must carry monotonic capture timestamps through dispatch rather than substitute
+  IPC arrival or UI-processing times.
+- Only Space has persistent claimed-hold state today. Other overlay keys consult
+  the current enable flags on each edge; hiding the overlay clears those flags.
+  A separate helper cannot rely on the current overlay state to decide whether
+  to suppress the release of an already claimed press. The integration needs
+  explicit tests for overlay closure, Shift changes, and device removal between
+  down and up, plus delayed/stale app-to-helper capture-state updates.
+- History search currently obtains layout-resolved text from
+  `CGEventKeyboardGetUnicodeString`. Raw HID usages do not supply that text. The
+  existing nonactivating `NSPanel`, `NSTextField`, and text-change delegate offer
+  a native-text-input candidate, but their delivery under the competing-tap and
+  Secure Input conditions has not been proved. Replacing that path with an ASCII
+  key map would not preserve existing behavior. Apple's
+  [text-event handling guidance](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/HandlingKeyEvents/HandlingKeyEvents.html)
+  explains the role of AppKit's input management in composition and key bindings;
+  it does not establish delivery through a competing consuming tap. Normal
+  forwarded typing still traverses that tap in the tested topology, so making
+  the search field first responder alone is not proof of a robust history path.
+
+The Shift+Enter reproduction used the freshly built, safety-checked headless
+binary with this stdin sequence:
+
+```jsonl
+{"type":"initialize","at_ms":0,"always_listening_enabled":false}
+{"type":"key_down","at_ms":1000,"key":"space","modifiers":["option"]}
+{"type":"speech_draft","at_ms":1100,"text":"fixture"}
+{"type":"key_down","at_ms":1200,"key":"enter","modifiers":["shift"]}
+```
+
+These findings make the implementation boundary concrete: normalize device input,
+reuse the complete production key policy, preserve capture timing and ownership,
+and verify the existing history text path. Fixing the harness's isolated Shift
+branch alone would not establish that the production adapter is correct. No
+production or harness code was changed during this review.
 
 ## Limits and alternatives
 
