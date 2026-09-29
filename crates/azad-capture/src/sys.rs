@@ -51,6 +51,9 @@ pub const kIOHIDOptionsTypeSeizeDevice: IOOptionBits = 1;
 pub const kIOHIDElementTypeInput_Misc: u32 = 1;
 pub const kIOHIDElementTypeInput_Button: u32 = 2;
 pub const kIOHIDElementTypeInput_ScanCodes: u32 = 4;
+pub const kIOHIDElementTypeOutput: u32 = 129;
+pub const kIOHIDParamConnectType: u32 = 1;
+pub const kIOHIDCapsLockState: i32 = 1;
 pub const kIOHIDRequestTypeListenEvent: u32 = 1;
 pub const kIOHIDAccessTypeGranted: u32 = 0;
 pub const kIOHIDAccessTypeDenied: u32 = 1;
@@ -234,6 +237,32 @@ unsafe extern "C" {
   pub fn IOHIDElementGetUsage(element: IOHIDElementRef) -> u32;
   pub fn IOHIDElementGetType(element: IOHIDElementRef) -> u32;
   pub fn IOHIDCheckAccess(request: u32) -> u32;
+  pub fn IOServiceGetMatchingService(
+    main_port: mach_port_t,
+    matching: CFDictionaryRef,
+  ) -> io_service_t;
+  pub fn IOServiceOpen(
+    service: io_service_t,
+    owning_task: mach_port_t,
+    kind: u32,
+    connect: *mut mach_port_t,
+  ) -> kern_return_t;
+  pub fn IOHIDGetModifierLockState(
+    connect: mach_port_t,
+    selector: i32,
+    state: *mut bool,
+  ) -> kern_return_t;
+  pub fn IOHIDValueCreateWithIntegerValue(
+    allocator: CFAllocatorRef,
+    element: IOHIDElementRef,
+    timestamp: u64,
+    value: CFIndex,
+  ) -> IOHIDValueRef;
+  pub fn IOHIDDeviceSetValue(
+    device: IOHIDDeviceRef,
+    element: IOHIDElementRef,
+    value: IOHIDValueRef,
+  ) -> IOReturn;
   pub fn IOHIDRequestAccess(request: u32) -> Boolean;
 }
 
@@ -336,3 +365,29 @@ pub unsafe fn cf_i64(value: CFTypeRef) -> Option<i64> {
 }
 
 pub use crate::clock::{mach_to_nanos, now_nanos};
+
+unsafe extern "C" {
+  static mach_task_self_: mach_port_t;
+}
+
+/// Reads the system Caps Lock state from the HID system.
+pub fn caps_lock_state() -> Option<bool> {
+  static CONNECT: std::sync::OnceLock<Option<mach_port_t>> = std::sync::OnceLock::new();
+  let connect = (*CONNECT.get_or_init(|| {
+    // SAFETY: The matching dictionary is consumed; the service is released after opening.
+    unsafe {
+      let service = IOServiceGetMatchingService(0, IOServiceMatching(c"IOHIDSystem".as_ptr()));
+      if service == 0 {
+        return None;
+      }
+      let mut connect: mach_port_t = 0;
+      let result = IOServiceOpen(service, mach_task_self_, kIOHIDParamConnectType, &mut connect);
+      IOObjectRelease(service);
+      (result == 0).then_some(connect)
+    }
+  }))?;
+  let mut state = false;
+  // SAFETY: `connect` is an open IOHIDSystem parameter connection kept for the process lifetime.
+  (unsafe { IOHIDGetModifierLockState(connect, kIOHIDCapsLockState, &mut state) } == 0)
+    .then_some(state)
+}

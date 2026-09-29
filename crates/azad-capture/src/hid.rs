@@ -21,6 +21,8 @@ const QUEUE_DEPTH: CFIndex = 1024;
 const PAGE_GENERIC_DESKTOP: u32 = 0x01;
 const USAGE_KEYBOARD: u32 = 0x06;
 const USAGE_KEYPAD: u32 = 0x07;
+const USAGE_POINTER: u32 = 0x01;
+const USAGE_MOUSE: u32 = 0x02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +57,8 @@ pub struct DeviceInfo {
   pub seized_reports: u64,
   /// The keyboard publishes OS key translations (F-row, fn combinations) the helper applies.
   pub key_translation: bool,
+  /// The device also carries a pointer collection (e.g. mouse keys) the helper forwards.
+  pub pointer: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +73,7 @@ pub enum Mode {
 pub enum DeviceEvent {
   Batch {
     device: u64,
-    values: Vec<(Usage, bool)>,
+    values: Vec<(Usage, i64)>,
     timestamp: u64,
     /// Present for keyboards with OS key translations, with the F-key mode read at this batch.
     translation: Option<DeviceTranslation>,
@@ -90,6 +94,8 @@ struct Device {
   open_options: Option<IOOptionBits>,
   held: BTreeSet<Usage>,
   translation: Option<DeviceTranslation>,
+  /// Caps Lock LED output element, retained; the OS no longer drives it once seized.
+  caps_led: IOHIDElementRef,
 }
 
 pub struct Manager {
@@ -165,6 +171,24 @@ impl Manager {
     self.events.push(event);
     // SAFETY: `notify` is a live run-loop source owned by the core for the process lifetime.
     unsafe { CFRunLoopSourceSignal(self.notify) };
+  }
+
+  /// Mirrors the system Caps Lock state onto the LEDs of seized keyboards.
+  pub fn set_caps_lock_led(&mut self, on: bool) {
+    for device in self.devices.values() {
+      if device.info.state != DeviceState::Seized || device.caps_led.is_null() {
+        continue;
+      }
+      // SAFETY: The element is retained by the device record; the value is released after use.
+      unsafe {
+        let value =
+          IOHIDValueCreateWithIntegerValue(kCFAllocatorDefault, device.caps_led, 0, on as CFIndex);
+        if !value.is_null() {
+          IOHIDDeviceSetValue(device.device, device.caps_led, value);
+          CFRelease(value.cast_const());
+        }
+      }
+    }
   }
 
   pub fn seized_count(&self) -> usize {
@@ -249,6 +273,11 @@ impl Manager {
       return;
     }
     let kind = if is_virtual_keyboard { DeviceKind::RemapperOutput } else { DeviceKind::Keyboard };
+    // SAFETY: `device` is a live IOHIDDevice.
+    let pointer = unsafe {
+      IOHIDDeviceConformsTo(device, PAGE_GENERIC_DESKTOP, USAGE_POINTER) != 0
+        || IOHIDDeviceConformsTo(device, PAGE_GENERIC_DESKTOP, USAGE_MOUSE) != 0
+    };
     let mut boxed = Box::new(Device {
       manager: self,
       service_id,
@@ -264,12 +293,15 @@ impl Manager {
         state: DeviceState::Closed,
         seized_reports: 0,
         key_translation: false,
+        pointer: false,
       },
       open_options: None,
       held: BTreeSet::new(),
       translation: read_translation(device),
+      caps_led: caps_lock_led(device),
     });
     boxed.info.key_translation = boxed.translation.is_some();
+    boxed.info.pointer = pointer;
     let context: *mut Device = &mut *boxed;
     // SAFETY: `context` stays valid until the device is removed and unscheduled.
     unsafe {
@@ -284,9 +316,13 @@ impl Manager {
     let Some(mut device) = self.devices.remove(&service_id) else { return };
     let was_seized = device.info.state == DeviceState::Seized;
     device.close();
-    // SAFETY: The device was scheduled on this run loop in `add_service`.
+    // SAFETY: The device was scheduled on this run loop in `add_service`; the LED element was
+    // retained there.
     unsafe {
       IOHIDDeviceUnscheduleFromRunLoop(device.device, self.run_loop, kCFRunLoopDefaultMode);
+      if !device.caps_led.is_null() {
+        CFRelease(device.caps_led.cast_const());
+      }
       CFRelease(device.device.cast_const());
     }
     if was_seized {
@@ -361,7 +397,9 @@ impl Device {
             || kind == kIOHIDElementTypeInput_Button
             || kind == kIOHIDElementTypeInput_ScanCodes;
           let usage = Usage::new(IOHIDElementGetUsagePage(element), IOHIDElementGetUsage(element));
-          if is_input && usage.is_forwardable() {
+          if is_input
+            && (usage.is_forwardable() || usage.is_pointer_button() || usage.is_pointer_axis())
+          {
             IOHIDQueueAddElement(queue, element);
           }
         }
@@ -402,22 +440,22 @@ impl Device {
         break;
       }
       // SAFETY: `value` is a retained IOHIDValue released below.
-      let (usage, pressed, timestamp) = unsafe {
+      let (usage, integer, timestamp) = unsafe {
         let element = IOHIDValueGetElement(value);
         let usage = Usage::new(IOHIDElementGetUsagePage(element), IOHIDElementGetUsage(element));
-        let pressed = IOHIDValueGetIntegerValue(value) != 0;
+        let integer = IOHIDValueGetIntegerValue(value) as i64;
         let timestamp = mach_to_nanos(IOHIDValueGetTimeStamp(value));
         CFRelease(value.cast_const());
-        (usage, pressed, timestamp)
+        (usage, integer, timestamp)
       };
-      if !usage.is_forwardable() {
+      if !(usage.is_forwardable() || usage.is_pointer_button() || usage.is_pointer_axis()) {
         continue;
       }
       if let Some(time) = batch_time.filter(|time| *time != timestamp) {
         self.flush(seized, std::mem::take(&mut batch), time);
       }
       batch_time = Some(timestamp);
-      batch.push((usage, pressed));
+      batch.push((usage, integer));
     }
     if let Some(time) = batch_time {
       self.flush(seized, batch, time);
@@ -430,9 +468,10 @@ impl Device {
     }
   }
 
-  fn flush(&mut self, seized: bool, values: Vec<(Usage, bool)>, timestamp: u64) {
-    for &(usage, pressed) in &values {
-      if pressed {
+  fn flush(&mut self, seized: bool, values: Vec<(Usage, i64)>, timestamp: u64) {
+    // Held keys and pointer buttons block seizing; motion does not.
+    for &(usage, value) in values.iter().filter(|(usage, _)| !usage.is_pointer_axis()) {
+      if value != 0 {
         self.held.insert(usage);
       } else {
         self.held.remove(&usage);
@@ -476,6 +515,30 @@ fn service_string(device: IOHIDDeviceRef, key: &str) -> Option<String> {
       CFRelease(value);
     }
     text
+  }
+}
+
+/// The Caps Lock LED output element (LED page 0x08, usage 0x02), retained, or null.
+fn caps_lock_led(device: IOHIDDeviceRef) -> IOHIDElementRef {
+  // SAFETY: Elements are borrowed from the copied array; the match is retained before release.
+  unsafe {
+    let elements = IOHIDDeviceCopyMatchingElements(device, ptr::null(), 0);
+    if elements.is_null() {
+      return ptr::null_mut();
+    }
+    let mut found = ptr::null_mut();
+    for index in 0..CFArrayGetCount(elements) {
+      let element = CFArrayGetValueAtIndex(elements, index) as IOHIDElementRef;
+      if IOHIDElementGetType(element) == kIOHIDElementTypeOutput
+        && IOHIDElementGetUsagePage(element) == 0x08
+        && IOHIDElementGetUsage(element) == 0x02
+      {
+        found = CFRetain(element.cast_const()) as IOHIDElementRef;
+        break;
+      }
+    }
+    CFRelease(elements);
+    found
   }
 }
 

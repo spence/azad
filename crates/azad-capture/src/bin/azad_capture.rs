@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use azad_capture::engine::{BatchOutcome, Engine, ForwardState};
+use azad_capture::engine::{BatchOutcome, Engine, ForwardState, PointerReport};
 use azad_capture::hid::{DeviceEvent, DeviceState, Manager, Mode};
 use azad_capture::ipc::{self, ClientEvent, ClientSender};
 use azad_capture::policy::KeyContext;
@@ -87,6 +87,9 @@ struct Core {
   /// forwarding path does not re-seize keyboards and swallow keys.
   forward_retry_after: u64,
   mode: Mode,
+  /// The driver connection generation whose virtual pointing device was requested.
+  pointing_requested: Option<u64>,
+  caps_lock: Option<bool>,
   client_uid: u32,
   /// The console belongs to the client's user; false during fast user switching or at the
   /// login window, when that user's shortcuts must not claim someone else's typing.
@@ -230,6 +233,7 @@ impl Core {
     };
     self.mode = mode;
     self.manager.set_mode(mode);
+    self.ensure_pointing();
     self.drain_devices();
     SEIZED.store(self.manager.seized_count() as u64, Ordering::Release);
     let status = self.status();
@@ -278,6 +282,9 @@ impl Core {
     if let Some(next) = outcome.forward {
       self.post(next);
     }
+    if let Some(pointer) = outcome.pointer {
+      self.post_pointer(pointer);
+    }
     for timed in outcome.actions {
       self.counters.actions += 1;
       self.send(&HelperMessage::Action { action: timed.action, timestamp_ns: timed.timestamp });
@@ -299,6 +306,39 @@ impl Core {
       }
       // Forwarding is broken: stop capturing so input returns to the OS directly.
       Err(_) => self.forwarding_failed(),
+    }
+  }
+
+  fn post_pointer(&mut self, report: PointerReport) {
+    if self.driver_state.pointing_ready != Some(true) {
+      return;
+    }
+    let client = self.driver.lock().expect("driver").clone();
+    match client {
+      Some(client) if client.post_pointer(&report).is_ok() => self.counters.forward_posts += 1,
+      _ => self.forwarding_failed(),
+    }
+  }
+
+  /// Creates the virtual pointing device once a seized keyboard carries a pointer collection.
+  fn ensure_pointing(&mut self) {
+    let generation = DRIVER_GENERATION.load(Ordering::Acquire);
+    if self.pointing_requested == Some(generation) || !self.driver_state.can_forward() {
+      return;
+    }
+    let wanted = self
+      .manager
+      .devices()
+      .iter()
+      .any(|device| device.pointer && device.state == DeviceState::Seized);
+    if !wanted {
+      return;
+    }
+    if let Some(client) = self.driver.lock().expect("driver").clone()
+      && client.initialize_pointing().is_ok()
+    {
+      self.pointing_requested = Some(generation);
+      log(json!({ "event": "pointing_initialized" }));
     }
   }
 
@@ -413,6 +453,15 @@ impl Core {
     }
     self.check_lease();
     self.check_console();
+    if self.manager.seized_count() > 0
+      && let Some(on) = caps_lock_state()
+    {
+      // Re-asserted every second, as the HID system can resynchronize the LED on its own.
+      if self.caps_lock != Some(on) || self.ticks % 4 == 0 {
+        self.manager.set_caps_lock_led(on);
+      }
+      self.caps_lock = Some(on);
+    }
     self.ticks += 1;
     if self.ticks % COUNTERS_EVERY_TICKS == 0 {
       let counters = json!({
@@ -534,6 +583,8 @@ fn run() {
     context: KeyContext::default(),
     forward_retry_after: 0,
     mode: Mode::Off,
+    pointing_requested: None,
+    caps_lock: None,
     client_uid: u32::MAX,
     console_matches: false,
     context_renewed: 0,

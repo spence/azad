@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::engine::ForwardState;
+use crate::engine::{ForwardState, PointerReport};
 
 pub const CLIENT_PROTOCOL_VERSION: u16 = 7;
 pub const SERVER_SOCKET_PATH: &str =
@@ -61,11 +61,13 @@ pub enum Request {
   VirtualHidKeyboardInitialize = 0,
   VirtualHidKeyboardTerminate = 1,
   VirtualHidKeyboardReset = 2,
+  VirtualHidPointingInitialize = 3,
   PostKeyboardInputReport = 6,
   PostConsumerInputReport = 7,
   PostAppleVendorKeyboardInputReport = 8,
   PostAppleVendorTopCaseInputReport = 9,
   PostGenericDesktopInputReport = 10,
+  PostPointingInputReport = 11,
 }
 
 /// Service state reported through response pairs.
@@ -76,6 +78,7 @@ pub struct ServiceState {
   pub driver_connected: Option<bool>,
   pub driver_version_mismatched: Option<bool>,
   pub keyboard_ready: Option<bool>,
+  pub pointing_ready: Option<bool>,
 }
 
 impl ServiceState {
@@ -98,6 +101,7 @@ impl ServiceState {
         2 => self.driver_connected = value,
         3 => self.driver_version_mismatched = value,
         4 => self.keyboard_ready = value,
+        5 => self.pointing_ready = value,
         _ => {}
       }
     }
@@ -147,6 +151,17 @@ pub fn keyboard_report(modifiers: u8, keys: &[u16]) -> [u8; 67] {
   report[0] = 1;
   report[1] = modifiers;
   put_keys(&mut report[3..], keys);
+  report
+}
+
+/// `hid_report::pointing_input`: button bits, then x, y, vertical and horizontal wheel as `i8`.
+pub fn pointing_report(buttons: u32, x: i8, y: i8, wheel: i8, horizontal_wheel: i8) -> [u8; 8] {
+  let mut report = [0u8; 8];
+  report[0..4].copy_from_slice(&buttons.to_le_bytes());
+  report[4] = x as u8;
+  report[5] = y as u8;
+  report[6] = wheel as u8;
+  report[7] = horizontal_wheel as u8;
   report
 }
 
@@ -309,6 +324,37 @@ impl Client {
     Ok(())
   }
 
+  /// Creates this connection's virtual pointing device, for keyboards with a pointer collection.
+  pub fn initialize_pointing(&self) -> io::Result<()> {
+    self.request(Request::VirtualHidPointingInitialize, &[])
+  }
+
+  /// Posts a pointer report, split so each motion component fits the report's `i8` range.
+  pub fn post_pointer(&self, report: &PointerReport) -> io::Result<()> {
+    let mut remaining = *report;
+    loop {
+      let x = remaining.x.clamp(-127, 127);
+      let y = remaining.y.clamp(-127, 127);
+      let wheel = remaining.wheel.clamp(-127, 127);
+      let horizontal = remaining.horizontal_wheel.clamp(-127, 127);
+      self.request(
+        Request::PostPointingInputReport,
+        &pointing_report(report.buttons, x as i8, y as i8, wheel as i8, horizontal as i8),
+      )?;
+      remaining.x -= x;
+      remaining.y -= y;
+      remaining.wheel -= wheel;
+      remaining.horizontal_wheel -= horizontal;
+      if remaining.x == 0
+        && remaining.y == 0
+        && remaining.wheel == 0
+        && remaining.horizontal_wheel == 0
+      {
+        return Ok(());
+      }
+    }
+  }
+
   /// Posts empty reports on every page so no forwarded key stays pressed.
   pub fn release_all(&self) -> io::Result<()> {
     self.request(Request::PostKeyboardInputReport, &keyboard_report(0, &[]))?;
@@ -384,6 +430,17 @@ mod tests {
     assert_eq!(
       hex(&request_payload(Request::VirtualHidKeyboardTerminate, &[])),
       expected("keyboard_terminate")
+    );
+    assert_eq!(
+      hex(&request_payload(
+        Request::PostPointingInputReport,
+        &pointing_report(0b101, -5, 7, -1, 2)
+      )),
+      expected("pointing_input")
+    );
+    assert_eq!(
+      hex(&request_payload(Request::VirtualHidPointingInitialize, &[])),
+      expected("pointing_initialize")
     );
     assert_eq!(hex(&encode_frame(MessageType::Heartbeat, None, &[])), expected("heartbeat_frame"));
     assert_eq!(

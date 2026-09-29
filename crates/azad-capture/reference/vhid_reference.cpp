@@ -66,6 +66,20 @@ int main() {
   dump("generic_desktop_input",
        payload(service::request::post_generic_desktop_input_report, generic_desktop));
 
+  reports::pointing_input pointing;
+  pointing.buttons.insert(1);
+  pointing.buttons.insert(3);
+  pointing.x = static_cast<uint8_t>(-5);
+  pointing.y = 7;
+  pointing.vertical_wheel = static_cast<uint8_t>(-1);
+  pointing.horizontal_wheel = 2;
+  dump("pointing_input", payload(service::request::post_pointing_input_report, pointing));
+
+  std::vector<uint8_t> pointing_init;
+  append(pointing_init, pqrs::karabiner::driverkit::client_protocol_version::embedded_client_protocol_version);
+  append(pointing_init, service::request::virtual_hid_pointing_initialize);
+  dump("pointing_initialize", pointing_init);
+
   std::vector<uint8_t> terminate;
   append(terminate, pqrs::karabiner::driverkit::client_protocol_version::embedded_client_protocol_version);
   append(terminate, service::request::virtual_hid_keyboard_terminate);

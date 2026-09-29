@@ -11,6 +11,7 @@ use crate::policy::{KeyAction, KeyContext, KeyPolicy, modifier_bit};
 
 pub const PAGE_GENERIC_DESKTOP: u32 = 0x01;
 pub const PAGE_KEYBOARD: u32 = 0x07;
+pub const PAGE_BUTTON: u32 = 0x09;
 pub const PAGE_CONSUMER: u32 = 0x0C;
 pub const PAGE_APPLE_TOP_CASE: u32 = 0x00FF;
 pub const PAGE_APPLE_KEYBOARD: u32 = 0xFF01;
@@ -29,8 +30,22 @@ impl Usage {
     Self { page, usage }
   }
 
-  /// True for usages the helper tracks and forwards; everything else on a seized keyboard is
-  /// dropped (LED outputs, error roll-over, vendor diagnostics).
+  /// Buttons of a pointer collection on a seized keyboard (e.g. mouse keys).
+  pub fn is_pointer_button(self) -> bool {
+    self.page == PAGE_BUTTON && (1..=32).contains(&self.usage)
+  }
+
+  /// Relative motion and scroll of a pointer collection on a seized keyboard.
+  pub fn is_pointer_axis(self) -> bool {
+    matches!(
+      (self.page, self.usage),
+      (PAGE_GENERIC_DESKTOP, 0x30 | 0x31 | 0x38) | (PAGE_CONSUMER, 0x238)
+    )
+  }
+
+  /// True for key usages the helper tracks and forwards; pointer usages are handled
+  /// separately and everything else on a seized keyboard is dropped (LED outputs, error
+  /// roll-over, vendor diagnostics).
   pub fn is_forwardable(self) -> bool {
     match self.page {
       PAGE_KEYBOARD => (0x04..=0xE7).contains(&self.usage),
@@ -87,6 +102,17 @@ fn usage_from_packed(value: u32) -> Usage {
   Usage::new(value >> 16, value & 0xffff)
 }
 
+/// Pointer state to post on the virtual pointing device: held buttons and this batch's motion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PointerReport {
+  /// Bit n-1 set while button n is held.
+  pub buttons: u32,
+  pub x: i32,
+  pub y: i32,
+  pub wheel: i32,
+  pub horizontal_wheel: i32,
+}
+
 /// Capture time of a batch, in nanoseconds on the host's monotonic clock.
 pub type Timestamp = u64;
 
@@ -118,6 +144,8 @@ pub struct BatchOutcome {
   pub actions: Vec<TimedAction>,
   /// Present when the forwarded state changed and a new virtual report must be posted.
   pub forward: Option<ForwardState>,
+  /// Present when a pointer collection on a seized keyboard changed.
+  pub pointer: Option<PointerReport>,
   pub claimed_edges: u32,
   pub forwarded_edges: u32,
 }
@@ -127,6 +155,8 @@ pub struct Engine {
   /// Per device: each held physical usage and the usage it was forwarded as.
   devices: HashMap<u64, BTreeMap<Usage, Usage>>,
   translations: HashMap<u64, DeviceTranslation>,
+  /// Per device: held pointer buttons.
+  buttons: HashMap<u64, u32>,
   pressed: BTreeMap<Usage, u32>,
   policy: KeyPolicy,
   last_forward: ForwardState,
@@ -156,20 +186,22 @@ impl Engine {
   pub fn apply_batch(
     &mut self,
     device: u64,
-    values: &[(Usage, bool)],
+    values: &[(Usage, i64)],
     timestamp: Timestamp,
     context: &KeyContext,
   ) -> BatchOutcome {
+    let pointer = self.apply_pointer(device, values);
     let held = self.devices.entry(device).or_default();
-    let fn_released = values.iter().any(|&(usage, down)| usage == APPLE_FN && !down);
-    let fn_pressed = values.iter().any(|&(usage, down)| usage == APPLE_FN && down);
+    let fn_released = values.iter().any(|&(usage, value)| usage == APPLE_FN && value == 0);
+    let fn_pressed = values.iter().any(|&(usage, value)| usage == APPLE_FN && value != 0);
     let fn_held = fn_pressed || (held.contains_key(&APPLE_FN) && !fn_released);
     let translation = self.translations.get(&device);
     let mut edges = Vec::new();
-    for &(physical, down) in values {
+    for &(physical, value) in values {
       if !physical.is_forwardable() {
         continue;
       }
+      let down = value != 0;
       let usage = if down {
         if held.contains_key(&physical) {
           continue;
@@ -200,7 +232,40 @@ impl Engine {
         }
       }
     }
-    self.run_edges(edges, timestamp, context)
+    let mut outcome = self.run_edges(edges, timestamp, context);
+    outcome.pointer = pointer;
+    outcome
+  }
+
+  fn apply_pointer(&mut self, device: u64, values: &[(Usage, i64)]) -> Option<PointerReport> {
+    let mut report = PointerReport::default();
+    let mut changed = false;
+    for &(usage, value) in values {
+      if usage.is_pointer_button() {
+        let bit = 1u32 << (usage.usage - 1);
+        let buttons = self.buttons.entry(device).or_default();
+        if value != 0 {
+          *buttons |= bit;
+        } else {
+          *buttons &= !bit;
+        }
+        changed = true;
+      } else if usage.is_pointer_axis() {
+        let delta = value.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        match (usage.page, usage.usage) {
+          (PAGE_GENERIC_DESKTOP, 0x30) => report.x = report.x.saturating_add(delta),
+          (PAGE_GENERIC_DESKTOP, 0x31) => report.y = report.y.saturating_add(delta),
+          (PAGE_GENERIC_DESKTOP, 0x38) => report.wheel = report.wheel.saturating_add(delta),
+          _ => report.horizontal_wheel = report.horizontal_wheel.saturating_add(delta),
+        }
+        changed = true;
+      }
+    }
+    changed.then(|| PointerReport { buttons: self.held_buttons(), ..report })
+  }
+
+  fn held_buttons(&self) -> u32 {
+    self.buttons.values().fold(0, |held, buttons| held | buttons)
   }
 
   /// Releases everything `device` held, as if it sent an all-up report.
@@ -211,8 +276,13 @@ impl Engine {
     context: &KeyContext,
   ) -> BatchOutcome {
     self.translations.remove(&device);
+    let pointer = self
+      .buttons
+      .remove(&device)
+      .filter(|buttons| *buttons != 0)
+      .map(|_| PointerReport { buttons: self.held_buttons(), ..PointerReport::default() });
     let Some(held) = self.devices.remove(&device) else {
-      return BatchOutcome::default();
+      return BatchOutcome { pointer, ..BatchOutcome::default() };
     };
     let mut edges = Vec::new();
     for usage in held.into_values() {
@@ -224,7 +294,9 @@ impl Engine {
         }
       }
     }
-    self.run_edges(edges, timestamp, context)
+    let mut outcome = self.run_edges(edges, timestamp, context);
+    outcome.pointer = pointer;
+    outcome
   }
 
   /// Drops all device state and claims, e.g. when forwarding stops. Returns the actions that
@@ -232,6 +304,8 @@ impl Engine {
   pub fn reset(&mut self, timestamp: Timestamp) -> BatchOutcome {
     self.devices.clear();
     self.pressed.clear();
+    let had_buttons = self.held_buttons() != 0;
+    self.buttons.clear();
     let actions = self
       .policy
       .release_all()
@@ -244,7 +318,8 @@ impl Engine {
       self.last_forward = ForwardState::default();
       Some(ForwardState::default())
     };
-    BatchOutcome { actions, forward, ..BatchOutcome::default() }
+    let pointer = had_buttons.then(PointerReport::default);
+    BatchOutcome { actions, forward, pointer, ..BatchOutcome::default() }
   }
 
   fn run_edges(
@@ -385,7 +460,7 @@ mod tests {
   fn chord_in_one_report_is_classified_with_its_modifier() {
     let mut engine = Engine::new();
     // Element order within the report lists Space before Option.
-    let outcome = engine.apply_batch(1, &[(SPACE, true), (OPTION, true)], 10, &context());
+    let outcome = engine.apply_batch(1, &[(SPACE, 1), (OPTION, 1)], 10, &context());
     assert_eq!(actions(&outcome), vec![KeyAction::HotkeyPressed]);
     assert_eq!(outcome.actions[0].timestamp, 10);
     assert_eq!(outcome.forward.unwrap(), ForwardState { modifiers: 0x04, ..Default::default() });
@@ -395,15 +470,15 @@ mod tests {
   fn hold_history_and_release_forward_only_modifiers() {
     let mut engine = Engine::new();
     let ctx = context();
-    engine.apply_batch(1, &[(OPTION, true)], 1, &ctx);
-    engine.apply_batch(1, &[(SPACE, true)], 2, &ctx);
-    let up = engine.apply_batch(1, &[(UP, true)], 3, &ctx);
+    engine.apply_batch(1, &[(OPTION, 1)], 1, &ctx);
+    engine.apply_batch(1, &[(SPACE, 1)], 2, &ctx);
+    let up = engine.apply_batch(1, &[(UP, 1)], 3, &ctx);
     assert_eq!(actions(&up), vec![KeyAction::Navigate { direction: -1 }]);
     assert!(up.forward.is_none());
-    engine.apply_batch(1, &[(UP, false)], 4, &ctx);
-    let option_up = engine.apply_batch(1, &[(OPTION, false)], 5, &ctx);
+    engine.apply_batch(1, &[(UP, 0)], 4, &ctx);
+    let option_up = engine.apply_batch(1, &[(OPTION, 0)], 5, &ctx);
     assert_eq!(option_up.forward.unwrap(), ForwardState::default());
-    let release = engine.apply_batch(1, &[(SPACE, false)], 6, &ctx);
+    let release = engine.apply_batch(1, &[(SPACE, 0)], 6, &ctx);
     assert_eq!(actions(&release), vec![KeyAction::HotkeyReleased { raw_requested: false }]);
     assert!(release.forward.is_none());
   }
@@ -412,8 +487,8 @@ mod tests {
   fn simultaneous_modifier_and_key_release_keeps_the_chord() {
     let mut engine = Engine::new();
     let ctx = context();
-    engine.apply_batch(1, &[(OPTION, true), (SPACE, true)], 1, &ctx);
-    let release = engine.apply_batch(1, &[(OPTION, false), (SPACE, false)], 2, &ctx);
+    engine.apply_batch(1, &[(OPTION, 1), (SPACE, 1)], 1, &ctx);
+    let release = engine.apply_batch(1, &[(OPTION, 0), (SPACE, 0)], 2, &ctx);
     assert_eq!(actions(&release), vec![KeyAction::HotkeyReleased { raw_requested: true }]);
   }
 
@@ -421,12 +496,12 @@ mod tests {
   fn ordinary_typing_is_forwarded_once() {
     let mut engine = Engine::new();
     let ctx = context();
-    let down = engine.apply_batch(1, &[(A, true)], 1, &ctx);
+    let down = engine.apply_batch(1, &[(A, 1)], 1, &ctx);
     assert_eq!(down.forward.unwrap().keyboard, vec![usage::A]);
     assert_eq!(down.forwarded_edges, 1);
-    let repeat = engine.apply_batch(1, &[(A, true)], 2, &ctx);
+    let repeat = engine.apply_batch(1, &[(A, 1)], 2, &ctx);
     assert!(repeat.forward.is_none());
-    let up = engine.apply_batch(1, &[(A, false)], 3, &ctx);
+    let up = engine.apply_batch(1, &[(A, 0)], 3, &ctx);
     assert_eq!(up.forward.unwrap(), ForwardState::default());
   }
 
@@ -434,7 +509,7 @@ mod tests {
   fn shift_enter_is_forwarded_with_shift() {
     let mut engine = Engine::new();
     let ctx = KeyContext { enter: true, ..context() };
-    let outcome = engine.apply_batch(1, &[(SHIFT, true), (RETURN, true)], 1, &ctx);
+    let outcome = engine.apply_batch(1, &[(SHIFT, 1), (RETURN, 1)], 1, &ctx);
     assert!(outcome.actions.is_empty());
     let forward = outcome.forward.unwrap();
     assert_eq!(forward.modifiers, 0x02);
@@ -444,7 +519,7 @@ mod tests {
   #[test]
   fn consumer_and_apple_pages_pass_through() {
     let mut engine = Engine::new();
-    let outcome = engine.apply_batch(1, &[(VOLUME_UP, true), (FN, true)], 1, &context());
+    let outcome = engine.apply_batch(1, &[(VOLUME_UP, 1), (FN, 1)], 1, &context());
     let forward = outcome.forward.unwrap();
     assert_eq!(forward.consumer, vec![0xE9]);
     assert_eq!(forward.apple_top_case, vec![0x03]);
@@ -470,13 +545,13 @@ mod tests {
   fn built_in_f_row_forwards_media_keys_by_default() {
     let mut engine = Engine::new();
     engine.set_translation(1, built_in(false));
-    let brightness = engine.apply_batch(1, &[(F1, true)], 1, &context());
+    let brightness = engine.apply_batch(1, &[(F1, 1)], 1, &context());
     assert_eq!(brightness.forward.unwrap().apple_top_case, vec![0x05]);
-    engine.apply_batch(1, &[(F1, false)], 2, &context());
-    let dnd = engine.apply_batch(1, &[(F6, true)], 3, &context());
+    engine.apply_batch(1, &[(F1, 0)], 2, &context());
+    let dnd = engine.apply_batch(1, &[(F6, 1)], 3, &context());
     assert_eq!(dnd.forward.unwrap().generic_desktop, vec![0x9B]);
-    engine.apply_batch(1, &[(F6, false)], 4, &context());
-    let volume = engine.apply_batch(1, &[(F12, true)], 5, &context());
+    engine.apply_batch(1, &[(F6, 0)], 4, &context());
+    let volume = engine.apply_batch(1, &[(F12, 1)], 5, &context());
     assert_eq!(volume.forward.unwrap().consumer, vec![0xE9]);
   }
 
@@ -484,7 +559,7 @@ mod tests {
   fn fn_f_key_forwards_the_function_key() {
     let mut engine = Engine::new();
     engine.set_translation(1, built_in(false));
-    let outcome = engine.apply_batch(1, &[(FN, true), (F1, true)], 1, &context());
+    let outcome = engine.apply_batch(1, &[(FN, 1), (F1, 1)], 1, &context());
     let forward = outcome.forward.unwrap();
     assert_eq!(forward.keyboard, vec![0x3A]);
     assert_eq!(forward.apple_top_case, vec![0x03]);
@@ -495,11 +570,11 @@ mod tests {
     let mut engine = Engine::new();
     engine.set_translation(1, built_in(true));
     assert_eq!(
-      engine.apply_batch(1, &[(F1, true)], 1, &context()).forward.unwrap().keyboard,
+      engine.apply_batch(1, &[(F1, 1)], 1, &context()).forward.unwrap().keyboard,
       vec![0x3A]
     );
-    engine.apply_batch(1, &[(F1, false)], 2, &context());
-    let media = engine.apply_batch(1, &[(FN, true), (F1, true)], 3, &context()).forward.unwrap();
+    engine.apply_batch(1, &[(F1, 0)], 2, &context());
+    let media = engine.apply_batch(1, &[(FN, 1), (F1, 1)], 3, &context()).forward.unwrap();
     assert_eq!(media.apple_top_case, vec![0x03, 0x05]);
   }
 
@@ -507,11 +582,11 @@ mod tests {
   fn fn_arrow_forwards_home_and_release_matches_after_fn_lifts() {
     let mut engine = Engine::new();
     engine.set_translation(1, built_in(false));
-    engine.apply_batch(1, &[(FN, true)], 1, &context());
-    let home = engine.apply_batch(1, &[(LEFT, true)], 2, &context());
+    engine.apply_batch(1, &[(FN, 1)], 1, &context());
+    let home = engine.apply_batch(1, &[(LEFT, 1)], 2, &context());
     assert_eq!(home.forward.unwrap().keyboard, vec![0x4A]);
-    engine.apply_batch(1, &[(FN, false)], 3, &context());
-    let release = engine.apply_batch(1, &[(LEFT, false)], 4, &context());
+    engine.apply_batch(1, &[(FN, 0)], 3, &context());
+    let release = engine.apply_batch(1, &[(LEFT, 0)], 4, &context());
     assert_eq!(release.forward.unwrap(), ForwardState::default());
   }
 
@@ -520,23 +595,60 @@ mod tests {
     let mut engine = Engine::new();
     engine.set_translation(1, built_in(false));
     let ctx = KeyContext { enter: true, ..context() };
-    engine.apply_batch(1, &[(FN, true)], 1, &ctx);
-    let outcome = engine.apply_batch(1, &[(RETURN, true)], 2, &ctx);
+    engine.apply_batch(1, &[(FN, 1)], 1, &ctx);
+    let outcome = engine.apply_batch(1, &[(RETURN, 1)], 2, &ctx);
     assert_eq!(actions(&outcome), vec![KeyAction::Finalize { raw_requested: false }]);
   }
 
   #[test]
   fn keyboards_without_maps_forward_f_keys_unchanged() {
     let mut engine = Engine::new();
-    let outcome = engine.apply_batch(2, &[(F1, true)], 1, &context());
+    let outcome = engine.apply_batch(2, &[(F1, 1)], 1, &context());
     assert_eq!(outcome.forward.unwrap().keyboard, vec![0x3A]);
+  }
+
+  const BUTTON_1: Usage = Usage::new(PAGE_BUTTON, 1);
+  const POINTER_X: Usage = Usage::new(PAGE_GENERIC_DESKTOP, 0x30);
+  const POINTER_Y: Usage = Usage::new(PAGE_GENERIC_DESKTOP, 0x31);
+  const WHEEL: Usage = Usage::new(PAGE_GENERIC_DESKTOP, 0x38);
+
+  #[test]
+  fn pointer_collection_on_a_keyboard_is_forwarded() {
+    let mut engine = Engine::new();
+    let moved = engine.apply_batch(1, &[(POINTER_X, -3), (POINTER_Y, 4)], 1, &context());
+    assert_eq!(moved.pointer, Some(PointerReport { x: -3, y: 4, ..PointerReport::default() }));
+    assert!(moved.forward.is_none());
+    let pressed = engine.apply_batch(1, &[(BUTTON_1, 1), (WHEEL, -1)], 2, &context());
+    assert_eq!(
+      pressed.pointer,
+      Some(PointerReport { buttons: 1, wheel: -1, ..PointerReport::default() })
+    );
+    let released = engine.apply_batch(1, &[(BUTTON_1, 0)], 3, &context());
+    assert_eq!(released.pointer, Some(PointerReport::default()));
+  }
+
+  #[test]
+  fn removing_a_device_releases_its_pointer_buttons() {
+    let mut engine = Engine::new();
+    engine.apply_batch(1, &[(BUTTON_1, 1)], 1, &context());
+    let removed = engine.remove_device(1, 2, &context());
+    assert_eq!(removed.pointer, Some(PointerReport::default()));
+    engine.apply_batch(2, &[(BUTTON_1, 1)], 3, &context());
+    assert_eq!(engine.reset(4).pointer, Some(PointerReport::default()));
+  }
+
+  #[test]
+  fn keyboards_without_pointers_report_no_pointer_state() {
+    let mut engine = Engine::new();
+    assert!(engine.apply_batch(1, &[(A, 1)], 1, &context()).pointer.is_none());
+    assert!(engine.remove_device(1, 2, &context()).pointer.is_none());
   }
 
   #[test]
   fn system_control_keys_pass_through() {
     let mut engine = Engine::new();
     let do_not_disturb = Usage::new(PAGE_GENERIC_DESKTOP, 0x9B);
-    let outcome = engine.apply_batch(1, &[(do_not_disturb, true)], 1, &context());
+    let outcome = engine.apply_batch(1, &[(do_not_disturb, 1)], 1, &context());
     assert_eq!(outcome.forward.unwrap().generic_desktop, vec![0x9B]);
     let pointer_x = Usage::new(PAGE_GENERIC_DESKTOP, 0x30);
     assert!(!pointer_x.is_forwardable());
@@ -547,7 +659,7 @@ mod tests {
     let mut engine = Engine::new();
     let rollover = Usage::new(PAGE_KEYBOARD, 0x01);
     let led = Usage::new(0x08, 0x01);
-    let outcome = engine.apply_batch(1, &[(rollover, true), (led, true)], 1, &context());
+    let outcome = engine.apply_batch(1, &[(rollover, 1), (led, 1)], 1, &context());
     assert!(outcome.forward.is_none());
     assert_eq!(outcome.forwarded_edges, 0);
   }
@@ -556,11 +668,11 @@ mod tests {
   fn keys_held_on_two_keyboards_release_after_the_last_one() {
     let mut engine = Engine::new();
     let ctx = context();
-    engine.apply_batch(1, &[(SHIFT, true)], 1, &ctx);
-    assert!(engine.apply_batch(2, &[(SHIFT, true)], 2, &ctx).forward.is_none());
-    assert!(engine.apply_batch(1, &[(SHIFT, false)], 3, &ctx).forward.is_none());
+    engine.apply_batch(1, &[(SHIFT, 1)], 1, &ctx);
+    assert!(engine.apply_batch(2, &[(SHIFT, 1)], 2, &ctx).forward.is_none());
+    assert!(engine.apply_batch(1, &[(SHIFT, 0)], 3, &ctx).forward.is_none());
     assert_eq!(
-      engine.apply_batch(2, &[(SHIFT, false)], 4, &ctx).forward.unwrap(),
+      engine.apply_batch(2, &[(SHIFT, 0)], 4, &ctx).forward.unwrap(),
       ForwardState::default()
     );
   }
@@ -569,8 +681,8 @@ mod tests {
   fn modifier_from_other_keyboard_completes_chord() {
     let mut engine = Engine::new();
     let ctx = context();
-    engine.apply_batch(1, &[(OPTION, true)], 1, &ctx);
-    let outcome = engine.apply_batch(2, &[(SPACE, true)], 2, &ctx);
+    engine.apply_batch(1, &[(OPTION, 1)], 1, &ctx);
+    let outcome = engine.apply_batch(2, &[(SPACE, 1)], 2, &ctx);
     assert_eq!(actions(&outcome), vec![KeyAction::HotkeyPressed]);
   }
 
@@ -578,8 +690,8 @@ mod tests {
   fn device_removal_mid_hold_releases_keys_and_finishes_gesture() {
     let mut engine = Engine::new();
     let ctx = context();
-    engine.apply_batch(1, &[(OPTION, true), (SPACE, true)], 1, &ctx);
-    engine.apply_batch(1, &[(A, true)], 2, &ctx);
+    engine.apply_batch(1, &[(OPTION, 1), (SPACE, 1)], 1, &ctx);
+    engine.apply_batch(1, &[(A, 1)], 2, &ctx);
     let removed = engine.remove_device(1, 3, &ctx);
     assert_eq!(actions(&removed), vec![KeyAction::HotkeyReleased { raw_requested: true }]);
     assert_eq!(removed.forward.unwrap(), ForwardState::default());
@@ -589,11 +701,11 @@ mod tests {
   fn reset_clears_forwarded_keys_and_orphaned_hold() {
     let mut engine = Engine::new();
     let ctx = context();
-    engine.apply_batch(1, &[(OPTION, true), (SPACE, true)], 1, &ctx);
+    engine.apply_batch(1, &[(OPTION, 1), (SPACE, 1)], 1, &ctx);
     let reset = engine.reset(9);
     assert_eq!(actions(&reset), vec![KeyAction::HotkeyReleased { raw_requested: false }]);
     assert_eq!(reset.forward.unwrap(), ForwardState::default());
-    let after = engine.apply_batch(1, &[(SPACE, true)], 10, &ctx);
+    let after = engine.apply_batch(1, &[(SPACE, 1)], 10, &ctx);
     assert_eq!(after.forward.unwrap().keyboard, vec![usage::SPACE]);
   }
 
@@ -602,9 +714,9 @@ mod tests {
     let mut engine = Engine::new();
     let ctx = context();
     let right_option = Usage::new(PAGE_KEYBOARD, usage::RIGHT_OPTION as u32);
-    engine.apply_batch(1, &[(OPTION, true), (right_option, true)], 1, &ctx);
-    engine.apply_batch(1, &[(OPTION, false)], 2, &ctx);
-    let outcome = engine.apply_batch(1, &[(SPACE, true)], 3, &ctx);
+    engine.apply_batch(1, &[(OPTION, 1), (right_option, 1)], 1, &ctx);
+    engine.apply_batch(1, &[(OPTION, 0)], 2, &ctx);
+    let outcome = engine.apply_batch(1, &[(SPACE, 1)], 3, &ctx);
     assert_eq!(actions(&outcome), vec![KeyAction::HotkeyPressed]);
   }
 }

@@ -88,6 +88,11 @@ APP_SCENARIOS = {
                  "Enter finalizes, Escape cancels; none of the claimed keys reach the foreground.",
         "script": "app-overlay-keys.json",
     },
+    "app_caps_lock_and_repeat": {
+        "about": "Caps Lock toggles through the virtual keyboard (the next 'a' is capitalized, "
+                 "then not), and holding 'a' auto-repeats with a single release.",
+        "script": "app-caps-repeat.json",
+    },
     "app_ordinary_typing": {
         "about": "With the overlay hidden, a, Return, Escape, Up and Shift+A all reach the "
                  "foreground exactly once and Azad handles none of them.",
@@ -566,6 +571,16 @@ def evaluate_app(name, spec, dest):
             r for r in downs if r["keycode"] == 36] and all(
             r["flags"] & SHIFT for r in downs if r["keycode"] == 36) and keys.count(36) == 1
         checks["claimed_keys_not_delivered"] = not ({49, 125, 76, 53} & set(keys))
+    elif name == "app_caps_lock_and_repeat":
+        alpha_shift = 0x10000
+        a_downs = [r for r in downs if r["keycode"] == KEY_A]
+        a_ups = [r for r in sink if r.get("kind") == "up" and r.get("keycode") == KEY_A]
+        checks["caps_lock_applied"] = bool(a_downs) and a_downs[0]["flags"] & alpha_shift != 0
+        checks["caps_lock_released"] = len(a_downs) > 1 and a_downs[1]["flags"] & alpha_shift == 0
+        checks["held_key_repeats"] = sum(1 for r in a_downs[1:] if r["repeat"]) >= 3
+        checks["one_release_per_press"] = len(a_ups) == 2
+        checks["text"] = text.startswith("Aa") and set(text[1:]) == {"a"}
+        checks["no_app_events"] = events == []
     elif name == "app_ordinary_typing":
         checks["no_app_events"] = events == []
         checks["each_key_once"] = sorted(keys) == sorted([0, 36, 53, 126, 0])

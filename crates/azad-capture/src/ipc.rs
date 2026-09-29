@@ -41,6 +41,7 @@ impl From<&DeviceInfo> for DeviceSummary {
       state,
       seized_reports: info.seized_reports,
       key_translation: info.key_translation,
+      pointer: info.pointer,
     }
   }
 }

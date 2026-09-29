@@ -82,6 +82,8 @@ pub struct DeviceSummary {
   pub state: String,
   pub seized_reports: u64,
   pub key_translation: bool,
+  #[serde(default)]
+  pub pointer: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
