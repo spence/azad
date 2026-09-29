@@ -85,7 +85,28 @@ pub fn microphone_authorization() -> PermissionStatus {
   }
 }
 
+pub fn input_monitoring_authorization() -> PermissionStatus {
+  // IOHIDAccessType: 0 Granted, 1 Denied, 2 Unknown.
+  let access = unsafe { IOHIDCheckAccess(KIOHID_REQUEST_TYPE_LISTEN_EVENT) };
+  match access {
+    0 => PermissionStatus::Granted,
+    1 => PermissionStatus::Denied,
+    _ => PermissionStatus::NotDetermined,
+  }
+}
+
+// IOHIDRequestType (IOKit hidsystem/IOHIDLib.h) is a C enum with implicit values:
+// kIOHIDRequestTypePostEvent is the FIRST member (0), kIOHIDRequestTypeListenEvent
+// is the SECOND (1). Input Monitoring is the listen-event access, so query 1;
+// querying 0 (post) returns Granted spuriously.
+const KIOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
   static AVMediaTypeAudio: id;
+}
+
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+  fn IOHIDCheckAccess(request: u32) -> u32;
 }

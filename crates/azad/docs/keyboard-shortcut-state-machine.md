@@ -106,9 +106,7 @@ within window" --> CaptureVAD
 
 ## Double-Tap Interpretation
 
-- Double-tap timing is measured from the first `Option+Space` press timestamp: the time the
-  capture helper saw the key, not the time the app handled the event, so a stalled main loop
-  cannot turn two separate holds into a double tap.
+- Double-tap timing is measured from the first `Option+Space` press timestamp.
 - While that window is open, capture remains active.
 - If the second Space press happens inside the window:
   - before transcription starts: immediately cancel the current overlay/session, then toggle Listen ON/OFF;
@@ -189,7 +187,6 @@ This section describes why each transition exists and what user-facing goal it p
 - Reducer tests validate pure transition behavior and guard conditions.
 - Adapter tests validate effect application to runtime/session/overlay state.
 - Overlay tests validate lane visibility/completion behavior across turn boundaries.
-- The isolated interaction harness validates raw key and speech-event sequences through the
-  capture helper's key policy without capturing keyboards, opening UI, using audio, reading
-  preferences, or posting desktop input.
+- The isolated interaction harness validates raw key and speech-event sequences without registering
+  global hotkeys, opening UI, using audio, reading preferences, or posting desktop input.
 - Regression tests are required for every bug in hotkey toggle, finalize/cancel, and split-lane behavior.

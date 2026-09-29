@@ -17,11 +17,9 @@ open AppKit windows, access the microphone, read or write user defaults, or past
 
 ## Production Logic Boundary
 
-The harness uses these production sources directly:
+The harness compiles these production sources directly:
 
-- `azad_capture::policy`, the key policy the capture helper applies to every key edge.
-- `src/key_context.rs`, which derives the helper's key context from Azad's overlay, history and
-  search surfaces.
+- `src/platform/hotkeys.rs` for raw Space and hold-plus-Up classification.
 - `src/interaction_sm.rs` for gesture timing and interaction transitions.
 
 A headless recording backend applies the resulting effects to in-memory capture, overlay, history,
@@ -51,22 +49,14 @@ example:
 ```
 
 Every input produces one output object containing the interpreted actions and complete recorded
-state. `passed_through` marks a key the policy does not claim, which reaches the focused app.
-Built-in scenarios cover immediate manual-hold overlay, spoken-hold finalization, double-tap
-listen toggle, history entry/navigation, cancellation, Enter-finalize cleanup, always-listening
-VAD assist, Shift+Enter pass-through, keypad Enter, claimed releases after the overlay closes,
-auto-repeat, history search typing, ordinary typing, and delayed delivery.
-
-`key_down.at_ms` is the capture time the helper stamps; `delivered_at_ms` is when the app
-handles it. With `"clock":"delivery"` in `initialize`, the reducer sees delivery time instead,
-which is the negative control for delayed delivery: two holds a second apart that are delivered
-two milliseconds apart turn into a double tap only on the delivery clock.
+state. Built-in scenarios cover immediate manual-hold overlay, spoken-hold finalization,
+double-tap listen toggle, history entry/navigation, cancellation, Enter-finalize cleanup, and
+always-listening VAD assist.
 
 ## Safety and Scope
 
-The harness intentionally does not test device capture, pixel rendering, the physical
-microphone, or paste delivery into another application; device capture and delivery are
-verified in a disposable VM by `crates/azad-capture/tests/vm/run_matrix.py`. Those capabilities would cross the process
+The harness intentionally does not test macOS hotkey registration, pixel rendering, the physical
+microphone, or paste delivery into another application. Those capabilities would cross the process
 boundary and interfere with the user's session. Validate their pure routing and rendering logic in
 unit or snapshot tests, validate ASR through the standalone `asr` binary, and limit installed-app
 verification to deployment and read-only process health. Never validate by posting synthetic input

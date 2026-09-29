@@ -97,9 +97,9 @@ Commands:
   start        Start Azad
   stop         Stop Azad
   restart      Stop then start Azad
-  status       Print Azad and keyboard-capture helper runtime status
+  status       Print Azad runtime status
   logs         Tail Azad stdout/stderr logs
-  reset-permissions  Reset macOS TCC permissions for Azad and its keyboard-capture helper
+  reset-permissions  Reset macOS TCC permissions for Azad (Microphone + Accessibility)
   uninstall    Stop Azad and remove LaunchAgent plist if present (keeps app bundle)
 USAGE
 }
@@ -318,25 +318,6 @@ codesign_app_if_configured() {
   exit 1
 }
 
-# Embeds `Azad Capture.app` (the root keyboard-capture helper) and the LaunchDaemon plist the app
-# registers with SMAppService, then re-seals the outer bundle without touching the helper's own
-# signature: its identity (ai.azad.capture + team) is what Input Monitoring grants are tied to.
-embed_capture_helper() {
-  local helper_build="${ROOT_DIR}/target/azad-capture-bundle"
-  mkdir -p "$helper_build"
-  "${ROOT_DIR}/crates/azad-capture/scripts/bundle-helper.sh" "$helper_build" \
-    "${AZAD_CODESIGN_IDENTITY:-}" >/dev/null
-  mkdir -p "${APP_CONTENTS_DIR}/Library/Helpers" "${APP_CONTENTS_DIR}/Library/LaunchDaemons"
-  ditto "${helper_build}/Azad Capture.app" "${APP_CONTENTS_DIR}/Library/Helpers/Azad Capture.app"
-  install -m 644 "${ROOT_DIR}/crates/azad-capture/bundle/ai.azad.capture.plist" \
-    "${APP_CONTENTS_DIR}/Library/LaunchDaemons/ai.azad.capture.plist"
-  if [[ -n "${AZAD_CODESIGN_IDENTITY:-}" ]]; then
-    /usr/bin/codesign --force --sign "$AZAD_CODESIGN_IDENTITY" \
-      --entitlements "$CRATE_DIR/Azad.entitlements" "$APP_DIR"
-  fi
-  echo "Embedded keyboard capture helper: ${APP_CONTENTS_DIR}/Library/Helpers/Azad Capture.app"
-}
-
 write_info_plist() {
   cat >"${APP_CONTENTS_DIR}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -495,10 +476,7 @@ cmd_install() {
   install -m 644 "${CRATE_DIR}/assets/azad.icns" "${APP_RESOURCES_DIR}/azad.icns"
   install -m 644 "${CRATE_DIR}/assets/claude.svg" "${APP_RESOURCES_DIR}/claude.svg"
   write_info_plist
-  # The capture helper is signed with its own identity; keep it out of the deep app signature.
-  rm -rf "${APP_CONTENTS_DIR}/Library"
   codesign_app_if_configured
-  embed_capture_helper
 
   echo "Installed Azad app bundle at: $APP_DIR"
   if [[ "$APP_STABLE_SIGNED" == "1" ]]; then
@@ -575,21 +553,6 @@ cmd_status() {
     echo "Azad is not running"
     exit 1
   fi
-  capture_status
-}
-
-# Read-only report on the keyboard-capture helper: its LaunchDaemon and its latest status line.
-capture_status() {
-  local helper_log="/var/log/azad-capture.log"
-  echo "Keyboard capture helper (ai.azad.capture):"
-  if launchctl print system/ai.azad.capture >/dev/null 2>&1; then
-    launchctl print system/ai.azad.capture | grep -E '^\s+(state|pid|program identifier) =' || true
-  else
-    echo "  not registered (launch Azad and allow it in Login Items & Extensions)"
-  fi
-  if [[ -r "$helper_log" ]]; then
-    grep '"event":"status"' "$helper_log" | tail -n 1 | sed 's/^/  /' || true
-  fi
 }
 
 cmd_logs() {
@@ -601,8 +564,7 @@ cmd_logs() {
 cmd_reset_permissions() {
   /usr/bin/tccutil reset Microphone "$LABEL" || true
   /usr/bin/tccutil reset Accessibility "$LABEL" || true
-  /usr/bin/tccutil reset ListenEvent "${LABEL}.capture" || true
-  echo "Reset TCC permissions for $LABEL (Microphone + Accessibility) and ${LABEL}.capture (Input Monitoring)."
+  echo "Reset TCC permissions for $LABEL (Microphone + Accessibility)."
   echo "The next app launch can trigger permission prompts again."
 }
 

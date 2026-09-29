@@ -31,4 +31,3 @@ tokio-util = "0.7"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 asr = { package = "azad-asr", path = "../azad-asr" }
 azad-text = { path = "../azad-text" }
-azad-capture = { path = "../azad-capture" }

@@ -54,27 +54,6 @@ Direct paths:
 - `~/Library/Logs/Azad/stdout.log`
 - `~/Library/Logs/Azad/stderr.log`
 
-## Keyboard Shortcuts Not Working
-
-```bash
-just status
-sudo tail -n 20 /var/log/azad-capture.log
-"$HOME/Applications/Azad.app/Contents/Library/Helpers/Azad Capture.app/Contents/MacOS/azad-capture" --list-devices
-```
-
-The helper's latest `status` line names the blocker:
-
-- `permission_denied`: enable "Azad Capture" in Privacy & Security -> Input Monitoring. It
-  appears after Azad's first launch shows the macOS prompt.
-- `driver_unavailable`: run `just install-capture-driver` and allow the driver extension; check
-  `systemextensionsctl list | grep pqrs`.
-- `idle` with no helper connection: allow "Azad" in Login Items & Extensions and relaunch.
-- `unavailable_devices` lists keyboards another app holds exclusively; shortcuts from those
-  keyboards are unavailable. Karabiner-Elements and Kanata are supported: Azad captures their
-  output keyboard instead.
-
-The helper never logs typed keys; its log holds status changes and counters.
-
 ## Reset Permissions
 
 ```bash

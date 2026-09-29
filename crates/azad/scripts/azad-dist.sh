@@ -329,27 +329,6 @@ echo "==> Signing app bundle"
   --timestamp \
   "$APP_DIR"
 
-# The keyboard-capture helper keeps its own signature (identifier ai.azad.capture), which is
-# what its Input Monitoring grant is tied to, so it is embedded after the deep app signature and
-# only the outer seal is renewed.
-echo "==> Embedding keyboard capture helper"
-HELPER_BUILD="${DIST_DIR}/azad-capture-bundle"
-mkdir -p "$HELPER_BUILD"
-"${ROOT_DIR}/crates/azad-capture/scripts/bundle-helper.sh" "$HELPER_BUILD" "$SIGNING_IDENTITY"
-mkdir -p "${APP_CONTENTS}/Library/Helpers" "${APP_CONTENTS}/Library/LaunchDaemons"
-ditto "${HELPER_BUILD}/Azad Capture.app" "${APP_CONTENTS}/Library/Helpers/Azad Capture.app"
-install -m 644 "${ROOT_DIR}/crates/azad-capture/bundle/ai.azad.capture.plist" \
-  "${APP_CONTENTS}/Library/LaunchDaemons/ai.azad.capture.plist"
-rm -rf "$HELPER_BUILD"
-/usr/bin/codesign \
-  --force \
-  --options runtime \
-  --sign "$SIGNING_IDENTITY" \
-  --entitlements "$CRATE_DIR/Azad.entitlements" \
-  --timestamp \
-  "$APP_DIR"
-/usr/bin/codesign --verify --deep --strict "$APP_DIR"
-
 echo "==> Notarizing app bundle"
 APP_ZIP="${DIST_DIR}/Azad.zip"
 ditto -c -k --keepParent "$APP_DIR" "$APP_ZIP"

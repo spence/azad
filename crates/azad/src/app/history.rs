@@ -164,7 +164,6 @@ impl AppController {
       // Release search key capture before firing synthetic paste keystrokes so
       // the focused app receives the chord instead of the history search field.
       platform::set_overlay_key_input_enabled(false);
-      platform::reset_search_key_state();
       let _ = platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
       let _ = platform::send_auto_submit(self.auto_submit_mode);
     }
@@ -268,7 +267,8 @@ impl AppController {
     self.history_visible_start = 0;
     self.history_expanded = false;
     self.history_search_query.clear();
-    platform::set_history_keys_enabled(true);
+    platform::set_arrow_left_hotkey_enabled(true);
+    platform::set_arrow_right_hotkey_enabled(true);
     platform::reset_click_outside_tracker();
     platform::set_overlay_search_query("");
     platform::set_overlay_key_input_enabled(true);
@@ -287,9 +287,9 @@ impl AppController {
     self.history_search_query.clear();
     self.overlay_visible = false;
     platform::set_overlay_key_input_enabled(false);
-    platform::reset_search_key_state();
     platform::set_overlay_search_query("");
-    platform::set_history_keys_enabled(false);
+    platform::set_arrow_left_hotkey_enabled(false);
+    platform::set_arrow_right_hotkey_enabled(false);
     platform::hide_overlay();
     let should_capture = self.should_keep_capture_for_followups();
     if let Some(session) = &self.session {

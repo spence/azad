@@ -11,7 +11,6 @@ mod gateway;
 mod hotkey_sm;
 mod input_log;
 mod interaction_sm;
-mod key_context;
 mod metrics_log;
 mod model_download;
 mod models;

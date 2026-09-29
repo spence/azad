@@ -2,11 +2,12 @@
 
 Investigation: 2026-09-28, with SIP-enabled verification on 2026-09-29 UTC.
 Source baseline: `da639bc`.
-Status: superseded by the implementation. Device-level capture is implemented in
-`crates/azad-capture` and verified in SIP-enabled VMs
-(`crates/azad-capture/docs/access-verification.md`); this document records the
-investigation that chose it. Physical-keyboard verification and host deployment
-are tracked in Burndown under `OBJ-RELIABLE-HOTKEYS`.
+Status: goal remains open. A privileged device-capture prototype survives the
+Secure Input and consuming-event-tap cases that defeated the app-level mechanisms.
+It is not an integrated Azad fix or an unconditional ownership guarantee. The
+owner has approved adopting device-level capture with a root helper and an
+approved virtual-keyboard driver. Implementation and integrated verification
+remain open. No shortcut changes or host driver installation have been made.
 
 ## Accepted implementation direction
 
