@@ -78,6 +78,24 @@ SCENARIOS = {
                  "and re-emits it through its own driver keyboard; Azad captures that output.",
         "script": "shortcuts.json", "tap": None, "owner": "remap", "expect": "capture",
     },
+    "after_helper_restart": {
+        "about": "The helper is restarted by launchd before the sequence; the existing Input "
+                 "Monitoring grant must still yield per-device report flow.",
+        "script": "shortcuts.json", "tap": None, "expect": "capture", "restart_helper": True,
+    },
+    "crash_during_hold": {
+        "about": "The helper is killed (SIGKILL) while Space is held. The kernel must release the "
+                 "keyboard: later ordinary typing reaches the foreground with no stuck modifier, "
+                 "and launchd restarts the helper.",
+        "script": "shortcuts.json", "tap": None, "expect": "fail_open", "kill_at_report": 4,
+    },
+    "karabiner_elements": {
+        "about": "Karabiner-Elements 16.3.0 is installed, owns the VM keyboard and runs its own "
+                 "driver daemon. Azad attaches to that daemon, yields the physical keyboard, "
+                 "captures Karabiner's output keyboard, and Karabiner never grabs Azad's output. "
+                 "Needs a VM with Karabiner-Elements set up.",
+        "script": "shortcuts.json", "tap": "consume", "expect": "capture", "karabiner": True,
+    },
     "negative_uncooperative_owner": {
         "about": "A preexisting exclusive owner discards input. Azad must report the device as "
                  "owned by another process and receive nothing.",
@@ -172,6 +190,7 @@ def plist():
   <key>ProgramArguments</key><array><string>{HELPER_APP}/Contents/MacOS/azad-capture</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>AbandonProcessGroup</key><true/>
   <key>StandardOutPath</key><string>{HELPER_LOG}</string>
   <key>StandardErrorPath</key><string>{HELPER_LOG}</string>
 </dict></plist>
@@ -210,6 +229,9 @@ def scenario_script(name, spec):
         f"D={run}; B={GUEST}/bin",
         "rm -rf $D && mkdir -p $D",
         sudo(f"wc -l < {HELPER_LOG}") + " > $D/logstart",
+        *([sudo("launchctl kickstart -k system/ai.azad.capture"), "sleep 5",
+           sudo("launchctl print system/ai.azad.capture") + " | grep -E '^\\s+pid' > $D/restart.txt"]
+          if spec.get("restart_helper") else []),
         "open -n $B/Sink.app --args $D/sink.jsonl 22",
         "sleep 2",
     ]
@@ -234,10 +256,22 @@ def scenario_script(name, spec):
             sudo(f"$B/fixture-keyboard --script {script} --settle-ms 3000") + " > $D/source.jsonl 2>&1 &",
             "SRC=$!",
         ]
+    if spec.get("kill_at_report"):
+        lines += [
+            # Kill once the source has posted the report that starts the claimed Space hold.
+            f"for i in $(seq 200); do grep -q '\"index\":{spec['kill_at_report']},' $D/source.jsonl && break; sleep 0.05; done",
+            sudo("launchctl print system/ai.azad.capture") + " | grep -E '^\\s+pid' > $D/pid-before.txt",
+            sudo("pkill -9 -f 'Azad Capture.app/Contents/MacOS/azad-capture$'"),
+            "sleep 2",
+            sudo("launchctl print system/ai.azad.capture") + " | grep -E '^\\s+pid' > $D/pid-after.txt",
+        ]
     lines += [
         "wait $SRC",
         "sleep 13",
         sudo(f"tail -n +$(( $(cat $D/logstart) + 1 )) {HELPER_LOG}") + " > $D/helper.jsonl",
+        sudo("grep -hE 'hid device events monitor is started|is terminated' "
+             "/var/log/karabiner/core_service.log 2>/dev/null | tail -40") + " > $D/karabiner.log || true",
+        "pgrep -fl VirtualHIDDevice-Daemon > $D/driver-daemons.txt || true",
         "wait",
         "sleep 4",
     ]
@@ -321,9 +355,31 @@ def evaluate(name, spec, dest):
             checks["tap_consumed_forwarded_keys"] = not sink_down and not sink_up
         if "secure" in spec["script"]:
             checks["secure_input_observed"] = bool(secure_steps)
+        if spec.get("karabiner"):
+            karabiner = open(os.path.join(dest, "karabiner.log")).read()
+            daemons = open(os.path.join(dest, "driver-daemons.txt")).read().strip().splitlines()
+            checks["karabiner_output_seized_by_azad"] = any(
+                d["kind"] == "remapper_output" and d["vendor_id"] == 0x05ac for d in seized)
+            checks["physical_keyboard_left_to_karabiner"] = any(
+                d["product"] == "Virtual USB Keyboard" and d["state"] == "yielded"
+                for s in statuses for d in s["devices"])
+            checks["karabiner_grabbed_physical_keyboard"] = "Virtual USB Keyboard" in karabiner and "(grabbed)" in karabiner
+            checks["karabiner_never_grabbed_driver_keyboards"] = not any(
+                "VirtualHIDKeyboard" in line and "(grabbed)" in line for line in karabiner.splitlines())
+            checks["single_driver_daemon"] = len(daemons) == 1
         if spec.get("owner"):
             checks["remapper_output_seized"] = any(d["kind"] == "remapper_output" for d in seized)
             checks["source_owned_by_remapper"] = any(d["product_id"] == 0x1790 for d in owned)
+    elif expect == "fail_open":
+        before = open(os.path.join(dest, "pid-before.txt")).read().split()
+        after = open(os.path.join(dest, "pid-after.txt")).read().split()
+        checks["all_reports_posted"] = len(reports) == 28
+        checks["hold_started_before_crash"] = actions[:1] == [{"kind": "hotkey_pressed"}]
+        checks["ordinary_a_reaches_foreground_once"] = (
+            sum(1 for r in sink_down if r["keycode"] == KEY_A) == 1
+            and sum(1 for r in sink_up if r["keycode"] == KEY_A) == 1)
+        checks["no_stuck_modifier_on_a"] = not stuck_option
+        checks["launchd_restarted_helper"] = bool(before) and bool(after) and before != after
     elif expect == "owned_by_other":
         checks["no_actions_delivered"] = not actions
         checks["device_reported_owned_by_other"] = any(d["product_id"] == 0x1790 for d in owned)
@@ -381,11 +437,15 @@ sleep 5
     if step == "request":
         # Azad's onboarding runs this from the user's session: a root requester cannot be
         # prompted, but this registers the Input Monitoring entry for the switch.
-        out = vm.ssh(f"""open -W -a "{HELPER_APP}" --args --request-access
-sleep 2
+        # The request blocks on the consent prompt; answering it registers the entry.
+        out = vm.ssh(f"""open -a "{HELPER_APP}" --args --request-access
+sleep 3
+pgrep -fl -- "--request-access" | head -1
 {sudo(TCC_QUERY)}
 """).stdout
-        return {"step": step, "ok": "ai.azad.capture|0|0" in out, "guest": out.splitlines()}
+        # Either the prompt is pending or a prior answer already listed the (off) entry.
+        return {"step": step, "ok": "--request-access" in out or "ai.azad.capture|0|0" in out,
+                "guest": out.splitlines()}
     deadline = time.time() + 300
     while time.time() < deadline:
         tcc = vm.ssh(sudo(TCC_QUERY), check=False).stdout
@@ -411,9 +471,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--vm", required=True)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--stage", action="store_true")
+    parser.add_argument("--stage", action="store_true", help="build, sign and install")
+    parser.add_argument("--install", action="store_true",
+                        help="install the existing stage directory without rebuilding")
     parser.add_argument("--stage-dir", default=os.path.join(ROOT, "target/azt-stage"))
     parser.add_argument("--only", nargs="*")
+    parser.add_argument("--evaluate-only", action="store_true",
+                        help="re-evaluate saved scenario outputs under --out without running")
     parser.add_argument("--permission", choices=["revoke", "request", "wait-granted"],
                         help="Input Monitoring lifecycle step instead of scenarios. The grant "
                              "itself is the user's switch in the guest's System Settings.")
@@ -428,6 +492,7 @@ def main():
         sys.exit(0 if record["ok"] else 1)
     if args.stage:
         build_stage(args.stage_dir)
+    if args.stage or args.install:
         install(vm, args.stage_dir)
     os.makedirs(args.out, exist_ok=True)
     results = []
@@ -435,8 +500,11 @@ def main():
         if args.only and name not in args.only:
             continue
         print(f"== {name}", flush=True)
-        vm.ssh(scenario_script(name, spec), timeout=240)
-        dest = collect(vm, name, args.out)
+        if args.evaluate_only:
+            dest = os.path.join(args.out, name)
+        else:
+            vm.ssh(scenario_script(name, spec), timeout=240)
+            dest = collect(vm, name, args.out)
         result = evaluate(name, spec, dest)
         results.append(result)
         print(json.dumps({"scenario": name, "passed": result["passed"], "checks": result["checks"]}),
@@ -447,8 +515,12 @@ systemextensionsctl list | grep -i pqrs
 codesign -dvvv "{HELPER_APP}" 2>&1 | grep -E '^(Identifier|TeamIdentifier|CDHash)='
 shasum -a 256 "{HELPER_APP}/Contents/MacOS/azad-capture"
 """, check=False).stdout
-    summary = {"vm": args.vm, "guest": guest.strip().splitlines(), "results": results}
-    with open(os.path.join(args.out, "results.json"), "w") as f:
+    path = os.path.join(args.out, "results.json")
+    previous = json.load(open(path))["results"] if os.path.exists(path) else []
+    ran = {r["scenario"] for r in results}
+    merged = [r for r in previous if r["scenario"] not in ran] + results
+    summary = {"vm": args.vm, "guest": guest.strip().splitlines(), "results": merged}
+    with open(path, "w") as f:
         json.dump(summary, f, indent=1)
     failed = [r["scenario"] for r in results if not r["passed"]]
     print(json.dumps({"passed": not failed, "failed": failed}))

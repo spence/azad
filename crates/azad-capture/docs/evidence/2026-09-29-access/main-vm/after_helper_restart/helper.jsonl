@@ -1,0 +1,18 @@
+{"event":"stopped"}
+{"client_requirement":"identifier \"ai.azad\" and anchor apple generic and certificate leaf[subject.OU] = \"35A87BDK48\"","event":"started","version":"0.5.0"}
+{"event":"status","status":{"capture":"driver_unavailable","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"service_unavailable","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"event":"driver_daemon_started","pid":1376}
+{"event":"driver_connected"}
+{"event":"status","status":{"capture":"driver_unavailable","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"starting","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"event":"status","status":{"capture":"idle","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"actions":0,"batches":0,"claimed_edges":0,"event":"counters","forward_errors":0,"forward_posts":0,"forwarded_edges":0,"rejected_clients":0}
+{"client":1,"event":"client_connected"}
+{"event":"status","status":{"capture":"no_capturable_keyboard","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"observing","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"event":"client_hello","protocol":1}
+{"event":"status","status":{"capture":"capturing","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
+{"event":"status","status":{"capture":"capturing","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"yielded","transport":"USB","vendor_id":1452},{"kind":"remapper_output","product":"Karabiner DriverKit VirtualHIDKeyboard 1.8.0","product_id":6032,"seized_reports":0,"state":"seized","transport":"","vendor_id":65261}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
+{"actions":12,"batches":22,"claimed_edges":20,"event":"counters","forward_errors":0,"forward_posts":2,"forwarded_edges":2,"rejected_clients":0}
+{"event":"status","status":{"capture":"capturing","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"seized","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":1,"unavailable_devices":[]}}
+{"client":1,"event":"client_disconnected"}
+{"event":"status","status":{"capture":"idle","devices":[{"kind":"keyboard","product":"Virtual USB Keyboard","product_id":33029,"seized_reports":0,"state":"closed","transport":"USB","vendor_id":1452}],"driver":"ready","permission":"granted","seized_devices":0,"unavailable_devices":[]}}
+{"actions":12,"batches":28,"claimed_edges":20,"event":"counters","forward_errors":0,"forward_posts":8,"forwarded_edges":8,"rejected_clients":0}

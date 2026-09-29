@@ -549,6 +549,12 @@ fn spawn_driver_connection(slot: Arc<Mutex<Option<Arc<vhid::Client>>>>) {
     .name("azad-vhid-connect".into())
     .spawn(move || {
       loop {
+        if yield_to_foreign_driver_daemon() {
+          // Our client is attached to the daemon being stopped; reconnect to the live service.
+          if let Some(client) = slot.lock().expect("driver").take() {
+            client.shutdown();
+          }
+        }
         let connected = slot.lock().expect("driver").as_ref().is_some_and(|c| c.state().connected);
         if !connected {
           slot.lock().expect("driver").take();
@@ -610,6 +616,40 @@ fn seed_keyboard_type() {
   );
 }
 
+/// Stops the daemon this helper started once another one runs, e.g. Karabiner-Elements' own
+/// service. The newer daemon rebinds the shared socket path, so keeping ours would split the
+/// virtual keyboards across two servers. Returns true when ours was stopped.
+fn yield_to_foreign_driver_daemon() -> bool {
+  let mut owned = OWNED_DAEMON.lock().expect("daemon");
+  let Some(child) = owned.as_mut() else { return false };
+  let ours = child.id() as libc::pid_t;
+  if !driver_daemon_pids().into_iter().any(|pid| pid != ours) {
+    return false;
+  }
+  let _ = child.kill();
+  let _ = child.wait();
+  *owned = None;
+  log(json!({ "event": "driver_daemon_yielded", "pid": ours }));
+  true
+}
+
+fn driver_daemon_pids() -> Vec<libc::pid_t> {
+  let mut pids = vec![0 as libc::pid_t; 4096];
+  let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+  // SAFETY: The buffer holds `bytes` bytes of pid storage.
+  let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+  pids.truncate(count.max(0) as usize);
+  pids
+    .into_iter()
+    .filter(|pid| {
+      let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+      // SAFETY: `path` is writable for its full length.
+      let length = unsafe { libc::proc_pidpath(*pid, path.as_mut_ptr().cast(), path.len() as u32) };
+      length > 0 && &path[..length as usize] == DRIVER_DAEMON_PATH.as_bytes()
+    })
+    .collect()
+}
+
 fn ensure_driver_daemon() {
   let mut owned = OWNED_DAEMON.lock().expect("daemon");
   if let Some(child) = owned.as_mut() {
@@ -620,7 +660,8 @@ fn ensure_driver_daemon() {
     }
     *owned = None;
   }
-  if !Path::new(DRIVER_DAEMON_PATH).exists() {
+  // A daemon that is running but not yet accepting connections must not get a competitor.
+  if !Path::new(DRIVER_DAEMON_PATH).exists() || !driver_daemon_pids().is_empty() {
     return;
   }
   match Command::new(DRIVER_DAEMON_PATH).spawn() {

@@ -99,7 +99,10 @@ fn main() {
       keyboard: step.keys.clone(),
       ..ForwardState::default()
     };
-    client.post_state(&previous, &next).expect("post report");
+    if let Err(error) = client.post_state(&previous, &next) {
+      println!("{}", json!({ "event": "post_failed", "index": index, "error": error.to_string() }));
+      std::process::exit(6);
+    }
     previous = next;
     // SAFETY: No preconditions.
     let secure = unsafe { IsSecureEventInputEnabled() } != 0;

@@ -1,0 +1,8 @@
+{
+ "step": "revoke",
+ "ok": true,
+ "guest": [
+  "Successfully reset ListenEvent approval status for ai.azad.capture",
+  "{\"event\":\"status\",\"status\":{\"capture\":\"permission_denied\",\"devices\":[],\"driver\":\"ready\",\"permission\":\"denied\",\"seized_devices\":0,\"unavailable_devices\":[]}}"
+ ]
+}

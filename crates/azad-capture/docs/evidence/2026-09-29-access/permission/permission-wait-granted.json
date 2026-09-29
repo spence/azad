@@ -1,0 +1,12 @@
+{
+ "step": "wait-granted",
+ "ok": true,
+ "restarted_into_grant": true,
+ "guest": [
+  "ai.azad.capture|0|2",
+  "{\"client_requirement\": \"identifier \\\"ai.azad\\\" and anchor apple generic and certificate leaf[subject.OU] = \\\"35A87BDK48\\\"\", \"event\": \"started\", \"version\": \"0.5.0\"}",
+  "{\"event\": \"status\", \"status\": {\"capture\": \"driver_unavailable\", \"devices\": [{\"kind\": \"keyboard\", \"product\": \"Virtual USB Keyboard\", \"product_id\": 33029, \"seized_reports\": 0, \"state\": \"closed\", \"transport\": \"USB\", \"vendor_id\": 1452}], \"driver\": \"service_unavailable\", \"permission\": \"granted\", \"seized_devices\": 0, \"unavailable_devices\": []}}",
+  "{\"event\": \"driver_connected\"}",
+  "{\"event\": \"status\", \"status\": {\"capture\": \"driver_unavailable\", \"devices\": [{\"kind\": \"keyboard\", \"product\": \"Virtual USB Keyboard\", \"product_id\": 33029, \"seized_reports\": 0, \"state\": \"closed\", \"transport\": \"USB\", \"vendor_id\": 1452}], \"driver\": \"starting\", \"permission\": \"granted\", \"seized_devices\": 0, \"unavailable_devices\": []}}"
+ ]
+}

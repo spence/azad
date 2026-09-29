@@ -1,0 +1,4 @@
+{"client":1,"event":"client_connected"}
+{"event":"status","status":{"capture":"permission_denied","devices":[],"driver":"ready","permission":"denied","seized_devices":0,"unavailable_devices":[]}}
+{"event":"client_hello","protocol":1}
+{"client":1,"event":"client_disconnected"}
