@@ -1,0 +1,50 @@
+[
+ {
+  "ts_ms": 1790708880386,
+  "event": "hotkey_pressed"
+ },
+ {
+  "ts_ms": 1790708880599,
+  "event": "hotkey_released",
+  "raw_requested": true
+ },
+ {
+  "ts_ms": 1790708882909,
+  "event": "hotkey_pressed"
+ },
+ {
+  "ts_ms": 1790708885895,
+  "event": "arrow_navigate",
+  "direction": 1
+ },
+ {
+  "ts_ms": 1790708887003,
+  "event": "overlay_cancel"
+ },
+ {
+  "ts_ms": 1790708887559,
+  "event": "hotkey_released",
+  "raw_requested": true
+ },
+ {
+  "ts_ms": 1790708896363,
+  "event": "engine_speech_start"
+ },
+ {
+  "ts_ms": 1790708899469,
+  "event": "engine_final_text"
+ },
+ {
+  "ts_ms": 1790708899469,
+  "event": "final_text_suppressed"
+ },
+ {
+  "ts_ms": 1790708923207,
+  "event": "hotkey_pressed"
+ },
+ {
+  "ts_ms": 1790708924119,
+  "event": "hotkey_released",
+  "raw_requested": true
+ }
+]

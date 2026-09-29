@@ -147,6 +147,20 @@ consuming-tap step could not run from the owner's terminal, and no sleep occurre
 tool now fails loudly and has a focused `--rerun` for the window-dependent steps, validated in
 the VM.
 
+The owner ran the rerun's built-in keyboard steps ([record](evidence/2026-09-29-physical-rerun/)).
+The foreground window received:
+
+- Shift+Return once during an Option+Space hold, while Space, Down and Escape never arrived and
+  Azad received the matching actions;
+- `azad` Return exactly once each, with no modifiers;
+- `xy` once during the Secure Input step;
+- fn+Left as Home;
+- one held `k` with 61 repeats and one release.
+
+Caps Lock is unused on this Mac and has no software remap. The Keychron's foreground side and a
+consuming tap with a physical keyboard were not run on the host. The owner accepted the evidence
+as it stands (`ESC-PHYSICAL-EVIDENCE-GAP`, option B), so those cases rest on the VM matrix.
+
 A Tart VM cannot sleep: `pmset sleepnow` fails with `0xe00002e2`. Sleep and wake are therefore
 recorded on the host during normal use by `tests/physical/sleep_wake_watch.py`. It records the
 kernel sleep/wake times, helper status and counters, Azad event names and held-modifier state,
