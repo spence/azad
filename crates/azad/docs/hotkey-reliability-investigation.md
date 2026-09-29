@@ -188,10 +188,11 @@ established remapper is not exempt from that conflict either.
 
 ### What remains unproved
 
-- Signed-helper installation and permission onboarding have not been validated.
-  The follow-up below proves the mechanism with SIP enabled, but its processes
-  inherit the fixture image's preauthorized SSH launch context. It does not prove
-  a newly installed Azad helper's permission behavior.
+- Production signed-helper installation, permission retention across updates,
+  and revoked-permission recovery have not been validated. The follow-ups below
+  prove the mechanism with SIP enabled, including an independently launched root
+  service after an explicit Input Monitoring grant. They do not prove an Azad
+  helper package or its lifecycle.
 - The source is a virtual fixture, not a built-in, USB, or Bluetooth keyboard.
   The relay decodes that fixture's report format, not arbitrary keyboard report
   descriptors. A generic adapter must normalize batched HID elements before
@@ -237,6 +238,35 @@ Accessibility and other automation services. The tap probe reported trusted.
 Consequently, normal permission onboarding for an independently launched,
 signed Azad helper is still a separate acceptance check; inherited SSH trust
 must not be presented as proof of that onboarding.
+
+### Independent service permission check
+
+The same SIP-enabled VM then launched the driver daemon and the unchanged relay
+as separately labeled system LaunchDaemons. `launchctl procinfo` showed the
+relay's parent PID was 1, its UID was 0, and its responsible PID/path were its own,
+not the preauthorized SSH wrapper. Both services were owned research fixtures,
+not host services or Azad deployment changes.
+
+| Check | Observed result |
+|---|---|
+| Independent root relay without its own Input Monitoring grant | Manager open returned zero, but the relay received zero reports and claimed zero actions. TCC attributed the request to `/private/tmp/relay`, denied `kTCCServiceListenEvent`, and reported that notifying the UID-0 requestor failed. The consuming tap saw 17 events; six events during Secure Input reached the foreground sink. |
+| Same binary and launch context after granting Input Monitoring in guest System Settings | 25 reports, ten claimed presses and ten matching releases during the same Secure Input transition and consuming-tap sequence. The tap saw only the four intentional pass-through events; the sink saw none. |
+
+The grant used the guest's normal Settings authentication and file-selection UI,
+not a TCC database write. A read-only query confirmed
+`kTCCServiceListenEvent|/private/tmp/relay|2`. The relay's SHA-256 was
+`5577024bbdf43246388c0e8e6dc3b71a86460250a562a1a53c2a0ded624c0a8c`;
+its ad-hoc designated requirement was a code hash, so this does not prove stable
+permission retention after rebuilding or installing a production-signed helper.
+
+This establishes a deployment failure mode, not a reason to abandon device
+capture: root execution and a successful manager-open result are insufficient
+without the responsible helper's permission. The implementation must preflight
+[Input Monitoring access](https://developer.apple.com/documentation/iokit/3181573-iohidcheckaccess),
+surface denial in Azad, and verify actual per-device acquisition. A root daemon
+cannot depend on a permission prompt appearing by itself. The permission
+comparison above closes the SSH-inheritance uncertainty for the prototype;
+the production signing, installation, and revocation checks remain open.
 
 ### Implementation boundary
 
