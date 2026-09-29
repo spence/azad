@@ -228,7 +228,13 @@ class Vm:
         cmd = ["sshpass", "-p", "admin", "ssh", "-o", "StrictHostKeyChecking=no",
                "-o", f"UserKnownHostsFile={self.known}", "-o", "LogLevel=ERROR",
                f"admin@{self.ip}", "bash -s"]
-        result = subprocess.run(cmd, input=script, text=True, capture_output=True, timeout=timeout)
+        # 255 is ssh's own connection failure (e.g. a brief virtual network interruption when
+        # another VM starts); scenario scripts are idempotent, so retry.
+        for _ in range(3):
+            result = subprocess.run(cmd, input=script, text=True, capture_output=True, timeout=timeout)
+            if result.returncode != 255:
+                break
+            time.sleep(5)
         if check and result.returncode != 0:
             raise RuntimeError(f"guest command failed ({result.returncode}): {result.stderr}")
         return result
@@ -237,8 +243,13 @@ class Vm:
         cmd = ["sshpass", "-p", "admin", "ssh", "-o", "StrictHostKeyChecking=no",
                "-o", f"UserKnownHostsFile={self.known}", "-o", "LogLevel=ERROR",
                f"admin@{self.ip}", "bash -s"]
-        return subprocess.run(cmd, input=script.encode(), capture_output=True, timeout=timeout,
-                              check=True).stdout
+        for attempt in range(3):
+            result = subprocess.run(cmd, input=script.encode(), capture_output=True, timeout=timeout)
+            if result.returncode != 255 or attempt == 2:
+                break
+            time.sleep(5)
+        result.check_returncode()
+        return result.stdout
 
     def put(self, local, remote):
         subprocess.run(["sshpass", "-p", "admin", "scp", "-q", "-o", "StrictHostKeyChecking=no",
