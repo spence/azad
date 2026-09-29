@@ -254,6 +254,15 @@ mod tests {
   }
 
   #[test]
+  fn start_publishes_the_initial_context_before_any_change() {
+    // With default preferences nothing changes after startup, so the context given to `start`
+    // is what the helper must receive on connect.
+    let context = KeyContext { listen_modifiers: 4, ..KeyContext::default() };
+    start(context);
+    assert_eq!(CONNECTION.lock().unwrap().context, context);
+  }
+
+  #[test]
   fn future_capture_time_clamps_to_now() {
     let now = Instant::now();
     assert_eq!(capture_instant(2_000, 1_000, now), now);

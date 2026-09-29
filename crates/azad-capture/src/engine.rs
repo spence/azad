@@ -613,6 +613,47 @@ mod tests {
   const WHEEL: Usage = Usage::new(PAGE_GENERIC_DESKTOP, 0x38);
 
   #[test]
+  fn random_sequences_never_strand_keys_or_claims() {
+    let keys = [OPTION, SHIFT, SPACE, UP, A, RETURN, FN, Usage::new(PAGE_KEYBOARD, 0x29)];
+    let contexts = [
+      context(),
+      KeyContext { escape: true, enter: true, arrows: true, ..context() },
+      KeyContext { search_input: true, ..context() },
+    ];
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+      seed ^= seed << 13;
+      seed ^= seed >> 7;
+      seed ^= seed << 17;
+      seed
+    };
+    for _ in 0..500 {
+      let mut engine = Engine::new();
+      let mut held: Vec<(u64, Usage)> = Vec::new();
+      for step in 0..40u64 {
+        let ctx = contexts[(next() % 3) as usize];
+        let device = 1 + next() % 2;
+        let key = keys[(next() % keys.len() as u64) as usize];
+        let down = !held.contains(&(device, key)) && next() % 2 == 0;
+        if down {
+          held.push((device, key));
+        } else if let Some(i) = held.iter().position(|entry| *entry == (device, key)) {
+          held.remove(i);
+        } else {
+          continue;
+        }
+        engine.apply_batch(device, &[(key, down as i64)], step, &ctx);
+      }
+      for (device, key) in held.drain(..) {
+        engine.apply_batch(device, &[(key, 0)], 99, &context());
+      }
+      assert!(engine.forward_state().is_empty(), "stranded forward state");
+      assert!(!engine.policy.space_hold_claimed(), "stranded hold");
+      assert!((0..256u16).all(|usage| !engine.policy.is_claimed(usage)), "stranded claim");
+    }
+  }
+
+  #[test]
   fn pointer_collection_on_a_keyboard_is_forwarded() {
     let mut engine = Engine::new();
     let moved = engine.apply_batch(1, &[(POINTER_X, -3), (POINTER_Y, 4)], 1, &context());

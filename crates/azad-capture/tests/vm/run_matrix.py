@@ -582,7 +582,11 @@ def evaluate_app(name, spec, dest):
         checks["text"] = text.startswith("Aa") and set(text[1:]) == {"a"}
         checks["no_app_events"] = events == []
     elif name == "app_ordinary_typing":
+        # Every action the app receives is logged, so no events means no typing reached it.
         checks["no_app_events"] = events == []
+        # Typing is neither logged by the helper nor sent to the app outside owned search input.
+        helper_text = open(os.path.join(dest, "helper.jsonl")).read()
+        checks["helper_log_has_no_keys"] = '"usage"' not in helper_text and '"keys"' not in helper_text
         checks["each_key_once"] = sorted(keys) == sorted([0, 36, 53, 126, 0])
     return {"scenario": name, "about": spec["about"], "passed": all(bool(v) for v in checks.values()),
             "checks": {k: bool(v) for k, v in checks.items()},
@@ -797,6 +801,9 @@ def main():
     parser.add_argument("--stage", action="store_true", help="build, sign and install")
     parser.add_argument("--install", action="store_true",
                         help="install the existing stage directory without rebuilding")
+    parser.add_argument("--installed-helper", action="store_true",
+                        help="use the helper Azad.app registered; quit Azad during helper-only "
+                             "scenarios so the fixture client is the helper's client")
     parser.add_argument("--stage-dir", default=os.path.join(ROOT, "target/azt-stage"))
     parser.add_argument("--only", nargs="*")
     parser.add_argument("--evaluate-only", action="store_true",
@@ -848,7 +855,12 @@ def main():
         if args.evaluate_only:
             dest = os.path.join(args.out, name)
         else:
-            vm.ssh(scenario_script(name, spec), timeout=240)
+            script = scenario_script(name, spec)
+            if args.installed_helper:
+                script = ("pkill -f /Applications/Azad.app/Contents/MacOS/azad; sleep 2\n" + script
+                          + "open --stdout /tmp/azad.out --stderr /tmp/azad.err /Applications/Azad.app\n"
+                          + "sleep 6\n")
+            vm.ssh(script, timeout=300)
             dest = collect(vm, name, args.out)
         result = evaluate(name, spec, dest)
         results.append(result)

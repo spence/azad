@@ -12,6 +12,9 @@ Each automated check compares what Azad received (input.log), what reached the f
 (the test window) and the helper's status. Visual items (brightness, LED, emoji picker) are
 confirmed by the owner. Results are written to <evidence-dir>/report.json with the raw log
 excerpts. Only the prescribed test keys are recorded.
+
+If typing ever stops working, quit Azad from its menu bar item with the mouse: the capture
+helper releases every keyboard as soon as Azad disconnects.
 """
 
 import argparse
@@ -124,7 +127,7 @@ class Session:
         time.sleep(2)
         self.sink = Stream(self.sink_path)
 
-    def step(self, name, keyboard, prompt, check, helper_process=None):
+    def step(self, name, keyboard, prompt, check, helper_process=None, timed=False):
         print(f"\n[{keyboard}] {name}\n  {prompt}")
         self.app.mark()
         self.helper.mark()
@@ -133,12 +136,17 @@ class Session:
         if helper_process:
             process = subprocess.Popen(helper_process, env=OWNER_ENV, stdout=subprocess.PIPE, text=True)
             time.sleep(0.5)
-        input("  Click the test window if asked, do it, then press Return here... ")
-        time.sleep(0.8)
-        extra = None
-        if process:
-            process.terminate()
-            extra = process.communicate(timeout=10)[0]
+        if timed:
+            # The terminal cannot receive Return while the step swallows typing; it ends by itself.
+            extra = process.communicate(timeout=60)[0]
+            print("  The step has ended; typing works again.")
+        else:
+            input("  Click the test window if asked, do it, then press Return here... ")
+            time.sleep(0.8)
+            extra = None
+            if process:
+                process.terminate()
+                extra = process.communicate(timeout=10)[0]
         app = app_events(self.app.since_mark())
         sink = self.sink.since_mark()
         helper = self.helper.since_mark()
@@ -205,14 +213,15 @@ class Session:
                       "typing_delivered_once": keys(sink) == [KEY["x"], KEY["y"]]},
                   helper_process=[os.path.join(BUILD, "secure"), "120"])
         self.step("consuming tap", keyboard,
-                  "Another program's event tap now swallows all keys. Hold Option+Space about a second "
-                  "and release, then type: q",
+                  "For the next 15 seconds another program's event tap swallows every key, so only "
+                  "Azad's shortcut works and this terminal will not respond. Hold Option+Space about a "
+                  "second and release, then type: q. The step ends by itself.",
                   lambda app, sink, helper, extra: {
                       "tap_installed": None if "tap_failed" in (extra or "") else '"tap_ready"' in (extra or ""),
                       "hotkey_received": [r["event"] for r in app] == ["hotkey_pressed", "hotkey_released"],
                       "space_never_seen_by_tap": '"keycode":49' not in (extra or ""),
                       "q_seen_once_by_tap": (extra or "").count('"type":"down","keycode":12') == 1},
-                  helper_process=[os.path.join(BUILD, "tap"), "120", "--consume"])
+                  helper_process=[os.path.join(BUILD, "tap"), "15", "--consume"], timed=True)
 
     def fidelity_steps(self):
         keys = lambda sink: [r["keycode"] for r in sink if r.get("kind") == "down"]

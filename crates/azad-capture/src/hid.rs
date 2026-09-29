@@ -96,6 +96,8 @@ struct Device {
   translation: Option<DeviceTranslation>,
   /// Caps Lock LED output element, retained; the OS no longer drives it once seized.
   caps_led: IOHIDElementRef,
+  /// LED state last written while seized; `None` after each (re)seizure.
+  caps_led_written: Option<bool>,
 }
 
 pub struct Manager {
@@ -173,12 +175,18 @@ impl Manager {
     unsafe { CFRunLoopSourceSignal(self.notify) };
   }
 
-  /// Mirrors the system Caps Lock state onto the LEDs of seized keyboards.
+  /// Mirrors the system Caps Lock state onto the LEDs of seized keyboards. Each device is
+  /// written only when its LED differs, since the write is synchronous on the main loop.
   pub fn set_caps_lock_led(&mut self, on: bool) {
-    for device in self.devices.values() {
-      if device.info.state != DeviceState::Seized || device.caps_led.is_null() {
+    for device in self.devices.values_mut() {
+      if device.info.state != DeviceState::Seized {
+        device.caps_led_written = None;
         continue;
       }
+      if device.caps_led.is_null() || device.caps_led_written == Some(on) {
+        continue;
+      }
+      device.caps_led_written = Some(on);
       // SAFETY: The element is retained by the device record; the value is released after use.
       unsafe {
         let value =
@@ -299,6 +307,7 @@ impl Manager {
       held: BTreeSet::new(),
       translation: read_translation(device),
       caps_led: caps_lock_led(device),
+      caps_led_written: None,
     });
     boxed.info.key_translation = boxed.translation.is_some();
     boxed.info.pointer = pointer;

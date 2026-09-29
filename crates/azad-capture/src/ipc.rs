@@ -69,6 +69,7 @@ pub enum ClientEvent {
 #[derive(Clone)]
 pub struct ClientSender {
   tx: SyncSender<String>,
+  stream: std::sync::Arc<UnixStream>,
 }
 
 impl ClientSender {
@@ -80,6 +81,11 @@ impl ClientSender {
       Ok(()) => true,
       Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => false,
     }
+  }
+
+  /// Closes the connection, e.g. when a newer client replaces this one, so the peer notices.
+  pub fn close(&self) {
+    let _ = self.stream.shutdown(std::net::Shutdown::Both);
   }
 }
 
@@ -133,7 +139,12 @@ fn run_client(id: u64, stream: UnixStream, deliver: &(dyn Fn(ClientEvent) + Send
   let mut gid: libc::gid_t = 0;
   // SAFETY: Out-parameters are valid; the descriptor is a connected Unix socket.
   unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-  deliver(ClientEvent::Connected { id, uid, sender: ClientSender { tx } });
+  let Ok(closer) = stream.try_clone() else { return };
+  deliver(ClientEvent::Connected {
+    id,
+    uid,
+    sender: ClientSender { tx, stream: std::sync::Arc::new(closer) },
+  });
   let reader = BufReader::new(&stream);
   for line in reader.lines() {
     let Ok(line) = line else { break };

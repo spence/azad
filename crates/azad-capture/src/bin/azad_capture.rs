@@ -89,7 +89,6 @@ struct Core {
   mode: Mode,
   /// The driver connection generation whose virtual pointing device was requested.
   pointing_requested: Option<u64>,
-  caps_lock: Option<bool>,
   client_uid: u32,
   /// The console belongs to the client's user; false during fast user switching or at the
   /// login window, when that user's shortcuts must not claim someone else's typing.
@@ -346,6 +345,7 @@ impl Core {
     let Some((_, sender)) = &self.client else { return };
     if !sender.send(message) {
       log(json!({ "event": "client_dropped", "reason": "stalled_or_closed" }));
+      sender.close();
       self.client = None;
     }
   }
@@ -362,7 +362,8 @@ impl Core {
   fn handle(&mut self, event: External) -> bool {
     match event {
       External::Client(ClientEvent::Connected { id, uid, sender }) => {
-        if self.client.is_some() {
+        if let Some((_, previous)) = self.client.take() {
+          previous.close();
           log(json!({ "event": "client_replaced" }));
         }
         self.client = Some((id, sender));
@@ -456,11 +457,7 @@ impl Core {
     if self.manager.seized_count() > 0
       && let Some(on) = caps_lock_state()
     {
-      // Re-asserted every second, as the HID system can resynchronize the LED on its own.
-      if self.caps_lock != Some(on) || self.ticks % 4 == 0 {
-        self.manager.set_caps_lock_led(on);
-      }
-      self.caps_lock = Some(on);
+      self.manager.set_caps_lock_led(on);
     }
     self.ticks += 1;
     if self.ticks % COUNTERS_EVERY_TICKS == 0 {
@@ -584,7 +581,6 @@ fn run() {
     forward_retry_after: 0,
     mode: Mode::Off,
     pointing_requested: None,
-    caps_lock: None,
     client_uid: u32::MAX,
     console_matches: false,
     context_renewed: 0,
