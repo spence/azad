@@ -37,6 +37,7 @@ int main(int argc, char **argv) {
 #endif
   if (argc < 3) return 64;
   output = fopen(argv[1], "w");
+  if (!output) return 73;
   double seconds = atof(argv[2]);
   @autoreleasepool {
     NSApplication *app = [NSApplication sharedApplication];
