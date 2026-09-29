@@ -1,0 +1,105 @@
+{
+ "started": 1790708146,
+ "slept": 1790708640,
+ "woke": 1790708644,
+ "before_sleep": {
+  "t": 1790708627,
+  "counters": {
+   "claimed_edges": 96,
+   "forwarded_edges": 3632,
+   "forward_errors": 0,
+   "actions": 76
+  },
+  "capture": "capturing",
+  "seized": 4,
+  "modifiers_held": false
+ },
+ "after_wake": [
+  {
+   "t": 1790708660,
+   "counters": {
+    "claimed_edges": 96,
+    "forwarded_edges": 3632,
+    "forward_errors": 0,
+    "actions": 76
+   },
+   "capture": "capturing",
+   "seized": 1,
+   "modifiers_held": false
+  },
+  {
+   "t": 1790708675,
+   "counters": {
+    "claimed_edges": 96,
+    "forwarded_edges": 3686,
+    "forward_errors": 0,
+    "actions": 76
+   },
+   "capture": "capturing",
+   "seized": 4,
+   "modifiers_held": false
+  },
+  {
+   "t": 1790708690,
+   "counters": {
+    "claimed_edges": 96,
+    "forwarded_edges": 3686,
+    "forward_errors": 0,
+    "actions": 76
+   },
+   "capture": "capturing",
+   "seized": 4,
+   "modifiers_held": false
+  },
+  {
+   "t": 1790708705,
+   "counters": {
+    "claimed_edges": 98,
+    "forwarded_edges": 3710,
+    "forward_errors": 0,
+    "actions": 78
+   },
+   "capture": "capturing",
+   "seized": 4,
+   "modifiers_held": false
+  }
+ ],
+ "app_events_after_wake": [
+  {
+   "ts_ms": 1790708663916,
+   "event": "keyboard_capture",
+   "connected": true,
+   "capturing": true
+  },
+  {
+   "ts_ms": 1790708663929,
+   "event": "keyboard_capture",
+   "connected": true,
+   "capturing": true
+  },
+  {
+   "ts_ms": 1790708664022,
+   "event": "keyboard_capture",
+   "connected": true,
+   "capturing": true
+  },
+  {
+   "ts_ms": 1790708692095,
+   "event": "hotkey_pressed"
+  },
+  {
+   "ts_ms": 1790708694152,
+   "event": "hotkey_released"
+  }
+ ],
+ "checks": {
+  "system_slept_and_woke": true,
+  "capturing_after_wake": true,
+  "hotkey_after_wake": true,
+  "typing_forwarded_after_wake": true,
+  "no_forward_errors": true,
+  "no_modifier_stuck_after_wake": true
+ },
+ "passed": true,
+ "host": "MacBookPro18,4"
+}
