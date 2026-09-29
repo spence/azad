@@ -230,6 +230,8 @@ class Session:
                                                      if r.get("kind") == "down" and r["keycode"] == KEY["a"]]
                       == [True, False]})
         self.confirm("Caps Lock LED", kb, "Did the Caps Lock light turn on and then off?")
+        self.confirm("Touch ID / power button", kb, "Press the Touch ID (power) button briefly: did the "
+                     "Mac lock or sleep the display as it normally does?")
         self.step("key repeat", kb, "Click the test window and hold k for about two seconds.",
                   lambda app, sink, helper, _: {
                       "repeats": sum(1 for r in sink if r.get("kind") == "down" and r["keycode"] == KEY["k"]
@@ -287,6 +289,8 @@ def main():
     if any("Internal" in k for k in keyboards):
         session.fidelity_steps()
     if any("Keychron" in k for k in keyboards):
+        session.confirm("Keychron media keys", "Keychron Q6 HE",
+                        "Press the Keychron's volume or brightness keys: do they work as before?")
         session.confirm("Keychron mouse keys", "Keychron Q6 HE",
                         "If you use the Keychron's mouse keys, do they still move and click?")
     session.sleep_wake()
