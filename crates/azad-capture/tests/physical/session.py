@@ -20,6 +20,7 @@ helper releases every keyboard as soon as Azad disconnects.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -29,6 +30,8 @@ OBJC = os.path.join(ROOT, "crates/azad-capture/fixtures/objc")
 BUILD = os.path.join(ROOT, "target/azad-capture-session")
 INPUT_LOG = os.path.expanduser("~/Library/Logs/Azad/input.log")
 HELPER_LOG = "/var/log/azad-capture.log"
+APP = os.path.expanduser("~/Applications/Azad.app")
+HELPER = "Contents/Library/Helpers/Azad Capture.app"
 OWNER_ENV = {**os.environ, "AZAD_OWNER_SESSION": "1"}
 
 KEY = {"a": 0, "z": 6, "d": 2, "b": 11, "x": 7, "y": 16, "q": 12, "k": 40, "w": 13,
@@ -99,6 +102,26 @@ def latest_status():
         if '"event":"status"' in line:
             return json.loads(line)["status"]
     return None
+
+
+def power_events_since(started):
+    """Counts of power-management events (Sleep, Wake, DarkWake, ...) logged since `started`."""
+    log = subprocess.run(["pmset", "-g", "log"], capture_output=True, text=True).stdout
+    counts = {}
+    for line in log.splitlines():
+        match = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) [+-]\d{4} (\w+)\s", line)
+        if match and match.group(1) >= started:
+            counts[match.group(2)] = counts.get(match.group(2), 0) + 1
+    return counts
+
+
+def installed_identities():
+    identities = {}
+    for name, path in [("app", APP), ("helper", os.path.join(APP, HELPER))]:
+        out = subprocess.run(["codesign", "-dvvv", path], capture_output=True, text=True).stderr
+        identities[name] = [line for line in out.splitlines()
+                            if line.startswith(("Identifier=", "CDHash=", "TeamIdentifier="))]
+    return identities
 
 
 def ask(question):
@@ -248,13 +271,23 @@ class Session:
 
     def sleep_wake(self):
         print("\n[system] sleep and wake")
+        started = time.strftime("%Y-%m-%d %H:%M:%S")
         input("  Close the lid (or sleep the Mac) for about 15 seconds, wake it, unlock, then press "
               "Return here... ")
         time.sleep(3)
+        power = power_events_since(started)
         status = latest_status() or {}
-        self.results.append({"keyboard": "system", "step": "after wake", "passed": status.get("capture") ==
-                             "capturing", "checks": {"capturing_after_wake": status.get("capture") ==
-                                                     "capturing"}, "status": status})
+        checks = {"system_slept": power.get("Sleep", 0) > 0,
+                  "system_woke": power.get("Wake", 0) + power.get("DarkWake", 0) > 0,
+                  "capturing_after_wake": status.get("capture") == "capturing"}
+        self.results.append({"keyboard": "system", "step": "after wake", "passed": all(checks.values()),
+                             "checks": checks, "power_events": power, "status": status})
+        self.step("hotkey after wake", "any", "Hold Option+Space for about a second, then release.",
+                  lambda app, sink, helper, _: {
+                      "hotkey_pressed_and_released": [r["event"] for r in app] ==
+                      ["hotkey_pressed", "hotkey_released"],
+                      "space_not_delivered": KEY["space"] not in
+                      [r["keycode"] for r in sink if r.get("kind") == "down"]})
         self.step("typing after wake", "any", "Click the test window and type: w",
                   lambda app, sink, helper, _: {
                       "w_delivered_once": [r["keycode"] for r in sink if r.get("kind") == "down"] == [KEY["w"]]})
@@ -264,6 +297,7 @@ class Session:
                   .stdout.strip(),
                   "os": subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True)
                   .stdout.strip(),
+                  "installed": installed_identities(),
                   "helper_status": latest_status(),
                   "results": self.results,
                   "passed": all(r["passed"] is not False for r in self.results)}
