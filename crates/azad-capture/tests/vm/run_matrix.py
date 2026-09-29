@@ -478,7 +478,9 @@ def evaluate_failure(name, spec, dest):
     a_downs = [r for r in downs if r["keycode"] == KEY_A]
     events = [r["event"] for r in app]
     helper_events = [r.get("event") for r in helper]
+    source = [r for r in jsonl(os.path.join(dest, "source.jsonl")) if r.get("event") == "report"]
     checks = {
+        "source_played": bool(source),
         "typing_after_failure_reaches_foreground_once": len(a_downs) == 1,
         "no_stuck_modifier": all(not r["flags"] & (OPTION | SHIFT) for r in a_downs),
     }
@@ -655,10 +657,12 @@ def evaluate(name, spec, dest):
     shift_return_ok = all(r["flags"] & SHIFT for r in sink_down if r["keycode"] == RETURN)
     stuck_option = [r for r in sink_down if r["keycode"] == KEY_A and r["flags"] & OPTION]
 
-    checks = {}
+    # Every scenario must have actually played its script; otherwise "nothing happened" checks
+    # pass vacuously.
+    script_steps = json.load(open(os.path.join(FIXTURES, "scenarios", spec["script"])))
+    checks = {"all_reports_posted": len(reports) == len(script_steps)}
     expect = spec["expect"]
     if expect == "capture":
-        checks["all_reports_posted"] = len(reports) == 28
         checks["actions_exact"] = actions == SHORTCUT_ACTIONS
         checks["timestamps_monotonic"] = stamps == sorted(stamps) and len(stamps) == len(actions)
         checks["no_claimed_key_reaches_foreground_or_tap"] = not claimed_leaks and not bare_return
@@ -700,7 +704,6 @@ def evaluate(name, spec, dest):
     elif expect == "fail_open":
         before = open(os.path.join(dest, "pid-before.txt")).read().split()
         after = open(os.path.join(dest, "pid-after.txt")).read().split()
-        checks["all_reports_posted"] = len(reports) == 28
         checks["hold_started_before_crash"] = actions[:1] == [{"kind": "hotkey_pressed"}]
         checks["ordinary_a_reaches_foreground_once"] = (
             sum(1 for r in sink_down if r["keycode"] == KEY_A) == 1
