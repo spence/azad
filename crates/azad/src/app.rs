@@ -1437,7 +1437,14 @@ impl AppController {
       connected: status.is_some(),
       capturing: status.as_ref().is_some_and(|s| s.capture == CaptureStatus::Capturing),
     });
-    let Some(status) = status else { return };
+    let Some(status) = status else {
+      // The helper went away (crash, update, uninstall) mid-gesture: the key's release will
+      // never arrive, so end the hold rather than leave it stuck.
+      if self.manual_hold_active {
+        self.handle_hotkey_released(false);
+      }
+      return;
+    };
     if status.permission != Permission::Granted {
       if !self.capture_access_requested {
         self.capture_access_requested = true;

@@ -3,6 +3,8 @@
 //! Usage: fixture-keyboard --script <steps.json> [--vendor N --product N]
 //! Each step is `{"keys": [usages], "modifiers": bits, "hold_ms": n, "secure": "on"|"off"}`;
 //! `secure` toggles Secure Input from this process before the step's report is posted.
+//! `--exit-after-report N` exits right after report N without releasing anything, removing
+//! the device while its keys are held.
 
 use std::thread;
 use std::time::Duration;
@@ -41,6 +43,7 @@ fn main() {
   let vendor = arg(&args, "--vendor").map_or(FIXTURE_VENDOR_ID, |v| v.parse().expect("vendor"));
   let product = arg(&args, "--product").map_or(FIXTURE_PRODUCT_ID, |v| v.parse().expect("product"));
   let settle_ms: u64 = arg(&args, "--settle-ms").map_or(3000, |v| v.parse().expect("settle"));
+  let exit_after: Option<usize> = arg(&args, "--exit-after-report").map(|v| v.parse().expect("n"));
   let steps: Vec<Step> =
     serde_json::from_str(&std::fs::read_to_string(script).expect("script")).expect("steps");
 
@@ -112,6 +115,10 @@ fn main() {
               "modifiers": step.modifiers, "keys": step.keys })
     );
     thread::sleep(Duration::from_millis(step.hold_ms));
+    if exit_after == Some(index) {
+      println!("{}", json!({ "event": "source_removed_with_keys_held", "index": index }));
+      std::process::exit(0);
+    }
   }
   client.release_all().ok();
   // SAFETY: No preconditions.

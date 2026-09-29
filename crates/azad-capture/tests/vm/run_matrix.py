@@ -95,6 +95,53 @@ APP_SCENARIOS = {
     },
 }
 
+# Failures against the installed app. Each interrupts a claimed Option+Space hold; afterwards
+# ordinary typing must reach the foreground with no stuck modifier, and the app must not be left
+# in a held state.
+FAILURE_SCENARIOS = {
+    "app_quit_mid_hold": {
+        "about": "The Azad app is killed mid-hold (helper loses its client).",
+        "inject": "pkill -9 -f /Applications/Azad.app/Contents/MacOS/azad",
+        "relaunch_app": True,
+    },
+    "helper_hang_mid_hold": {
+        "about": "The helper's main loop hangs mid-hold; its watchdog exits so the kernel "
+                 "releases the keyboards, launchd restarts it, and the app ends the hold.",
+        "inject": "echo admin | sudo -S -p '' touch /var/run/ai.azad.capture.fault-hang",
+        "cleanup": "echo admin | sudo -S -p '' rm -f /var/run/ai.azad.capture.fault-hang",
+        "cleanup_after_s": 4,
+    },
+    "driver_daemon_killed_mid_hold": {
+        "about": "The virtual keyboard daemon dies mid-hold (taking every driver keyboard, "
+                 "including the test source, with it); the helper releases the keyboards and "
+                 "the hold, restarts the daemon, and a new keyboard's typing is forwarded.",
+        "inject": "echo admin | sudo -S -p '' pkill -9 -f Karabiner-VirtualHIDDevice-Daemon",
+        "then_type_from_new_keyboard": True,
+    },
+    "forwarding_fails_mid_hold": {
+        "about": "Posting to the virtual keyboard fails mid-hold while the keyboard stays "
+                 "connected; the helper stops capturing, so the rest reaches the OS directly.",
+        "inject": "echo admin | sudo -S -p '' touch /var/run/ai.azad.capture.fault-forward",
+        "cleanup": "echo admin | sudo -S -p '' rm -f /var/run/ai.azad.capture.fault-forward",
+        "cleanup_after_s": 8,
+    },
+    "keyboard_removed_mid_hold": {
+        "about": "The keyboard disappears while Option+Space is held; the helper releases its "
+                 "keys and the app ends the hold. A second keyboard then types.",
+        "remove_after_report": 1,
+    },
+    "two_keyboards": {
+        "about": "Option held on one keyboard, Space pressed on another, then typing on the "
+                 "second: the chord is claimed and typing arrives once.",
+        "two_keyboards": True,
+    },
+    "client_not_console_user": {
+        "about": "A correctly signed client running as a user who does not own the console "
+                 "(fast user switching): the helper must not capture for it.",
+        "other_user_client": True,
+    },
+}
+
 SCENARIOS = {
     "baseline": {
         "about": "Secure Input off, no competing tap.",
@@ -352,6 +399,128 @@ def app_scenario_script(name, spec):
         "sleep 14",
     ]
     return "\n".join(lines) + "\n"
+
+
+def failure_scenario_script(name, spec):
+    run = f"{GUEST}/run/{name}"
+    input_log = '"$HOME/Library/Logs/Azad/input.log"'
+    kb = f"{GUEST}/bin/fixture-keyboard"
+    lines = [
+        "set -u",
+        f"D={run}; B={GUEST}/bin",
+        "rm -rf $D && mkdir -p $D",
+        f"wc -l < {input_log} > $D/applogstart",
+        sudo(f"wc -l < {HELPER_LOG}") + " > $D/logstart",
+        sudo("launchctl print system/ai.azad.capture") + " | grep -E '^\\s+pid' > $D/pid-before.txt",
+        "open -n $B/Sink.app --args $D/sink.jsonl 26",
+        "sleep 2",
+    ]
+    hold = f"{GUEST}/scenarios/fail-hold-then-type.json"
+    if spec.get("two_keyboards"):
+        lines += [
+            sudo(f"{kb} --script {GUEST}/scenarios/multi-a.json --settle-ms 3000") + " > $D/source.jsonl 2>&1 &",
+            sudo(f"{kb} --script {GUEST}/scenarios/multi-b.json --settle-ms 3000 --product 6033") + " > $D/source-b.jsonl 2>&1",
+            "wait",
+        ]
+    elif spec.get("other_user_client"):
+        lines += [
+            "id azadother >/dev/null 2>&1 || " + sudo("sysadminctl -addUser azadother -password azadother") + " >/dev/null 2>&1",
+            sudo("cp $B/fixture-app /Users/Shared/fixture-app && chmod 755 /Users/Shared/fixture-app"),
+            "pkill -f /Applications/Azad.app/Contents/MacOS/azad; sleep 2",
+            sudo("-u azadother /Users/Shared/fixture-app --seconds 12 --context '{\"listen_modifiers\":4}'") + " > $D/other-app.jsonl 2>&1 &",
+            "sleep 2",
+            sudo(f"{kb} --script {hold} --settle-ms 3000") + " > $D/source.jsonl 2>&1",
+            "wait",
+        ]
+    elif spec.get("remove_after_report") is not None:
+        lines += [
+            sudo(f"{kb} --script {hold} --settle-ms 3000 --exit-after-report {spec['remove_after_report']}") + " > $D/source.jsonl 2>&1",
+            "sleep 2",
+            sudo(f"{kb} --script {GUEST}/scenarios/type-a.json --settle-ms 3000 --product 6033") + " > $D/source-b.jsonl 2>&1",
+        ]
+    else:
+        lines += [
+            sudo(f"{kb} --script {hold} --settle-ms 3000") + " > $D/source.jsonl 2>&1 &",
+            "for i in $(seq 200); do grep -q '\"index\":1,' $D/source.jsonl && break; sleep 0.05; done",
+            "sleep 0.5",
+            spec["inject"],
+        ]
+        if spec.get("cleanup"):
+            lines += [f"sleep {spec['cleanup_after_s']}", spec["cleanup"]]
+        lines += ["wait"]
+        if spec.get("then_type_from_new_keyboard"):
+            lines += [
+                "sleep 5",
+                sudo(f"{kb} --script {GUEST}/scenarios/type-a.json --settle-ms 3000 --product 6033") + " > $D/source-b.jsonl 2>&1",
+            ]
+    lines += [
+        "sleep 4",
+        f"tail -n +$(( $(cat $D/applogstart) + 1 )) {input_log} > $D/app.jsonl",
+        sudo(f"tail -n +$(( $(cat $D/logstart) + 1 )) {HELPER_LOG}") + " > $D/helper.jsonl",
+        sudo("launchctl print system/ai.azad.capture") + " | grep -E '^\\s+pid' > $D/pid-after.txt",
+    ]
+    if spec.get("relaunch_app") or spec.get("other_user_client"):
+        lines += ["open --stdout /tmp/azad.out --stderr /tmp/azad.err /Applications/Azad.app", "sleep 6"]
+    lines += ["sleep 14"]
+    return "\n".join(lines) + "\n"
+
+
+def evaluate_failure(name, spec, dest):
+    app = [r for r in jsonl(os.path.join(dest, "app.jsonl")) if r.get("event") != "keyboard_capture"]
+    helper = jsonl(os.path.join(dest, "helper.jsonl"))
+    sink = jsonl(os.path.join(dest, "sink.jsonl"))
+    downs = [r for r in sink if r.get("kind") == "down"]
+    a_downs = [r for r in downs if r["keycode"] == KEY_A]
+    events = [r["event"] for r in app]
+    helper_events = [r.get("event") for r in helper]
+    checks = {
+        "typing_after_failure_reaches_foreground_once": len(a_downs) == 1,
+        "no_stuck_modifier": all(not r["flags"] & (OPTION | SHIFT) for r in a_downs),
+    }
+    if name == "app_quit_mid_hold":
+        checks["helper_saw_client_leave"] = "client_disconnected" in helper_events
+        checks["hold_had_started"] = events[:1] == ["hotkey_pressed"]
+    elif name == "helper_hang_mid_hold":
+        before = open(os.path.join(dest, "pid-before.txt")).read().split()
+        after = open(os.path.join(dest, "pid-after.txt")).read().split()
+        checks["hang_injected"] = "fault_hang" in helper_events
+        checks["watchdog_exited"] = any("watchdog_exit" in json.dumps(r) for r in helper) or \
+            "watchdog_exit" in open(os.path.join(dest, "helper.jsonl")).read()
+        checks["launchd_restarted_helper"] = bool(before) and bool(after) and before != after
+        checks["app_ended_hold"] = events[:2] == ["hotkey_pressed", "hotkey_released"]
+    elif name == "forwarding_fails_mid_hold":
+        checks["app_ended_hold"] = events[:2] == ["hotkey_pressed", "hotkey_released"]
+        checks["forward_failure_injected"] = any(
+            r.get("event") == "counters" and r.get("forward_errors", 0) > 0 for r in helper)
+    elif name == "driver_daemon_killed_mid_hold":
+        checks["app_ended_hold"] = events[:2] == ["hotkey_pressed", "hotkey_released"]
+        statuses = [r["status"]["capture"] for r in helper if r.get("event") == "status"]
+        checks["capture_dropped_then_recovered"] = (
+            "driver_unavailable" in statuses and statuses[-1] == "capturing")
+    elif name == "keyboard_removed_mid_hold":
+        checks["app_ended_hold"] = events[:2] == ["hotkey_pressed", "hotkey_released"]
+        checks["space_never_delivered"] = not any(r["keycode"] == 49 for r in downs)
+    elif name == "two_keyboards":
+        checks["chord_claimed_across_keyboards"] = events[:2] == ["hotkey_pressed", "hotkey_released"]
+        checks["space_never_delivered"] = not any(r["keycode"] == 49 for r in downs)
+    elif name == "client_not_console_user":
+        other = jsonl(os.path.join(dest, "other-app.jsonl"))
+        actions = [r for r in other if r.get("event") == "received"
+                   and r["message"].get("type") == "action"]
+        checks["no_actions_for_other_user"] = not actions
+        connected = next((i for i, r in enumerate(helper) if r.get("event") == "client_connected"), None)
+        after = [r["status"]["capture"] for r in helper[connected or 0:]
+                 if r.get("event") == "status"] if connected is not None else []
+        checks["client_connected"] = connected is not None
+        checks["status_idle_not_capturing"] = bool(after) and "capturing" not in after
+        checks["nothing_seized"] = not any(
+            d["state"] == "seized" for r in helper if r.get("event") == "status"
+            for d in r["status"]["devices"])
+        checks["space_reached_foreground"] = any(r["keycode"] == 49 for r in downs)
+    return {"scenario": name, "about": spec["about"], "passed": all(bool(v) for v in checks.values()),
+            "checks": {k: bool(v) for k, v in checks.items()},
+            "observed": {"app_events": events, "helper_events": helper_events,
+                         "foreground_keys": [r["keycode"] for r in downs]}}
 
 
 def evaluate_app(name, spec, dest):
@@ -635,6 +804,17 @@ def main():
         install(vm, args.stage_dir)
     os.makedirs(args.out, exist_ok=True)
     results = []
+    for name, spec in FAILURE_SCENARIOS.items():
+        if not args.only or name not in args.only:
+            continue
+        print(f"== {name}", flush=True)
+        if not args.evaluate_only:
+            vm.ssh(failure_scenario_script(name, spec), timeout=300)
+            collect(vm, name, args.out)
+        result = evaluate_failure(name, spec, os.path.join(args.out, name))
+        results.append(result)
+        print(json.dumps({"scenario": name, "passed": result["passed"], "checks": result["checks"]}),
+              flush=True)
     for name, spec in APP_SCENARIOS.items():
         if not args.only or name not in args.only:
             continue

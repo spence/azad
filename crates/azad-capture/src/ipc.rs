@@ -47,10 +47,22 @@ impl From<&DeviceInfo> for DeviceSummary {
 
 /// Connection lifecycle and requests delivered to the helper core.
 pub enum ClientEvent {
-  Connected { id: u64, sender: ClientSender },
-  Message { id: u64, message: AppMessage },
-  Disconnected { id: u64 },
-  Rejected { reason: String },
+  /// `uid` is the peer's user; capture follows that user only while it owns the console.
+  Connected {
+    id: u64,
+    uid: u32,
+    sender: ClientSender,
+  },
+  Message {
+    id: u64,
+    message: AppMessage,
+  },
+  Disconnected {
+    id: u64,
+  },
+  Rejected {
+    reason: String,
+  },
 }
 
 #[derive(Clone)]
@@ -116,7 +128,11 @@ fn run_client(id: u64, stream: UnixStream, deliver: &(dyn Fn(ClientEvent) + Send
   if write_thread.is_err() {
     return;
   }
-  deliver(ClientEvent::Connected { id, sender: ClientSender { tx } });
+  let mut uid: libc::uid_t = u32::MAX;
+  let mut gid: libc::gid_t = 0;
+  // SAFETY: Out-parameters are valid; the descriptor is a connected Unix socket.
+  unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+  deliver(ClientEvent::Connected { id, uid, sender: ClientSender { tx } });
   let reader = BufReader::new(&stream);
   for line in reader.lines() {
     let Ok(line) = line else { break };

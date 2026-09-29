@@ -30,8 +30,9 @@ use azad_capture::vhid::{self, ServiceState};
 const DRIVER_DAEMON_PATH: &str = "/Library/Application Support/org.pqrs/Karabiner-DriverKit-VirtualHIDDevice/Applications/Karabiner-VirtualHIDDevice-Daemon.app/Contents/MacOS/Karabiner-VirtualHIDDevice-Daemon";
 const TICK_SECONDS: f64 = 0.25;
 /// A main loop silent this long while holding seized keyboards is treated as hung.
-const WATCHDOG_LIMIT_NANOS: u64 = 2_000_000_000;
+const WATCHDOG_LIMIT_NANOS: u64 = 1_000_000_000;
 const WATCHDOG_EXIT_CODE: i32 = 75;
+const FORWARD_RETRY_DELAY_NANOS: u64 = 3_000_000_000;
 const EX_TEMPFAIL: i32 = 75;
 const COUNTERS_EVERY_TICKS: u32 = 20;
 const RESCAN_EVERY_TICKS: u32 = 20;
@@ -40,11 +41,13 @@ const UPDATE_CHECK_EVERY_TICKS: u32 = 20;
 
 static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 static SEIZED: AtomicU64 = AtomicU64::new(0);
+static DRIVER_GENERATION: AtomicU64 = AtomicU64::new(0);
 static INBOX: OnceLock<Inbox> = OnceLock::new();
 
 enum External {
   Client(ClientEvent),
-  Driver(ServiceState),
+  /// A driver connection's state, tagged with the connection generation that reported it.
+  Driver(u64, ServiceState),
   Shutdown,
 }
 
@@ -80,6 +83,14 @@ struct Core {
   manager: &'static mut Manager,
   engine: Engine,
   context: KeyContext,
+  /// Capture stays off until then after a forwarding failure, so a persistently broken
+  /// forwarding path does not re-seize keyboards and swallow keys.
+  forward_retry_after: u64,
+  mode: Mode,
+  client_uid: u32,
+  /// The console belongs to the client's user; false during fast user switching or at the
+  /// login window, when that user's shortcuts must not claim someone else's typing.
+  console_matches: bool,
   context_renewed: u64,
   lease_expired: bool,
   client: Option<(u64, ClientSender)>,
@@ -99,8 +110,47 @@ struct Core {
 impl Core {
   fn active(&self) -> bool {
     self.client.is_some()
+      && self.console_matches
       && self.permission == Permission::Granted
       && self.driver_state.can_forward()
+      && now_nanos() >= self.forward_retry_after
+  }
+
+  /// Before seizing anything, posts an all-up report to prove forwarding works; seizing with a
+  /// broken forwarding path would swallow the next key.
+  fn forwarding_healthy(&mut self) -> bool {
+    let client = self.driver.lock().expect("driver").clone();
+    let probe = match client {
+      Some(_) if fault::forward_fails() => Err(std::io::Error::other("injected forward failure")),
+      Some(client) => client.release_all(),
+      None => Err(std::io::Error::other("driver not connected")),
+    };
+    if probe.is_err() {
+      self.forwarding_failed();
+    }
+    probe.is_ok()
+  }
+
+  fn forwarding_failed(&mut self) {
+    self.counters.forward_errors += 1;
+    self.forward_retry_after = now_nanos() + FORWARD_RETRY_DELAY_NANOS;
+    // Drop the connection so the next one re-creates the virtual keyboard.
+    self.driver_state = ServiceState::default();
+    if let Some(client) = self.driver.lock().expect("driver").take() {
+      client.shutdown();
+    }
+  }
+
+  fn check_console(&mut self) {
+    use std::os::unix::fs::MetadataExt;
+    let console = std::fs::metadata("/dev/console").map(|m| m.uid()).ok();
+    let matches = self.client.is_some() && console == Some(self.client_uid);
+    if matches != self.console_matches {
+      self.console_matches = matches;
+      if self.client.is_some() {
+        log(json!({ "event": "console_session", "client_owns_console": matches }));
+      }
+    }
   }
 
   /// The app's context while its lease is current. A hung app keeps only the listen chord: its
@@ -148,7 +198,7 @@ impl Core {
       CaptureStatus::PermissionDenied
     } else if !self.driver_state.can_forward() {
       CaptureStatus::DriverUnavailable
-    } else if self.client.is_none() {
+    } else if self.client.is_none() || !self.console_matches {
       CaptureStatus::Idle
     } else if seized == 0 {
       CaptureStatus::NoCapturableKeyboard
@@ -172,7 +222,13 @@ impl Core {
   }
 
   fn refresh(&mut self) {
-    let mode = if self.active() { Mode::Capture } else { Mode::Off };
+    let starting = self.mode == Mode::Off;
+    let mode = if self.active() && (!starting || self.forwarding_healthy()) {
+      Mode::Capture
+    } else {
+      Mode::Off
+    };
+    self.mode = mode;
     self.manager.set_mode(mode);
     self.drain_devices();
     SEIZED.store(self.manager.seized_count() as u64, Ordering::Release);
@@ -197,6 +253,7 @@ impl Core {
       for event in events {
         let outcome = match event {
           DeviceEvent::Batch { device, values, timestamp, translation } => {
+            fault::maybe_hang();
             if let Some(translation) = translation {
               self.engine.set_translation(device, translation);
             }
@@ -231,6 +288,7 @@ impl Core {
     let client = self.driver.lock().expect("driver").clone();
     let previous = self.last_posted.clone();
     let result = match client {
+      Some(_) if fault::forward_fails() => Err(std::io::Error::other("injected forward failure")),
       Some(client) => client.post_state(&previous, &next),
       None => Err(std::io::Error::other("driver not connected")),
     };
@@ -239,11 +297,8 @@ impl Core {
         self.counters.forward_posts += 1;
         self.last_posted = next;
       }
-      Err(_) => {
-        self.counters.forward_errors += 1;
-        // Forwarding is broken: stop capturing so input returns to the OS directly.
-        self.driver_state.keyboard_ready = Some(false);
-      }
+      // Forwarding is broken: stop capturing so input returns to the OS directly.
+      Err(_) => self.forwarding_failed(),
     }
   }
 
@@ -266,11 +321,13 @@ impl Core {
 
   fn handle(&mut self, event: External) -> bool {
     match event {
-      External::Client(ClientEvent::Connected { id, sender }) => {
+      External::Client(ClientEvent::Connected { id, uid, sender }) => {
         if self.client.is_some() {
           log(json!({ "event": "client_replaced" }));
         }
         self.client = Some((id, sender));
+        self.client_uid = uid;
+        self.check_console();
         self.context = KeyContext::default();
         self.context_renewed = now_nanos();
         self.lease_expired = false;
@@ -300,7 +357,12 @@ impl Core {
         self.counters.rejected_clients += 1;
         log(json!({ "event": "client_rejected", "reason": reason }));
       }
-      External::Driver(state) => self.driver_state = state,
+      External::Driver(generation, state) => {
+        // A replaced connection's reader may report after its successor; only the latest counts.
+        if generation == DRIVER_GENERATION.load(Ordering::Acquire) {
+          self.driver_state = state;
+        }
+      }
       External::Shutdown => return false,
     }
     true
@@ -350,6 +412,7 @@ impl Core {
       self.access_requested = true;
     }
     self.check_lease();
+    self.check_console();
     self.ticks += 1;
     if self.ticks % COUNTERS_EVERY_TICKS == 0 {
       let counters = json!({
@@ -469,6 +532,10 @@ fn run() {
     manager,
     engine: Engine::new(),
     context: KeyContext::default(),
+    forward_retry_after: 0,
+    mode: Mode::Off,
+    client_uid: u32::MAX,
+    console_matches: false,
     context_renewed: 0,
     lease_expired: false,
     client: None,
@@ -616,17 +683,18 @@ fn spawn_driver_connection(slot: Arc<Mutex<Option<Arc<vhid::Client>>>>) {
         let connected = slot.lock().expect("driver").as_ref().is_some_and(|c| c.state().connected);
         if !connected {
           slot.lock().expect("driver").take();
+          let generation = DRIVER_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
           seed_keyboard_type();
           match vhid::Client::connect(
             vhid::SERVER_SOCKET_PATH,
-            Box::new(|state| inbox().push(External::Driver(state))),
+            Box::new(move |state| inbox().push(External::Driver(generation, state))),
           ) {
             Ok(client) => {
               log(json!({ "event": "driver_connected" }));
               *slot.lock().expect("driver") = Some(client);
             }
             Err(_) => {
-              inbox().push(External::Driver(ServiceState::default()));
+              inbox().push(External::Driver(generation, ServiceState::default()));
               ensure_driver_daemon();
             }
           }
@@ -784,6 +852,54 @@ fn spawn_signal_thread() {
       inbox().push(External::Shutdown);
     })
     .expect("spawn signal thread");
+}
+
+/// Failure injection for the VM verification matrix. Honoured only inside a macOS virtual
+/// machine and only while a root-owned marker file exists.
+mod fault {
+  use std::sync::OnceLock;
+
+  const HANG_MARKER: &str = "/var/run/ai.azad.capture.fault-hang";
+  const FORWARD_MARKER: &str = "/var/run/ai.azad.capture.fault-forward";
+
+  fn armed(marker: &str) -> bool {
+    virtual_mac()
+      && std::fs::metadata(marker)
+        .is_ok_and(|metadata| std::os::unix::fs::MetadataExt::uid(&metadata) == 0)
+  }
+
+  pub fn forward_fails() -> bool {
+    armed(FORWARD_MARKER)
+  }
+
+  pub fn maybe_hang() {
+    if !armed(HANG_MARKER) {
+      return;
+    }
+    super::log(serde_json::json!({ "event": "fault_hang" }));
+    loop {
+      std::thread::park();
+    }
+  }
+
+  fn virtual_mac() -> bool {
+    static VIRTUAL: OnceLock<bool> = OnceLock::new();
+    *VIRTUAL.get_or_init(|| {
+      let mut model = [0u8; 128];
+      let mut size = model.len();
+      // SAFETY: `model` is writable for `size` bytes.
+      let status = unsafe {
+        libc::sysctlbyname(
+          c"hw.model".as_ptr(),
+          model.as_mut_ptr().cast(),
+          &mut size,
+          std::ptr::null_mut(),
+          0,
+        )
+      };
+      status == 0 && model.starts_with(b"VirtualMac")
+    })
+  }
 }
 
 fn log(value: serde_json::Value) {
