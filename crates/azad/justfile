@@ -53,6 +53,10 @@ logs:
 reset-permissions:
     ./scripts/azad-dev.sh reset-permissions
 
+# Install and activate the virtual keyboard driver keyboard capture forwards typing through.
+install-capture-driver:
+    ./scripts/install-capture-driver.sh
+
 uninstall:
     ./scripts/azad-dev.sh uninstall
 

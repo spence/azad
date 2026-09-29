@@ -117,7 +117,7 @@ Key entry points:
 
 Overlay styling and drawing primitives are in `platform.rs`.
 
-## 7. Listen Mode and Accessibility
+## 7. Listen Mode, Keyboard Capture, and Accessibility
 
 `always_listening_enabled` controls auto-VAD capture behavior.
 
@@ -125,12 +125,36 @@ Important:
 
 - listen mode can be toggled by menu and double-tap hotkey.
 - menu toggle should remain available; while active turn is in progress it may defer and apply after boundary.
-- one active HID event tap owns all global shortcut capture and propagation control.
-- overlay state gates Enter, Escape, and navigation without registering additional shortcuts.
-- the tap is recreated when its port is invalid, its registration disappears, or latency indicates a stall.
-- missing Accessibility permission disables global shortcuts and listening and surfaces an overlay notice.
+- missing Accessibility permission disables listening and auto-paste and surfaces an overlay notice.
 
 This ensures the app does not keep capturing speech when auto-paste cannot execute.
+
+Global shortcuts are captured below application event taps by the root helper `azad-capture`
+(`crates/azad-capture`, shipped as `Azad.app/Contents/Library/Helpers/Azad Capture.app` and
+registered with `SMAppService` as the LaunchDaemon `ai.azad.capture`):
+
+- the helper seizes keyboards through IOKit, applies the shared key policy
+  (`azad_capture::policy`) to whole reports, sends claimed actions to Azad, and forwards all
+  other input through the Karabiner DriverKit virtual keyboard. Secure Input and other
+  applications' consuming event taps therefore do not block shortcuts.
+- Azad publishes one key context derived from its surfaces (`key_context.rs`: listen modifiers,
+  overlay keys, history keys, search input) and renews it from a main-thread heartbeat. If the
+  heartbeat stops, the helper keeps claiming only the listen chord.
+- claimed actions carry the key's capture time; `HotkeyPressed` feeds that time to the reducer
+  so queued events keep their spacing for double-tap detection.
+- a claimed press owns its release, even after the overlay context closes.
+- history search keys arrive as HID usages and are resolved with the active keyboard layout
+  (`platform/key_text.rs`).
+- capture is fail-open: keyboards are seized only while the helper has Input Monitoring, the
+  virtual keyboard is ready, forwarding works, and an authenticated Azad of the console user is
+  connected. Losing any of these, or the helper exiting (including its main-loop watchdog),
+  returns input to the OS directly; Azad ends a hold whose release can no longer arrive.
+- setup needs the virtual keyboard driver (`just install-capture-driver`, or an existing
+  Karabiner-Elements), the helper allowed in Login Items & Extensions, and Input Monitoring for
+  "Azad Capture". Azad itself does not need Input Monitoring.
+
+Verification lives in `crates/azad-capture/tests/vm/run_matrix.py` (disposable SIP-enabled VM)
+and `crates/azad-capture/docs/`.
 
 ## 8. Finalization and Raw Mode
 

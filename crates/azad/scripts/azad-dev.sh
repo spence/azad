@@ -97,9 +97,9 @@ Commands:
   start        Start Azad
   stop         Stop Azad
   restart      Stop then start Azad
-  status       Print Azad runtime status
+  status       Print Azad and keyboard-capture helper runtime status
   logs         Tail Azad stdout/stderr logs
-  reset-permissions  Reset macOS TCC permissions for Azad (Microphone + Accessibility)
+  reset-permissions  Reset macOS TCC permissions for Azad and its keyboard-capture helper
   uninstall    Stop Azad and remove LaunchAgent plist if present (keeps app bundle)
 USAGE
 }
@@ -575,6 +575,21 @@ cmd_status() {
     echo "Azad is not running"
     exit 1
   fi
+  capture_status
+}
+
+# Read-only report on the keyboard-capture helper: its LaunchDaemon and its latest status line.
+capture_status() {
+  local helper_log="/var/log/azad-capture.log"
+  echo "Keyboard capture helper (ai.azad.capture):"
+  if launchctl print system/ai.azad.capture >/dev/null 2>&1; then
+    launchctl print system/ai.azad.capture | grep -E '^\s+(state|pid|program identifier) =' || true
+  else
+    echo "  not registered (launch Azad and allow it in Login Items & Extensions)"
+  fi
+  if [[ -r "$helper_log" ]]; then
+    grep '"event":"status"' "$helper_log" | tail -n 1 | sed 's/^/  /' || true
+  fi
 }
 
 cmd_logs() {
@@ -586,7 +601,8 @@ cmd_logs() {
 cmd_reset_permissions() {
   /usr/bin/tccutil reset Microphone "$LABEL" || true
   /usr/bin/tccutil reset Accessibility "$LABEL" || true
-  echo "Reset TCC permissions for $LABEL (Microphone + Accessibility)."
+  /usr/bin/tccutil reset ListenEvent "${LABEL}.capture" || true
+  echo "Reset TCC permissions for $LABEL (Microphone + Accessibility) and ${LABEL}.capture (Input Monitoring)."
   echo "The next app launch can trigger permission prompts again."
 }
 

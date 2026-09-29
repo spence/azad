@@ -21,6 +21,12 @@ Project documentation is organized by ownership boundary.
 - [macOS build notes](../crates/azad/docs/build-macos.md): local macOS build details.
 - [Troubleshooting](../crates/azad/docs/troubleshooting.md): common runtime issues.
 
+## Keyboard Capture
+
+- [azad-capture](../crates/azad-capture/src/lib.rs): root helper that captures shortcuts below application event taps and forwards other input through the virtual keyboard driver.
+- [Access verification](../crates/azad-capture/docs/access-verification.md): SIP-enabled VM evidence for the capture boundary (interference, permissions, coexistence).
+- [Hotkey reliability investigation](../crates/azad/docs/hotkey-reliability-investigation.md): why app-level hooks were replaced with device-level capture.
+
 ## ASR Runtime
 
 - [ASR README](../crates/azad-asr/README.md): CLI use, model layout, and runtime dependencies.

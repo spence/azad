@@ -72,7 +72,10 @@ Explicit environment variables override values from `.release.env`.
 ## Permissions
 
 - Microphone permission is required for transcription.
-- Accessibility permission is required for global shortcuts and synthetic paste into the focused app.
+- Accessibility permission is required for synthetic paste into the focused app.
+- Keyboard shortcuts need the virtual keyboard driver (`just install-capture-driver`), the
+  "Azad" background item allowed in Login Items & Extensions, and Input Monitoring for "Azad
+  Capture", the embedded keyboard-capture helper.
 
 Reset and relaunch:
 

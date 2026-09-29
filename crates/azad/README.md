@@ -42,7 +42,19 @@ Azad requires macOS microphone permission.
 - Then restart Azad:
   - `just restart`
 
-Azad also checks Accessibility permission on startup (required for global shortcuts and auto-paste) and opens the Accessibility settings pane if it is missing.
+Azad also checks Accessibility permission on startup (required for auto-paste) and opens the Accessibility settings pane if it is missing.
+
+## Keyboard Shortcuts
+
+Shortcuts are captured by Azad's keyboard-capture helper, which works while other apps use
+Secure Input or their own keyboard hooks. It needs, once:
+
+- the virtual keyboard driver: `just install-capture-driver` (skip if Karabiner-Elements is
+  installed), then allow it in System Settings -> General -> Login Items & Extensions;
+- Azad's background item allowed in Login Items & Extensions (Azad opens the pane);
+- Input Monitoring for "Azad Capture" (Azad shows the macOS prompt).
+
+`just status` reports the helper's state.
 
 ## Behavior Docs
 
