@@ -2,7 +2,8 @@
 Runtime Agent Design delivers low-latency transcription with deterministic hotkey/listen-mode behavior and predictable overlay/paste UX in the Azad macOS app.
 
 Burndown now owns live work tracking. Run `burn guide`, `burn status`, and `burn next`;
-the device-level keyboard capture work is `OBJ-RELIABLE-HOTKEYS`.
+the keyboard policy is recorded in `OBJ-SECURE-INPUT-YIELD`.
+`OBJ-RELIABLE-HOTKEYS` records the superseded device-capture delivery and its owner exceptions.
 The milestones below preserve the pre-adoption plan and history, not current status.
 Unchecked items have not been imported as new commitments.
 

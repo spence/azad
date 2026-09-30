@@ -1,6 +1,10 @@
 #!/bin/bash
 # Secure Input check for the tap build: Option+Space hold with Secure Input off, on, then off.
 set -u
+case "$(/usr/sbin/sysctl -n hw.model)" in
+  VirtualMac*) ;;
+  *) echo "Refusing keyboard test outside an isolated macOS VM." >&2; exit 64 ;;
+esac
 rm -rf /tmp/azt /tmp/siy && mkdir -p /tmp/azt && tar xzf /tmp/siy-stage.tgz -C /tmp/azt && mv /tmp/azt/siy /tmp/siy
 codesign --force --sign - /tmp/azt/bin/Sink.app 2>/dev/null
 B=/tmp/azt/bin; D=/tmp/siy/run; mkdir -p $D
