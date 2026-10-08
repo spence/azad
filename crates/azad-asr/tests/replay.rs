@@ -34,7 +34,7 @@
 //! Set `AZAD_TEST_REQUIRE_MODELS=1` to fail (instead of skip) when models are missing — useful
 //! when you want to verify the harness actually exercises the pipeline.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -436,6 +436,8 @@ struct TurnTrace {
   turn_starts: Vec<usize>,
   /// Per-chunk `(rms-ish peak_db, raw vad_prob, effective thold, is_speech)`.
   meters: Vec<(f32, f32, f32, bool)>,
+  draft_turns: BTreeSet<u64>,
+  manual_finished_turn: Option<u64>,
   lines: BTreeMap<u64, String>,
   errors: Vec<String>,
 }
@@ -540,6 +542,8 @@ impl TurnTracingRenderer {
       chunks_seen: t.chunks_seen,
       turn_starts: t.turn_starts.clone(),
       meters: t.meters.clone(),
+      draft_turns: t.draft_turns.clone(),
+      manual_finished_turn: t.manual_finished_turn,
       lines: t.lines.clone(),
       errors: t.errors.clone(),
     }
@@ -566,7 +570,17 @@ impl Renderer for TurnTracingRenderer {
           let at = t.chunks_seen.saturating_sub(1);
           t.turn_starts.push(at);
         }
+        RenderEvent::Active { id, committed, live } => {
+          if !committed.trim().is_empty() || !live.trim().is_empty() {
+            t.draft_turns.insert(id);
+          }
+        }
         RenderEvent::FinalLine { id, text } | RenderEvent::ReplaceLine { id, text } => {
+          if t.chunks_seen.saturating_sub(1) == self.finish_at_chunk
+            && self.finish_fired.load(Ordering::Relaxed)
+          {
+            t.manual_finished_turn = Some(id);
+          }
           t.lines.insert(id, text);
         }
         RenderEvent::Error { message } => t.errors.push(message),
@@ -931,4 +945,75 @@ fn talking_through_a_manual_finalize_still_transcribes_the_continuation() {
       run.finish_chunk,
     );
   }
+}
+
+#[test]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
+fn immediate_followup_after_manual_finalize_has_live_and_final_text() {
+  let clips = SourceClips::load();
+  let mut failures = Vec::new();
+
+  for gap_chunks in [0usize, 1, 2, 4, 6, 10] {
+    let mut d = Dictation::new(&clips, -1).then_tone_chunks(&clips, gap_chunks);
+    let onset = d.then_speech_b(&clips);
+    let d = d.then_tone(&clips, 2_000);
+    let tag = format!("immediate-followup-gap-{gap_chunks}c");
+    let Some(run) = run_post_finalize_paced(&tag, &d.audio, d.finish_at_chunk, true) else {
+      return;
+    };
+    let finished = run.trace.manual_finished_turn.expect("Enter finalized a spoken turn");
+    let followup = run
+      .trace
+      .lines
+      .range(finished + 1..)
+      .map(|(_, text)| text.as_str())
+      .collect::<Vec<_>>()
+      .join(" ")
+      .to_lowercase();
+    let has_live_draft = run.trace.draft_turns.iter().any(|id| *id > finished);
+    if !has_live_draft || !["fonts", "mapping"].iter().all(|word| followup.contains(word)) {
+      failures.push(format!(
+        "gap={}ms onset_chunk={onset} Enter_chunk={} starts={:?} \
+         live_draft={has_live_draft} followup={followup:?}",
+        gap_chunks * 160,
+        run.finish_chunk,
+        run.trace.turn_starts,
+      ));
+    }
+  }
+
+  assert!(failures.is_empty(), "missed immediate follow-up:\n{}", failures.join("\n"));
+}
+
+#[test]
+#[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
+fn recorded_post_paste_followup_has_live_and_final_text() {
+  let mut audio = fixture_samples("post-paste-previous-utterance.wav");
+  let finish_at_chunk = audio.len() / CHUNK_SAMPLES - 1;
+  audio.extend(fixture_samples("post-paste-missed-start.wav"));
+  let clips = SourceClips::load();
+  audio.extend(clips.tone(2_000));
+
+  let Some(run) =
+    run_post_finalize_paced("recorded-post-paste-followup", &audio, finish_at_chunk, true)
+  else {
+    return;
+  };
+  let finished = run.trace.manual_finished_turn.expect("Enter finalized the preceding utterance");
+  assert!(run.trace.lines[&finished].to_lowercase().contains("modify claude code"));
+  let followup = run
+    .trace
+    .lines
+    .range(finished + 1..)
+    .map(|(_, text)| text.as_str())
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_lowercase();
+  assert!(
+    run.trace.draft_turns.iter().any(|id| *id > finished) && followup.contains("is that a"),
+    "recorded follow-up was detected but did not produce live and final text: \
+     starts={:?} draft_turns={:?} finished_turn={finished} followup={followup:?}",
+    run.trace.turn_starts,
+    run.trace.draft_turns,
+  );
 }

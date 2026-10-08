@@ -1,0 +1,14 @@
+{
+  "turn_id": 145,
+  "ts_ms": 1791493597564,
+  "sample_rate": 16000,
+  "num_samples": 519680,
+  "pipeline": "dual_stream",
+  "emitted_kind": "dual_final",
+  "emitted_text": "It sounds like I can modify claude code to show custom interface things I would like to make it show the progress of a number of individual tasks that I spin up using an entirely separate thing outside of claude code is that something that we could show different progress bars on?",
+  "draft_text": "It sounds like I can modify claude code to show custom interface things I would like to make it show the progress of a number of individual tasks that I spin up using an entirely separate thing outside of claude code is that something that we could show different progress bars on",
+  "full_text": "",
+  "finalize_elapsed_ms": 55,
+  "eou_emission_count": 75,
+  "live_display_event_count": 73
+}

@@ -2,6 +2,24 @@
   "version": 1,
   "fixtures": [
     {
+      "id": "post-paste-previous-utterance",
+      "wav": "post-paste-previous-utterance.wav",
+      "json": "post-paste-previous-utterance.json",
+      "description": "Captured 2026-10-08, production turn 145. The preceding successfully pasted utterance for recorded_post_paste_followup_has_live_and_final_text. Enter lands on its final processing chunk.",
+      "assertions": {
+        "must_contain": ["modify claude code"]
+      }
+    },
+    {
+      "id": "post-paste-missed-start",
+      "wav": "post-paste-missed-start.wav",
+      "json": "post-paste-missed-start.json",
+      "description": "Captured 2026-10-08, production turn 146. VAD detected a turn after the preceding paste, but neither stream emitted text. Includes the beginning of the next question, independently recovered as 'Is that a' in a fresh file replay. Used after the preceding fixture at real-time cadence; the capture ends at the textless-turn timeout, not at the end of the user's complete question.",
+      "assertions": {
+        "must_contain": ["is that a"]
+      }
+    },
+    {
       "id": "empty-audio",
       "wav": "empty-audio.wav",
       "json": "empty-audio.json",

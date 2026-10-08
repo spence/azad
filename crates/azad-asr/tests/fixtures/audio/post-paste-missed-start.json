@@ -1,0 +1,16 @@
+{
+  "bailout_reason": null,
+  "draft_text": "",
+  "emitted_kind": "dual_final",
+  "emitted_text": "",
+  "eou_emissions": [],
+  "finalize_elapsed_ms": 39,
+  "full_text": "",
+  "live_display_events": [],
+  "num_samples": 61440,
+  "partials": [],
+  "pipeline": "dual_stream",
+  "sample_rate": 16000,
+  "ts_ms": 1791493601496,
+  "turn_id": 146
+}
