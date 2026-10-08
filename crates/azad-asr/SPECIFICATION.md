@@ -114,10 +114,14 @@ Finalize path:
 - flush the refined session and emit `ReplaceLine` with the refined final (or the draft if the refined session was empty),
 - clear the VAD start gate (`reset_vad_start_gate`) so the next turn is decided by fresh audio.
 
-The empty-turn timeout treats the refined stream's text as evidence too: it fires regardless of
-current VAD state, so keying only on the live draft let it discard a turn the user was mid-way
-through speaking. The restart block it arms is bounded by the pre-roll window, so a block can cost
-start latency but never words.
+The empty-turn timeout evaluates the current chunk after decoding and counts audio without fresh
+speech evidence, not the turn's wall-clock age. Raw VAD speech at the in-speech threshold resets
+that inactivity budget; smoothed VAD hangover does not. Text from either stream protects the turn.
+The restart block it arms remains bounded by the pre-roll window.
+
+Bindings: `empty_vad_inactivity_resets_on_renewed_speech`,
+`empty_vad_inactivity_expires_on_room_tone`, and
+`recorded_post_paste_followup_has_live_and_final_text`.
 
 ## 5. Dual-Stream Refinement Design
 

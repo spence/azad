@@ -995,6 +995,7 @@ struct PipelineCore {
 
   in_speech: bool,
   silence_samples: usize,
+  empty_vad_inactive_samples: usize,
   vad_avg_ema: f32,
   start_run: usize,
   /// Chunks of automatic-restart block remaining after an empty VAD turn. Cleared early by the
@@ -1123,6 +1124,10 @@ fn vad_rearm_chunks_after(remaining: u32, vad_avg: f32, vad_on: f32) -> u32 {
   if vad_avg < vad_on { 0 } else { remaining.saturating_sub(1) }
 }
 
+fn empty_vad_inactive_samples_after(samples: usize, vad_prob: f32, speech_thold: f32) -> usize {
+  if vad_prob >= speech_thold { 0 } else { samples.saturating_add(CHUNK_SAMPLES) }
+}
+
 impl PipelineCore {
   fn new(
     input_spec: AudioSpec,
@@ -1162,6 +1167,7 @@ impl PipelineCore {
       session_complete: false,
       in_speech: false,
       silence_samples: 0,
+      empty_vad_inactive_samples: 0,
       vad_avg_ema: 0.0,
       start_run: 0,
       vad_rearm_chunks: 0,
@@ -1455,40 +1461,13 @@ impl PipelineCore {
       return Ok(());
     }
 
-    // Guard against false-positive VAD starts that produce no draft text and never
-    // naturally transition back to idle (e.g. noisy environments hovering near threshold).
-    if self.should_timeout_empty_vad_turn() {
-      // Discards the turn's audio outright, so it needs its own line: `is_speech=true` here means
-      // it fired on somebody who was still talking.
-      if self.debug_stats_enabled() {
-        eprintln!(
-          "TOON_TURN_TIMEOUT ts_ms={} turn_id={} elapsed_ms={} audio_samples={} \
-           vad_prob={:.3} is_speech={}",
-          now_ms(),
-          self.turn_id,
-          self.turn_started_at.elapsed().as_millis(),
-          self.turn_audio.len(),
-          vad_avg,
-          is_speech,
-        );
-      }
-      if self.tentative_active {
-        self.commit_finalize_from_tentative()?;
-      } else {
-        self.finish_turn(false)?;
-        self.complete_turn_after_finish();
-      }
-      return Ok(());
-    }
-
-    let silence_ms: u32;
-    if is_speech {
+    let silence_ms = if is_speech {
       self.silence_samples = 0;
-      silence_ms = 0;
+      0
     } else {
       self.silence_samples = self.silence_samples.saturating_add(chunk16.len());
-      silence_ms = ((self.silence_samples as u64) * 1000 / (TARGET_SR as u64)) as u32;
-    }
+      ((self.silence_samples as u64) * 1000 / (TARGET_SR as u64)) as u32
+    };
     let speech_resumed = silence_ms == 0 && self.prev_silence_ms > 0;
     let silence_started = silence_ms > 0 && self.prev_silence_ms == 0;
     let debug_enabled = self.debug_stats_enabled();
@@ -1574,6 +1553,35 @@ impl PipelineCore {
     if force_finish_requested {
       if let Some(ctrl) = &self.controls {
         let _ = ctrl.take_force_finish();
+      }
+      if self.tentative_active {
+        self.commit_finalize_from_tentative()?;
+      } else {
+        self.finish_turn(false)?;
+        self.complete_turn_after_finish();
+      }
+      return Ok(());
+    }
+
+    // Raw speech renews the budget; EMA hangover cannot keep an empty false start alive.
+    self.empty_vad_inactive_samples = empty_vad_inactive_samples_after(
+      self.empty_vad_inactive_samples,
+      vad_avg,
+      self.cfg.vad_in_speech_thold,
+    );
+    self.drain_async_results();
+    if self.should_timeout_empty_vad_turn() {
+      if self.debug_stats_enabled() {
+        eprintln!(
+          "TOON_TURN_TIMEOUT ts_ms={} turn_id={} elapsed_ms={} audio_samples={} \
+           vad_prob={:.3} is_speech={}",
+          now_ms(),
+          self.turn_id,
+          self.turn_started_at.elapsed().as_millis(),
+          self.turn_audio.len(),
+          vad_avg,
+          is_speech,
+        );
       }
       if self.tentative_active {
         self.commit_finalize_from_tentative()?;
@@ -1674,6 +1682,7 @@ impl PipelineCore {
     self.start_run = 0;
     self.in_speech = true;
     self.silence_samples = 0;
+    self.empty_vad_inactive_samples = 0;
     self.tracker.reset();
     self.pending_active_clear_chunks = 0;
     self.turn_started_at = Instant::now();
@@ -2308,10 +2317,7 @@ impl PipelineCore {
       return false;
     }
 
-    // The refined 560 ms stream counts as evidence too. It routinely has words before the live
-    // 80 ms stream does, and this timeout fires whether or not VAD currently reports speech — so
-    // consulting only the live draft let it discard a turn the user was in the middle of
-    // speaking, taking their opening words with it.
+    // Either decoder's text protects a turn whose live caption is still catching up.
     let has_text = !self.tracker.full_text().trim().is_empty()
       || !self.eou_draft.trim().is_empty()
       || !self.live_display.live_refined_text.trim().is_empty();
@@ -2320,7 +2326,7 @@ impl PipelineCore {
     }
 
     let timeout_ms = u64::from(self.cfg.eou_max_silence_ms.max(1)).saturating_mul(3);
-    self.turn_started_at.elapsed().as_millis() >= u128::from(timeout_ms)
+    self.empty_vad_inactive_samples as u64 * 1000 >= timeout_ms * u64::from(TARGET_SR)
   }
 
   fn complete_turn_after_finish(&mut self) {
@@ -2995,15 +3001,16 @@ mod tests {
     tokens_equivalent, tokens_match_substantive_boundary, try_consume_number_run,
   };
   use super::{
-    CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES, DEBUG_RECORDING_MAX_FILES,
-    DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, EouEmission, FinalizingPulsePlan,
-    INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS, INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS,
-    LiveDraftRenderPlan, PipelineControls, activation_level_blocks_start,
-    capture_enable_transition, compose_live_display_text, debug_recording_stem,
-    finalizing_pulse_plan, freeze_cosmetic_live_display_churn, live_display_can_replace,
-    live_stream_output_gap, normalize_chunk_case, plan_live_draft_render,
-    plan_live_draft_render_after_previous, prune_debug_recordings, samples_to_ms_at_target_sr,
-    stabilize_live_display_replacement, stitch_incremental_text, vad_rearm_chunks_after, vad_score,
+    CHUNK_SAMPLES, CaptureEnableTransition, DEBUG_RECORDING_BAILOUT_MAX_FILES,
+    DEBUG_RECORDING_MAX_FILES, DEFAULT_LIVE_DISPLAY_MUTABLE_TAIL_TOKENS, EouEmission,
+    FinalizingPulsePlan, INCREMENTAL_STITCH_MIN_OVERLAP_TOKENS,
+    INCREMENTAL_STITCH_TAIL_WINDOW_TOKENS, LiveDraftRenderPlan, PipelineControls,
+    activation_level_blocks_start, capture_enable_transition, compose_live_display_text,
+    debug_recording_stem, empty_vad_inactive_samples_after, finalizing_pulse_plan,
+    freeze_cosmetic_live_display_churn, live_display_can_replace, live_stream_output_gap,
+    normalize_chunk_case, plan_live_draft_render, plan_live_draft_render_after_previous,
+    prune_debug_recordings, samples_to_ms_at_target_sr, stabilize_live_display_replacement,
+    stitch_incremental_text, vad_rearm_chunks_after, vad_score,
   };
 
   /// The 25 captured incremental partials from turn 41 (debug-recording
@@ -3155,6 +3162,30 @@ mod tests {
     assert!(!activation_level_blocks_start(false, true, -35.0, -40.0));
     assert!(!activation_level_blocks_start(false, false, -45.0, -40.0));
     assert!(!activation_level_blocks_start(true, true, -45.0, -40.0));
+  }
+
+  #[test]
+  fn empty_vad_inactivity_resets_on_renewed_speech() {
+    let nearly_expired = 19 * CHUNK_SAMPLES;
+    for vad_prob in [0.10, 0.235, 1.0] {
+      assert_eq!(empty_vad_inactive_samples_after(nearly_expired, vad_prob, 0.10), 0);
+    }
+  }
+
+  #[test]
+  fn empty_vad_inactivity_expires_on_room_tone() {
+    let mut inactive = 0;
+    for _ in 0..19 {
+      inactive = empty_vad_inactive_samples_after(inactive, 0.01, 0.10);
+    }
+    assert!(inactive as u64 * 1000 >= 3_000 * 16_000);
+  }
+
+  #[test]
+  fn empty_vad_inactivity_ignores_smoothed_speech_hangover() {
+    let raw_prob = 0.01;
+    assert!(vad_score(raw_prob, 0.8) >= 0.10);
+    assert_eq!(empty_vad_inactive_samples_after(0, raw_prob, 0.10), CHUNK_SAMPLES);
   }
 
   #[test]

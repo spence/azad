@@ -1,7 +1,7 @@
 # Post-paste missed speech reproduction — 2026-10-08
 
-Reproduced twice in an isolated, real-time `run_pipeline_with_options` replay. No runtime
-implementation was changed. The installed app was not restarted or driven with test input.
+The baseline below reproduced the failure twice without runtime changes or live-app test input.
+The validated correction and deployment evidence follow the baseline record.
 
 ## Observed episode
 
@@ -52,7 +52,7 @@ approximately 800 ms after the finishing chunk's end. No nonempty draft or final
 At chunks 224–226, VAD reports renewed speech (raw probabilities 0.235, 1.000, 1.000). The
 pipeline is back at its idle threshold at chunk 228.
 
-The code's relevant failure path is `PipelineCore::should_timeout_empty_vad_turn`: a textless
+The baseline failure path is `PipelineCore::should_timeout_empty_vad_turn`: a textless
 VAD turn expires after `eou_max_silence_ms * 3` (3 s), even if new speech is arriving. The
 check runs before appending/decoding the current chunk. The replay retires the turn at this
 boundary while the VAD meter still reports speech. This demonstrates an engine-side missed
@@ -82,4 +82,69 @@ replays remain opt-in. The short-gap control passed again on the final test code
   disk 34 GiB and memory-pressure report 87% free. This is a correctness reproduction, not a
   latency benchmark or proof of uninterrupted hardware capture.
 - The live Azad PID remained 2475, started 2026-10-06 14:34:50, with the same three ASR children.
-- The model-dependent test remains opt-in and intentionally red until the requested fix is made.
+- The model-dependent test remains opt-in; its correct-behavior assertion fails on the baseline.
+
++## Validated correction — 2026-10-08
+
+The owner approved the engine-local inactivity-timeout recommendation and required reevaluation
+if it did not fix this recording. The first corrected replay passed, so no alternate strategy,
+model change, input-device change, shortcut change, or overlay redesign was needed.
+
+The correction processes the current chunk before empty-turn cleanup. A private sample counter
+measures audio without raw VAD speech at the existing in-speech threshold, rather than wall time
+since turn creation. Fresh speech resets the counter; smoothed hangover does not. Text from either
+decoder still protects the turn, and explicit finish/cancel retain priority.
+
+The threshold is unchanged. This correction does not change VAD's classification of noise or
+introduce a maximum duration for continuously detected speech.
+
+Verification:
+
+- First corrected, unchanged recorded-case assertion: passed in 38.67 s, with live and final
+  follow-up text (`Is that a`).
+- All 10 opt-in model replays: passed, 224.57 s. The existing resume test's Enter offset is
+  corrected to 2 chunks (320 ms), so it actually exercises manual finalize.
+- Workspace tests: 287 app tests passed (1 unrelated opt-in test ignored), 134 engine tests
+  passed, and 57 text tests passed. App tests used a private `HOME` under `target/`, with the
+  existing Cargo/Rustup homes explicitly retained; live metrics/preferences were not test controls.
+- `just interaction-test`: all 7 headless scenarios passed.
+- `cargo clippy -q -p azad-asr --all-targets -- -D warnings` and `cargo fmt --all --check`: passed.
+- The recorded-case assertion also passed in the optimized release profile against the signed,
+  staged helper, 38.54 s. The staged main app was never launched for testing.
+
+Release reproduction:
+
+```sh
+CARGO_BUILD_JOBS=2 AZAD_TEST_REQUIRE_MODELS=1 \
+AZAD_MLX_ASR_HELPER=/Users/spencer/Applications/Azad.app/Contents/MacOS/azad-mlx-asr \
+cargo test --release -p azad-asr --test replay \
+  recorded_post_paste_followup_has_live_and_final_text \
+  -- --ignored --nocapture --test-threads=1
+```
+
+Deployment:
+
+- The signed release was staged independently. `AZAD_SKIP_MLX_HELPER=1` reuses the unchanged
+  model helper; no model weights or helper implementation were changed.
+- Canonical live deployment completed: `just install`, one `just restart`, and `just status`.
+- Before lifecycle actions, the matching app processes were the previous main PID 2475 and
+  its three pure ASR helpers, not agent hosts. The legacy service was absent. App shutdown
+  cancels its audio session only; no foreign agent, editor, VM, or gateway daemon was stopped.
+- LaunchAgent `ai.azad` is running as PID 66977, started 2026-10-08 16:27:42 PDT.
+  `lsof` confirms its mapped executable is the installed bundle's main binary.
+- Stable identity remains `ai.azad`, team `35A87BDK48`; strict deep signature verification passes.
+  Main CDHash `38ec14544ec5afea9d4ab68af4e9c8facb6e6f03` and helper CDHash `32a8fbc96c3a02532dd470c36528c8f4894027f4`
+  match the independently staged release. File SHA differences after signing reflect signature
+  metadata; code-directory identities match.
+- The tap logs `installed`, reason `startup`, generation 1 at Unix ms 1791502063027.
+- No synthetic desktop input, live microphone test, input-device change, preference test control,
+  permission reset, or second runtime restart was used.
+
+Installed/source SHA-256 at verification:
+
+- Main app: `1bbb541aa4105e2c1570682db045cc3acf02336b190ec0633616cffef5296c0a`.
+- Model helper: `2edacd61420685495fade94d30006cc286fd4f7c2efa795db35d947e8d6bb406`.
+- Engine source `src/pipeline.rs`: `8994a468017164c3855b28d18296d9e090c1b108e8c87f5a9d253cf1f48723ea`.
+
+Burndown owns current completion state under `MS-POST-PASTE-SPEECH.T1` and
+`MS-POST-PASTE-SPEECH.G1`, linked from `ISS-FOLLOW-UP-SPEECH-CAN-BE-DETECTED-BUT-LOS`.

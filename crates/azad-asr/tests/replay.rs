@@ -697,11 +697,7 @@ impl Dictation {
   }
 }
 
-/// Delivers a WAV at 1x wall-clock speed. Required whenever the behaviour under test is gated on
-/// real time rather than sample count — `should_timeout_empty_vad_turn` compares
-/// `turn_started_at.elapsed()` against `eou_max_silence_ms * 3`, which a free-running replay
-/// (the live decode costs ~0.3x realtime) never reaches until far more audio has gone by than on
-/// a real mic.
+/// Delivers a WAV at microphone cadence so the concurrent refined decoder runs at live speed.
 struct PacedInput {
   inner: WavInput,
   started: std::time::Instant,
@@ -850,25 +846,8 @@ fn manual_finalize_does_not_restart_a_turn_on_room_tone() {
   }
 }
 
-/// **User-visible consequence — "I start talking again and nothing happens."**
-///
-/// Pre-fix, the phantom turn from the test above was still open when the user resumed, so their
-/// words were swallowed into a turn VAD had opened on room tone seconds earlier. That turn was
-/// still text-less when it hit `should_timeout_empty_vad_turn` (`eou_max_silence_ms * 3` = 3 s of
-/// wall clock), which fires whether or not VAD currently says speech. It was discarded with an
-/// empty draft — nothing pasted, nothing shown — and, counting as an *empty VAD turn*, it armed
-/// the restart block and reset the Silero VAD mid-word. The block then refused every automatic
-/// start until a chunk scored below `vad_thold`, which does not happen while somebody is talking.
-/// Production logs had 6.4 % of all turns dying on this timeout, over half with VAD reporting
-/// speech more than 2 s in; this fixture measured 3040 ms of speech dropped.
-///
-/// Three defences hold it now: no phantom turn to resume into, the refined stream counts as text
-/// so the timeout cannot discard a turn whose words merely have not reached the live draft yet,
-/// and the restart block expires after the pre-roll window so it can cost latency but never words.
-///
-/// Runs at 1x wall-clock speed: the timeout is wall-clock gated, so a free-running replay cannot
-/// see it. The resume offset is swept because where the user lands inside the phantom decided
-/// whether the timeout caught them.
+/// Speech resuming after a manual finalize must remain capturable.
+/// Sweeps resume timing with real microphone room tone at live decoder cadence.
 #[test]
 #[ignore = "requires MLX Nemotron + Silero VAD models on disk"]
 fn speech_resumed_into_a_phantom_turn_is_not_discarded() {
@@ -876,7 +855,7 @@ fn speech_resumed_into_a_phantom_turn_is_not_discarded() {
   let mut failures = Vec::new();
 
   for gap_chunks in [12usize, 14, 16] {
-    let mut d = Dictation::new(&clips, 320).then_tone_chunks(&clips, gap_chunks);
+    let mut d = Dictation::new(&clips, 2).then_tone_chunks(&clips, gap_chunks);
     let b_onset = d.then_speech_b(&clips);
     let d = d.then_tone(&clips, 2_000);
 
