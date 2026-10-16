@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cocoa::appkit::NSPasteboard;
 use cocoa::base::{id, nil};
@@ -10,9 +10,11 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::settings::{AutoSubmitMode, PasteMethod};
+use crate::typing::{TypingCursor, TypingProgress};
 
 #[cfg(not(test))]
-use super::{AZAD_SYNTHETIC_MARKER, KCG_EVENT_SOURCE_USER_DATA_FIELD, KEYCODE_RETURN};
+use super::KEYCODE_RETURN;
+use super::{AZAD_SYNTHETIC_MARKER, KCG_EVENT_SOURCE_USER_DATA_FIELD};
 use super::{ensure_accessibility_for_auto_paste, nsstring_to_string};
 
 const KEYCODE_DIRECT_INPUT: u16 = 0x00;
@@ -41,6 +43,155 @@ pub enum PasteResult {
   ClipboardWriteFailed,
   InputEventFailed,
   AccessibilityRequired,
+  Cancelled,
+}
+
+pub enum InsertStart {
+  Finished(PasteResult),
+  Paced(PacedTyping),
+  PacedFailed(PasteResult),
+}
+
+pub struct PacedTyping {
+  cursor: TypingCursor,
+  copy: bool,
+}
+
+#[cfg(not(test))]
+thread_local! {
+  static TYPING_SOURCE: std::cell::RefCell<Option<CGEventSource>> = const { std::cell::RefCell::new(None) };
+}
+
+impl PacedTyping {
+  fn new(text: String, method: PasteMethod, rate: u32) -> Result<Self, PasteResult> {
+    if text.trim().is_empty() {
+      return Err(PasteResult::EmptyText);
+    }
+    #[cfg(not(test))]
+    {
+      if !ensure_accessibility_for_auto_paste() {
+        return Err(PasteResult::AccessibilityRequired);
+      }
+      let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+        .map_err(|_| PasteResult::InputEventFailed)?;
+      // SAFETY: the source belongs to this insertion on the main thread.
+      unsafe { release_modifiers(&source) };
+      TYPING_SOURCE.with(|slot| slot.replace(Some(source)));
+    }
+    Ok(Self {
+      cursor: TypingCursor::new(text, rate, Instant::now()),
+      copy: method == PasteMethod::DirectTypingAndCopyClipboard,
+    })
+  }
+
+  pub fn advance(&mut self, now: Instant) -> TypingProgress {
+    #[cfg(not(test))]
+    let progress = self.cursor.advance(now, |ch| {
+      TYPING_SOURCE.with(|slot| {
+        let source = slot.borrow();
+        let source = source.as_ref().ok_or(())?;
+        let (down, up) = direct_key_pair(source, ch)?;
+        down.post(CGEventTapLocation::HID);
+        up.post(CGEventTapLocation::HID);
+        Ok(Instant::now())
+      })
+    });
+    #[cfg(test)]
+    let progress = self.cursor.advance(now, |ch| {
+      TEST_PAIRS_BEFORE_FAILURE.with(|slot| {
+        let mut remaining = slot.borrow_mut();
+        if let Some(count) = remaining.as_mut() {
+          if *count == 0 {
+            return Err(());
+          }
+          *count -= 1;
+        }
+        Ok(())
+      })?;
+      record_test_output(TestOutput::Pair(ch));
+      Ok(now)
+    });
+    if progress == TypingProgress::Complete && self.copy {
+      #[cfg(not(test))]
+      // SAFETY: the clipboard attempt follows the final pair on the main thread.
+      if !unsafe { write_pasteboard_string(self.cursor.text()) } {
+        eprintln!("Azad: direct input succeeded but failed to copy text to pasteboard");
+      }
+      #[cfg(test)]
+      record_test_output(TestOutput::Copy(self.cursor.text().into()));
+    }
+    progress
+  }
+}
+
+impl Drop for PacedTyping {
+  fn drop(&mut self) {
+    #[cfg(not(test))]
+    TYPING_SOURCE.with(|slot| slot.replace(None));
+  }
+}
+
+pub(super) fn direct_key_pair(source: &CGEventSource, ch: char) -> Result<(CGEvent, CGEvent), ()> {
+  let down = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, true)?;
+  let up = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, false)?;
+  down.set_string(&ch.to_string());
+  for event in [&down, &up] {
+    event.set_integer_value_field(KCG_EVENT_SOURCE_USER_DATA_FIELD, AZAD_SYNTHETIC_MARKER);
+  }
+  Ok((down, up))
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum TestOutput {
+  Pair(char),
+  Copy(String),
+  Insert(String, PasteMethod),
+  Submit(AutoSubmitMode),
+}
+
+#[cfg(test)]
+thread_local! {
+  static TEST_OUTPUT: std::cell::RefCell<Vec<TestOutput>> = const { std::cell::RefCell::new(Vec::new()) };
+  static TEST_PAIRS_BEFORE_FAILURE: std::cell::RefCell<Option<usize>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub fn fail_typing_after_for_test(pairs: Option<usize>) {
+  TEST_PAIRS_BEFORE_FAILURE.with(|slot| slot.replace(pairs));
+}
+
+#[cfg(test)]
+fn record_test_output(event: TestOutput) {
+  TEST_OUTPUT.with(|slot| slot.borrow_mut().push(event));
+}
+
+#[cfg(test)]
+pub fn take_test_output() -> Vec<TestOutput> {
+  TEST_OUTPUT.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
+}
+
+pub fn start_insert(
+  text: &str,
+  method: PasteMethod,
+  paste_delay_ms: u64,
+  key_rate: u32,
+) -> InsertStart {
+  if key_rate > 0 && method != PasteMethod::ClipboardPaste {
+    #[cfg(not(test))]
+    // SAFETY: this only inspects the current foreground application.
+    let terminal =
+      unsafe { frontmost_bundle_id().is_some_and(|bundle| is_terminal_like_bundle_id(&bundle)) };
+    #[cfg(test)]
+    let terminal = false;
+    if !terminal {
+      return match PacedTyping::new(text.to_string(), method, key_rate) {
+        Ok(typing) => InsertStart::Paced(typing),
+        Err(result) => InsertStart::PacedFailed(result),
+      };
+    }
+  }
+  InsertStart::Finished(insert_text(text, method, paste_delay_ms))
 }
 
 pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> PasteResult {
@@ -53,6 +204,8 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
   // transitions; routing them through live paths would inject real Cmd+V
   // keystrokes into whatever app is focused during `cargo test`.
   if cfg!(test) {
+    #[cfg(test)]
+    record_test_output(TestOutput::Insert(text.into(), method));
     return PasteResult::Pasted;
   }
 
@@ -125,7 +278,8 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
 }
 
 #[cfg(test)]
-pub fn send_auto_submit(_mode: AutoSubmitMode) -> bool {
+pub fn send_auto_submit(mode: AutoSubmitMode) -> bool {
+  record_test_output(TestOutput::Submit(mode));
   true
 }
 
@@ -187,20 +341,8 @@ unsafe fn send_direct_text_input(text: &str) -> bool {
   // Dispatch per-character Unicode key events. Some targets ignore or truncate
   // multi-character Unicode payloads in a single CGEvent.
   for ch in text.chars() {
-    let mut one = String::new();
-    one.push(ch);
-
-    let Ok(key_down) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, true)
-    else {
-      return false;
-    };
-    key_down.set_string(&one);
+    let Ok((key_down, key_up)) = direct_key_pair(&source, ch) else { return false };
     key_down.post(CGEventTapLocation::HID);
-
-    let Ok(key_up) = CGEvent::new_keyboard_event(source.clone(), KEYCODE_DIRECT_INPUT, false)
-    else {
-      return false;
-    };
     key_up.post(CGEventTapLocation::HID);
   }
   true
@@ -273,7 +415,9 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
 unsafe fn send_command_v() {
   use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
-  let mut enigo = match Enigo::new(&Settings::default()) {
+  let settings =
+    Settings { event_source_user_data: Some(AZAD_SYNTHETIC_MARKER), ..Settings::default() };
+  let mut enigo = match Enigo::new(&settings) {
     Ok(e) => e,
     Err(err) => {
       eprintln!("Azad: enigo init failed for Cmd+V paste: {err}");

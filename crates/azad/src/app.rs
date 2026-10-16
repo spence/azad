@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use asr::devices::DeviceStateSnapshot;
 use asr::pipeline::{DebugStatsEvent, EngineState};
-use azad_text::{DisplayTextOptions, PasteTextOptions, build_display_text, build_paste_text};
+use azad_text::{DisplayTextOptions, build_display_text};
 
 use crate::apple_lm::{
   self, AvailabilityReport, AvailabilityState, AzadIntent, RemovedWordAction, TextSettingId,
@@ -31,8 +31,11 @@ use crate::spotify_cmd::{self, SpotifyIntent};
 use crate::transcript_history::TranscriptIndex;
 
 mod history;
+mod insertion;
 mod policy;
 mod settings_ui;
+
+use insertion::{ActiveInsertion, InsertOrigin, InsertionRequest, InsertionSource};
 
 use policy::{
   DraftOverlayAction, ListenToggleNotice, ManualHoldReleaseAction, SessionRecoveryState,
@@ -97,6 +100,7 @@ pub enum AppEvent {
   SettingsToggleDebugStats(bool),
   SettingsSetActivationLevel(i64),
   SettingsSelectPasteMethod(PasteMethod),
+  SettingsSetTypingKeyRate(u32),
   SettingsSelectAutoSubmit(AutoSubmitMode),
   SettingsSelectOverlayPosition(OverlayPosition),
   SettingsToggleHistory(bool),
@@ -147,10 +151,6 @@ pub enum AppEvent {
   /// collapses back to the list; in list mode it dismisses the overlay.
   /// Distinct from `OverlayCancel` (Esc) so Esc can always exit fully.
   HistoryCollapse,
-  /// User typed into the history search field. Filters the list to entries
-  /// containing the term (case-insensitive substring) and highlights the
-  /// match. Empty string clears the filter.
-  HistorySearchChanged(String),
   /// HID-tap captured a printable keystroke while history mode is active —
   /// append it to the search query.
   HistorySearchAppend(String),
@@ -272,6 +272,12 @@ pub fn request_shutdown() {
   send_event(AppEvent::ShutdownRequested);
 }
 
+pub fn advance_typing(request_id: u64) {
+  if let Some(controller) = CONTROLLER.get() {
+    controller.lock().unwrap().advance_insertion(request_id, Instant::now());
+  }
+}
+
 pub fn set_download_paused_immediate(paused: bool) -> bool {
   let Some(controller_mutex) = CONTROLLER.get() else {
     return false;
@@ -334,6 +340,11 @@ struct AppController {
   overlay_pending_vad_text: bool,
   cancelled: bool,
   last_pasted_turn_id: Option<u64>,
+  next_insertion_id: u64,
+  insertion_queue: VecDeque<InsertionRequest>,
+  active_insertion: Option<ActiveInsertion>,
+  handled_insertions: HashSet<InsertionSource>,
+  insertion_overlay_owner: Option<u64>,
   latest_draft: String,
   finalizing_draft: String,
   finalizing_activity_history: Vec<f32>,
@@ -365,6 +376,7 @@ struct AppController {
   activation_level: i64,
   history_enabled: bool,
   paste_method: PasteMethod,
+  typing_key_rate: u32,
   auto_submit_mode: AutoSubmitMode,
   append_trailing_space_on_paste: bool,
   deduplicate_words_on_paste: bool,
@@ -607,6 +619,7 @@ fn paste_result_label(result: PasteResult) -> &'static str {
     PasteResult::EmptyText => "empty_text",
     PasteResult::ClipboardWriteFailed => "clipboard_write_failed",
     PasteResult::InputEventFailed => "input_event_failed",
+    PasteResult::Cancelled => "cancelled",
   }
 }
 
@@ -639,6 +652,7 @@ impl AppController {
     let activation_level = preferred_store::load_activation_level();
     let history_enabled = preferred_store::load_history_enabled();
     let paste_method = preferred_store::load_paste_method();
+    let typing_key_rate = preferred_store::load_typing_key_rate();
     let auto_submit_mode = preferred_store::load_auto_submit_mode();
     let append_trailing_space_on_paste = preferred_store::load_append_trailing_space_on_paste();
     let deduplicate_words_on_paste = preferred_store::load_deduplicate_words_on_paste();
@@ -684,6 +698,11 @@ impl AppController {
       overlay_pending_vad_text: false,
       cancelled: false,
       last_pasted_turn_id: None,
+      next_insertion_id: 1,
+      insertion_queue: VecDeque::new(),
+      active_insertion: None,
+      handled_insertions: HashSet::new(),
+      insertion_overlay_owner: None,
       latest_draft: String::new(),
       finalizing_draft: String::new(),
       finalizing_activity_history: vec![0.0; OVERLAY_ACTIVITY_HISTORY_LEN],
@@ -715,6 +734,7 @@ impl AppController {
       activation_level,
       history_enabled,
       paste_method,
+      typing_key_rate,
       auto_submit_mode,
       append_trailing_space_on_paste,
       deduplicate_words_on_paste,
@@ -810,18 +830,6 @@ impl AppController {
       && platform::accessibility_authorization() == platform::PermissionStatus::Granted
   }
 
-  /// Record a finalized turn to the transcript history, unless the user has
-  /// turned history off. Existing entries stay browsable; only new writes stop.
-  fn record_history(&mut self, turn_id: u64, cleaned: &str) {
-    if !self.history_enabled {
-      return;
-    }
-    let cleaned = self.strip_active_trigger(cleaned);
-    if let Some(index) = &mut self.transcript_index {
-      index.append(turn_id, &self.finalizing_draft, &cleaned);
-    }
-  }
-
   fn record_shutdown_snapshot(&mut self) -> ShutdownSnapshotOutcome {
     if !self.history_enabled {
       return ShutdownSnapshotOutcome::HistoryDisabled;
@@ -832,7 +840,10 @@ impl AppController {
     let Some((turn_id, text)) = self.shutdown_snapshot_candidate() else {
       return ShutdownSnapshotOutcome::NoActiveDraft;
     };
-    if self.last_pasted_turn_id == Some(turn_id) || self.raw_handled_turn_id == Some(turn_id) {
+    if self.last_pasted_turn_id == Some(turn_id)
+      || self.raw_handled_turn_id == Some(turn_id)
+      || self.insertion_source_handled(turn_id)
+    {
       return ShutdownSnapshotOutcome::AlreadyHandled;
     }
     let char_count = text.chars().count();
@@ -1012,6 +1023,7 @@ impl AppController {
       AppEvent::SettingsSelectPasteMethod(method) => {
         self.handle_settings_select_paste_method(method)
       }
+      AppEvent::SettingsSetTypingKeyRate(rate) => self.handle_settings_set_typing_key_rate(rate),
       AppEvent::SettingsSelectAutoSubmit(mode) => self.handle_settings_select_auto_submit(mode),
       AppEvent::SettingsSelectOverlayPosition(pos) => {
         self.handle_settings_select_overlay_position(pos)
@@ -1076,7 +1088,6 @@ impl AppController {
       AppEvent::ArrowNavigate(direction) => self.handle_arrow_navigate(direction),
       AppEvent::HistoryExpand => self.handle_history_expand(),
       AppEvent::HistoryCollapse => self.handle_history_collapse(),
-      AppEvent::HistorySearchChanged(query) => self.handle_history_search_changed(query),
       AppEvent::HistorySearchAppend(s) => self.handle_history_search_append(&s),
       AppEvent::HistorySearchBackspace => self.handle_history_search_backspace(),
       AppEvent::HistorySearchDeleteWord => self.handle_history_search_delete_word(),
@@ -1094,6 +1105,7 @@ impl AppController {
     }
     self.shutdown_started = true;
     let outcome = self.record_shutdown_snapshot();
+    self.cancel_insertion_output();
     eprintln!("AZAD_SHUTDOWN requested snapshot={outcome:?}");
     if let Some(session) = &self.session {
       session.cancel();
@@ -1119,6 +1131,7 @@ impl AppController {
 
     let session_id = self.next_session_id;
     self.next_session_id = self.next_session_id.saturating_add(1);
+    self.handled_insertions.clear();
     self.latest_draft.clear();
     self.finalizing_draft.clear();
     self.finalizing_activity_history.resize(OVERLAY_ACTIVITY_HISTORY_LEN, 0.0);
@@ -1638,6 +1651,7 @@ impl AppController {
 
   fn handle_overlay_cancel(&mut self) {
     self.log_input_event(InputLogEvent::OverlayCancel);
+    self.cancel_insertion_output();
     if self.history_browsing {
       // Esc always fully dismisses history regardless of expand state. The
       // list-mode "back" gesture is the Left arrow (HistoryCollapse), which
@@ -1855,6 +1869,17 @@ impl AppController {
       return;
     }
     if self.shutdown_started {
+      return;
+    }
+
+    let output_turn = match &event {
+      SpeechEvent::DraftUpdated { turn_id, .. }
+      | SpeechEvent::Finalizing { turn_id, .. }
+      | SpeechEvent::FinalizingCancelled { turn_id, .. }
+      | SpeechEvent::FinalText { turn_id, .. } => Some(*turn_id),
+      _ => None,
+    };
+    if output_turn.is_some_and(|turn_id| self.insertion_source_handled(turn_id)) {
       return;
     }
 
@@ -2224,11 +2249,8 @@ impl AppController {
               self.submit_to_azad(turn_id, &cleaned);
             } else if self.gateway_should_handle_turn() {
               self.submit_to_gateway(turn_id, &cleaned);
-            } else if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
-              self.last_pasted_turn_id = Some(turn_id);
-              self.record_history(turn_id, &cleaned);
             } else {
-              eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
+              self.request_paste(turn_id, TranscriptMode::Normal, &cleaned, InsertOrigin::SplitTop);
             }
           }
           // A live gateway/Azad/Spotify conversation owns the card; only fall back to
@@ -2310,15 +2332,12 @@ impl AppController {
             // nothing happening / paste appears" gap; hiding after leaves the overlay
             // responsible for "still working" state right up until the moment the text lands.
             let should_hide_overlay = !self.manual_hold_active && !hold_top_for_next_turn;
-            if self.try_paste(turn_id, TranscriptMode::Normal, &cleaned) {
-              self.last_pasted_turn_id = Some(turn_id);
-              self.record_history(turn_id, &cleaned);
-            } else {
-              eprintln!("Azad: failed to auto-paste transcript (clipboard still contains text)");
-            }
-            if should_hide_overlay {
-              self.dismiss_overlay_after_standard_dictation();
-            }
+            self.request_paste(
+              turn_id,
+              TranscriptMode::Normal,
+              &cleaned,
+              InsertOrigin::Normal { dismiss: should_hide_overlay },
+            );
           }
         }
         self.maybe_start_deferred_vad_turn();
@@ -2344,15 +2363,19 @@ impl AppController {
           if !self.cancelled
             && self.latest_seen_turn_id > 0
             && self.last_pasted_turn_id != Some(self.latest_seen_turn_id)
+            && !self.insertion_source_handled(self.latest_seen_turn_id)
           {
             // Paste-then-hide: the overlay's "still working" state stays on screen until the
             // paste actually lands, so dismissal and paste appear on the same frame.
             if let Some(final_text) = self.latest_final.as_ref() {
               let cleaned = final_text.trim().to_string();
-              if !cleaned.is_empty()
-                && self.try_paste(self.latest_seen_turn_id, TranscriptMode::Normal, &cleaned)
-              {
-                self.last_pasted_turn_id = Some(self.latest_seen_turn_id);
+              if !cleaned.is_empty() {
+                self.request_paste(
+                  self.latest_seen_turn_id,
+                  TranscriptMode::Normal,
+                  &cleaned,
+                  InsertOrigin::SessionEnd,
+                );
               }
             }
             self.hide_overlay();
@@ -2541,6 +2564,10 @@ impl AppController {
     // window back to the speech footprint. That's what produces the user-
     // reported "blank box that doesn't grow" symptom: the history render
     // runs once on entry, then gets clobbered ~50 ms later by the next tick.
+    if self.insertion_overlay_owner.is_some() && !self.history_browsing {
+      self.busy_border_phase =
+        (self.busy_border_phase + OVERLAY_BUSY_PHASE_STEP).rem_euclid(std::f32::consts::TAU);
+    }
     if !self.history_browsing {
       if let Some(deadline) = self.finalizing_deadline {
         let now = Instant::now();
@@ -2733,6 +2760,9 @@ impl AppController {
     if self.accessibility_notice_deadline.is_some() {
       return;
     }
+    if self.render_insertion_overlay() {
+      return;
+    }
     if !self.overlay_visible {
       if self.debug_stats_enabled {
         let loc = std::panic::Location::caller();
@@ -2804,6 +2834,9 @@ impl AppController {
 
   fn render_listening_overlay(&self) {
     if self.accessibility_notice_deadline.is_some() {
+      return;
+    }
+    if self.render_insertion_overlay() {
       return;
     }
     // During a gateway/Azad conversation, keep the prior exchange on screen rather than
@@ -2964,6 +2997,7 @@ impl AppController {
   }
 
   fn show_conversation_overlay(&mut self) {
+    self.insertion_overlay_owner = None;
     if self.gateway_conv.is_none() {
       return;
     }
@@ -3177,6 +3211,7 @@ impl AppController {
   }
 
   fn show_azad_overlay(&mut self) {
+    self.insertion_overlay_owner = None;
     if self.azad_turn.is_none() {
       return;
     }
@@ -3315,6 +3350,7 @@ impl AppController {
   }
 
   fn show_spotify_overlay(&mut self) {
+    self.insertion_overlay_owner = None;
     if self.spotify_turn.is_none() {
       return;
     }
@@ -3564,6 +3600,7 @@ impl AppController {
   }
 
   fn show_overlay_notice(&mut self, title: &str, body: &str, duration: Duration) {
+    self.insertion_overlay_owner = None;
     if !self.overlay_visible {
       platform::show_overlay();
       self.overlay_visible = true;
@@ -3575,6 +3612,7 @@ impl AppController {
   }
 
   fn show_listen_toggle_notice(&mut self, enabled: bool, duration: Duration) {
+    self.insertion_overlay_owner = None;
     if !self.overlay_visible {
       platform::show_overlay();
       self.overlay_visible = true;
@@ -3640,126 +3678,11 @@ impl AppController {
     false
   }
 
-  fn try_paste(&mut self, turn_id: u64, mode: TranscriptMode, text: &str) -> bool {
-    let text = self.strip_active_trigger(text);
-    let text = text.as_str();
-    let removed_words =
-      effective_removed_words(&self.removed_words, self.remove_hesitations_on_paste);
-    let paste_text = build_paste_text(
-      text,
-      PasteTextOptions {
-        append_trailing_space: self.append_trailing_space_on_paste,
-        removed_words: &removed_words,
-        deduplicate_words: self.deduplicate_words_on_paste,
-        convert_number_words: self.convert_number_words_on_paste,
-        convert_spoken_emoji: self.convert_spoken_emoji_on_paste,
-        lowercase_except_uppercase_words: self.lowercase_except_uppercase_words_on_paste,
-      },
-    );
-
-    if !matches!(self.paste_method, PasteMethod::ClipboardPaste) {
-      let payload_json =
-        serde_json::to_string(&paste_text).unwrap_or_else(|_| "\"<serialize_error>\"".to_string());
-      eprintln!(
-        "AZAD_DIRECT_PAYLOAD turn_id={} transcript_mode={} method={} chars={} payload={}",
-        turn_id,
-        transcript_mode_label(mode),
-        paste_method_label(self.paste_method),
-        paste_text.chars().count(),
-        payload_json
-      );
-    }
-
-    let paste_started = Instant::now();
-    let insert_started = Instant::now();
-    let paste_result =
-      platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
-    let insert_duration_ms =
-      u64::try_from(insert_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-    let auto_submit_started = Instant::now();
-    let (auto_submit_sent, auto_submit_ok) = if matches!(paste_result, PasteResult::Pasted) {
-      let sent = !matches!(self.auto_submit_mode, AutoSubmitMode::Off);
-      let ok = platform::send_auto_submit(self.auto_submit_mode);
-      (sent, ok)
-    } else {
-      (false, true)
-    };
-    let auto_submit_duration_ms = if matches!(paste_result, PasteResult::Pasted) {
-      u64::try_from(auto_submit_started.elapsed().as_millis()).unwrap_or(u64::MAX)
-    } else {
-      0
-    };
-    if matches!(paste_result, PasteResult::Pasted) && !auto_submit_ok {
-      eprintln!(
-        "Azad: failed to send auto-submit key event (mode={})",
-        auto_submit_mode_label(self.auto_submit_mode)
-      );
-    }
-    if matches!(paste_result, PasteResult::AccessibilityRequired) {
-      self.disable_listening_due_to_accessibility();
-    }
-    let paste_duration_ms = u64::try_from(paste_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-    eprintln!(
-      "AZAD_INSERT_PERF turn_id={} transcript_mode={} method={} chars={} result={} insert_ms={} auto_submit_mode={} auto_submit_sent={} auto_submit_ms={} auto_submit_ok={} total_ms={}",
-      turn_id,
-      transcript_mode_label(mode),
-      paste_method_label(self.paste_method),
-      paste_text.chars().count(),
-      paste_result_label(paste_result),
-      insert_duration_ms,
-      auto_submit_mode_label(self.auto_submit_mode),
-      auto_submit_sent,
-      auto_submit_duration_ms,
-      auto_submit_ok,
-      paste_duration_ms
-    );
-
-    let transcription_duration_ms = self
-      .turn_started_at
-      .remove(&turn_id)
-      .map(|started_at| u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX))
-      .unwrap_or(0);
-    if self.debug_stats_enabled {
-      let _ = metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::PasteCompleted {
-        turn_id,
-        mode,
-        paste_duration_ms,
-        result: paste_result_label(paste_result).to_string(),
-      }));
-
-      if transcription_duration_ms > 0 {
-        let _ =
-          metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::TurnCompleted {
-            turn_id,
-            mode,
-            transcription_duration_ms,
-          }));
-      }
-      let _ = metrics_log::append_record(&MetricsLogRecord::new(MetricsLogEvent::TurnSnapshot {
-        turn_id,
-        mode,
-        transcription_duration_ms,
-        text_preview: preview_text_for_metrics(text, 45),
-      }));
-    }
-
-    let paste_ok = matches!(paste_result, PasteResult::Pasted);
-    self.log_input_event(InputLogEvent::PasteAttempt {
-      turn_id,
-      mode: match mode {
-        TranscriptMode::Normal => "normal",
-        TranscriptMode::Raw => "raw",
-      },
-      source: paste_result_label(paste_result),
-      paste_ok,
-    });
-    paste_ok
-  }
-
   #[track_caller]
   fn hide_overlay(&mut self) {
+    if self.insertion_overlay_owner.is_some() {
+      return;
+    }
     // A live gateway/Azad/Spotify conversation owns the overlay until Esc tears it down.
     if self.gateway_conv.is_some() || self.azad_turn.is_some() || self.spotify_turn.is_some() {
       return;
@@ -3827,6 +3750,7 @@ impl AppController {
   }
 
   fn reset_turn_state_preserving_hotkey_state(&mut self) {
+    self.insertion_overlay_owner = None;
     self.cancelled = false;
     self.last_pasted_turn_id = None;
     self.hold_saw_speech = false;
@@ -3854,6 +3778,9 @@ impl AppController {
     let Some(turn_id) = turn_id else {
       return false;
     };
+    if self.insertion_source_handled(turn_id) {
+      return true;
+    }
 
     let raw_targets_finalizing_lane = self.finalizing_turn_id == Some(turn_id);
     let raw_text = if raw_targets_finalizing_lane {
@@ -3913,19 +3840,15 @@ impl AppController {
     }
 
     if !self.cancelled && self.last_pasted_turn_id != Some(turn_id) {
-      // Keep the overlay up through the paste window so the dismissal coincides with the
-      // text landing in the target. Hiding first, then blocking in try_paste, opens a
-      // visible gap between "overlay gone" and "paste appears".
+      // Keep the overlay up until insertion completes.
       let should_hide_overlay =
         ui_plan.hide_overlay && (raw_targets_finalizing_lane || self.finalizing_turn_id.is_none());
-      if self.try_paste(turn_id, TranscriptMode::Raw, &raw_text) {
-        self.last_pasted_turn_id = Some(turn_id);
-      } else {
-        eprintln!("Azad: failed to auto-paste raw transcript (clipboard still contains text)");
-      }
-      if should_hide_overlay {
-        self.hide_overlay();
-      }
+      self.request_paste(
+        turn_id,
+        TranscriptMode::Raw,
+        &raw_text,
+        InsertOrigin::Raw { dismiss: should_hide_overlay },
+      );
     }
 
     if !raw_targets_finalizing_lane && self.finalizing_turn_id.is_some() {
@@ -4019,6 +3942,9 @@ impl AppController {
   }
 
   fn observe_turn(&mut self, turn_id: u64) {
+    if self.current_turn_id.is_none_or(|current| turn_id > current) {
+      self.insertion_overlay_owner = None;
+    }
     self.latest_seen_turn_id = self.latest_seen_turn_id.max(turn_id);
     self.current_turn_id = Some(next_current_turn_id(self.current_turn_id, turn_id));
     self.turn_started_at.entry(turn_id).or_insert_with(Instant::now);

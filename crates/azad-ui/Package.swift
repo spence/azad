@@ -18,5 +18,10 @@ let package = Package(
             dependencies: ["AzadUI"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "AzadUITests",
+            dependencies: ["AzadUI"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

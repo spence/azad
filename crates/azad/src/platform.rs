@@ -34,7 +34,11 @@ use hotkeys::{
   EventTapRestartReason, SpaceHotkeyAction, claimed_hold_navigation_decision, current_mod_mask,
   event_tap_maintenance_action, space_hotkey_decision,
 };
-pub use paste::{PasteResult, insert_text, post_down_then_return, send_auto_submit};
+pub use paste::{
+  InsertStart, PacedTyping, PasteResult, post_down_then_return, send_auto_submit, start_insert,
+};
+#[cfg(test)]
+pub use paste::{TestOutput, fail_typing_after_for_test, take_test_output};
 pub use permissions::{
   PermissionStatus, accessibility_authorization, ensure_accessibility_for_auto_paste,
   input_monitoring_authorization, microphone_authorization, request_accessibility_permission,
@@ -191,7 +195,6 @@ static DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static OVERLAY_WINDOW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static DEVICE_HEADER_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static DEVICE_ROW_VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
-static SEARCH_FIELD_DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static HOTKEY_ESCAPE_ENABLED: AtomicBool = AtomicBool::new(false);
 static HOTKEY_ENTER_ENABLED: AtomicBool = AtomicBool::new(false);
 static HOTKEY_ARROWS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -215,10 +218,7 @@ static MOUSE_BUTTON_PREV_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic
 static STATUS_DELEGATE_PTR: AtomicUsize = AtomicUsize::new(0);
 static MAIN_EVENT_DRAIN_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
-// Whether the overlay panel may become the key window. Off by default so
-// the panel never steals focus from the user's foreground app. Flipped on
-// while history mode is active (so the search field can receive typed
-// characters) and back off on exit. See `set_overlay_key_input_enabled`.
+// History search is captured by the tap; the overlay never takes keyboard focus.
 static OVERLAY_ACCEPTS_KEY_INPUT: AtomicBool = AtomicBool::new(false);
 
 // Event-tap state. `EVENT_TAP_PORT` holds the CFMachPortRef so the callback can re-enable the
@@ -260,7 +260,7 @@ thread_local! {
     static STATUS_MENU_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static STATUS_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static EVENT_TICK_TIMER_REF: RefCell<Option<id>> = const { RefCell::new(None) };
-    static SEARCH_FIELD_DELEGATE_REF: RefCell<Option<id>> = const { RefCell::new(None) };
+    static TYPING_TIMER_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_VIEW_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_TRACK_REF: RefCell<Option<id>> = const { RefCell::new(None) };
     static ALWAYS_LISTENING_THUMB_REF: RefCell<Option<id>> = const { RefCell::new(None) };
@@ -341,12 +341,7 @@ struct OverlayRefs {
   autocomplete_char_count_labels: [id; AUTOCOMPLETE_MAX_ITEMS],
   search_field: id,
   search_icon: id,
-  /// 1-pt-wide blinking caret rendered manually because the panel's native
-  /// NSTextField caret never appears (likely the non-activating-panel +
-  /// accessory-policy combo confuses AppKit's responder-chain blink). A
-  /// CALayer-backed NSView with a white fill and an "opacity" blink
-  /// animation; positioned per keystroke at the right edge of the typed
-  /// text by `layout_history_search_caret`.
+  /// Blinking caret for tap-driven search, independent of native keyboard focus.
   search_caret: id,
 }
 
@@ -1051,6 +1046,7 @@ fn register_delegate_class() -> &'static Class {
     );
     decl.add_method(sel!(quit:), quit as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(tick:), tick as extern "C" fn(&Object, Sel, id));
+    decl.add_method(sel!(typingTick:), typing_tick as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(toggleDevices:), toggle_devices as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(openSettings:), open_settings as extern "C" fn(&Object, Sel, id));
     decl.add_method(sel!(selectDevice:), select_device as extern "C" fn(&Object, Sel, id));
@@ -1069,12 +1065,7 @@ fn register_delegate_class() -> &'static Class {
 
 fn register_overlay_window_class() -> &'static Class {
   OVERLAY_WINDOW_CLASS.get_or_init(|| unsafe {
-    // Subclass NSPanel (not NSWindow) so we can pair canBecomeKeyWindow=YES
-    // with the NSWindowStyleMaskNonactivatingPanel style mask: the panel
-    // takes key without bringing Azad to the foreground, the same trick
-    // Spotlight uses. That gives the search field a real first-responder
-    // status — and therefore a real blinking caret — while the user's
-    // foreground app keeps its menu bar and dock badge.
+    // The nonactivating panel leaves keyboard focus with the insertion target.
     let superclass = class!(NSPanel);
     let mut decl = ClassDecl::new("AzadOverlayWindow", superclass)
       .expect("failed to declare overlay window class");
@@ -1087,45 +1078,9 @@ fn register_overlay_window_class() -> &'static Class {
       sel!(canBecomeMainWindow),
       overlay_can_become_main_window as extern "C" fn(&Object, Sel) -> bool,
     );
-    decl.add_method(sel!(keyDown:), overlay_key_down as extern "C" fn(&Object, Sel, id));
 
     decl.register()
   })
-}
-
-fn register_search_field_delegate_class() -> &'static Class {
-  SEARCH_FIELD_DELEGATE_CLASS.get_or_init(|| unsafe {
-    let superclass = class!(NSObject);
-    let mut decl = ClassDecl::new("AzadSearchFieldDelegate", superclass)
-      .expect("failed to declare search field delegate class");
-    decl.add_method(
-      sel!(controlTextDidChange:),
-      search_field_text_did_change as extern "C" fn(&Object, Sel, id),
-    );
-    decl.register()
-  })
-}
-
-extern "C" fn search_field_text_did_change(_: &Object, _: Sel, notification: id) {
-  unsafe {
-    let field: id = msg_send![notification, object];
-    if field == nil {
-      return;
-    }
-    let value: id = msg_send![field, stringValue];
-    if value == nil {
-      return;
-    }
-    let utf8: *const c_char = msg_send![value, UTF8String];
-    if utf8.is_null() {
-      return;
-    }
-    let s = match CStr::from_ptr(utf8).to_str() {
-      Ok(s) => s.to_string(),
-      Err(_) => return,
-    };
-    crate::app::send_event(crate::app::AppEvent::HistorySearchChanged(s));
-  }
 }
 
 fn register_device_header_view_class() -> &'static Class {
@@ -1406,6 +1361,56 @@ extern "C" fn tick(_: &Object, _: Sel, _: id) {
   }
 }
 
+extern "C" fn typing_tick(_: &Object, _: Sel, timer: id) {
+  if !TYPING_TIMER_REF.with(|slot| *slot.borrow() == Some(timer)) {
+    return;
+  }
+  // SAFETY: this callback receives the owned one-shot NSTimer on the main run loop.
+  let request_id = unsafe {
+    let info: id = msg_send![timer, userInfo];
+    let request_id: u64 = msg_send![info, unsignedLongLongValue];
+    request_id
+  };
+  cancel_typing_timer();
+  crate::app::advance_typing(request_id);
+}
+
+pub fn schedule_typing_timer(request_id: u64, after: Duration) {
+  cancel_typing_timer();
+  let delegate = STATUS_DELEGATE_PTR.load(Ordering::Acquire) as id;
+  if delegate == nil {
+    return;
+  }
+  // SAFETY: the controller schedules typing only from the AppKit main thread.
+  unsafe {
+    let info: id = msg_send![class!(NSNumber), numberWithUnsignedLongLong: request_id];
+    let timer: id = msg_send![
+      class!(NSTimer),
+      scheduledTimerWithTimeInterval: after.as_secs_f64().max(0.001)
+      target: delegate
+      selector: sel!(typingTick:)
+      userInfo: info
+      repeats: NO
+    ];
+    let run_loop: id = msg_send![class!(NSRunLoop), mainRunLoop];
+    let tracking_mode = NSString::alloc(nil).init_str("NSEventTrackingRunLoopMode");
+    let _: () = msg_send![run_loop, addTimer: timer forMode: tracking_mode];
+    let _: () = msg_send![tracking_mode, release];
+    TYPING_TIMER_REF.with(|slot| slot.replace(Some(timer)));
+  }
+}
+
+pub fn cancel_typing_timer() {
+  TYPING_TIMER_REF.with(|slot| {
+    if let Some(timer) = slot.borrow_mut().take() {
+      // SAFETY: this timer is owned and used only by the main-thread typing operation.
+      unsafe {
+        let _: () = msg_send![timer, invalidate];
+      }
+    }
+  });
+}
+
 extern "C" fn toggle_devices(this: &Object, _: Sel, _: id) {
   crate::app::send_event(AppEvent::MenuToggleDevices);
   crate::app::drain_events();
@@ -1493,34 +1498,20 @@ extern "C" fn sync_menu_layout(_: &Object, _: Sel, _: id) {
 extern "C" fn noop(_: &Object, _: Sel, _: id) {}
 
 extern "C" fn overlay_can_become_key_window(_: &Object, _: Sel) -> bool {
+  false
+}
+
+/// Capture history search through the tap without moving native keyboard focus.
+pub fn set_overlay_key_input_enabled(enabled: bool) {
+  OVERLAY_ACCEPTS_KEY_INPUT.store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub fn history_key_capture_for_test() -> bool {
   OVERLAY_ACCEPTS_KEY_INPUT.load(Ordering::Relaxed)
 }
 
-/// Toggle whether the overlay intercepts keystrokes (via the HID event tap)
-/// AND whether the panel takes key window status. The HID tap is what
-/// actually feeds the search field; promoting the panel to key + the field
-/// to first responder gives AppKit enough state to draw the caret. Because
-/// the overlay panel uses the non-activating style mask, becoming key does
-/// NOT bring Azad to the foreground — the user's app keeps its menu bar.
-pub fn set_overlay_key_input_enabled(enabled: bool) {
-  OVERLAY_ACCEPTS_KEY_INPUT.store(enabled, Ordering::Relaxed);
-  let Some(refs) = current_overlay() else { return };
-  unsafe {
-    if enabled {
-      let _: () = msg_send![refs.window, makeKeyWindow];
-      if refs.search_field != nil {
-        let _: () = msg_send![refs.window, makeFirstResponder: refs.search_field];
-      }
-    } else {
-      let _: () = msg_send![refs.window, resignKeyWindow];
-    }
-  }
-}
-
-/// Programmatically set the search field's text without firing the
-/// `controlTextDidChange:` delegate (used to clear the field on
-/// enter/exit). NSTextField's `setStringValue:` doesn't trigger the
-/// notification, so this is safe by construction.
+/// Update the tap-driven search query displayed by the overlay.
 pub fn set_overlay_search_query(s: &str) {
   let Some(refs) = current_overlay() else { return };
   if refs.search_field == nil {
@@ -1534,19 +1525,6 @@ pub fn set_overlay_search_query(s: &str) {
 
 extern "C" fn overlay_can_become_main_window(_: &Object, _: Sel) -> bool {
   false
-}
-
-extern "C" fn overlay_key_down(this: &Object, _: Sel, event: id) {
-  unsafe {
-    let key_code: u16 = msg_send![event, keyCode];
-    if key_code == 53 {
-      crate::app::send_event(AppEvent::OverlayCancel);
-      return;
-    }
-
-    let window_id = this as *const Object as id;
-    let _: () = msg_send![super(window_id, class!(NSWindow)), keyDown: event];
-  }
 }
 
 unsafe fn setup_status_bar(delegate: id) {
@@ -3936,7 +3914,7 @@ unsafe fn layout_history_hints(refs: OverlayRefs, _width: f64, _show_view: bool,
   }
 }
 
-/// Position and show the editable search field at the bottom of the
+/// Position and show the tap-driven search field at the bottom of the
 /// history overlay. Text is left-aligned at the same x as the row body
 /// labels so the typed query is visually continuous with the rows; AppKit
 /// vertically centers single-line text within the frame automatically.
@@ -4740,8 +4718,7 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
 
   let overlay_class = register_overlay_window_class();
   let window: id = msg_send![overlay_class, alloc];
-  // NSWindowStyleMaskNonactivatingPanel = 1 << 7. Combined with borderless,
-  // lets the panel become key without activating Azad.
+  // NSWindowStyleMaskNonactivatingPanel prevents activating Azad on overlay clicks.
   let style_mask: u64 = NSWindowStyleMask::NSBorderlessWindowMask.bits() | (1u64 << 7);
   let window: id = msg_send![window, initWithContentRect: overlay_frame
                                                 styleMask: style_mask
@@ -5335,8 +5312,8 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![search_field, setBezeled: NO];
   let _: () = msg_send![search_field, setBordered: NO];
   let _: () = msg_send![search_field, setDrawsBackground: NO];
-  let _: () = msg_send![search_field, setEditable: YES];
-  let _: () = msg_send![search_field, setSelectable: YES];
+  let _: () = msg_send![search_field, setEditable: NO];
+  let _: () = msg_send![search_field, setSelectable: NO];
   let _: () = msg_send![
       search_field,
       setPlaceholderString: NSString::alloc(nil).init_str("Search history")
@@ -5353,13 +5330,6 @@ unsafe fn create_overlay_window(read_only: bool) -> OverlayRefs {
   let _: () = msg_send![search_field, setTextColor: search_color];
   let _: () = msg_send![search_field, setHidden: YES];
   let _: () = msg_send![card_view, addSubview: search_field];
-
-  let search_delegate_class = register_search_field_delegate_class();
-  let search_delegate: id = msg_send![search_delegate_class, new];
-  let _: () = msg_send![search_field, setDelegate: search_delegate];
-  SEARCH_FIELD_DELEGATE_REF.with(|r| {
-    r.borrow_mut().replace(search_delegate);
-  });
 
   // No magnifier icon. Field stays in `OverlayRefs` for binary
   // compatibility but is left as nil; layout helpers skip when nil.
@@ -5894,7 +5864,7 @@ fn claim_tap_search_input(
   //
   // Shift+Enter still passes through here too, mirroring the bypass in
   // `claim_tap_hotkey` so a soft-return chord lands in the focused app even
-  // when the search field is first responder.
+  // during history browsing.
   if keycode == KEYCODE_RETURN || keycode == KEYCODE_NUMPAD_ENTER {
     if is_shift {
       return false;
@@ -6186,6 +6156,30 @@ unsafe fn nsstring_to_string(value: id) -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::{OVERLAY_WAVE_EDGE_INSET, overlay_display_text, wave_edge_inset_for_width};
+
+  #[test]
+  fn paced_key_pairs_bypass_the_real_tap_without_posting_events() {
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use std::ptr;
+
+    let source = CGEventSource::new(CGEventSourceStateID::Private).unwrap();
+    let was_capturing = super::OVERLAY_ACCEPTS_KEY_INPUT.swap(true, super::Ordering::Relaxed);
+    for ch in ['a', 'é', '🧠', '\u{200d}'] {
+      let (down, up) = super::paste::direct_key_pair(&source, ch).unwrap();
+      for (event, kind) in [(down, super::KCG_EVENT_KEY_DOWN), (up, super::KCG_EVENT_KEY_UP)] {
+        assert_eq!(
+          event.get_integer_value_field(super::KCG_EVENT_SOURCE_USER_DATA_FIELD),
+          super::AZAD_SYNTHETIC_MARKER
+        );
+        let pointer = &*event as *const _ as *mut std::ffi::c_void;
+        assert_eq!(
+          super::event_tap_callback(ptr::null_mut(), kind, pointer, ptr::null_mut()),
+          pointer
+        );
+      }
+    }
+    super::OVERLAY_ACCEPTS_KEY_INPUT.store(was_capturing, super::Ordering::Relaxed);
+  }
 
   #[test]
   fn empty_overlay_body_stays_empty_while_holding_to_listen() {

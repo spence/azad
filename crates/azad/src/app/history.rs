@@ -43,6 +43,7 @@ impl AppController {
     if count == 0 {
       return;
     }
+    self.insertion_overlay_owner = None;
     // The renderer reports the last visible window so selection movement can
     // keep a small cushion from the top and bottom edges.
     const LAG: usize = 2;
@@ -77,6 +78,7 @@ impl AppController {
     // Left arrow collapses expanded content back to the list. Esc is the
     // explicit full-dismiss path.
     if self.history_expanded {
+      self.insertion_overlay_owner = None;
       self.history_expanded = false;
       self.render_history_overlay();
     }
@@ -96,11 +98,13 @@ impl AppController {
     if !platform::last_history_selected_truncated() {
       return;
     }
+    self.insertion_overlay_owner = None;
     self.history_expanded = true;
     self.render_history_overlay();
   }
 
   fn render_history_overlay(&self) {
+    platform::set_overlay_key_input_enabled(true);
     let Some(index) = &self.transcript_index else {
       if self.debug_stats_enabled {
         eprintln!("AZAD_HISTORY_RENDER action=no_index browse_index={}", self.history_browse_index);
@@ -164,26 +168,11 @@ impl AppController {
       // Release search key capture before firing synthetic paste keystrokes so
       // the focused app receives the chord instead of the history search field.
       platform::set_overlay_key_input_enabled(false);
-      let _ = platform::insert_text(&paste_text, self.paste_method, self.cfg.paste_delay_ms);
-      let _ = platform::send_auto_submit(self.auto_submit_mode);
+      self.request_history_insertion(paste_text);
+    } else {
+      // Empty-state releases still dismiss the overlay.
+      self.exit_history_mode();
     }
-    // Exit even on an empty-state release so the overlay closes.
-    self.exit_history_mode();
-  }
-
-  pub(super) fn handle_history_search_changed(&mut self, query: String) {
-    self.log_input_event(InputLogEvent::HistorySearchEdit {
-      kind: "changed",
-      chars_appended: Some(query.chars().count()),
-    });
-    if !self.history_browsing {
-      return;
-    }
-    if self.history_search_query == query {
-      return;
-    }
-    self.history_search_query = query;
-    self.after_history_search_change();
   }
 
   pub(super) fn handle_history_search_append(&mut self, s: &str) {
@@ -240,6 +229,7 @@ impl AppController {
   }
 
   fn after_history_search_change(&mut self) {
+    self.insertion_overlay_owner = None;
     self.history_browse_index = 0;
     self.history_visible_start = 0;
     self.history_expanded = false;
@@ -248,6 +238,7 @@ impl AppController {
   }
 
   fn enter_history_mode(&mut self) {
+    self.insertion_overlay_owner = None;
     // History owns the overlay and pauses capture so a simultaneous in-flight
     // turn cannot paste while the user is browsing saved transcripts.
     self.manual_hold_active = false;
@@ -280,6 +271,7 @@ impl AppController {
   }
 
   pub(super) fn exit_history_mode(&mut self) {
+    self.insertion_overlay_owner = None;
     self.history_browsing = false;
     self.history_browse_index = 0;
     self.history_visible_start = 0;

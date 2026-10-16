@@ -4,8 +4,11 @@ Add a small **Key rate** slider to the right of **Insert method** in General set
 visible for **Type** and **Type and copy**. Both methods share one saved value. The default
 is **Max**, preserving the current unpaced behavior.
 
-This is a design for review, not an implementation. It does not change clipboard paste timing
-or claim to fix the separately reported intermittent paste failure.
+This approved design does not change clipboard paste timing or claim to fix the separately
+reported intermittent paste failure. Implementation verification is recorded in
+[the key-rate evidence](evidence/2026-10-16-typing-key-rate.md).
+
+Decision: the owner approved implementation of this design on 2026-10-16 ("impl it. set a goal").
 
 ## Settings layout
 
@@ -18,7 +21,7 @@ switching back to either typing method restores it. Changing insertion methods d
 the rate, and changing the rate does not change the insertion method.
 
 Use a native small `NSSlider` with six discrete stops, increasing left to right:
-**20/s, 40/s, 80/s, 160/s, 320/s, Max**. These are proposed control choices, not measured
+**20/s, 40/s, 80/s, 160/s, 320/s, Max**. These are approved control choices, not measured
 compatibility limits. Max adds no intentional inter-character wait; the finite values limit
 character-pair emission, not the operating system's physical keyboard repeat rate.
 
@@ -97,10 +100,18 @@ timer resumes at the selected spacing rather than sending a catch-up burst. The 
 upper bound; AppKit scheduling can make delivery slower. A callback validates its original
 insertion identity and due time; an invalidated or stale callback emits nothing.
 
-Stamp paced down/up events with the existing `AZAD_SYNTHETIC_MARKER`. The current tap already
+Stamp typing down/up and paste-chord events with the existing `AZAD_SYNTHETIC_MARKER`. The tap already
 passes marked events through before hotkey/history handling. Without this marker, opening
 history during paced output could consume Azad's own Unicode payloads as search input. Reuse
 that existing bypass; do not change tap registration, key bindings, or capture policy.
+
+Implementation review exposed a required overlap adjustment: synchronous Max/Paste requests
+can execute from the queue while history is open, so they need the same marker too. History
+search must stay tap-driven, with its existing custom caret, without making the overlay key
+or its search field first responder. Otherwise marked output can still land in Azad through
+AppKit focus. History navigation/search that takes over during a paced selection restores tap
+capture; the original insertion completion must leave that newer browsing state intact. This
+removes redundant native focus ownership, not adds target activation or focus restoration.
 
 Keep the existing synchronous path for Max when no earlier insertion is outstanding. This
 preserves the default path's ordering and lack of added pacing delay. For finite rates, extract
@@ -188,7 +199,9 @@ when implementing; this proposal does not replace the current specification.
    Use isolated preferences, never the installed app's defaults as test controls.
 2. **Layout:** instantiate the actual General controls without activating a window; check all
    three methods at the existing window size, longest popup title, and both rate endpoints.
-   Assert no ambiguous constraints, clipped labels, or out-of-bounds frames. Keep other tabs'
+   Assert no added layout ambiguity relative to the unchanged shared FormRow, no clipped labels,
+   and no out-of-bounds frames. Offscreen AppKit reports the same row ambiguity for the untouched
+   Text tab; this feature does not change that shared component. Keep other tabs'
    constraints unchanged. Any visual preview that activates an application runs only in an
    isolated macOS desktop/VM; the existing preview executable activates itself.
 3. **Production pacing logic:** a recording event emitter and supplied monotonic time exercise
@@ -231,8 +244,8 @@ pass; pacing and completion checks above must also pass.
 The initial architecture review rejected a sleep loop and fire-and-forget worker. Independent
 draft review then found the history self-capture and late-event retry regressions above. Both
 now have explicit design requirements and acceptance cases. A final independent review of the
-revised design found no remaining blockers. Implementation and receiver validation remain the
-acceptance work described above, not completed tests.
+revised design found no remaining blockers. The completed implementation and receiver checks
+are recorded in the linked evidence; native results are not an all-app compatibility claim.
 
 ## Source anchors
 

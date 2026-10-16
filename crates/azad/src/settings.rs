@@ -1,3 +1,12 @@
+pub const TYPING_KEY_RATES: [u32; 6] = [20, 40, 80, 160, 320, 0];
+
+pub fn typing_key_rate_from_pref(value: i64) -> u32 {
+  u32::try_from(value)
+    .ok()
+    .filter(|rate| TYPING_KEY_RATES.contains(rate))
+    .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StartupListenMode {
   Off,
@@ -190,6 +199,28 @@ impl OverlayPosition {
 #[cfg(test)]
 mod tests {
   use super::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
+
+  #[test]
+  fn typing_rate_matches_shared_ui_fixture_and_defaults_to_max() {
+    let fixture: serde_json::Value =
+      serde_json::from_str(include_str!("../docs/typing-key-rate.fixture.json")).unwrap();
+    let rates: Vec<u32> = fixture["sliderRates"]
+      .as_array()
+      .unwrap()
+      .iter()
+      .map(|value| value.as_u64().unwrap() as u32)
+      .collect();
+    assert_eq!(rates, super::TYPING_KEY_RATES);
+    for rate in rates {
+      assert_eq!(super::typing_key_rate_from_pref(i64::from(rate)), rate);
+    }
+    for invalid in [-1, 1, 19, 21, 640, i64::MAX] {
+      assert_eq!(
+        super::typing_key_rate_from_pref(invalid),
+        fixture["default"].as_u64().unwrap() as u32
+      );
+    }
+  }
 
   #[test]
   fn startup_listen_mode_roundtrips_preferences_values() {

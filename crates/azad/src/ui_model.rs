@@ -87,6 +87,7 @@ pub struct SettingsViewModel {
   pub activation_level: i64,
   pub history_enabled: bool,
   pub paste_method_index: i64,
+  pub typing_key_rate: u32,
   pub auto_submit_index: i64,
   pub overlay_position_index: i64,
   pub append_trailing_space_on_paste: bool,

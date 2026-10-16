@@ -1,7 +1,7 @@
 import AppKit
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    private var model: SettingsViewModel?
+    private(set) var model: SettingsViewModel?
     private var selectedTab: SettingsTab = .general
     private let sidebar = ThemedStackView(fill: Design.sidebar)
     private let content = NSView()
@@ -31,15 +31,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show(model: SettingsViewModel) {
-        self.model = model
-        selectedTab = model.selectedTab
-        render()
+        prepare(model: model)
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         DispatchQueue.main.async { [weak self] in
             self?.window?.makeFirstResponder(nil)
         }
+    }
+
+    func prepare(model: SettingsViewModel) {
+        self.model = model
+        selectedTab = model.selectedTab
+        render()
     }
 
     func update(model: SettingsViewModel) {
@@ -62,6 +66,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             activationLevel: model.activationLevel,
             historyEnabled: model.historyEnabled,
             pasteMethodIndex: model.pasteMethodIndex,
+            typingKeyRate: model.typingKeyRate,
             autoSubmitIndex: model.autoSubmitIndex,
             overlayPositionIndex: model.overlayPositionIndex,
             appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
@@ -149,7 +154,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             pane = connectorsPane(model)
         }
         content.addSubview(pane)
-        pane.pinToSuperview(NSEdgeInsets(top: 24, left: 32, bottom: 34, right: 24))
+        pane.pinToSuperview(NSEdgeInsets(top: 24, left: selectedTab == .general ? 16 : 32, bottom: 34, right: 24))
 
         let build = Design.label(model.buildInfo, size: 10, color: Design.mutedText)
         build.alignment = .right
@@ -184,30 +189,66 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let startupListen = Design.popup(["Off", "On", "Restore last state"], selected: model.startupListenModeIndex, target: self, action: #selector(selectStartupListenMode(_:)))
         startupListen.widthAnchor.constraint(equalToConstant: 190).isActive = true
-        stack.addArrangedSubview(FormRow(label: "Start listening", control: startupListen))
+        stack.addArrangedSubview(FormRow(label: "Start listening", labelWidth: 104, control: startupListen))
 
         let shortcut = ShortcutView(mask: model.listenModifiers, target: self, action: #selector(toggleModifier(_:)))
         shortcutView = shortcut
-        stack.addArrangedSubview(FormRow(label: "Listen shortcut", control: shortcut))
+        stack.addArrangedSubview(FormRow(label: "Listen shortcut", labelWidth: 104, control: shortcut))
 
-        let paste = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: #selector(selectPasteMethod(_:)))
-        paste.widthAnchor.constraint(equalToConstant: 210).isActive = true
-        stack.addArrangedSubview(FormRow(label: "Insert method", control: paste))
+        stack.addArrangedSubview(FormRow(label: "Insert method", labelWidth: 104, control: insertionControl(model)))
 
         let overlay = Design.popup(["Follow cursor", "Primary monitor", "Active window"], selected: model.overlayPositionIndex, target: self, action: #selector(selectOverlayPosition(_:)))
         overlay.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        stack.addArrangedSubview(FormRow(label: "Overlay position", control: overlay))
+        stack.addArrangedSubview(FormRow(label: "Overlay position", labelWidth: 104, control: overlay))
 
-        stack.addArrangedSubview(FormRow(label: "History", control: Design.checkbox("Keep a searchable history of dictations", checked: model.historyEnabled, target: self, action: #selector(toggleHistory(_:)))))
+        stack.addArrangedSubview(FormRow(label: "History", labelWidth: 104, control: Design.checkbox("Keep a searchable history of dictations", checked: model.historyEnabled, target: self, action: #selector(toggleHistory(_:)))))
 
         let submit = Design.popup(["Off", "Enter", "Ctrl+Enter", "Shift+Enter"], selected: model.autoSubmitIndex, target: self, action: #selector(selectAutoSubmit(_:)))
         submit.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        stack.addArrangedSubview(FormRow(label: "Auto submit", control: submit))
+        stack.addArrangedSubview(FormRow(label: "Auto submit", labelWidth: 104, control: submit))
 
-        stack.addArrangedSubview(FormRow(label: "Activation level", control: activationLevelControl(model.activationLevel)))
+        stack.addArrangedSubview(FormRow(label: "Activation level", labelWidth: 104, control: activationLevelControl(model.activationLevel)))
 
-        stack.addArrangedSubview(FormRow(label: "Open at login", control: Design.checkbox("Run Azad on startup", checked: model.runOnStartupEnabled, target: self, action: #selector(toggleRunOnStartup(_:)))))
+        stack.addArrangedSubview(FormRow(label: "Open at login", labelWidth: 104, control: Design.checkbox("Run Azad on startup", checked: model.runOnStartupEnabled, target: self, action: #selector(toggleRunOnStartup(_:)))))
 
+        return stack
+    }
+
+    static let typingKeyRates = [20, 40, 80, 160, 320, 0]
+
+    private func insertionControl(_ model: SettingsViewModel) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let paste = Design.popup(["Paste", "Type", "Type and copy"], selected: model.pasteMethodIndex, target: self, action: #selector(selectPasteMethod(_:)))
+        paste.widthAnchor.constraint(equalToConstant: 145).isActive = true
+        stack.addArrangedSubview(paste)
+
+        guard model.pasteMethodIndex == 1 || model.pasteMethodIndex == 2 else { return stack }
+        stack.setCustomSpacing(8, after: paste)
+        let label = Design.label("Key rate", size: 12, color: Design.secondaryText)
+        label.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        stack.addArrangedSubview(label)
+
+        let selected = Self.typingKeyRates.firstIndex(of: model.typingKeyRate) ?? 5
+        let slider = NSSlider(value: Double(selected), minValue: 0, maxValue: 5, target: self, action: #selector(setTypingKeyRate(_:)))
+        slider.controlSize = .small
+        slider.isContinuous = false
+        slider.numberOfTickMarks = 6
+        slider.allowsTickMarkValuesOnly = true
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        slider.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        slider.setAccessibilityLabel("Key rate")
+        slider.setAccessibilityValueDescription(model.typingKeyRate == 0 ? "Maximum, no added delay" : "\(model.typingKeyRate) characters per second")
+        stack.addArrangedSubview(slider)
+
+        let readout = Design.label(model.typingKeyRate == 0 ? "Max" : "\(model.typingKeyRate)/s", size: 12, color: Design.secondaryText)
+        readout.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        readout.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        stack.addArrangedSubview(readout)
         return stack
     }
 
@@ -887,6 +928,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 activationLevel: value,
                 historyEnabled: model.historyEnabled,
                 pasteMethodIndex: model.pasteMethodIndex,
+                typingKeyRate: model.typingKeyRate,
                 autoSubmitIndex: model.autoSubmitIndex,
                 overlayPositionIndex: model.overlayPositionIndex,
                 appendTrailingSpaceOnPaste: model.appendTrailingSpaceOnPaste,
@@ -909,6 +951,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func selectPasteMethod(_ sender: NSPopUpButton) {
         AzadUI.shared.emit(UIEvent(surface: "settings", action: "selectPasteMethod", index: sender.indexOfSelectedItem))
+    }
+
+    @objc private func setTypingKeyRate(_ sender: NSSlider) {
+        let position = sender.integerValue
+        guard Self.typingKeyRates.indices.contains(position) else { return }
+        AzadUI.shared.emit(UIEvent(surface: "settings", action: "setTypingKeyRate", index: Self.typingKeyRates[position]))
     }
 
     @objc private func selectAutoSubmit(_ sender: NSPopUpButton) {

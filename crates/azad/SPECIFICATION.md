@@ -166,7 +166,23 @@ Implementation:
 
 - `platform::insert_text()` executes chosen method.
 - `platform::send_auto_submit()` optionally sends submit chord after successful insert.
-- `app.rs::try_paste()` handles metrics logging and failure behavior.
+- `app/insertion.rs` handles insertion ordering, completion, metrics, and failure behavior.
+
+Typing key rate (grounded in the owner's accepted
+[typing key rate design](docs/typing-key-rate-design.md)):
+
+- One saved rate applies to both typing methods. Max is the default and adds no pacing delay.
+- Finite rates pace complete Unicode-scalar key-down/key-up pairs without blocking the app.
+  Insertion, optional copy, and auto-submit stay ordered, including overlapping requests.
+- Canceled or failed paced emissions are not retried by late turn/session events. Completion
+  for an older insertion does not dismiss newer speech or clear its capture state.
+- Clipboard paste and the existing terminal fallback do not gain per-character delays.
+- History search stays tap-driven without taking native keyboard focus, so insertion events
+  marked as Azad-generated still reach the target while history is open.
+
+Binding: [typing-key-rate.fixture.json](docs/typing-key-rate.fixture.json) is consumed by Rust
+settings tests and Swift settings tests. Production pacing, completion, and isolated receiver
+checks are described in the accepted design's validation section.
 
 Design constraints:
 
@@ -188,6 +204,8 @@ Settings window:
 
 - tabs: General, Debug
 - debug tab renders metrics summary text generated from log parsing.
+- General shows Key rate beside Insert method only for Type and Type and copy; switching to
+  Paste hides the control without resetting its value.
 
 ## 11. Debug Metrics and Quality Reporting
 
@@ -262,7 +280,8 @@ Then:
 
 Edit:
 
-- `src/app.rs` (`Finalizing`/`FinalText` handling, raw finalize path, `try_paste`)
+- `src/app.rs` (`Finalizing`/`FinalText` handling and raw finalize path)
+- `src/app/insertion.rs` (ordered insertion and source-owned completion)
 - `src/platform.rs` (insert method internals)
 
 Then:

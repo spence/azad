@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::AppEvent;
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
+use crate::settings::{
+  AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode, TYPING_KEY_RATES,
+};
 use crate::ui_model::{
   OnboardingViewModel, SettingsPermissionUpdate, SettingsViewModel, UiEvent, UiPermissionStatus,
 };
@@ -83,6 +85,10 @@ pub fn sync_listen_modifiers(mask: u8) {
 }
 
 fn with_library(f: impl FnOnce(&AzadUiLibrary)) {
+  // Controller tests stay headless; native controls are exercised by the Swift tests.
+  if cfg!(test) {
+    return;
+  }
   match UI_LIBRARY.get_or_init(load_library) {
     Ok(lib) => f(lib),
     Err(err) => eprintln!("Azad UI unavailable: {err}"),
@@ -257,6 +263,14 @@ fn app_event_for_ui_event(event: &UiEvent) -> UiEventAction {
     ("settings", "selectPasteMethod") => UiEventAction::Send(AppEvent::SettingsSelectPasteMethod(
       PasteMethod::from_ui_index(index() as i64),
     )),
+    ("settings", "setTypingKeyRate") => {
+      match event.index.and_then(|value| u32::try_from(value).ok()) {
+        Some(rate) if TYPING_KEY_RATES.contains(&rate) => {
+          UiEventAction::Send(AppEvent::SettingsSetTypingKeyRate(rate))
+        }
+        _ => UiEventAction::Ignore,
+      }
+    }
     ("settings", "selectAutoSubmit") => UiEventAction::Send(AppEvent::SettingsSelectAutoSubmit(
       AutoSubmitMode::from_ui_index(index() as i64),
     )),
@@ -329,6 +343,32 @@ fn open_permission_settings(permission: String) {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn typing_rate_events_accept_only_supported_values() {
+    assert!(
+      serde_json::from_str::<UiEvent>(
+        r#"{"surface":"settings","action":"setTypingKeyRate","index":-1}"#
+      )
+      .is_err()
+    );
+    for value in
+      [None, Some(1), Some(20), Some(40), Some(80), Some(160), Some(320), Some(0), Some(usize::MAX)]
+    {
+      let mut event = test_event("settings", "setTypingKeyRate");
+      event.index = value;
+      let expected = value
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| TYPING_KEY_RATES.contains(value));
+      match (app_event_for_ui_event(&event), expected) {
+        (UiEventAction::Send(AppEvent::SettingsSetTypingKeyRate(actual)), Some(expected)) => {
+          assert_eq!(actual, expected)
+        }
+        (UiEventAction::Ignore, None) => {}
+        _ => panic!("unexpected rate mapping for {value:?}"),
+      }
+    }
+  }
 
   fn test_event(surface: &str, action: &str) -> UiEvent {
     UiEvent {

@@ -6,7 +6,9 @@ use crate::model_download;
 use crate::models::{self, PackStatus};
 use crate::platform::{self, ConnectorRowVM, SettingsTab, SettingsViewModel};
 use crate::preferred_store;
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
+use crate::settings::{
+  AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode, TYPING_KEY_RATES,
+};
 use crate::ui_model::{UiModelPack, UiModelStatus, UiPermissionStatus};
 
 use super::AppController;
@@ -254,6 +256,15 @@ impl AppController {
     platform::update_settings_window(self.settings_view_model());
   }
 
+  pub(super) fn handle_settings_set_typing_key_rate(&mut self, rate: u32) {
+    if !TYPING_KEY_RATES.contains(&rate) {
+      return;
+    }
+    self.typing_key_rate = rate;
+    preferred_store::save_typing_key_rate(rate);
+    platform::update_settings_window(self.settings_view_model());
+  }
+
   pub(super) fn handle_settings_select_auto_submit(&mut self, mode: AutoSubmitMode) {
     self.auto_submit_mode = mode;
     preferred_store::save_auto_submit_mode(mode);
@@ -461,6 +472,7 @@ impl AppController {
       activation_level: self.activation_level,
       history_enabled: self.history_enabled,
       paste_method_index: self.paste_method.ui_index(),
+      typing_key_rate: self.typing_key_rate,
       auto_submit_index: self.auto_submit_mode.ui_index(),
       overlay_position_index: self.overlay_position.ui_index(),
       append_trailing_space_on_paste: self.append_trailing_space_on_paste,
@@ -548,6 +560,29 @@ mod tests {
     ui_onboarding_accessibility_status, ui_permission_status, updated_listen_modifier_mask,
   };
   use crate::ui_model::UiPermissionStatus;
+
+  #[test]
+  fn typing_rate_is_shared_preserved_and_serialized_for_both_typing_methods() {
+    let mut app = super::AppController::new(crate::config::AzadConfig::default());
+    assert_eq!(app.typing_key_rate, 0);
+    app.handle_settings_set_typing_key_rate(80);
+    for method in [
+      crate::settings::PasteMethod::ClipboardPaste,
+      crate::settings::PasteMethod::DirectTyping,
+      crate::settings::PasteMethod::DirectTypingAndCopyClipboard,
+      crate::settings::PasteMethod::ClipboardPaste,
+    ] {
+      app.handle_settings_select_paste_method(method);
+      assert_eq!(app.typing_key_rate, 80);
+      let model = app.settings_view_model();
+      assert_eq!(model.typing_key_rate, 80);
+      let json = serde_json::to_value(model).unwrap();
+      assert_eq!(json["typingKeyRate"], 80);
+      assert_eq!(json["pasteMethodIndex"], method.ui_index());
+    }
+    app.handle_settings_set_typing_key_rate(123);
+    assert_eq!(app.typing_key_rate, 80);
+  }
 
   #[test]
   fn listen_modifier_update_adds_and_removes_bits() {

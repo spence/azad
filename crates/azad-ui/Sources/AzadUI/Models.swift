@@ -164,6 +164,7 @@ public struct SettingsViewModel: Codable {
     public let activationLevel: Int
     public let historyEnabled: Bool
     public let pasteMethodIndex: Int
+    public let typingKeyRate: Int
     public let autoSubmitIndex: Int
     public let overlayPositionIndex: Int
     public let appendTrailingSpaceOnPaste: Bool
@@ -189,6 +190,7 @@ public struct SettingsViewModel: Codable {
         activationLevel: Int,
         historyEnabled: Bool,
         pasteMethodIndex: Int,
+        typingKeyRate: Int,
         autoSubmitIndex: Int,
         overlayPositionIndex: Int,
         appendTrailingSpaceOnPaste: Bool,
@@ -213,6 +215,7 @@ public struct SettingsViewModel: Codable {
         self.activationLevel = activationLevel
         self.historyEnabled = historyEnabled
         self.pasteMethodIndex = pasteMethodIndex
+        self.typingKeyRate = typingKeyRate
         self.autoSubmitIndex = autoSubmitIndex
         self.overlayPositionIndex = overlayPositionIndex
         self.appendTrailingSpaceOnPaste = appendTrailingSpaceOnPaste

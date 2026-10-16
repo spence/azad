@@ -7,7 +7,9 @@ use cocoa::foundation::NSString;
 use objc::class;
 use objc::{msg_send, sel, sel_impl};
 
-use crate::settings::{AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode};
+use crate::settings::{
+  AutoSubmitMode, OverlayPosition, PasteMethod, StartupListenMode, typing_key_rate_from_pref,
+};
 
 const PREFERRED_DEVICE_KEY: &str = "AzadPreferredInputDeviceId";
 const ALWAYS_LISTENING_KEY: &str = "AzadAlwaysListeningEnabled";
@@ -16,6 +18,7 @@ const DEBUG_STATS_ENABLED_KEY: &str = "AzadDebugStatsEnabled";
 const ACTIVATION_LEVEL_KEY: &str = "AzadActivationLevel";
 const RUN_ON_STARTUP_KEY: &str = "AzadRunOnStartup";
 const PASTE_METHOD_KEY: &str = "AzadPasteMethod";
+const TYPING_KEY_RATE_KEY: &str = "AzadTypingKeyRate";
 const AUTO_SUBMIT_MODE_KEY: &str = "AzadAutoSubmit";
 const OVERLAY_POSITION_KEY: &str = "AzadOverlayPosition";
 const APPEND_TRAILING_SPACE_KEY: &str = "AzadAppendTrailingSpaceOnPaste";
@@ -378,6 +381,31 @@ pub fn save_paste_method(method: PasteMethod) {
     let key = NSString::alloc(nil).init_str(PASTE_METHOD_KEY);
     let value = NSString::alloc(nil).init_str(method.prefs_value());
     let _: () = msg_send![defaults, setObject: value forKey: key];
+  }
+}
+
+pub fn load_typing_key_rate() -> u32 {
+  // SAFETY: the standard defaults object receives the existing integer preference API.
+  unsafe {
+    let defaults = standard_user_defaults();
+    if defaults == nil {
+      return 0;
+    }
+    let key = NSString::alloc(nil).init_str(TYPING_KEY_RATE_KEY);
+    let value: i64 = msg_send![defaults, integerForKey: key];
+    typing_key_rate_from_pref(value)
+  }
+}
+
+pub fn save_typing_key_rate(rate: u32) {
+  // SAFETY: the standard defaults object receives an integer representable by NSInteger.
+  unsafe {
+    let defaults = standard_user_defaults();
+    if defaults == nil {
+      return;
+    }
+    let key = NSString::alloc(nil).init_str(TYPING_KEY_RATE_KEY);
+    let _: () = msg_send![defaults, setInteger: i64::from(rate) forKey: key];
   }
 }
 

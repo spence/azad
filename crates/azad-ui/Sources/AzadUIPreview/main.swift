@@ -140,6 +140,7 @@ func settingsModel(tab: SettingsTab) -> SettingsViewModel {
         activationLevel: 0,
         historyEnabled: true,
         pasteMethodIndex: 0,
+        typingKeyRate: 0,
         autoSubmitIndex: 0,
         overlayPositionIndex: 2,
         appendTrailingSpaceOnPaste: true,

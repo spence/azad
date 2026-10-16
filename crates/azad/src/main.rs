@@ -22,6 +22,7 @@ mod speech;
 mod spotify_client;
 mod spotify_cmd;
 mod transcript_history;
+mod typing;
 mod ui_bridge;
 mod ui_model;
 
