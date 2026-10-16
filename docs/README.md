@@ -18,6 +18,7 @@ Project documentation is organized by ownership boundary.
 - [Keyboard workflow](../crates/azad/docs/keyboard-workflow.md): user-facing keyboard behavior.
 - [Keyboard state machine](../crates/azad/docs/keyboard-shortcut-state-machine.md): engineering contract for hotkey/listen-mode transitions.
 - [Isolated interaction harness](../crates/azad/docs/isolated-interaction-harness.md): process-local shortcut, overlay-state, and session-control validation without desktop input injection.
+- [Typing key rate design](../crates/azad/docs/typing-key-rate-design.md): proposed General-settings slider and scoped, nonblocking typing delivery; design only.
 - [macOS build notes](../crates/azad/docs/build-macos.md): local macOS build details.
 - [Troubleshooting](../crates/azad/docs/troubleshooting.md): common runtime issues.
 
