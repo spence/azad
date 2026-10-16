@@ -44,6 +44,7 @@ final class TypingKeyRateTests: XCTestCase {
         let fixture = try fixture()
         let rates = try XCTUnwrap(fixture["sliderRates"] as? [Int])
         let visible = try XCTUnwrap(fixture["visibleForPasteMethodIndices"] as? [Int])
+        let unpacedReadout = try XCTUnwrap(fixture["unpacedReadout"] as? String)
         XCTAssertEqual(SettingsWindowController.typingKeyRates, rates)
         XCTAssertEqual(fixture["default"] as? Int, 0)
         let baseline = SettingsWindowController()
@@ -92,7 +93,7 @@ final class TypingKeyRateTests: XCTestCase {
                         XCTAssertLessThanOrEqual(pair.0.maxX, pair.1.minX + 0.5)
                     }
                     let readout = try XCTUnwrap(stack.arrangedSubviews.last as? NSTextField)
-                    XCTAssertEqual(readout.stringValue, rate == 0 ? "Max" : "\(rate)/s")
+                    XCTAssertEqual(readout.stringValue, rate == 0 ? unpacedReadout : "\(rate)/s")
                     XCTAssertLessThanOrEqual(readout.fittingSize.width, readout.frame.width + 0.5)
                     capturedEvents = []
                     azadUIRegisterCallback(captureEvent)

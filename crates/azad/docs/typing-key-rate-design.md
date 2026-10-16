@@ -9,6 +9,8 @@ reported intermittent paste failure. Implementation verification is recorded in
 [the key-rate evidence](evidence/2026-10-16-typing-key-rate.md).
 
 Decision: the owner approved implementation of this design on 2026-10-16 ("impl it. set a goal").
+Readout decision, 2026-10-16: show the raw unpaced value `0` instead of the label “Max”;
+finite values keep their `/s` suffix. Rate values and insertion behavior are unchanged.
 
 ## Settings layout
 

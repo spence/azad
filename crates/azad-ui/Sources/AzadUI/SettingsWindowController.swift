@@ -245,7 +245,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         slider.setAccessibilityValueDescription(model.typingKeyRate == 0 ? "Maximum, no added delay" : "\(model.typingKeyRate) characters per second")
         stack.addArrangedSubview(slider)
 
-        let readout = Design.label(model.typingKeyRate == 0 ? "Max" : "\(model.typingKeyRate)/s", size: 12, color: Design.secondaryText)
+        let readout = Design.label(model.typingKeyRate == 0 ? "0" : "\(model.typingKeyRate)/s", size: 12, color: Design.secondaryText)
         readout.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         readout.widthAnchor.constraint(equalToConstant: 44).isActive = true
         stack.addArrangedSubview(readout)

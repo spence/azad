@@ -1,5 +1,6 @@
 {
   "default": 0,
+  "unpacedReadout": "0",
   "sliderRates": [20, 40, 80, 160, 320, 0],
   "visibleForPasteMethodIndices": [1, 2],
   "unicodeSample": "Azad café é 🧠 👩🏽‍💻"

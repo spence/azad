@@ -206,6 +206,8 @@ Settings window:
 - debug tab renders metrics summary text generated from log parsing.
 - General shows Key rate beside Insert method only for Type and Type and copy; switching to
   Paste hides the control without resetting its value.
+- The readout shows `0` for the unpaced value and finite rates with `/s`, as recorded in the
+  design's readout decision; the shared fixture and native settings test bind this presentation.
 
 ## 11. Debug Metrics and Quality Reporting
 
