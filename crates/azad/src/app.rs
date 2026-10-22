@@ -1741,6 +1741,9 @@ impl AppController {
     } else {
       self.hide_overlay();
     }
+
+    // queued output from the discarded turn must not restore the overlay.
+    self.turn_accept_floor = self.latest_seen_turn_id.saturating_add(1);
   }
 
   fn handle_device_event(&mut self, event: DeviceEvent) {
@@ -3908,7 +3911,8 @@ impl AppController {
   }
 
   fn accept_turn(&self, turn_id: u64) -> bool {
-    turn_id >= self.turn_accept_floor
+    // keep a retained finalizing lane eligible after live-lane cancellation.
+    turn_id >= self.turn_accept_floor || self.finalizing_turn_id == Some(turn_id)
   }
 
   fn input_log_snapshot(&self) -> StateSnapshot {
@@ -4318,6 +4322,117 @@ mod tests {
       committed: text.to_string(),
       live: String::new(),
     }
+  }
+
+  #[test]
+  fn escape_keeps_overlay_closed_when_cancelled_turn_finalizes_late() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.session = Some(SpeechSession::test(7));
+    controller.always_listening_enabled = true;
+    controller.engine_state = EngineState::Speech;
+    controller.overlay_visible = true;
+    controller.handle_speech_event(draft_event(24, "discard this dictation"));
+
+    controller.handle_overlay_cancel();
+    assert!(!controller.overlay_visible);
+
+    // a queued draft and tentative finalize can arrive after Escape.
+    controller.handle_speech_event(draft_event(24, "discard this dictation completely"));
+    controller.handle_speech_event(SpeechEvent::Finalizing {
+      session_id: 7,
+      turn_id: 24,
+      current_draft: "discard this dictation completely".to_string(),
+    });
+
+    assert!(!controller.overlay_visible, "late Finalizing restored the cancelled overlay");
+    assert!(controller.finalizing_turn_id.is_none());
+    assert!(controller.finalizing_deadline.is_none());
+
+    controller.handle_speech_event(SpeechEvent::FinalText {
+      session_id: 7,
+      turn_id: 24,
+      text: "Discard this dictation completely.".to_string(),
+    });
+
+    assert_eq!(controller.last_pasted_turn_id, None);
+    assert!(controller.latest_final.is_none());
+    assert!(controller.active_insertion.is_none());
+    assert!(controller.insertion_queue.is_empty());
+    assert_eq!(controller.transcript_index.as_ref().unwrap().entry_count(), 0);
+
+    controller.cancel_vad_show_suppressed_until = Some(Instant::now() - Duration::from_secs(1));
+    controller.handle_speech_event(draft_event(24, "late cancelled draft"));
+    assert!(!controller.overlay_visible, "cancelled drafts stay hidden after suppression expires");
+
+    controller.handle_speech_event(SpeechEvent::SpeechStartedByVad { session_id: 7 });
+    controller.handle_speech_event(draft_event(25, "keep the next dictation"));
+    assert!(controller.overlay_visible, "new dictation must remain visible");
+    assert!(!controller.cancelled);
+
+    controller.handle_speech_event(SpeechEvent::Finalizing {
+      session_id: 7,
+      turn_id: 24,
+      current_draft: "late cancelled draft".to_string(),
+    });
+    controller.handle_speech_event(SpeechEvent::FinalText {
+      session_id: 7,
+      turn_id: 24,
+      text: "Late cancelled text.".to_string(),
+    });
+    assert_eq!(controller.current_turn_id, Some(25));
+    assert_eq!(controller.latest_draft, "keep the next dictation");
+    assert!(controller.finalizing_turn_id.is_none());
+    assert!(controller.active_insertion.is_none());
+    assert_eq!(controller.last_pasted_turn_id, None);
+  }
+
+  #[test]
+  fn escape_rejects_cancelled_live_lane_but_accepts_retained_finalizing_turn() {
+    let mut controller = AppController::new(AzadConfig::default());
+    controller.session = Some(SpeechSession::test(7));
+    controller.always_listening_enabled = true;
+    controller.engine_state = EngineState::Speech;
+    controller.overlay_visible = true;
+    controller.handle_speech_event(draft_event(23, "keep the previous dictation"));
+    controller.handle_speech_event(SpeechEvent::Finalizing {
+      session_id: 7,
+      turn_id: 23,
+      current_draft: "keep the previous dictation".to_string(),
+    });
+    controller.handle_speech_event(SpeechEvent::SpeechStartedByVad { session_id: 7 });
+    controller.handle_speech_event(draft_event(24, "discard the live lane"));
+    assert!(controller.split_overlay_visible());
+
+    controller.handle_overlay_cancel();
+    assert_eq!(controller.finalizing_turn_id, Some(23));
+    assert!(controller.overlay_visible);
+    assert!(!controller.accept_turn(24));
+
+    controller.handle_speech_event(draft_event(24, "late discarded live lane"));
+    controller.handle_speech_event(SpeechEvent::Finalizing {
+      session_id: 7,
+      turn_id: 24,
+      current_draft: "late discarded live lane".to_string(),
+    });
+    controller.handle_speech_event(SpeechEvent::FinalizingCancelled { session_id: 7, turn_id: 24 });
+    controller.handle_speech_event(SpeechEvent::FinalText {
+      session_id: 7,
+      turn_id: 24,
+      text: "Late discarded live lane.".to_string(),
+    });
+    assert_eq!(controller.finalizing_turn_id, Some(23));
+    assert!(controller.latest_draft.is_empty());
+    assert!(controller.latest_final.is_none());
+    assert!(controller.active_insertion.is_none());
+    assert_eq!(controller.last_pasted_turn_id, None);
+
+    controller.handle_speech_event(SpeechEvent::FinalText {
+      session_id: 7,
+      turn_id: 23,
+      text: "Keep the previous dictation.".to_string(),
+    });
+    assert_eq!(controller.latest_final.as_deref(), Some("Keep the previous dictation."));
+    assert_eq!(controller.last_pasted_turn_id, Some(23));
   }
 
   #[test]

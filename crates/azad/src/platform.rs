@@ -722,10 +722,12 @@ pub fn show_overlay() {
     let loc = std::panic::Location::caller();
     eprintln!("AZAD_WIN main=front at {}:{}", loc.file(), loc.line());
   }
-  unsafe {
-    let refs = ensure_overlay();
-    move_overlay_to_target_screen(refs, true);
-    let _: () = msg_send![refs.window, orderFrontRegardless];
+  if !cfg!(test) {
+    unsafe {
+      let refs = ensure_overlay();
+      move_overlay_to_target_screen(refs, true);
+      let _: () = msg_send![refs.window, orderFrontRegardless];
+    }
   }
   set_escape_hotkey_enabled(true);
   set_enter_hotkey_enabled(true);
@@ -738,14 +740,16 @@ pub fn show_overlay_top() {
     let loc = std::panic::Location::caller();
     eprintln!("AZAD_WIN top=front at {}:{}", loc.file(), loc.line());
   }
-  unsafe {
-    let refs = ensure_overlay_top();
-    if let Some(bottom) = current_overlay() {
-      position_overlay_top_relative_to_bottom(refs, bottom);
-    } else {
-      move_overlay_to_target_screen(refs, true);
+  if !cfg!(test) {
+    unsafe {
+      let refs = ensure_overlay_top();
+      if let Some(bottom) = current_overlay() {
+        position_overlay_top_relative_to_bottom(refs, bottom);
+      } else {
+        move_overlay_to_target_screen(refs, true);
+      }
+      let _: () = msg_send![refs.window, orderFrontRegardless];
     }
-    let _: () = msg_send![refs.window, orderFrontRegardless];
   }
 }
 
@@ -1023,6 +1027,9 @@ pub fn hold_hotkey_overlaps_raw_modifier() -> bool {
 }
 
 pub fn is_option_pressed() -> bool {
+  if cfg!(test) {
+    return false;
+  }
   unsafe {
     let flags: u64 = msg_send![class!(NSEvent), modifierFlags];
     (flags & NSEVENT_MODIFIER_FLAG_OPTION) != 0
