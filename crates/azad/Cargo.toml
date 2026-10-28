@@ -13,6 +13,12 @@ path = "src/bin/azad_interaction_harness.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "azad-insertion-probe"
+path = "src/bin/azad_insertion_probe.rs"
+test = false
+bench = false
+
 [dependencies]
 anyhow = "1.0"
 cocoa = "0.26.1"

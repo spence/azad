@@ -268,6 +268,10 @@ fn ensure_accessibility_for_auto_paste() -> bool {
   unsafe { AXIsProcessTrusted() }
 }
 
+fn overlay_debug_logs_enabled() -> bool {
+  false
+}
+
 unsafe fn nsstring_to_string(value: id) -> Option<String> {
   if value == nil {
     return None;

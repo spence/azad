@@ -230,7 +230,7 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
         }
         nudge_screen_sharing_clipboard_sync();
         std::thread::sleep(Duration::from_millis(paste_delay_ms));
-        send_command_v();
+        send_command_v(text);
       }
       PasteMethod::DirectTyping => {
         if let Some(bundle) = force_clipboard_bundle.as_deref() {
@@ -243,7 +243,7 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
           }
           nudge_screen_sharing_clipboard_sync();
           std::thread::sleep(Duration::from_millis(paste_delay_ms));
-          send_command_v();
+          send_command_v(text);
         } else if !send_direct_text_input(text) {
           eprintln!("Azad: failed to send direct text input");
           return PasteResult::InputEventFailed;
@@ -260,7 +260,7 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
           }
           nudge_screen_sharing_clipboard_sync();
           std::thread::sleep(Duration::from_millis(paste_delay_ms));
-          send_command_v();
+          send_command_v(text);
         } else {
           if !send_direct_text_input(text) {
             eprintln!("Azad: failed to send direct text input");
@@ -412,9 +412,10 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   true
 }
 
-unsafe fn send_command_v() {
+unsafe fn send_command_v(text: &str) {
   use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
+  trace_paste_handoff("before_shortcut", text);
   let settings =
     Settings { event_source_user_data: Some(AZAD_SYNTHETIC_MARKER), ..Settings::default() };
   let mut enigo = match Enigo::new(&settings) {
@@ -438,6 +439,8 @@ unsafe fn send_command_v() {
   if let Err(err) = enigo.key(Key::Meta, Direction::Release) {
     eprintln!("Azad: enigo Cmd up failed: {err}");
   }
+  drop(enigo);
+  trace_paste_handoff("after_shortcut", text);
 }
 
 unsafe fn release_modifiers(source: &CGEventSource) {
@@ -463,7 +466,36 @@ unsafe fn write_pasteboard_string(text: &str) -> bool {
   let ns_text = NSString::alloc(nil).init_str(text);
   let array: id = msg_send![class!(NSArray), arrayWithObject: ns_text];
   let ok: i8 = msg_send![pasteboard, writeObjects: array];
+  trace_paste_handoff("clipboard_write", text);
   ok != 0
+}
+
+/// Record producer-side paste state when debug stats are enabled, without text contents.
+/// These snapshots do not confirm delivery to the receiving application.
+unsafe fn trace_paste_handoff(stage: &str, expected: &str) {
+  if !super::overlay_debug_logs_enabled() {
+    return;
+  }
+  // SAFETY: this is the main-thread insertion path; these queries do not request permissions.
+  let (change_count, foreground, post_access) = unsafe {
+    let board = NSPasteboard::generalPasteboard(nil);
+    let change_count: isize = msg_send![board, changeCount];
+    (change_count, frontmost_bundle_id(), CGPreflightPostEventAccess())
+  };
+  let ts_ms = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map_or(0, |duration| duration.as_millis());
+  eprintln!(
+    "AZAD_PASTE_HANDOFF ts_ms={ts_ms} stage={stage} foreground={foreground:?} \
+     post_access={post_access} change_count={change_count} \
+     chars={}",
+    expected.chars().count(),
+  );
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+  fn CGPreflightPostEventAccess() -> bool;
 }
 
 unsafe fn nudge_screen_sharing_clipboard_sync() {
