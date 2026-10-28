@@ -35,6 +35,22 @@ A composed emoji or an accented character can require several scalars and severa
 These are calculations from the code, not recipient measurements. They exclude callback delays,
 event creation, browser work, and display latency. There is no interval after the last scalar.
 
+### Existing native measurements
+
+The [October 16 VM evidence](evidence/2026-10-16-typing-key-rate.md) records actual AppKit receipt
+for a short Unicode sample. The production insertion code ran beside a non-key panel.
+
+| Selected rate | Calculated minimum span | Received span |
+| --- | --- | --- |
+| 20/s | 900 ms | 1,026 ms |
+| 80/s | 225 ms | 365 ms |
+| 320/s | 56.25 ms | 219 ms |
+| Unpaced | No added wait | 89 ms |
+
+Thus, the selected rate is not a measured delivery rate. At 320/s, this receiver took almost
+four times the calculated minimum. These totals do not identify callback jitter, individual
+event latency, or browser frame timing. They are not measurements of the reported Google field.
+
 ### Why characters can appear in groups
 
 Apple documents that `Timer` is not a real-time mechanism. A busy run loop can delay a callback.
