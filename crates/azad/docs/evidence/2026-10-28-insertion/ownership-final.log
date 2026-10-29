@@ -1,0 +1,4 @@
+AZAD_PASTE_HANDOFF ts_ms=1793232559120 stage=clipboard_write foreground=Some("com.p5sys.jump.mac.viewer.web") post_access=true change_count=3 expected_change_count=3 count_after_read=4 matches_expected=false expected_sha256=074bdc4f111e14d23f2c7cd18bc76a3d3f74b4a0dd430232d5e527096f9e0674 clipboard_sha256=None chars=27
+Azad: failed to write or retain the transcript pasteboard
+{"clipboard_matches":false,"elapsed_ms":15,"frontmost":"com.p5sys.jump.mac.viewer.web","post_access":true,"result":"ClipboardWriteFailed"}
+Error: production insertion did not report success

@@ -1,0 +1,8 @@
+{
+  "connection_ended": false,
+  "expected_scalars": 10000,
+  "received_scalars": 10000,
+  "exact_match": true,
+  "expected_sha256": "a9bf3d15da540a6f885c07ce4bf04501958edb5fcd4e29c25329e1e7dde22d09",
+  "received_sha256": "a9bf3d15da540a6f885c07ce4bf04501958edb5fcd4e29c25329e1e7dde22d09"
+}

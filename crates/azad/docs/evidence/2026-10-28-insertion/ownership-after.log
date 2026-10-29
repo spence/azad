@@ -1,0 +1,5 @@
+AZAD_PASTE_HANDOFF ts_ms=1793231548638 stage=clipboard_write foreground=Some("com.p5sys.jump.mac.viewer.web") post_access=true change_count=5 expected_change_count=5 count_after_read=5 matches_expected=true expected_sha256=173fc5ff8a3fd9e60e6e6bcff14a57966e7b048b9bcbfc9c77acdf30c1e74403 clipboard_sha256=Some("173fc5ff8a3fd9e60e6e6bcff14a57966e7b048b9bcbfc9c77acdf30c1e74403") chars=27
+AZAD_PASTE_HANDOFF ts_ms=1793231548782 stage=before_shortcut foreground=Some("com.p5sys.jump.mac.viewer.web") post_access=true change_count=6 expected_change_count=5 count_after_read=6 matches_expected=false expected_sha256=173fc5ff8a3fd9e60e6e6bcff14a57966e7b048b9bcbfc9c77acdf30c1e74403 clipboard_sha256=None chars=27
+Azad: paste cancelled because the transcript clipboard changed before the shortcut
+{"clipboard_matches":false,"elapsed_ms":162,"frontmost":"com.p5sys.jump.mac.viewer.web","post_access":true,"result":"ClipboardWriteFailed"}
+Error: production insertion did not report success

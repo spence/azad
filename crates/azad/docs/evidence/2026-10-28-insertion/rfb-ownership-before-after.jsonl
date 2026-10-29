@@ -1,0 +1,14 @@
+{"kind": "listening", "time_ns": 125518791, "address": "127.0.0.1:15900"}
+{"kind": "version", "time_ns": 2489501416, "version": "RFB 003.008\n"}
+{"kind": "ready", "time_ns": 2490775458, "clipboard": "0050's null wrapper: the inline oneof fixes this, with less clutter."}
+{"kind": "encodings", "time_ns": 2491502708, "values": [1, 16, -26, 7, 8, 6, 5, 2, -239, -223, 1101]}
+{"kind": "pixel_format", "time_ns": 2491885458, "bits": 16}
+{"kind": "key", "time_ns": 3928447083, "key": 65507, "down": true, "field_chars": 0, "events": 1}
+{"kind": "clipboard_received", "time_ns": 3928754166, "generation": 1, "text": "0050's null wrapper: the inline oneof fixes this, with less clutter.", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 3928806208, "generation": 1, "text": "0050's null wrapper: the inline oneof fixes this, with less clutter."}
+{"kind": "clipboard_received", "time_ns": 3929126416, "generation": 2, "text": "0050's null wrapper: the inline oneof fixes this, with less clutter.", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 3929206250, "generation": 2, "text": "0050's null wrapper: the inline oneof fixes this, with less clutter."}
+{"kind": "paste", "time_ns": 4128983125, "clipboard": "0050's null wrapper: the inline oneof fixes this, with less clutter.", "field": "0050's null wrapper: the inline oneof fixes this, with less clutter.", "modifiers": [65507]}
+{"kind": "key", "time_ns": 4129112750, "key": 118, "down": true, "field_chars": 68, "events": 2}
+{"kind": "key", "time_ns": 4129585208, "key": 118, "down": false, "field_chars": 68, "events": 3}
+{"kind": "key", "time_ns": 4129994541, "key": 65507, "down": false, "field_chars": 68, "events": 4}

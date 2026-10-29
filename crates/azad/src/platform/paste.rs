@@ -114,7 +114,7 @@ impl PacedTyping {
     if progress == TypingProgress::Complete && self.copy {
       #[cfg(not(test))]
       // SAFETY: the clipboard attempt follows the final pair on the main thread.
-      if !unsafe { write_pasteboard_string(self.cursor.text()) } {
+      if unsafe { write_pasteboard_string(self.cursor.text()) }.is_none() {
         eprintln!("Azad: direct input succeeded but failed to copy text to pasteboard");
       }
       #[cfg(test)]
@@ -154,6 +154,12 @@ pub enum TestOutput {
 thread_local! {
   static TEST_OUTPUT: std::cell::RefCell<Vec<TestOutput>> = const { std::cell::RefCell::new(Vec::new()) };
   static TEST_PAIRS_BEFORE_FAILURE: std::cell::RefCell<Option<usize>> = const { std::cell::RefCell::new(None) };
+  static TEST_INSERT_FAILURE: std::cell::Cell<Option<PasteResult>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub fn fail_insert_for_test(result: PasteResult) {
+  TEST_INSERT_FAILURE.with(|slot| slot.set(Some(result)));
 }
 
 #[cfg(test)]
@@ -206,6 +212,10 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
   if cfg!(test) {
     #[cfg(test)]
     record_test_output(TestOutput::Insert(text.into(), method));
+    #[cfg(test)]
+    if let Some(result) = TEST_INSERT_FAILURE.with(|slot| slot.take()) {
+      return result;
+    }
     return PasteResult::Pasted;
   }
 
@@ -224,26 +234,14 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
   unsafe {
     match method {
       PasteMethod::ClipboardPaste => {
-        if !write_pasteboard_string(text) {
-          eprintln!("Azad: failed to write transcript to pasteboard");
-          return PasteResult::ClipboardWriteFailed;
-        }
-        nudge_screen_sharing_clipboard_sync();
-        std::thread::sleep(Duration::from_millis(paste_delay_ms));
-        send_command_v(text);
+        return paste_via_clipboard(text, paste_delay_ms);
       }
       PasteMethod::DirectTyping => {
         if let Some(bundle) = force_clipboard_bundle.as_deref() {
           eprintln!(
             "Azad: direct typing fallback to clipboard paste for frontmost app bundle={bundle}"
           );
-          if !write_pasteboard_string(text) {
-            eprintln!("Azad: failed to write transcript to pasteboard");
-            return PasteResult::ClipboardWriteFailed;
-          }
-          nudge_screen_sharing_clipboard_sync();
-          std::thread::sleep(Duration::from_millis(paste_delay_ms));
-          send_command_v(text);
+          return paste_via_clipboard(text, paste_delay_ms);
         } else if !send_direct_text_input(text) {
           eprintln!("Azad: failed to send direct text input");
           return PasteResult::InputEventFailed;
@@ -254,19 +252,13 @@ pub fn insert_text(text: &str, method: PasteMethod, paste_delay_ms: u64) -> Past
           eprintln!(
             "Azad: direct typing+copy fallback to clipboard paste for frontmost app bundle={bundle}"
           );
-          if !write_pasteboard_string(text) {
-            eprintln!("Azad: failed to write transcript to pasteboard");
-            return PasteResult::ClipboardWriteFailed;
-          }
-          nudge_screen_sharing_clipboard_sync();
-          std::thread::sleep(Duration::from_millis(paste_delay_ms));
-          send_command_v(text);
+          return paste_via_clipboard(text, paste_delay_ms);
         } else {
           if !send_direct_text_input(text) {
             eprintln!("Azad: failed to send direct text input");
             return PasteResult::InputEventFailed;
           }
-          if !write_pasteboard_string(text) {
+          if write_pasteboard_string(text).is_none() {
             eprintln!("Azad: direct input succeeded but failed to copy text to pasteboard");
           }
         }
@@ -412,35 +404,71 @@ unsafe fn send_key_chord(keycode: u16, flags: CGEventFlags) -> bool {
   true
 }
 
-unsafe fn send_command_v(text: &str) {
-  use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+unsafe fn paste_via_clipboard(text: &str, paste_delay_ms: u64) -> PasteResult {
+  let Some(change_count) = (unsafe { write_pasteboard_string(text) }) else {
+    eprintln!("Azad: failed to write or retain the transcript pasteboard");
+    return PasteResult::ClipboardWriteFailed;
+  };
+  unsafe { nudge_screen_sharing_clipboard_sync() };
+  std::thread::sleep(Duration::from_millis(paste_delay_ms));
+  unsafe { send_command_v(text, change_count) }
+}
 
-  trace_paste_handoff("before_shortcut", text);
+unsafe fn send_command_v(text: &str, change_count: isize) -> PasteResult {
+  use enigo::{Enigo, Keyboard, Settings};
+
   let settings =
     Settings { event_source_user_data: Some(AZAD_SYNTHETIC_MARKER), ..Settings::default() };
   let mut enigo = match Enigo::new(&settings) {
     Ok(e) => e,
     Err(err) => {
       eprintln!("Azad: enigo init failed for Cmd+V paste: {err}");
-      return;
+      return PasteResult::InputEventFailed;
     }
   };
-
-  if let Err(err) = enigo.key(Key::Meta, Direction::Press) {
-    eprintln!("Azad: enigo Cmd down failed: {err}");
-    return;
+  if !unsafe { trace_paste_handoff("before_shortcut", text, change_count) } {
+    eprintln!("Azad: paste cancelled because the transcript clipboard changed before the shortcut");
+    return PasteResult::ClipboardWriteFailed;
   }
-  // `Key::Other(9)` is the physical V keycode on macOS. That keeps paste
-  // working on non-US layouts.
-  if let Err(err) = enigo.key(Key::Other(9), Direction::Click) {
-    eprintln!("Azad: enigo V click failed: {err}");
-  }
-  std::thread::sleep(Duration::from_millis(PASTE_CHORD_HOLD_MS));
-  if let Err(err) = enigo.key(Key::Meta, Direction::Release) {
-    eprintln!("Azad: enigo Cmd up failed: {err}");
-  }
+  let ok = command_v_events(
+    |key, direction| enigo.key(key, direction),
+    || std::thread::sleep(Duration::from_millis(PASTE_CHORD_HOLD_MS)),
+  );
   drop(enigo);
-  trace_paste_handoff("after_shortcut", text);
+  unsafe { trace_paste_handoff("after_shortcut", text, change_count) };
+  if ok { PasteResult::Pasted } else { PasteResult::InputEventFailed }
+}
+
+fn command_v_events(
+  mut key: impl FnMut(enigo::Key, enigo::Direction) -> Result<(), enigo::InputError>,
+  hold: impl FnOnce(),
+) -> bool {
+  use enigo::{Direction, Key};
+
+  if let Err(err) = key(Key::Meta, Direction::Press) {
+    eprintln!("Azad: enigo Cmd down failed: {err}");
+    return false;
+  }
+  // physical V preserves the shortcut on non-US layouts.
+  let clicked = match key(Key::Other(9), Direction::Click) {
+    Ok(()) => true,
+    Err(err) => {
+      eprintln!("Azad: enigo V click failed: {err}");
+      if let Err(err) = key(Key::Other(9), Direction::Release) {
+        eprintln!("Azad: enigo V cleanup failed: {err}");
+      }
+      false
+    }
+  };
+  hold();
+  let released = match key(Key::Meta, Direction::Release) {
+    Ok(()) => true,
+    Err(err) => {
+      eprintln!("Azad: enigo Cmd up failed: {err}");
+      false
+    }
+  };
+  clicked && released
 }
 
 unsafe fn release_modifiers(source: &CGEventSource) {
@@ -460,37 +488,70 @@ unsafe fn release_modifiers(source: &CGEventSource) {
   }
 }
 
-unsafe fn write_pasteboard_string(text: &str) -> bool {
+unsafe fn write_pasteboard_string(text: &str) -> Option<isize> {
   let pasteboard = NSPasteboard::generalPasteboard(nil);
-  let _: usize = msg_send![pasteboard, clearContents];
+  let change_count: isize = msg_send![pasteboard, clearContents];
   let ns_text = NSString::alloc(nil).init_str(text);
   let array: id = msg_send![class!(NSArray), arrayWithObject: ns_text];
   let ok: i8 = msg_send![pasteboard, writeObjects: array];
-  trace_paste_handoff("clipboard_write", text);
-  ok != 0
+  (ok != 0 && trace_paste_handoff("clipboard_write", text, change_count)).then_some(change_count)
 }
 
-/// Record producer-side paste state when debug stats are enabled, without text contents.
-/// These snapshots do not confirm delivery to the receiving application.
-unsafe fn trace_paste_handoff(stage: &str, expected: &str) {
-  if !super::overlay_debug_logs_enabled() {
-    return;
-  }
-  // SAFETY: this is the main-thread insertion path; these queries do not request permissions.
-  let (change_count, foreground, post_access) = unsafe {
-    let board = NSPasteboard::generalPasteboard(nil);
-    let change_count: isize = msg_send![board, changeCount];
-    (change_count, frontmost_bundle_id(), CGPreflightPostEventAccess())
+/// Verify the owned pasteboard generation and record metadata without text contents.
+/// Local ownership does not confirm delivery to a receiving or remote application.
+unsafe fn trace_paste_handoff(stage: &str, expected: &str, expected_count: isize) -> bool {
+  let board = unsafe { NSPasteboard::generalPasteboard(nil) };
+  let change_count: isize = unsafe { msg_send![board, changeCount] };
+  // read text only while the pasteboard still has the generation that this write claimed.
+  let actual = if change_count == expected_count {
+    let kind: id = unsafe {
+      msg_send![class!(NSString), stringWithUTF8String: c"public.utf8-plain-text".as_ptr()]
+    };
+    let value: id = unsafe { msg_send![board, stringForType: kind] };
+    unsafe { pasteboard_string(value) }
+  } else {
+    None
   };
-  let ts_ms = std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .map_or(0, |duration| duration.as_millis());
-  eprintln!(
-    "AZAD_PASTE_HANDOFF ts_ms={ts_ms} stage={stage} foreground={foreground:?} \
-     post_access={post_access} change_count={change_count} \
-     chars={}",
-    expected.chars().count(),
-  );
+  let count_after_read: isize = unsafe { msg_send![board, changeCount] };
+  let actual = actual.filter(|_| count_after_read == expected_count);
+  let matches = change_count == expected_count
+    && count_after_read == expected_count
+    && actual.as_deref() == Some(expected);
+  if super::overlay_debug_logs_enabled() {
+    use sha2::{Digest, Sha256};
+
+    let expected_sha256 = format!("{:x}", Sha256::digest(expected.as_bytes()));
+    let clipboard_sha256 =
+      actual.as_ref().map(|text| format!("{:x}", Sha256::digest(text.as_bytes())));
+    // SAFETY: these read-only main-thread queries do not request permissions.
+    let (foreground, post_access) =
+      unsafe { (frontmost_bundle_id(), CGPreflightPostEventAccess()) };
+    let ts_ms = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map_or(0, |duration| duration.as_millis());
+    eprintln!(
+      "AZAD_PASTE_HANDOFF ts_ms={ts_ms} stage={stage} foreground={foreground:?} \
+       post_access={post_access} change_count={change_count} expected_change_count={expected_count} \
+       count_after_read={count_after_read} matches_expected={matches} \
+       expected_sha256={expected_sha256} clipboard_sha256={clipboard_sha256:?} chars={}",
+      expected.chars().count(),
+    );
+  }
+  matches
+}
+
+unsafe fn pasteboard_string(value: id) -> Option<String> {
+  if value == nil {
+    return None;
+  }
+  // SAFETY: NSString owns this UTF-8 buffer, including any embedded null bytes.
+  let bytes = unsafe { NSString::UTF8String(value) };
+  if bytes.is_null() {
+    return None;
+  }
+  let length = unsafe { NSString::len(value) };
+  let bytes = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) };
+  std::str::from_utf8(bytes).ok().map(str::to_owned)
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -544,7 +605,80 @@ unsafe fn frontmost_bundle_id() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-  use super::is_terminal_like_bundle_id;
+  use super::{command_v_events, is_terminal_like_bundle_id};
+
+  #[test]
+  fn failed_v_click_releases_command_and_reports_failure() {
+    use enigo::{Direction, InputError, Key};
+
+    let mut calls = Vec::new();
+    let ok = command_v_events(
+      |key, direction| {
+        let failed = matches!(key, Key::Other(9));
+        calls.push((key, direction));
+        if failed { Err(InputError::Simulate("fixture V failure")) } else { Ok(()) }
+      },
+      || {},
+    );
+    assert!(!ok);
+    assert!(matches!(
+      calls.as_slice(),
+      [
+        (Key::Meta, Direction::Press),
+        (Key::Other(9), Direction::Click),
+        (Key::Other(9), Direction::Release),
+        (Key::Meta, Direction::Release)
+      ]
+    ));
+  }
+
+  #[test]
+  fn clipboard_string_preserves_embedded_null_and_unicode() {
+    use cocoa::base::nil;
+    use cocoa::foundation::{NSAutoreleasePool, NSString};
+    use objc::{msg_send, sel, sel_impl};
+
+    use super::pasteboard_string;
+
+    // SAFETY: this test owns only an NSString and a pool; it does not access a pasteboard.
+    unsafe {
+      let pool = NSAutoreleasePool::new(nil);
+      let expected = "before\0after café 🦋";
+      let value = NSString::alloc(nil).init_str(expected);
+      assert_eq!(pasteboard_string(value).as_deref(), Some(expected));
+      let _: () = msg_send![value, release];
+      pool.drain();
+    }
+  }
+
+  #[test]
+  fn command_down_failure_does_not_emit_the_paste_key() {
+    let mut calls = 0;
+    assert!(!command_v_events(
+      |_, _| {
+        calls += 1;
+        Err(enigo::InputError::Simulate("fixture Command failure"))
+      },
+      || panic!("a failed Command press must not enter the hold"),
+    ));
+    assert_eq!(calls, 1);
+  }
+
+  #[test]
+  fn command_release_failure_is_not_success() {
+    use enigo::{Direction, InputError, Key};
+
+    assert!(!command_v_events(
+      |key, direction| {
+        if matches!((key, direction), (Key::Meta, Direction::Release)) {
+          Err(InputError::Simulate("fixture release failure"))
+        } else {
+          Ok(())
+        }
+      },
+      || {},
+    ));
+  }
 
   #[test]
   fn terminal_like_bundle_ids_force_clipboard_fallback() {

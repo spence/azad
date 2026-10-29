@@ -27,16 +27,30 @@ const KEYCODE_RETURN: u16 = 0x24;
 const AZAD_SYNTHETIC_MARKER: i64 = 0x1A2A_D1A2;
 const KCG_EVENT_SOURCE_USER_DATA_FIELD: u32 = 42;
 
-#[path = "../platform/paste.rs"]
 #[allow(unsafe_op_in_unsafe_fn)]
-mod paste;
+mod paste {
+  include!("../platform/paste.rs");
+
+  pub(super) unsafe fn repeat_shortcut(text: &str) -> PasteResult {
+    let board = unsafe { NSPasteboard::generalPasteboard(nil) };
+    let change_count: isize = unsafe { msg_send![board, changeCount] };
+    unsafe { send_command_v(text, change_count) }
+  }
+}
 
 fn main() -> Result<()> {
   let args: Vec<String> = std::env::args().collect();
   ensure!(
-    args.len() == 3 && args[1] == "--allow-vm-input",
-    "usage: azad-insertion-probe --allow-vm-input TEXT"
+    args.len() == 3,
+    "usage: azad-insertion-probe --allow-vm-input|--allow-vm-jump-input|--allow-vm-jump-type|--allow-vm-jump-retry TEXT"
   );
+  let (target, method) = match args[1].as_str() {
+    "--allow-vm-input" => ("com.brave.Browser", PasteMethod::ClipboardPaste),
+    "--allow-vm-jump-input" => ("com.p5sys.jump.mac.viewer.web", PasteMethod::ClipboardPaste),
+    "--allow-vm-jump-retry" => ("com.p5sys.jump.mac.viewer.web", PasteMethod::ClipboardPaste),
+    "--allow-vm-jump-type" => ("com.p5sys.jump.mac.viewer.web", PasteMethod::DirectTyping),
+    _ => anyhow::bail!("an explicit VM input mode is required"),
+  };
   let model = Command::new("/usr/sbin/sysctl").args(["-n", "hw.model"]).output()?;
   ensure!(model.status.success(), "cannot establish the VM hardware boundary");
   ensure!(
@@ -56,20 +70,21 @@ fn main() -> Result<()> {
   // SAFETY: this query does not request or change event-posting permission.
   let post_access = unsafe { CGPreflightPostEventAccess() };
   ensure!(
-    frontmost.as_deref() == Some("com.brave.Browser"),
-    "Brave is not the foreground guest application: {frontmost:?}"
+    frontmost.as_deref() == Some(target),
+    "the requested guest application is not in the foreground: {frontmost:?}"
   );
   ensure!(post_access, "the guest probe lacks event-posting permission");
   let started = Instant::now();
-  let result = paste::insert_text(&args[2], PasteMethod::ClipboardPaste, 20);
-  // SAFETY: the VM guard precedes access to this guest's pasteboard.
-  let clipboard_matches = unsafe {
-    let board = NSPasteboard::generalPasteboard(nil);
-    let text_type: id =
-      msg_send![class!(NSString), stringWithUTF8String: c"public.utf8-plain-text".as_ptr()];
-    let value: id = msg_send![board, stringForType: text_type];
-    nsstring_to_string(value).as_deref() == Some(args[2].as_str())
+  let result = if args[1] == "--allow-vm-jump-retry" {
+    // SAFETY: the VM, target, and permission guards precede this guest-only clipboard read.
+    ensure!(unsafe { clipboard_matches(&args[2]) }, "the guest clipboard does not match the retry");
+    // SAFETY: the same admission guards protect this shortcut without a clipboard rewrite.
+    unsafe { paste::repeat_shortcut(&args[2]) }
+  } else {
+    paste::insert_text(&args[2], method, 20)
   };
+  // SAFETY: the VM guard precedes access to this guest's pasteboard.
+  let clipboard_matches = unsafe { clipboard_matches(&args[2]) };
   println!(
     "{}",
     serde_json::json!({"result": format!("{result:?}"), "clipboard_matches": clipboard_matches, "frontmost": frontmost, "post_access": post_access, "elapsed_ms": started.elapsed().as_millis()})
@@ -77,8 +92,20 @@ fn main() -> Result<()> {
   // SAFETY: no Objective-C object from the pool is used after this call.
   unsafe { pool.drain() };
   ensure!(result == paste::PasteResult::Pasted, "production insertion did not report success");
-  ensure!(clipboard_matches, "guest pasteboard does not contain the requested text");
+  if method == PasteMethod::ClipboardPaste {
+    ensure!(clipboard_matches, "guest pasteboard does not contain the requested text");
+  }
   Ok(())
+}
+
+unsafe fn clipboard_matches(expected: &str) -> bool {
+  // SAFETY: callers have admitted this process to the owned VM before any pasteboard access.
+  let board = unsafe { NSPasteboard::generalPasteboard(nil) };
+  let text_type: id = unsafe {
+    msg_send![class!(NSString), stringWithUTF8String: c"public.utf8-plain-text".as_ptr()]
+  };
+  let value: id = unsafe { msg_send![board, stringForType: text_type] };
+  unsafe { nsstring_to_string(value) }.as_deref() == Some(expected)
 }
 
 fn ensure_accessibility_for_auto_paste() -> bool {

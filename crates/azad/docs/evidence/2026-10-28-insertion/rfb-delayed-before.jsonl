@@ -1,0 +1,19 @@
+{"kind": "listening", "time_ns": 89792125, "address": "127.0.0.1:15900"}
+{"kind": "version", "time_ns": 1444387708, "version": "RFB 003.008\n"}
+{"kind": "ready", "time_ns": 1445073750, "clipboard": "0050's null wrapper: the inline oneof fixes this, with less clutter."}
+{"kind": "encodings", "time_ns": 1445920208, "values": [1, 16, -26, 7, 8, 6, 5, 2, -239, -223, 1101]}
+{"kind": "pixel_format", "time_ns": 1446231416, "bits": 16}
+{"kind": "key", "time_ns": 81555421041, "key": 65507, "down": true, "field_chars": 0, "events": 1}
+{"kind": "clipboard_received", "time_ns": 81555937083, "generation": 1, "text": "By old designs, I meant any old code.", "commit_delay_ms": 500}
+{"kind": "clipboard_received", "time_ns": 81556246666, "generation": 2, "text": "By old designs, I meant any old code.", "commit_delay_ms": 500}
+{"kind": "paste", "time_ns": 81755907666, "clipboard": "0050's null wrapper: the inline oneof fixes this, with less clutter.", "field": "0050's null wrapper: the inline oneof fixes this, with less clutter.", "modifiers": [65507]}
+{"kind": "key", "time_ns": 81755985291, "key": 118, "down": true, "field_chars": 68, "events": 2}
+{"kind": "key", "time_ns": 81756231791, "key": 118, "down": false, "field_chars": 68, "events": 3}
+{"kind": "key", "time_ns": 81756509083, "key": 65507, "down": false, "field_chars": 68, "events": 4}
+{"kind": "clipboard_committed", "time_ns": 82058693666, "generation": 1, "text": "By old designs, I meant any old code."}
+{"kind": "clipboard_committed", "time_ns": 82058785750, "generation": 2, "text": "By old designs, I meant any old code."}
+{"kind": "key", "time_ns": 192697303375, "key": 65507, "down": true, "field_chars": 68, "events": 5}
+{"kind": "paste", "time_ns": 192697578666, "clipboard": "By old designs, I meant any old code.", "field": "0050's null wrapper: the inline oneof fixes this, with less clutter.By old designs, I meant any old code.", "modifiers": [65507]}
+{"kind": "key", "time_ns": 192697598250, "key": 118, "down": true, "field_chars": 105, "events": 6}
+{"kind": "key", "time_ns": 192697792250, "key": 118, "down": false, "field_chars": 105, "events": 7}
+{"kind": "key", "time_ns": 192704237000, "key": 65507, "down": false, "field_chars": 105, "events": 8}

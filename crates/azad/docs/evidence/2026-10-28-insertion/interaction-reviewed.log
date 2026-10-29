@@ -1,0 +1,9 @@
+./scripts/azad-interaction-test.sh
+{"scenario":"manual_hold_overlay","passed":true}
+{"scenario":"manual_hold_finalize","passed":true}
+{"scenario":"double_tap_toggle","passed":true}
+{"scenario":"history_navigation","passed":true}
+{"scenario":"cancel_manual_hold","passed":true}
+{"scenario":"enter_finalize_cleanup","passed":true}
+{"scenario":"always_listening_assist","passed":true}
+{"scenarios":7,"summary":"ok"}

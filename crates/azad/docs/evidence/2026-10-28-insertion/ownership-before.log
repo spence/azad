@@ -1,0 +1,5 @@
+AZAD_PASTE_HANDOFF ts_ms=1793230586045 stage=clipboard_write foreground=Some("com.p5sys.jump.mac.viewer.web") post_access=true change_count=3 chars=27
+AZAD_PASTE_HANDOFF ts_ms=1793230586103 stage=before_shortcut foreground=Some("com.p5sys.jump.mac.viewer.web") post_access=true change_count=4 chars=27
+AZAD_PASTE_HANDOFF ts_ms=1793230586405 stage=after_shortcut foreground=Some("com.p5sys.jump.mac.viewer.web") post_access=true change_count=4 chars=27
+{"clipboard_matches":false,"elapsed_ms":382,"frontmost":"com.p5sys.jump.mac.viewer.web","post_access":true,"result":"Pasted"}
+Error: guest pasteboard does not contain the requested text

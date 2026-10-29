@@ -38,7 +38,7 @@ pub use paste::{
   InsertStart, PacedTyping, PasteResult, post_down_then_return, send_auto_submit, start_insert,
 };
 #[cfg(test)]
-pub use paste::{TestOutput, fail_typing_after_for_test, take_test_output};
+pub use paste::{TestOutput, fail_insert_for_test, fail_typing_after_for_test, take_test_output};
 pub use permissions::{
   PermissionStatus, accessibility_authorization, ensure_accessibility_for_auto_paste,
   input_monitoring_authorization, microphone_authorization, request_accessibility_permission,
@@ -248,6 +248,9 @@ const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 const KCG_KEYBOARD_EVENT_KEYCODE_FIELD: u32 = 9;
 const KCG_KEYBOARD_EVENT_AUTOREPEAT_FIELD: u32 = 8;
 const KCG_EVENT_SOURCE_USER_DATA_FIELD: u32 = 42;
+const KCG_EVENT_SOURCE_UNIX_PROCESS_ID_FIELD: u32 = 41;
+const KCG_EVENT_SOURCE_STATE_ID_FIELD: u32 = 45;
+const KCG_KEYBOARD_EVENT_KEYBOARD_TYPE_FIELD: u32 = 10;
 const EVENT_TAP_HEALTH_INTERVAL_SECONDS: f64 = 1.0;
 
 thread_local! {
@@ -5693,33 +5696,35 @@ extern "C" fn event_tap_callback(
   // Skip events Azad itself synthesized (Cmd+V, auto-submit Enter, etc.). Without this check
   // the tap would swallow our own Enter and auto-submit would never reach the focused app.
   let user_data = unsafe { CGEventGetIntegerValueField(event, KCG_EVENT_SOURCE_USER_DATA_FIELD) };
+  let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE_FIELD) };
+  let flags = unsafe { CGEventGetFlags(event) };
+  if overlay_debug_logs_enabled()
+    && keycode == 9
+    && (user_data == AZAD_SYNTHETIC_MARKER || flags & CGEventFlags::CGEventFlagCommand.bits() != 0)
+  {
+    // SAFETY: the callback supplies a live keyboard event; only shortcut metadata is recorded.
+    let (source_pid, source_state, keyboard_type) = unsafe {
+      (
+        CGEventGetIntegerValueField(event, KCG_EVENT_SOURCE_UNIX_PROCESS_ID_FIELD),
+        CGEventGetIntegerValueField(event, KCG_EVENT_SOURCE_STATE_ID_FIELD),
+        CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYBOARD_TYPE_FIELD),
+      )
+    };
+    let origin = if user_data == AZAD_SYNTHETIC_MARKER { "azad" } else { "external" };
+    let ts_ms = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map_or(0, |duration| duration.as_millis());
+    eprintln!(
+      "AZAD_PASTE_HID ts_ms={ts_ms} origin={origin} event_type={event_type} keycode={keycode} \
+       flags={flags:#x} source_pid={source_pid} source_state={source_state} keyboard_type={keyboard_type}"
+    );
+  }
   if user_data == AZAD_SYNTHETIC_MARKER {
-    if overlay_debug_logs_enabled()
-      && (event_type == KCG_EVENT_KEY_DOWN || event_type == KCG_EVENT_KEY_UP)
-    {
-      // SAFETY: the event-tap callback supplies a valid keyboard event for these queries.
-      let (keycode, flags) = unsafe {
-        (
-          CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE_FIELD),
-          CGEventGetFlags(event),
-        )
-      };
-      if keycode == 9 || keycode == 0x37 {
-        let ts_ms = std::time::SystemTime::now()
-          .duration_since(std::time::UNIX_EPOCH)
-          .map_or(0, |duration| duration.as_millis());
-        eprintln!(
-          "AZAD_PASTE_HID ts_ms={ts_ms} event_type={event_type} keycode={keycode} flags={flags:#x}"
-        );
-      }
-    }
     return event;
   }
 
-  let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE_FIELD) };
   let autorepeat =
     unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_AUTOREPEAT_FIELD) };
-  let flags = unsafe { CGEventGetFlags(event) };
   let is_option = (flags & CGEventFlags::CGEventFlagAlternate.bits()) != 0;
   let is_shift = (flags & CGEventFlags::CGEventFlagShift.bits()) != 0;
   let is_command = (flags & CGEventFlags::CGEventFlagCommand.bits()) != 0;

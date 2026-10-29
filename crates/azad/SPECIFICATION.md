@@ -168,6 +168,22 @@ Implementation:
 - `platform::send_auto_submit()` optionally sends submit chord after successful insert.
 - `app/insertion.rs` handles insertion ordering, completion, metrics, and failure behavior.
 
+Local clipboard handoff (grounded in the owner's stale-insertion report and the
+controlled ownership and delayed-receiver replays):
+
+- **C1:** If the claimed clipboard generation or text fails verification before the shortcut,
+  Azad emits no paste shortcut. A later clipboard change remains outside this local verification.
+- **C2:** Native shortcut errors produce a failed result. Azad attempts V and Command release
+  after a failed V event and does not auto-submit a failed insertion, including a history insertion.
+- **C3:** A failed normal transcript remains available when history is enabled. Failure does not
+  advance the last-pasted turn. Cancellation does not create a history entry.
+- **C4:** Local clipboard verification and event posting do not confirm remote receipt.
+  Azad does not automatically repeat an insertion whose delivery is uncertain.
+
+Binding: native ownership-interference and delayed-receiver replays exercise C1 and C4.
+`platform::paste::tests` covers shortcut failure cleanup for C2. `app::insertion::tests` covers
+failed history insertion, failed-transcript retention, and newer-speech preservation for C2–C3.
+
 Typing key rate (grounded in the owner's accepted
 [typing key rate design](docs/typing-key-rate-design.md)):
 

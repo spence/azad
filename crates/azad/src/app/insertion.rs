@@ -143,13 +143,8 @@ impl AppController {
   }
 
   fn admit_insertion(&mut self, request: InsertionRequest) {
-    if self.active_insertion.is_some()
-      || !self.insertion_queue.is_empty()
-      || (request.rate > 0 && request.method != PasteMethod::ClipboardPaste)
-    {
-      if let Some(source) = request.source {
-        self.handled_insertions.insert(source);
-      }
+    if let Some(source) = request.source {
+      self.handled_insertions.insert(source);
     }
     if request.origin.owns_overlay() {
       self.insertion_overlay_owner = Some(request.id);
@@ -179,12 +174,8 @@ impl AppController {
         request.paste_delay_ms,
         request.rate,
       ) {
-        InsertStart::Finished(result) => {
-          self.complete_insertion(request, result, started_at, false)
-        }
-        InsertStart::PacedFailed(result) => {
-          self.complete_insertion(request, result, started_at, true)
-        }
+        InsertStart::Finished(result) => self.complete_insertion(request, result, started_at),
+        InsertStart::PacedFailed(result) => self.complete_insertion(request, result, started_at),
         InsertStart::Paced(mut typing) => match typing.advance(Instant::now()) {
           TypingProgress::Waiting(after) => {
             let id = request.id;
@@ -200,7 +191,7 @@ impl AppController {
             } else {
               PasteResult::InputEventFailed
             };
-            self.complete_insertion(request, result, started_at, true);
+            self.complete_insertion(request, result, started_at);
           }
         },
       }
@@ -223,7 +214,7 @@ impl AppController {
         } else {
           PasteResult::InputEventFailed
         };
-        self.complete_insertion(request, result, started_at, true);
+        self.complete_insertion(request, result, started_at);
         self.start_next_insertion();
       }
     }
@@ -234,10 +225,10 @@ impl AppController {
     self.insertion_overlay_owner = None;
     if let Some(ActiveInsertion { request, typing, started_at }) = self.active_insertion.take() {
       drop(typing);
-      self.complete_insertion(request, PasteResult::Cancelled, started_at, true);
+      self.complete_insertion(request, PasteResult::Cancelled, started_at);
     }
     while let Some(request) = self.insertion_queue.pop_front() {
-      self.complete_insertion(request, PasteResult::Cancelled, Instant::now(), true);
+      self.complete_insertion(request, PasteResult::Cancelled, Instant::now());
     }
   }
 
@@ -273,12 +264,10 @@ impl AppController {
     request: InsertionRequest,
     result: PasteResult,
     started_at: Instant,
-    paced: bool,
   ) {
     let insert_duration_ms = started_at.elapsed().as_millis() as u64;
     let submit_started = Instant::now();
-    let should_submit = result == PasteResult::Pasted
-      || (request.origin == InsertOrigin::History && !paced && result != PasteResult::Cancelled);
+    let should_submit = result == PasteResult::Pasted;
     let auto_submit_sent = should_submit && request.submit != AutoSubmitMode::Off;
     let auto_submit_ok = !should_submit || platform::send_auto_submit(request.submit);
     let auto_submit_duration_ms =
@@ -339,11 +328,15 @@ impl AppController {
           {
             self.last_pasted_turn_id = Some(source.turn_id);
           }
-          if request.origin.records_history() && self.history_enabled {
-            if let Some(index) = self.transcript_index.as_mut() {
-              index.append(source.turn_id, &request.history_draft, &request.text);
-            }
-          }
+        }
+      }
+      // retain failed normal transcripts for an explicit retry, but exclude cancellation.
+      if !matches!(result, PasteResult::Cancelled | PasteResult::EmptyText)
+        && request.origin.records_history()
+        && self.history_enabled
+      {
+        if let (Some(source), Some(index)) = (request.source, self.transcript_index.as_mut()) {
+          index.append(source.turn_id, &request.history_draft, &request.text);
         }
       }
     }
@@ -361,11 +354,23 @@ impl AppController {
     }
     if self.insertion_overlay_owner == Some(request.id) {
       self.insertion_overlay_owner = None;
+      let failed_current_turn =
+        matches!(result, PasteResult::ClipboardWriteFailed | PasteResult::InputEventFailed)
+          && !self.manual_hold_active
+          && request.source.is_none_or(|source| self.current_turn_id == Some(source.turn_id));
       match request.origin {
         InsertOrigin::Normal { dismiss: true } => self.dismiss_overlay_after_standard_dictation(),
         InsertOrigin::Raw { dismiss: true } | InsertOrigin::SessionEnd => self.hide_overlay(),
         InsertOrigin::History => self.exit_history_mode(),
         _ => {}
+      }
+      if failed_current_turn {
+        let body = if self.history_enabled && request.origin.records_history() {
+          "Review the destination before you insert the transcript from history."
+        } else {
+          "Review the destination. Automatic insertion did not complete."
+        };
+        self.show_overlay_notice("Insertion stopped", body, std::time::Duration::from_secs(4));
       }
     }
   }
@@ -490,7 +495,8 @@ mod tests {
     platform::fail_typing_after_for_test(None);
     assert_eq!(platform::take_test_output(), [TestOutput::Pair('a')]);
     assert_eq!(app.last_pasted_turn_id, None);
-    assert_eq!(app.transcript_index.as_ref().unwrap().entry_count(), 0);
+    assert_eq!(app.transcript_index.as_ref().unwrap().entry_count(), 1);
+    assert_eq!(app.transcript_index.as_ref().unwrap().search("", 10)[0].final_text, "abc");
     app.handle_speech_event(SpeechEvent::SessionEnded { session_id: 7 });
     assert!(platform::take_test_output().is_empty());
     assert!(app.active_insertion.is_none());
@@ -574,7 +580,69 @@ mod tests {
   }
 
   #[test]
-  fn synchronous_history_failure_preserves_listening_and_submit_baseline() {
+  fn synchronous_failure_is_not_retried_by_late_events() {
+    let mut app = controller();
+    app.paste_method = PasteMethod::ClipboardPaste;
+    platform::fail_insert_for_test(PasteResult::InputEventFailed);
+    app.handle_speech_event(final_text(1, "recover this text"));
+    assert_eq!(
+      platform::take_test_output(),
+      [TestOutput::Insert("recover this text".into(), PasteMethod::ClipboardPaste)]
+    );
+    assert_eq!(app.last_pasted_turn_id, None);
+    app.handle_speech_event(final_text(1, "recover this text"));
+    app.handle_speech_event(SpeechEvent::SessionEnded { session_id: 7 });
+    assert!(platform::take_test_output().is_empty(), "a failed attempt must not be repeated");
+    assert_eq!(app.last_pasted_turn_id, None);
+    assert_eq!(app.transcript_index.as_ref().unwrap().entry_count(), 1);
+  }
+
+  #[test]
+  fn failed_clipboard_keeps_opted_in_history_without_claiming_delivery() {
+    for history_enabled in [true, false] {
+      let mut app = controller();
+      app.history_enabled = history_enabled;
+      let source = app.insertion_source(1);
+      let request = app.new_insertion(
+        Some(source),
+        InsertOrigin::Normal { dismiss: true },
+        TranscriptMode::Normal,
+        "recover this text".into(),
+        "recover this text".into(),
+      );
+      app.insertion_overlay_owner = Some(request.id);
+      app.complete_insertion(request, PasteResult::ClipboardWriteFailed, Instant::now());
+      assert_eq!(app.last_pasted_turn_id, None);
+      assert!(platform::take_test_output().is_empty());
+      assert_eq!(
+        app.transcript_index.as_ref().unwrap().entry_count(),
+        usize::from(history_enabled)
+      );
+      assert!(app.accessibility_notice_deadline.is_some());
+    }
+  }
+
+  #[test]
+  fn old_insertion_failure_does_not_replace_new_speech_with_a_notice() {
+    let mut app = controller();
+    let source = app.insertion_source(1);
+    let request = app.new_insertion(
+      Some(source),
+      InsertOrigin::Normal { dismiss: true },
+      TranscriptMode::Normal,
+      "old text".into(),
+      "old text".into(),
+    );
+    app.insertion_overlay_owner = Some(request.id);
+    app.current_turn_id = Some(2);
+    app.latest_draft = "new speech".into();
+    app.complete_insertion(request, PasteResult::InputEventFailed, Instant::now());
+    assert!(app.accessibility_notice_deadline.is_none());
+    assert_eq!(app.latest_draft, "new speech");
+  }
+
+  #[test]
+  fn history_failure_does_not_submit_or_disable_listening() {
     let mut app = controller();
     app.always_listening_enabled = true;
     let request = app.new_insertion(
@@ -584,9 +652,9 @@ mod tests {
       "text".into(),
       "text".into(),
     );
-    app.complete_insertion(request, PasteResult::AccessibilityRequired, Instant::now(), false);
+    app.complete_insertion(request, PasteResult::AccessibilityRequired, Instant::now());
     assert!(app.always_listening_enabled);
-    assert_eq!(platform::take_test_output(), [TestOutput::Submit(AutoSubmitMode::Enter)]);
+    assert!(platform::take_test_output().is_empty(), "failed insertion must not submit the field");
     let request = app.new_insertion(
       None,
       InsertOrigin::History,
@@ -594,7 +662,7 @@ mod tests {
       "text".into(),
       "text".into(),
     );
-    app.complete_insertion(request, PasteResult::InputEventFailed, Instant::now(), true);
+    app.complete_insertion(request, PasteResult::InputEventFailed, Instant::now());
     assert!(platform::take_test_output().is_empty());
   }
 

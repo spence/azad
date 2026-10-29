@@ -95,3 +95,33 @@ For character-by-character appearance, a rate below the observed display and edi
 more promising than the highest rate. Clipboard paste remains the shortest operation for long text.
 
 No timer, rate default, or typing architecture was changed for this research.
+
+## Implementation options
+
+| Option | Benefit | Limit |
+| --- | --- | --- |
+| Dedicated serial keyboard emitter with a bounded rate | Separates event timing from Azad's main-thread work; avoids clipboard synchronization | Cannot control recipient processing or frame timing; needs cancellation and long-text receipt checks |
+| Small Unicode chunks per event | Reduces event count and can improve throughput | Some targets ignore or truncate multi-character payloads; requires target-specific receipt evidence |
+| Verified clipboard handoff | Short operation for long text; the new generation check stops a demonstrated local ownership race | Local readiness is not remote readiness; Fluid needs receiver acknowledgment or a clipboard-independent path |
+| Editor/browser integration | Can insert text as one operation and confirm the target value | Requires a supported integration for each destination; it is not a universal keyboard replacement |
+| Jump's built-in clipboard-as-keyboard command | Existing clipboard-independent option within Jump | Jump documents a 1 KB text limit, so this is not a large-transcript solution |
+
+Jump's command is **Remote → Send via Keyboard → Clipboard Text**.
+[Jump clipboard documentation](https://docs.jumpdesktop.com/viewer/session/clipboard/)
+
+Enigo's macOS fast-text implementation uses chunks of 20 Unicode characters and documents target
+truncation and leading newline/tab constraints in its source. That is an implementation workaround,
+not an Apple guarantee that all applications accept such chunks. Azad currently uses one scalar
+per pair for compatibility.
+[Enigo 0.6.1 macOS source](https://docs.rs/crate/enigo/0.6.1/source/src/macos/macos_impl.rs)
+
+The [follow-up replay](evidence/2026-10-28-insertion-followup.md#long-keyboard-output) received all
+10,000 ASCII characters through Jump VNC, with an exact receiver hash match. The producer took
+2.314 seconds. This establishes feasibility for that run, not Fluid reliability, Unicode coverage,
+native-editor acceptance, or smooth visible output.
+
+The recommended next timing comparison is the existing emitter versus a dedicated serial emitter
+at the same finite rates. Preserve one-scalar pairs and the no-catch-up rule. Measure recipient
+contents and interval variation as well as producer duration. Use chunks only after exact target
+receipt is demonstrated. Do not add a blocking main-thread wait or change the default on the basis
+of the single VNC result.

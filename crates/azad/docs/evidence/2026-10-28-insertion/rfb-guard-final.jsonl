@@ -1,0 +1,15 @@
+{"kind": "listening", "time_ns": 116634708, "address": "127.0.0.1:15900"}
+{"kind": "version", "time_ns": 7335777458, "version": "RFB 003.008\n"}
+{"kind": "ready", "time_ns": 7342198875, "clipboard": "0050's null wrapper: the inline oneof fixes this, with less clutter."}
+{"kind": "encodings", "time_ns": 7344596291, "values": [1, 16, -26, 7, 8, 6, 5, 2, -239, -223, 1101]}
+{"kind": "pixel_format", "time_ns": 7344851125, "bits": 16}
+{"kind": "key", "time_ns": 15812370291, "key": 65507, "down": true, "field_chars": 0, "events": 1}
+{"kind": "clipboard_received", "time_ns": 15814704000, "generation": 1, "text": "AZAD_GUARD_LIVE_POSITIVE_004", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 15814783125, "generation": 1, "text": "AZAD_GUARD_LIVE_POSITIVE_004"}
+{"kind": "clipboard_received", "time_ns": 15814942416, "generation": 2, "text": "AZAD_GUARD_LIVE_POSITIVE_004", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 15814993625, "generation": 2, "text": "AZAD_GUARD_LIVE_POSITIVE_004"}
+{"kind": "paste", "time_ns": 16014930166, "clipboard": "AZAD_GUARD_LIVE_POSITIVE_004", "field": "AZAD_GUARD_LIVE_POSITIVE_004", "modifiers": [65507]}
+{"kind": "key", "time_ns": 16015015166, "key": 118, "down": true, "field_chars": 28, "events": 2}
+{"kind": "key", "time_ns": 16015225458, "key": 118, "down": false, "field_chars": 28, "events": 3}
+{"kind": "key", "time_ns": 16015425625, "key": 65507, "down": false, "field_chars": 28, "events": 4}
+{"kind": "snapshot", "time_ns": 17732111500, "field": "AZAD_GUARD_LIVE_POSITIVE_004", "chars": 28, "sha256": "91568883bdb28f46f2bcd11e91f98de8a4967d7938343cf0783215daa3e02d53", "clipboard": "AZAD_GUARD_LIVE_POSITIVE_004"}

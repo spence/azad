@@ -1,0 +1,22 @@
+
+running 1 test
+app::insertion::tests::synchronous_failure_is_not_retried_by_late_events --- FAILED
+
+failures:
+
+---- app::insertion::tests::synchronous_failure_is_not_retried_by_late_events stdout ----
+AZAD_INSERT_PERF turn_id=1 transcript_mode=normal method=clipboard_paste chars=17 result=input_event_failed insert_ms=0 auto_submit_mode=enter auto_submit_sent=false auto_submit_ms=0 auto_submit_ok=true total_ms=0
+Azad: transcript insertion failed (input_event_failed)
+AZAD_INSERT_PERF turn_id=1 transcript_mode=normal method=clipboard_paste chars=17 result=pasted insert_ms=0 auto_submit_mode=enter auto_submit_sent=true auto_submit_ms=0 auto_submit_ok=true total_ms=0
+
+thread 'app::insertion::tests::synchronous_failure_is_not_retried_by_late_events' (43033087) panicked at crates/azad/src/app/insertion.rs:600:5:
+a failed attempt must not be repeated
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::insertion::tests::synchronous_failure_is_not_retried_by_late_events
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 311 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p azad --bin azad`
