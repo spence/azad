@@ -10,7 +10,8 @@ The same behavior occurs without Azad, Zed, macOS keyboard events, or a remote d
 
 This reproduces the delayed, grouped output class, not the exact historical native event sequence.
 The observations are terminal output, not physical screen frames or Zed input receipts.
-No Azad behavior change or live Codex setting change is included. The typing defect remains recorded in Burndown.
+The fixture comparison includes no Azad behavior change or global Codex setting change.
+The separate fleet configuration update below does not resolve the full typing delay.
 
 ## Reported turns and source path
 
@@ -77,7 +78,7 @@ codex -c tui.disable_paste_burst=true
 In this comparison, the setting removes most initial holding and increases visible updates.
 It does not remove the approximately one-second completion cost.
 Disabling detection also changes how unframed keyboard input is classified; it is not a universal text-delivery guarantee.
-No existing client was restarted and no user configuration file was edited.
+During the fixture comparison, no existing client was restarted and no user configuration file was edited.
 
 The user reports immediate output with Azad Paste. The fixture verifies bracketed-paste behavior only; it does not verify native clipboard delivery through Zed.
 A clipboard-independent, paste-like operation would need a supported terminal/Codex literal-text integration.
@@ -104,3 +105,35 @@ python3 -m pip install --target python-libs pyte==0.8.2 wcwidth==0.9.4
 python3 codex-input-timing.py --private-client
 python3 codex-input-timing.py --private-client --disable-burst
 ```
+
+## Fleet configuration, 2026-10-28
+
+The owner requested the Codex setting on both Macs and prohibited session restarts.
+Each Mac now has this entry in `/Users/spencer/.codex/config.toml`:
+
+```toml
+[tui]
+disable_paste_burst = true
+```
+
+| Mac | Setting line | Account paths that read `true` |
+| --- | ---: | --- |
+| catalyst | 4522 | `.codex`, `.codex-sudo`, `.codex-gmail`, `.codex-micro` |
+| catalyst-mini | 354 | `.codex`, `.codex-sudo`, `.codex-gmail`, `.codex-micro` |
+
+On each Mac, all four paths resolve to the same configuration file.
+The update added only the setting line. TOML parsing before and after the write confirmed that all other settings were unchanged.
+Separate read-only commands parsed all account paths again and confirmed `true`.
+The account links, file permissions, and file inode were preserved. No profile override was found.
+Read-only process snapshots before and after each write matched for existing Codex and Zed processes.
+No session restart, process termination, desktop input, or Azad deployment command was used.
+The saved configuration is for future Codex sessions; this evidence does not claim that an existing TUI loaded the new value.
+
+Azad's far-right key rate, `0`, already means no added character delay.
+It is separate from the Codex input-burst setting. No extra slider position or app change was necessary.
+The controlled comparison above supports faster initial display, not faster completion of the full text.
+
+The official Claude Code [settings reference](https://code.claude.com/docs/en/settings-reference) and
+[environment-variable reference](https://code.claude.com/docs/en/env-vars) have no documented equivalent to this Codex control.
+Its [terminal guide](https://code.claude.com/docs/en/terminal-config#paste-large-content) describes collapsed large pastes, not a switch to disable input-burst detection.
+No Claude Code setting was changed.
