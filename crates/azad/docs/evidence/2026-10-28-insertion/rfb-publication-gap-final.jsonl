@@ -1,0 +1,131 @@
+{"kind": "listening", "time_ns": 122581416, "address": "127.0.0.1:15900"}
+{"kind": "version", "time_ns": 1918847958, "version": "RFB 003.008\n"}
+{"kind": "ready", "time_ns": 1937346583, "clipboard": "0050's null wrapper: the inline oneof fixes this, with less clutter."}
+{"kind": "encodings", "time_ns": 1938774875, "values": [1, 16, -26, 7, 8, 6, 5, 2, -239, -223, 1101]}
+{"kind": "pixel_format", "time_ns": 1939179291, "bits": 16}
+{"kind": "key", "time_ns": 2322919125, "key": 65507, "down": true, "field_chars": 0, "events": 1}
+{"kind": "clipboard_received", "time_ns": 2323872458, "generation": 1, "text": "OLD_PUBLICATION_FIXTURE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 2324037333, "generation": 1, "text": "OLD_PUBLICATION_FIXTURE"}
+{"kind": "clipboard_received", "time_ns": 2324333291, "generation": 2, "text": "OLD_PUBLICATION_FIXTURE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 2324397583, "generation": 2, "text": "OLD_PUBLICATION_FIXTURE"}
+{"kind": "paste", "time_ns": 2520810375, "clipboard": "OLD_PUBLICATION_FIXTURE", "field": "OLD_PUBLICATION_FIXTURE", "modifiers": [65507]}
+{"kind": "key", "time_ns": 2529679291, "key": 118, "down": true, "field_chars": 23, "events": 2}
+{"kind": "key", "time_ns": 2529869666, "key": 118, "down": false, "field_chars": 23, "events": 3}
+{"kind": "key", "time_ns": 2529983291, "key": 65507, "down": false, "field_chars": 23, "events": 4}
+{"kind": "key", "time_ns": 14417028000, "key": 65507, "down": true, "field_chars": 23, "events": 5}
+{"kind": "clipboard_received", "time_ns": 14417568375, "generation": 3, "text": "NEW_PUBLICATION_DECLARE_001", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 14417650916, "generation": 3, "text": "NEW_PUBLICATION_DECLARE_001"}
+{"kind": "clipboard_received", "time_ns": 14417833083, "generation": 4, "text": "NEW_PUBLICATION_DECLARE_001", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 14417880500, "generation": 4, "text": "NEW_PUBLICATION_DECLARE_001"}
+{"kind": "paste", "time_ns": 14618149416, "clipboard": "NEW_PUBLICATION_DECLARE_001", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001", "modifiers": [65507]}
+{"kind": "key", "time_ns": 14618214750, "key": 118, "down": true, "field_chars": 50, "events": 6}
+{"kind": "key", "time_ns": 14618336500, "key": 118, "down": false, "field_chars": 50, "events": 7}
+{"kind": "key", "time_ns": 14618541041, "key": 65507, "down": false, "field_chars": 50, "events": 8}
+{"kind": "key", "time_ns": 93683845833, "key": 65507, "down": true, "field_chars": 50, "events": 9}
+{"kind": "clipboard_received", "time_ns": 93689656041, "generation": 5, "text": "AZAD_PUBLICATION_SEED_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 93689733208, "generation": 5, "text": "AZAD_PUBLICATION_SEED_CLEAR"}
+{"kind": "clipboard_received", "time_ns": 93689910875, "generation": 6, "text": "AZAD_PUBLICATION_SEED_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 93689957000, "generation": 6, "text": "AZAD_PUBLICATION_SEED_CLEAR"}
+{"kind": "paste", "time_ns": 93886214791, "clipboard": "AZAD_PUBLICATION_SEED_CLEAR", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEAR", "modifiers": [65507]}
+{"kind": "key", "time_ns": 93886294083, "key": 118, "down": true, "field_chars": 77, "events": 10}
+{"kind": "key", "time_ns": 93886411875, "key": 118, "down": false, "field_chars": 77, "events": 11}
+{"kind": "key", "time_ns": 93886527750, "key": 65507, "down": false, "field_chars": 77, "events": 12}
+{"kind": "key", "time_ns": 95600752333, "key": 65507, "down": true, "field_chars": 77, "events": 13}
+{"kind": "clipboard_received", "time_ns": 95601086541, "generation": 7, "text": "AZAD_PUBLICATION_NEW_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 95601221125, "generation": 7, "text": "AZAD_PUBLICATION_NEW_CLEAR"}
+{"kind": "clipboard_received", "time_ns": 95601496208, "generation": 8, "text": "AZAD_PUBLICATION_NEW_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 95601547958, "generation": 8, "text": "AZAD_PUBLICATION_NEW_CLEAR"}
+{"kind": "paste", "time_ns": 95802295750, "clipboard": "AZAD_PUBLICATION_NEW_CLEAR", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEAR", "modifiers": [65507]}
+{"kind": "key", "time_ns": 95802355000, "key": 118, "down": true, "field_chars": 103, "events": 14}
+{"kind": "key", "time_ns": 95802485375, "key": 118, "down": false, "field_chars": 103, "events": 15}
+{"kind": "key", "time_ns": 95802727583, "key": 65507, "down": false, "field_chars": 103, "events": 16}
+{"kind": "key", "time_ns": 96056366125, "key": 65507, "down": true, "field_chars": 103, "events": 17}
+{"kind": "clipboard_received", "time_ns": 96056734541, "generation": 9, "text": "AZAD_PUBLICATION_SEED_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 96056826250, "generation": 9, "text": "AZAD_PUBLICATION_SEED_DECLARE"}
+{"kind": "clipboard_received", "time_ns": 96057001583, "generation": 10, "text": "AZAD_PUBLICATION_SEED_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 96057053125, "generation": 10, "text": "AZAD_PUBLICATION_SEED_DECLARE"}
+{"kind": "paste", "time_ns": 96258287708, "clipboard": "AZAD_PUBLICATION_SEED_DECLARE", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLARE", "modifiers": [65507]}
+{"kind": "key", "time_ns": 96258364791, "key": 118, "down": true, "field_chars": 132, "events": 18}
+{"kind": "key", "time_ns": 96258509416, "key": 118, "down": false, "field_chars": 132, "events": 19}
+{"kind": "key", "time_ns": 96258647458, "key": 65507, "down": false, "field_chars": 132, "events": 20}
+{"kind": "key", "time_ns": 98033934250, "key": 65507, "down": true, "field_chars": 132, "events": 21}
+{"kind": "clipboard_received", "time_ns": 98034326083, "generation": 11, "text": "AZAD_PUBLICATION_NEW_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 98034446083, "generation": 11, "text": "AZAD_PUBLICATION_NEW_DECLARE"}
+{"kind": "clipboard_received", "time_ns": 98034635041, "generation": 12, "text": "AZAD_PUBLICATION_NEW_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 98034704958, "generation": 12, "text": "AZAD_PUBLICATION_NEW_DECLARE"}
+{"kind": "paste", "time_ns": 98235198000, "clipboard": "AZAD_PUBLICATION_NEW_DECLARE", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLARE", "modifiers": [65507]}
+{"kind": "key", "time_ns": 98235279333, "key": 118, "down": true, "field_chars": 160, "events": 22}
+{"kind": "key", "time_ns": 98235413833, "key": 118, "down": false, "field_chars": 160, "events": 23}
+{"kind": "key", "time_ns": 98235569041, "key": 65507, "down": false, "field_chars": 160, "events": 24}
+{"kind": "key", "time_ns": 596691502458, "key": 65507, "down": true, "field_chars": 160, "events": 25}
+{"kind": "clipboard_received", "time_ns": 596691796250, "generation": 13, "text": "AZAD_PUBLICATION_SEED_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 596691852333, "generation": 13, "text": "AZAD_PUBLICATION_SEED_CLEAR"}
+{"kind": "clipboard_received", "time_ns": 596692100583, "generation": 14, "text": "AZAD_PUBLICATION_SEED_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 596692162791, "generation": 14, "text": "AZAD_PUBLICATION_SEED_CLEAR"}
+{"kind": "paste", "time_ns": 596893945416, "clipboard": "AZAD_PUBLICATION_SEED_CLEAR", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEAR", "modifiers": [65507]}
+{"kind": "key", "time_ns": 596894184083, "key": 118, "down": true, "field_chars": 187, "events": 26}
+{"kind": "key", "time_ns": 596894712208, "key": 118, "down": false, "field_chars": 187, "events": 27}
+{"kind": "key", "time_ns": 596894973166, "key": 65507, "down": false, "field_chars": 187, "events": 28}
+{"kind": "key", "time_ns": 598518973583, "key": 65507, "down": true, "field_chars": 187, "events": 29}
+{"kind": "clipboard_received", "time_ns": 598519349666, "generation": 15, "text": "AZAD_PUBLICATION_NEW_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 598519430916, "generation": 15, "text": "AZAD_PUBLICATION_NEW_CLEAR"}
+{"kind": "clipboard_received", "time_ns": 598519605208, "generation": 16, "text": "AZAD_PUBLICATION_NEW_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 598519663291, "generation": 16, "text": "AZAD_PUBLICATION_NEW_CLEAR"}
+{"kind": "paste", "time_ns": 598721842958, "clipboard": "AZAD_PUBLICATION_NEW_CLEAR", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEAR", "modifiers": [65507]}
+{"kind": "key", "time_ns": 598722028166, "key": 118, "down": true, "field_chars": 213, "events": 30}
+{"kind": "key", "time_ns": 598722274541, "key": 118, "down": false, "field_chars": 213, "events": 31}
+{"kind": "key", "time_ns": 598722611583, "key": 65507, "down": false, "field_chars": 213, "events": 32}
+{"kind": "key", "time_ns": 599319248291, "key": 65507, "down": true, "field_chars": 213, "events": 33}
+{"kind": "clipboard_received", "time_ns": 599319479416, "generation": 17, "text": "AZAD_PUBLICATION_SEED_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 599319531666, "generation": 17, "text": "AZAD_PUBLICATION_SEED_DECLARE"}
+{"kind": "clipboard_received", "time_ns": 599319689875, "generation": 18, "text": "AZAD_PUBLICATION_SEED_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 599319732916, "generation": 18, "text": "AZAD_PUBLICATION_SEED_DECLARE"}
+{"kind": "paste", "time_ns": 599522050666, "clipboard": "AZAD_PUBLICATION_SEED_DECLARE", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLARE", "modifiers": [65507]}
+{"kind": "key", "time_ns": 599522478875, "key": 118, "down": true, "field_chars": 242, "events": 34}
+{"kind": "key", "time_ns": 599522753458, "key": 118, "down": false, "field_chars": 242, "events": 35}
+{"kind": "key", "time_ns": 599522973125, "key": 65507, "down": false, "field_chars": 242, "events": 36}
+{"kind": "key", "time_ns": 601372472916, "key": 65507, "down": true, "field_chars": 242, "events": 37}
+{"kind": "clipboard_received", "time_ns": 601372834333, "generation": 19, "text": "AZAD_PUBLICATION_NEW_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 601372918083, "generation": 19, "text": "AZAD_PUBLICATION_NEW_DECLARE"}
+{"kind": "clipboard_received", "time_ns": 601373255541, "generation": 20, "text": "AZAD_PUBLICATION_NEW_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 601373315208, "generation": 20, "text": "AZAD_PUBLICATION_NEW_DECLARE"}
+{"kind": "paste", "time_ns": 601573723916, "clipboard": "AZAD_PUBLICATION_NEW_DECLARE", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLARE", "modifiers": [65507]}
+{"kind": "key", "time_ns": 601573796125, "key": 118, "down": true, "field_chars": 270, "events": 38}
+{"kind": "key", "time_ns": 601573947666, "key": 118, "down": false, "field_chars": 270, "events": 39}
+{"kind": "key", "time_ns": 601574075750, "key": 65507, "down": false, "field_chars": 270, "events": 40}
+{"kind": "key", "time_ns": 793843650500, "key": 65507, "down": true, "field_chars": 270, "events": 41}
+{"kind": "clipboard_received", "time_ns": 793843901041, "generation": 21, "text": "AZAD_PUBLICATION_SEED_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 793843966708, "generation": 21, "text": "AZAD_PUBLICATION_SEED_CLEAR"}
+{"kind": "clipboard_received", "time_ns": 793844129333, "generation": 22, "text": "AZAD_PUBLICATION_SEED_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 793844174333, "generation": 22, "text": "AZAD_PUBLICATION_SEED_CLEAR"}
+{"kind": "paste", "time_ns": 794045671041, "clipboard": "AZAD_PUBLICATION_SEED_CLEAR", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEAR", "modifiers": [65507]}
+{"kind": "key", "time_ns": 794045746541, "key": 118, "down": true, "field_chars": 297, "events": 42}
+{"kind": "key", "time_ns": 794045918458, "key": 118, "down": false, "field_chars": 297, "events": 43}
+{"kind": "key", "time_ns": 794046101750, "key": 65507, "down": false, "field_chars": 297, "events": 44}
+{"kind": "key", "time_ns": 795784359791, "key": 65507, "down": true, "field_chars": 297, "events": 45}
+{"kind": "clipboard_received", "time_ns": 795784635500, "generation": 23, "text": "AZAD_PUBLICATION_NEW_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 795784696583, "generation": 23, "text": "AZAD_PUBLICATION_NEW_CLEAR"}
+{"kind": "clipboard_received", "time_ns": 795784861958, "generation": 24, "text": "AZAD_PUBLICATION_NEW_CLEAR", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 795784907166, "generation": 24, "text": "AZAD_PUBLICATION_NEW_CLEAR"}
+{"kind": "paste", "time_ns": 795986456833, "clipboard": "AZAD_PUBLICATION_NEW_CLEAR", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEAR", "modifiers": [65507]}
+{"kind": "key", "time_ns": 795986534125, "key": 118, "down": true, "field_chars": 323, "events": 46}
+{"kind": "key", "time_ns": 795986654458, "key": 118, "down": false, "field_chars": 323, "events": 47}
+{"kind": "key", "time_ns": 795986770458, "key": 65507, "down": false, "field_chars": 323, "events": 48}
+{"kind": "key", "time_ns": 796251983958, "key": 65507, "down": true, "field_chars": 323, "events": 49}
+{"kind": "clipboard_received", "time_ns": 796252265041, "generation": 25, "text": "AZAD_PUBLICATION_SEED_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 796252357958, "generation": 25, "text": "AZAD_PUBLICATION_SEED_DECLARE"}
+{"kind": "clipboard_received", "time_ns": 796252581041, "generation": 26, "text": "AZAD_PUBLICATION_SEED_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 796252645333, "generation": 26, "text": "AZAD_PUBLICATION_SEED_DECLARE"}
+{"kind": "paste", "time_ns": 796453484166, "clipboard": "AZAD_PUBLICATION_SEED_DECLARE", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLARE", "modifiers": [65507]}
+{"kind": "key", "time_ns": 796453563083, "key": 118, "down": true, "field_chars": 352, "events": 50}
+{"kind": "key", "time_ns": 796453677250, "key": 118, "down": false, "field_chars": 352, "events": 51}
+{"kind": "key", "time_ns": 796453785458, "key": 65507, "down": false, "field_chars": 352, "events": 52}
+{"kind": "key", "time_ns": 798200276875, "key": 65507, "down": true, "field_chars": 352, "events": 53}
+{"kind": "clipboard_received", "time_ns": 798200606541, "generation": 27, "text": "AZAD_PUBLICATION_NEW_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 798200684458, "generation": 27, "text": "AZAD_PUBLICATION_NEW_DECLARE"}
+{"kind": "clipboard_received", "time_ns": 798200846000, "generation": 28, "text": "AZAD_PUBLICATION_NEW_DECLARE", "commit_delay_ms": 0}
+{"kind": "clipboard_committed", "time_ns": 798200890000, "generation": 28, "text": "AZAD_PUBLICATION_NEW_DECLARE"}
+{"kind": "paste", "time_ns": 798402143250, "clipboard": "AZAD_PUBLICATION_NEW_DECLARE", "field": "OLD_PUBLICATION_FIXTURENEW_PUBLICATION_DECLARE_001AZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLAREAZAD_PUBLICATION_SEED_CLEARAZAD_PUBLICATION_NEW_CLEARAZAD_PUBLICATION_SEED_DECLAREAZAD_PUBLICATION_NEW_DECLARE", "modifiers": [65507]}
+{"kind": "key", "time_ns": 798402218333, "key": 118, "down": true, "field_chars": 380, "events": 54}
+{"kind": "key", "time_ns": 798402328500, "key": 118, "down": false, "field_chars": 380, "events": 55}
+{"kind": "key", "time_ns": 798402432833, "key": 65507, "down": false, "field_chars": 380, "events": 56}

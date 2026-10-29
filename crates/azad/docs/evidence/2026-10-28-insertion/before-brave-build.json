@@ -1,0 +1,30 @@
+{
+  "revision": "9853442b4f3f076415c9eec591e176e3b50eedf0",
+  "sources": [
+    "bin/azad_insertion_probe.rs",
+    "platform/paste.rs",
+    "settings.rs",
+    "typing.rs"
+  ],
+  "command": [
+    "rustc",
+    "--edition=2024",
+    "/Users/spencer/projects/azad/insertion-20261028/before-brave-src/bin/azad_insertion_probe.rs",
+    "-o",
+    "/Users/spencer/projects/azad/insertion-20261028/azad-insertion-probe-before",
+    "-L",
+    "dependency=target/debug/deps",
+    "--extern",
+    "anyhow=/Users/spencer/src/azad/target/debug/deps/libanyhow-c4883d6abb30f111.rlib",
+    "--extern",
+    "cocoa=/Users/spencer/src/azad/target/debug/deps/libcocoa-cb08907d44c553b3.rlib",
+    "--extern",
+    "objc=/Users/spencer/src/azad/target/debug/deps/libobjc-71dee512098cc532.rlib",
+    "--extern",
+    "core_graphics=/Users/spencer/src/azad/target/debug/deps/libcore_graphics-29705b95e89f6261.rlib",
+    "--extern",
+    "enigo=/Users/spencer/src/azad/target/debug/deps/libenigo-399163e14d185feb.rlib",
+    "--extern",
+    "serde_json=/Users/spencer/src/azad/target/debug/deps/libserde_json-7217c81f0f929923.rlib"
+  ]
+}

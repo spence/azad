@@ -1,0 +1,1 @@
+Error: refusing native input outside a macOS VM

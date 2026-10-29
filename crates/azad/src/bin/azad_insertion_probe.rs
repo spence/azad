@@ -42,10 +42,10 @@ fn main() -> Result<()> {
   let args: Vec<String> = std::env::args().collect();
   ensure!(
     args.len() == 3,
-    "usage: azad-insertion-probe --allow-vm-input|--allow-vm-jump-input|--allow-vm-jump-type|--allow-vm-jump-retry TEXT"
+    "usage: azad-insertion-probe --allow-vm-input|--allow-vm-brave-retry|--allow-vm-jump-input|--allow-vm-jump-type|--allow-vm-jump-retry TEXT"
   );
   let (target, method) = match args[1].as_str() {
-    "--allow-vm-input" => ("com.brave.Browser", PasteMethod::ClipboardPaste),
+    "--allow-vm-input" | "--allow-vm-brave-retry" => ("com.brave.Browser", PasteMethod::ClipboardPaste),
     "--allow-vm-jump-input" => ("com.p5sys.jump.mac.viewer.web", PasteMethod::ClipboardPaste),
     "--allow-vm-jump-retry" => ("com.p5sys.jump.mac.viewer.web", PasteMethod::ClipboardPaste),
     "--allow-vm-jump-type" => ("com.p5sys.jump.mac.viewer.web", PasteMethod::DirectTyping),
@@ -75,7 +75,7 @@ fn main() -> Result<()> {
   );
   ensure!(post_access, "the guest probe lacks event-posting permission");
   let started = Instant::now();
-  let result = if args[1] == "--allow-vm-jump-retry" {
+  let result = if matches!(args[1].as_str(), "--allow-vm-jump-retry" | "--allow-vm-brave-retry") {
     // SAFETY: the VM, target, and permission guards precede this guest-only clipboard read.
     ensure!(unsafe { clipboard_matches(&args[2]) }, "the guest clipboard does not match the retry");
     // SAFETY: the same admission guards protect this shortcut without a clipboard rewrite.
