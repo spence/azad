@@ -125,3 +125,16 @@ at the same finite rates. Preserve one-scalar pairs and the no-catch-up rule. Me
 contents and interval variation as well as producer duration. Use chunks only after exact target
 receipt is demonstrated. Do not add a blocking main-thread wait or change the default on the basis
 of the single VNC result.
+
+## Reported Max-mode delay in Codex
+
+The [Codex follow-up](evidence/2026-10-28-codex-typing.md) identifies the reported 338-, 156-, and 96-character turns as unpaced output.
+The finite-rate timer is not involved. An isolated Codex 0.163.0 prompt at the user's terminal size reproduces grouped long-text output.
+Raw writes complete in less than 1 ms; the long prompt output takes approximately one second.
+Bracketed paste produces one update within milliseconds.
+
+A process-local Codex burst-detection setting improves the first output, but does not remove completion cost.
+Raw single-write timing varies; it is not a verified general prevention.
+These observations make a separate Azad timer insufficient as the primary correction for this Max-mode report.
+The dedicated-emitter option above remains a candidate for finite-rate producer jitter, not a demonstrated solution to receiver-side delay.
+No live setting, typing default, or app behavior changed in this follow-up.

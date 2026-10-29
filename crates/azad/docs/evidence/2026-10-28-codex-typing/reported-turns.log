@@ -1,0 +1,12 @@
+AZAD_FINALIZING_RECV ts_ms=1793237274135 turn_id=111 draft_chars=338 overlay_visible=true prior_finalizing_turn_id=None
+TOON_DUAL_STREAM_FINAL turn_id=111 elapsed_ms=48 draft_chars=338 refined_chars=339
+AZAD_DIRECT_PAYLOAD turn_id=111 transcript_mode=normal method=direct_typing chars=338 payload="okay, so i'm using typing and it seems like longer length texts still feel super weird and choppy, right? like not only when i ended a long text did it take a second before anything showed up. when normally when set to paste, it would show up immediately and also it only came out in one chunk and then like the rest of it came out next. "
+AZAD_INSERT_PERF turn_id=111 transcript_mode=normal method=direct_typing chars=338 result=pasted insert_ms=2 auto_submit_mode=off auto_submit_sent=false auto_submit_ms=0 auto_submit_ok=true total_ms=2
+AZAD_FINALIZING_RECV ts_ms=1793237298786 turn_id=113 draft_chars=155 overlay_visible=true prior_finalizing_turn_id=None
+TOON_DUAL_STREAM_FINAL turn_id=113 elapsed_ms=32 draft_chars=155 refined_chars=155
+AZAD_DIRECT_PAYLOAD turn_id=113 transcript_mode=normal method=direct_typing chars=156 payload="so the above paragraph that i just sent you like it came out and i only saw okay so i'm and then it waited like a whole second and then the rest of it came "
+AZAD_INSERT_PERF turn_id=113 transcript_mode=normal method=direct_typing chars=156 result=pasted insert_ms=1 auto_submit_mode=off auto_submit_sent=false auto_submit_ms=0 auto_submit_ok=true total_ms=1
+AZAD_FINALIZING_RECV ts_ms=1793237314160 turn_id=115 draft_chars=94 overlay_visible=true prior_finalizing_turn_id=None
+TOON_DUAL_STREAM_FINAL turn_id=115 elapsed_ms=28 draft_chars=94 refined_chars=95
+AZAD_DIRECT_PAYLOAD turn_id=115 transcript_mode=normal method=direct_typing chars=96 payload="the second paragraph here when i hit enter, it took like an additional second for it to appear. "
+AZAD_INSERT_PERF turn_id=115 transcript_mode=normal method=direct_typing chars=96 result=pasted insert_ms=1 auto_submit_mode=off auto_submit_sent=false auto_submit_ms=0 auto_submit_ok=true total_ms=1
