@@ -430,24 +430,38 @@ unsafe fn send_command_v(text: &str, change_count: isize) -> PasteResult {
     eprintln!("Azad: paste cancelled because the transcript clipboard changed before the shortcut");
     return PasteResult::ClipboardWriteFailed;
   }
-  let ok = command_v_events(
+  let result = command_v_events(
     |key, direction| enigo.key(key, direction),
+    // SAFETY: the main thread verifies this insertion's text and generation before V.
+    || unsafe { trace_paste_handoff("before_paste_key", text, change_count) },
     || std::thread::sleep(Duration::from_millis(PASTE_CHORD_HOLD_MS)),
   );
   drop(enigo);
   unsafe { trace_paste_handoff("after_shortcut", text, change_count) };
-  if ok { PasteResult::Pasted } else { PasteResult::InputEventFailed }
+  result
 }
 
+/// Verify the clipboard after Command-down, then post V only on a match.
+/// A mismatch releases Command; a failed release remains an input-event failure.
 fn command_v_events(
   mut key: impl FnMut(enigo::Key, enigo::Direction) -> Result<(), enigo::InputError>,
+  verify_clipboard: impl FnOnce() -> bool,
   hold: impl FnOnce(),
-) -> bool {
+) -> PasteResult {
   use enigo::{Direction, Key};
 
   if let Err(err) = key(Key::Meta, Direction::Press) {
     eprintln!("Azad: enigo Cmd down failed: {err}");
-    return false;
+    return PasteResult::InputEventFailed;
+  }
+  // reject clipboard changes during shortcut setup before the paste-triggering V event.
+  if !verify_clipboard() {
+    eprintln!("Azad: paste cancelled because the transcript clipboard changed before V");
+    if let Err(err) = key(Key::Meta, Direction::Release) {
+      eprintln!("Azad: enigo Cmd cleanup failed after clipboard verification: {err}");
+      return PasteResult::InputEventFailed;
+    }
+    return PasteResult::ClipboardWriteFailed;
   }
   // physical V preserves the shortcut on non-US layouts.
   let clicked = match key(Key::Other(9), Direction::Click) {
@@ -468,7 +482,7 @@ fn command_v_events(
       false
     }
   };
-  clicked && released
+  if clicked && released { PasteResult::Pasted } else { PasteResult::InputEventFailed }
 }
 
 unsafe fn release_modifiers(source: &CGEventSource) {
@@ -605,22 +619,103 @@ unsafe fn frontmost_bundle_id() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-  use super::{command_v_events, is_terminal_like_bundle_id};
+  use super::{PasteResult, command_v_events, is_terminal_like_bundle_id};
+
+  #[test]
+  fn clipboard_change_during_command_down_does_not_emit_paste_key() {
+    use std::cell::Cell;
+
+    use enigo::{Direction, Key};
+
+    let clipboard_matches = Cell::new(true);
+    let held = Cell::new(false);
+    let mut calls = Vec::new();
+    assert!(clipboard_matches.get());
+    let result = command_v_events(
+      |key, direction| {
+        calls.push((key, direction));
+        if matches!((key, direction), (Key::Meta, Direction::Press)) {
+          clipboard_matches.set(false);
+        }
+        Ok(())
+      },
+      || clipboard_matches.get(),
+      || held.set(true),
+    );
+    assert_eq!(result, PasteResult::ClipboardWriteFailed);
+    assert!(!held.get());
+    assert!(matches!(
+      calls.as_slice(),
+      [(Key::Meta, Direction::Press), (Key::Meta, Direction::Release)]
+    ));
+  }
+
+  #[test]
+  fn final_clipboard_verification_precedes_v() {
+    use std::cell::RefCell;
+
+    use enigo::{Direction, Key};
+
+    let calls = RefCell::new(Vec::new());
+    let result = command_v_events(
+      |key, direction| {
+        calls.borrow_mut().push(match (key, direction) {
+          (Key::Meta, Direction::Press) => "command_down",
+          (Key::Other(9), Direction::Click) => "v",
+          (Key::Meta, Direction::Release) => "command_up",
+          _ => panic!("unexpected shortcut event"),
+        });
+        Ok(())
+      },
+      || {
+        calls.borrow_mut().push("verify");
+        true
+      },
+      || calls.borrow_mut().push("hold"),
+    );
+    assert_eq!(result, PasteResult::Pasted);
+    assert_eq!(*calls.borrow(), ["command_down", "verify", "v", "hold", "command_up"]);
+  }
+
+  #[test]
+  fn final_verification_failure_reports_command_cleanup_failure() {
+    use enigo::{Direction, InputError, Key};
+
+    let mut calls = Vec::new();
+    let result = command_v_events(
+      |key, direction| {
+        calls.push((key, direction));
+        if matches!((key, direction), (Key::Meta, Direction::Release)) {
+          Err(InputError::Simulate("fixture cleanup failure"))
+        } else {
+          Ok(())
+        }
+      },
+      || false,
+      || panic!("failed clipboard verification must not enter the hold"),
+    );
+    assert_eq!(result, PasteResult::InputEventFailed);
+    assert!(matches!(
+      calls.as_slice(),
+      [(Key::Meta, Direction::Press), (Key::Meta, Direction::Release)]
+    ));
+  }
 
   #[test]
   fn failed_v_click_releases_command_and_reports_failure() {
     use enigo::{Direction, InputError, Key};
 
     let mut calls = Vec::new();
-    let ok = command_v_events(
+    let result = command_v_events(
       |key, direction| {
         let failed = matches!(key, Key::Other(9));
         calls.push((key, direction));
         if failed { Err(InputError::Simulate("fixture V failure")) } else { Ok(()) }
       },
+      || true,
       || {},
     );
-    assert!(!ok);
+    assert_eq!(result, PasteResult::InputEventFailed);
     assert!(matches!(
       calls.as_slice(),
       [
@@ -654,13 +749,17 @@ mod tests {
   #[test]
   fn command_down_failure_does_not_emit_the_paste_key() {
     let mut calls = 0;
-    assert!(!command_v_events(
-      |_, _| {
-        calls += 1;
-        Err(enigo::InputError::Simulate("fixture Command failure"))
-      },
-      || panic!("a failed Command press must not enter the hold"),
-    ));
+    assert_eq!(
+      command_v_events(
+        |_, _| {
+          calls += 1;
+          Err(enigo::InputError::Simulate("fixture Command failure"))
+        },
+        || panic!("a failed Command press must not enter clipboard verification"),
+        || panic!("a failed Command press must not enter the hold"),
+      ),
+      PasteResult::InputEventFailed
+    );
     assert_eq!(calls, 1);
   }
 
@@ -668,16 +767,20 @@ mod tests {
   fn command_release_failure_is_not_success() {
     use enigo::{Direction, InputError, Key};
 
-    assert!(!command_v_events(
-      |key, direction| {
-        if matches!((key, direction), (Key::Meta, Direction::Release)) {
-          Err(InputError::Simulate("fixture release failure"))
-        } else {
-          Ok(())
-        }
-      },
-      || {},
-    ));
+    assert_eq!(
+      command_v_events(
+        |key, direction| {
+          if matches!((key, direction), (Key::Meta, Direction::Release)) {
+            Err(InputError::Simulate("fixture release failure"))
+          } else {
+            Ok(())
+          }
+        },
+        || true,
+        || {},
+      ),
+      PasteResult::InputEventFailed
+    );
   }
 
   #[test]

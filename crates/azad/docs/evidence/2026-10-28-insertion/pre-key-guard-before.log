@@ -1,0 +1,25 @@
+Command:
+CARGO_BUILD_JOBS=2 cargo test -q -p azad --bin azad clipboard_change_during_command_down_does_not_emit_paste_key -- --exact platform::paste::tests::clipboard_change_during_command_down_does_not_emit_paste_key
+
+Source baseline: e87230ec0f5d28f03eeaac7b7f93db7fd55f7f0a
+The regression was added before the production change.
+Its event callback replaces the modeled clipboard state during Command-down.
+
+running 1 test
+platform::paste::tests::clipboard_change_during_command_down_does_not_emit_paste_key --- FAILED
+
+failures:
+
+---- platform::paste::tests::clipboard_change_during_command_down_does_not_emit_paste_key stdout ----
+
+thread 'platform::paste::tests::clipboard_change_during_command_down_does_not_emit_paste_key' (45312216) panicked at crates/azad/src/platform/paste.rs:630:5:
+a clipboard change during shortcut setup must stop the paste
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    platform::paste::tests::clipboard_change_during_command_down_does_not_emit_paste_key
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 313 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p azad --bin azad`
+Exit code: 101

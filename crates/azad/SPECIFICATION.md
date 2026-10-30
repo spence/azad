@@ -172,7 +172,9 @@ Local clipboard handoff (grounded in the owner's stale-insertion report and the
 controlled ownership and delayed-receiver replays):
 
 - **C1:** If the claimed clipboard generation or text fails verification before the shortcut,
-  Azad emits no paste shortcut. A later clipboard change remains outside this local verification.
+  Azad emits no paste shortcut. Azad verifies again after Command-down, immediately before V.
+  If that verification fails, Azad releases Command without a V event.
+  A clipboard change after the final verification remains outside this local guarantee.
 - **C2:** Native shortcut errors produce a failed result. Azad attempts V and Command release
   after a failed V event and does not auto-submit a failed insertion, including a history insertion.
 - **C3:** A failed normal transcript remains available when history is enabled. Failure does not
@@ -181,6 +183,8 @@ controlled ownership and delayed-receiver replays):
   Azad does not automatically repeat an insertion whose delivery is uncertain.
 
 Binding: native ownership-interference and delayed-receiver replays exercise C1 and C4.
+`platform::paste::tests` covers clipboard replacement during Command-down and final verification
+before V for C1.
 `platform::paste::tests` covers shortcut failure cleanup for C2. `app::insertion::tests` covers
 failed history insertion, failed-transcript retention, and newer-speech preservation for C2–C3.
 

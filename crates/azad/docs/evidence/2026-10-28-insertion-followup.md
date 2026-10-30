@@ -199,6 +199,47 @@ Initial source review: `conversation-18e3256bdefd8f48-627359`.
 Final acceptance: `conversation-18e325ba3d1b08a0-627925`.
 The reviews require these timing limits; neither accepts a stale-paste fix.
 
+## Final pre-key verification — October 29, 2026
+
+The owner approved clipboard verification after the cost measurement.
+The shared clipboard path retains its initial ownership check and now verifies exact text and
+generation again after Command-down, before the physical V event.
+This final check is unconditional; the debug setting controls only its log record.
+The record uses `stage=before_paste_key` and the existing metadata fields, without clipboard text.
+
+If the final check fails, Azad releases Command and sends neither V nor the chord hold.
+The result is `ClipboardWriteFailed`, or `InputEventFailed` if Command release fails.
+The existing insertion failure path suppresses auto-submit and preserves normal history when enabled.
+No paste delay or key-hold duration was increased.
+
+The [before capture](2026-10-28-insertion/pre-key-guard-before.log) records a failing regression
+against the previous event recipe. The event callback replaces a modeled clipboard state during
+Command-down, after successful initial validation. The old recipe still reports a paste.
+After the final gate was added, the regression returns `ClipboardWriteFailed` with only
+Command-down and Command-up events. Additional cases verify the callback/V/hold order and cleanup errors.
+This is headless event-recipe proof, not a native clipboard race or the natural historical trigger.
+
+Verification:
+
+- `CARGO_BUILD_JOBS=2 cargo test -q -p azad -- --test-threads=2`: 315 passed, one existing ignored test.
+- `CARGO_BUILD_JOBS=2 just interaction-test`: all seven isolated scenarios passed.
+- `rustfmt --edition 2024 --check crates/azad/src/platform/paste.rs`: passed.
+- `git diff --check`: passed.
+- Independent source review accepted the change in `conversation-18e3282d44ad1ea8-633496`.
+
+`just install`, `just restart`, and `just status` completed on catalyst.
+The release build took 1 minute 31 seconds. The updated `ai.azad` process runs as PID `97212`.
+The installed executable and release artifact have UUID `A68E6336-B66C-31B4-AFB6-B5D2FA651DFE`.
+The running process maps the installed executable at inode `465542382`.
+Strict bundle signature verification passed. The Micro authority, team `35A87BDK48`, and stable
+designated requirement remain unchanged.
+The restart selector contained only Azad and its speech helpers, not an agent host.
+All 17 captured Codex/Zed process records retained their PID and start time after deployment.
+No desktop input, microphone control, or app-preference mutation was used for verification.
+
+A clipboard change after the final read and destination or remote receipt remain outside this
+local guarantee. This delivery does not establish that all reported stale pastes are resolved.
+
 ## Long keyboard output
 
 A separate admitted run used the production unpaced direct-typing path through guest Jump VNC.
