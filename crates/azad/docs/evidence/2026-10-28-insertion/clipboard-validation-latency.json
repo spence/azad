@@ -1,0 +1,72 @@
+{
+  "general_pasteboard_access" : false,
+  "input_events" : false,
+  "negative_controls" : 3,
+  "private_pasteboard" : true,
+  "results" : [
+    {
+      "one_validation" : {
+        "max_us" : 87.5,
+        "p50_us" : 30.042000000000002,
+        "p95_us" : 44.375,
+        "p99_us" : 58.582999999999998
+      },
+      "payload_bytes" : 49,
+      "samples" : 1000,
+      "three_back_to_back_validations" : {
+        "max_us" : 1563.4169999999999,
+        "p50_us" : 59.415999999999997,
+        "p95_us" : 74.25,
+        "p99_us" : 84.707999999999998
+      }
+    },
+    {
+      "one_validation" : {
+        "max_us" : 94.875,
+        "p50_us" : 31.209,
+        "p95_us" : 46.167000000000002,
+        "p99_us" : 61.375
+      },
+      "payload_bytes" : 347,
+      "samples" : 1000,
+      "three_back_to_back_validations" : {
+        "max_us" : 123.375,
+        "p50_us" : 62.082999999999998,
+        "p95_us" : 78.290999999999997,
+        "p99_us" : 92.459000000000003
+      }
+    },
+    {
+      "one_validation" : {
+        "max_us" : 114.708,
+        "p50_us" : 55.084000000000003,
+        "p95_us" : 66.667000000000002,
+        "p99_us" : 75.792000000000002
+      },
+      "payload_bytes" : 4105,
+      "samples" : 1000,
+      "three_back_to_back_validations" : {
+        "max_us" : 195.208,
+        "p50_us" : 130.375,
+        "p95_us" : 145.5,
+        "p99_us" : 153.958
+      }
+    },
+    {
+      "one_validation" : {
+        "max_us" : 521.875,
+        "p50_us" : 422.25,
+        "p95_us" : 449.125,
+        "p99_us" : 464.04199999999997
+      },
+      "payload_bytes" : 65545,
+      "samples" : 1000,
+      "three_back_to_back_validations" : {
+        "max_us" : 5643.375,
+        "p50_us" : 1231,
+        "p95_us" : 1282.0409999999999,
+        "p99_us" : 1311.0830000000001
+      }
+    }
+  ]
+}

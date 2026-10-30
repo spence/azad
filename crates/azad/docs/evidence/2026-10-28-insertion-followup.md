@@ -149,6 +149,56 @@ Use a successful positive paste on the same connection before that negative chec
 Clipboard readback is not atomic. A change after the pre-shortcut check remains possible.
 No configured paste delay was increased. No automatic retry or typing default was added.
 
+## Clipboard verification cost — October 29, 2026
+
+The owner limited this follow-up to the performance impact of clipboard verification.
+An unsaved read-only observation of `~/Library/Logs/Azad/stderr.log` at 4:51pm PT found 575 attempts
+with matching text and generation at all three local handoff stages. These include turns 259–263
+from the owner's October 29 message; the logs do not contain destination receipt.
+The [fixture](2026-10-28-insertion/clipboard-validation-latency.swift) uses a private
+`NSPasteboard`, not the general clipboard. It posts no input events.
+It measures a generation read, a text read, another generation read, and exact UTF-8 comparison.
+The API sequence matches the production guard, but its Swift conversion cost is not the Rust cost.
+
+The optimized run used catalyst, MacBookPro18,4, macOS 26.5, and Apple Swift 6.3.2.
+The source baseline was `bf044d7512dfc6e1dee4af0a9587102497b6f22f`, with this fixture added.
+The run completed at approximately 5pm PT on October 29. No CPU was reserved or pinned.
+Each payload has 50 warm-up iterations and 1,000 retained samples.
+The [saved result](2026-10-28-insertion/clipboard-validation-latency.json) contains:
+
+| Payload bytes | One verification, median | One verification, p95 |
+| ------------- | ------------------------ | --------------------- |
+| 49            | 0.030 ms                 | 0.044 ms              |
+| 347           | 0.031 ms                 | 0.046 ms              |
+| 4,105         | 0.055 ms                 | 0.067 ms              |
+| 65,545        | 0.422 ms                 | 0.449 ms              |
+
+The fixture also records three consecutive verifications of the same generation.
+That total is not pre-paste latency: production has two validation stages before Command-V
+and one after it.
+Production separates its stages with other work; the fixture runs its three reads consecutively.
+Clipboard writes, logging, foreground queries, waits, event posting, and destination receipt
+are outside the timed region. These results estimate AppKit readback cost on an uncontended
+private board, not general-board or end-to-end latency.
+They do not show that validation prevents a stale paste or change the installed app.
+
+Positive readback and negative stale-text, stale-generation, and unequal-encoding controls passed.
+The payloads include Unicode but no embedded NUL. No mid-read ownership change is forced by this fixture.
+
+Build from the repository root and run in the retained internal-storage evidence target:
+
+```sh
+swiftc -O \
+  -module-cache-path ~/projects/azad/insertion-20261028/swift-module-cache \
+  crates/azad/docs/evidence/2026-10-28-insertion/clipboard-validation-latency.swift \
+  -o ~/projects/azad/insertion-20261028/clipboard-validation-latency
+~/projects/azad/insertion-20261028/clipboard-validation-latency
+```
+
+Initial source review: `conversation-18e3256bdefd8f48-627359`.
+Final acceptance: `conversation-18e325ba3d1b08a0-627925`.
+The reviews require these timing limits; neither accepts a stale-paste fix.
+
 ## Long keyboard output
 
 A separate admitted run used the production unpaced direct-typing path through guest Jump VNC.
